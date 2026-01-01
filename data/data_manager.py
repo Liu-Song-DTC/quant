@@ -193,7 +193,7 @@ class StockDataManager:
 
         return filtered_df
 
-    def download_raw_data(self, symbol, save_raw=True):
+    def download_raw_data(self, symbol, start_time, save_raw=True):
         """下载原始数据（不做任何处理）"""
         symbol = str(symbol).zfill(6)
 
@@ -207,10 +207,12 @@ class StockDataManager:
             # 计算开始日期（上市日期或配置的起始日期）
             start_date = max(
                 pd.to_datetime(ipo_date),
-                pd.to_datetime('1990-01-01')
+                start_time
             ).strftime("%Y%m%d")
 
             end_date = datetime.today().strftime("%Y%m%d")
+            if start_date >= end_date:
+                return None
 
             print(f"下载 {symbol} 数据: {start_date} 到 {end_date}")
 
@@ -335,15 +337,14 @@ class StockDataManager:
 
             # 创建因子DataFrame
             factors_df = pd.DataFrame({
-                'date': merged_qfq['日期'],
+                '日期': merged_qfq['日期'].dt.date,
                 'symbol': symbol,
                 'qfq_factor': merged_qfq['qfq_factor'],
                 'hfq_factor': merged_hfq['hfq_factor']
             })
 
             # 保存因子
-            raw_data_path = self.raw_data_dir / f"{symbol}"
-            factors_df.to_csv(raw_data_path / "fq_factors.csv", index=False)
+            data_dict['fq_factors'] = factors_df
 
         except Exception as e:
             print(f"计算复权因子失败 {symbol}: {e}")
@@ -352,43 +353,45 @@ class StockDataManager:
         """增量更新数据"""
         symbol = str(symbol).zfill(6)
         raw_data_path = self.raw_data_dir / symbol
-
+        raw_data_path.mkdir(exist_ok=True)
         # 检查是否有现有数据
         existing_data = {}
+        last_dates = {}
+        last_date = pd.to_datetime('1990-01-01')
         if raw_data_path.exists():
-            for adj_type in ['none', 'qfq', 'hfq']:
+            for adj_type in ['none', 'qfq', 'hfq', 'fq_factors']:
                 file_path = raw_data_path / f"{adj_type}.csv"
                 if file_path.exists():
-                    try:
-                        existing_data[adj_type] = pd.read_csv(file_path, parse_dates=['日期'])
-                    except:
-                        existing_data[adj_type] = pd.DataFrame()
+                    existing_data[adj_type] = pd.read_csv(file_path, parse_dates=['日期'])
+                    last_dates[adj_type] = existing_data[adj_type]['日期'].max()
+                    existing_data[adj_type]['日期'] = existing_data[adj_type]['日期'].dt.date
+            if len(last_dates) == 4:
+                last_date = min(last_dates.values()) + timedelta(days=1)
 
         # 获取最新数据
-        new_data = self.download_raw_data(symbol, save_raw=False)
-
-        if not new_data:
-            return existing_data
+        new_data = self.download_raw_data(symbol, start_time=last_date, save_raw=False)
+        if new_data is None:
+            return
 
         # 合并数据
         for adj_type in ['none', 'qfq', 'hfq', 'fq_factors']:
-            if adj_type in new_data and not new_data[adj_type].empty:
-                if adj_type in existing_data and not existing_data[adj_type].empty:
-                    # 合并新旧数据
-                    combined = pd.concat([existing_data[adj_type], new_data[adj_type]],
-                                       ignore_index=True)
-                    # 去重
-                    combined = combined.drop_duplicates(subset=['日期'], keep='last')
-                    combined = combined.sort_values('日期')
-                else:
-                    combined = new_data[adj_type]
+            if adj_type not in existing_data:
+                combined = new_data[adj_type]
+            elif adj_type not in new_data:
+                combined = existing_data[adj_type]
+            else:
+                combined = pd.concat([existing_data[adj_type], new_data[adj_type]],
+                                   ignore_index=True)
+                # 去重
+                combined = combined.drop_duplicates(subset=['日期'], keep='last')
+                combined = combined.sort_values('日期')
 
-                # 保存
-                raw_data_path.mkdir(exist_ok=True)
-                combined.to_csv(raw_data_path / f"{adj_type}.csv",
-                              index=False, encoding="utf-8")
+            # 保存
+            raw_data_path.mkdir(exist_ok=True)
+            combined.to_csv(raw_data_path / f"{adj_type}.csv",
+                          index=False, encoding="utf-8")
 
-        return new_data
+        return
 
     def batch_download(self, symbols=None, force=False, max_workers=5):
         """批量下载数据"""
@@ -406,23 +409,20 @@ class StockDataManager:
 
         def download_single(symbol):
             try:
-                if force or not self._has_data(symbol):
-                    self.download_raw_data(symbol)
-                    return (symbol, "success")
-                else:
-                    return (symbol, "already_exists")
+                self.incremental_update(symbol)
+                return (symbol, "success")
             except Exception as e:
                 return (symbol, f"error: {str(e)}")
 
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(download_single, symbol): symbol for symbol in symbols[:100]}  # 限制前100只
+            futures = {executor.submit(download_single, symbol): symbol for symbol in symbols}  # 限制前100只
 
             for future in tqdm(concurrent.futures.as_completed(futures),
                              total=len(futures), desc="下载进度"):
                 results.append(future.result())
 
-        # 统计结果
+        #  统计结果
         success = sum(1 for _, status in results if status == "success")
         exists = sum(1 for _, status in results if status == "already_exists")
         errors = sum(1 for _, status in results if "error" in status)
