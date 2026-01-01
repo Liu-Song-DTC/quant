@@ -15,13 +15,13 @@ class StockDataManager:
         """初始化数据管理器"""
         self.data_dir = Path(data_dir)
         self.raw_data_dir = self.data_dir / "raw_data"
-        self.processed_data_dir = self.data_dir / "processed_data"
+        self.backtrader_data_dir = self.data_dir / "backtrader_data"
         self.stock_metadata_dir = self.data_dir / "stock_metadata"
 
         # 创建目录
         self.data_dir.mkdir(exist_ok=True)
         self.raw_data_dir.mkdir(exist_ok=True)
-        self.processed_data_dir.mkdir(exist_ok=True)
+        self.backtrader_data_dir.mkdir(exist_ok=True)
         self.stock_metadata_dir.mkdir(exist_ok=True)
         self.metadata_path = self.data_dir / "metadata.json"
 
@@ -493,10 +493,7 @@ class StockDataManager:
                 bt_df = self._create_complete_series(bt_df)
 
                 # 保存处理后的数据
-                processed_path = self.processed_data_dir / "backtrader"
-                processed_path.mkdir(exist_ok=True)
-
-                output_file = processed_path / f"{symbol}_{adj_type}.csv"
+                output_file = self.backtrader_data_dir/ f"{symbol}_{adj_type}.csv"
                 bt_df.to_csv(output_file, index=False)
 
                 print(f"已保存 {symbol} 的Backtrader格式数据: {len(bt_df)} 条记录")
@@ -674,7 +671,7 @@ class StockDataManager:
 
         return issues
 
-    def create_universe_for_backtest(self, symbols, start_date, end_date, min_days=100):
+    def create_universe_for_backtest(self, symbols, start_date, end_date, adj_type='qfq', min_days=100):
         """创建回测股票池"""
         # 获取股票列表
 
@@ -700,7 +697,7 @@ class StockDataManager:
                 print(f"检查 {symbol} 时出错: {e}")
 
         # 保存股票池
-        self.create_backtrader_data(universe, adj_type='qfq')
+        self.create_backtrader_data(universe, adj_type=adj_type)
         print(f"创建回测股票池完成: {len(universe)} 只股票")
         return universe
 
@@ -743,7 +740,7 @@ def main():
     print(f"- 回测股票池: {len(universe)} 只")
     print(f"- 数据目录: {manager.data_dir}")
     print(f"- 原始数据: {len(list(manager.raw_data_dir.glob('*/*.csv')))} 个文件")
-    print(f"- 处理数据: {len(list(manager.processed_data_dir.glob('**/*.csv')))} 个文件")
+    print(f"- 处理数据: {len(list(manager.backtrader_data_dir.glob('**/*.csv')))} 个文件")
 
 
 if __name__ == "__main__":
