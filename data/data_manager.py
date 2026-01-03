@@ -402,7 +402,7 @@ class StockDataManager:
                 return
             symbols = stock_list['symbol'].tolist()
 
-        print(f"开始批量下载 {len(symbols)} 只股票数据...")
+        print(f"开始批量更新 {len(symbols)} 只股票数据...")
 
         import concurrent.futures
         from tqdm import tqdm
@@ -419,7 +419,7 @@ class StockDataManager:
             futures = {executor.submit(download_single, symbol): symbol for symbol in symbols}  # 限制前100只
 
             for future in tqdm(concurrent.futures.as_completed(futures),
-                             total=len(futures), desc="下载进度"):
+                             total=len(futures), desc="更新进度"):
                 results.append(future.result())
 
         #  统计结果
@@ -427,7 +427,7 @@ class StockDataManager:
         exists = sum(1 for _, status in results if status == "already_exists")
         errors = sum(1 for _, status in results if "error" in status)
 
-        print(f"批量下载完成: 成功 {success}, 已存在 {exists}, 失败 {errors}")
+        print(f"批量更新完成: 成功 {success}, 已存在 {exists}, 失败 {errors}")
 
         # 保存下载日志
         log_df = pd.DataFrame(results, columns=['symbol', 'status'])
@@ -449,7 +449,7 @@ class StockDataManager:
 
         return False
 
-    def create_backtrader_data(self, symbols, adj_type='qfq'):
+    def create_backtrader_data(self, symbols, start_date, end_date, adj_type='qfq'):
         """创建Backtrader格式数据"""
         for symbol in symbols:
             symbol = str(symbol).zfill(6)
@@ -463,7 +463,8 @@ class StockDataManager:
 
             try:
                 # 读取数据
-                df = pd.read_csv(data_file)
+                df = pd.read_csv(data_file, parse_dates=['日期'])
+                df = df[(df['日期'] >= start_date) & (df['日期'] <= end_date)]
 
                 # 标准化列名
                 df.columns = [col.strip() for col in df.columns]
@@ -627,7 +628,7 @@ class StockDataManager:
 
         # 打印摘要
         if quality_report['issues']:
-            print(f"  发现问题: {len(quality_report['issues'])} 个")
+            print(f" {symbol} 发现问题: {len(quality_report['issues'])} 个")
             for issue in quality_report['issues'][:3]:  # 只显示前3个问题
                 print(f"    - {issue}")
 
@@ -697,7 +698,7 @@ class StockDataManager:
                 print(f"检查 {symbol} 时出错: {e}")
 
         # 保存股票池
-        self.create_backtrader_data(universe, adj_type=adj_type)
+        self.create_backtrader_data(universe, start_date, end_date, adj_type=adj_type)
         print(f"创建回测股票池完成: {len(universe)} 只股票")
         return universe
 
@@ -716,17 +717,17 @@ def main():
     stock_list = manager._get_stock_list()
     print(f"股票列表共 {len(stock_list)} 只股票")
 
-    # 批量下载数据（示例：只下载前20只）
-    print("\n======> 批量下载数据...")
-    sample_symbols = stock_list['symbol'].head(20).tolist()
+    # 批量更新数据
+    print("\n======> 批量更新数据...")
+    sample_symbols = stock_list['symbol'].tolist()
     manager.batch_download(symbols=sample_symbols, force=False)
 
     # 创建回测股票池
     print("\n======> 创建回测股票池...")
     universe = manager.create_universe_for_backtest(
         symbols=sample_symbols,
-        start_date='2020-01-01',
-        end_date='2023-12-31',
+        start_date='2018-01-01',
+        end_date='2025-12-31',
         min_days=100
     )
 
