@@ -8,6 +8,7 @@ import pickle
 from pathlib import Path
 import warnings
 import hashlib
+import shutil
 warnings.filterwarnings('ignore')
 
 class StockDataManager:
@@ -36,7 +37,7 @@ class StockDataManager:
             with open(self.metadata_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return {
-            "last_update": ""
+            "last_update": "19000101"
         }
 
     def _save_metadata(self):
@@ -70,20 +71,28 @@ class StockDataManager:
 
         return default_config
 
-    def _get_stock_list(self, force_update=False):
+    def get_stock_list(self, force_update=False):
         """获取股票列表"""
+        stock_full_list_file = self.stock_metadata_dir / "stock_list_full.csv"
         stock_list_file = self.stock_metadata_dir / "stock_list.csv"
         current_date = datetime.today()
 
-        if not force_update and stock_list_file.exists():
+        def _filter_stock(data):
+            # 应用过滤规则
+            filtered_data = self._apply_filters(data)
+            # 保存股票列表
+            filtered_data.to_csv(stock_list_file, index=False, encoding="utf-8")
+            return filtered_data
+
+        if not force_update and stock_full_list_file.exists():
             # 检查是否需要更新
             mtime = datetime.strptime(self.metadata["last_update"], "%Y%m%d")
             if (current_date - mtime).days < self.config["update_interval"]:
                 print("股票列表在更新间隔内，使用缓存")
-                return pd.read_csv(stock_list_file, dtype={'symbol': str})
+                data = pd.read_csv(stock_full_list_file, dtype={'symbol': str})
+                print(data)
+                return _filter_stock(data)
 
-        self.metadata["last_update"] = current_date.strftime("%Y%m%d")
-        self._save_metadata()
         try:
             print("正在获取股票列表...")
 
@@ -128,16 +137,12 @@ class StockDataManager:
             # 确保代码是字符串格式
             spot_data['symbol'] = spot_data['symbol'].astype(str).str.zfill(6)
 
-            # 应用过滤规则
-            filtered_data = self._apply_filters(spot_data)
-
-            # 保存股票列表
-            filtered_data.to_csv(stock_list_file, index=False, encoding="utf-8")
-
             # 保存完整数据用于参考
-            spot_data.to_csv(self.stock_metadata_dir / "stock_list_full.csv",
-                           index=False, encoding="utf-8")
+            spot_data.to_csv(stock_full_list_file, index=False, encoding="utf-8")
+            filtered_data = _filter_stock(spot_data)
 
+            self.metadata["last_update"] = current_date.strftime("%Y%m%d")
+            self._save_metadata()
             print(f"股票列表获取完成，过滤后共 {len(filtered_data)} 只股票")
             return filtered_data
 
@@ -396,7 +401,7 @@ class StockDataManager:
     def batch_download(self, symbols=None, force=False, max_workers=5):
         """批量下载数据"""
         if symbols is None:
-            stock_list = self._get_stock_list()
+            stock_list = self.get_stock_list()
             if stock_list.empty:
                 print("股票列表为空")
                 return
@@ -484,7 +489,12 @@ class StockDataManager:
                     'low': df['最低'].astype(float),
                     'close': df['收盘'].astype(float),
                     'volume': df['成交量'].astype(float),
-                    'openinterest': 0
+                    'openinterest': 0,
+                    'amount': df['成交额'].astype(float),
+                    'amplitude': df['振幅'].astype(float),
+                    'change_percent': df['涨跌幅'].astype(float),
+                    'change_amount': df['涨跌额'].astype(float),
+                    'turnover_rate': df['换手率'].astype(float)
                 })
 
                 # 处理异常值
@@ -676,6 +686,8 @@ class StockDataManager:
         """创建回测股票池"""
         # 获取股票列表
 
+        shutil.rmtree(self.backtrader_data_dir)
+        os.makedirs(self.backtrader_data_dir)
         universe = []
 
         for symbol in symbols:
@@ -714,7 +726,7 @@ def main():
 
     # 获取股票列表
     print("\n======> 获取股票列表...")
-    stock_list = manager._get_stock_list()
+    stock_list = manager.get_stock_list()
     print(f"股票列表共 {len(stock_list)} 只股票")
 
     # 批量更新数据
