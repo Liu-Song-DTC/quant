@@ -9,6 +9,8 @@ from pathlib import Path
 import warnings
 import hashlib
 import shutil
+import time
+import random
 warnings.filterwarnings('ignore')
 
 class StockDataManager:
@@ -52,7 +54,7 @@ class StockDataManager:
             "update_interval": 30,  # 更新间隔（天）
             "min_market_cap": -1,   # 最小市值过滤（亿元）
             "min_price": -1,        # 最低价格过滤（元）
-            "min_volume": -1, # 最低成交量过滤（股）
+            "min_amount": -1, # 最低成交量过滤（万元）
             "max_stock_count": -1,  # 最大股票数量
             "exclude_st": True,    # 排除ST股票
             "exclude_suspended": True,  # 排除停牌股票
@@ -90,7 +92,6 @@ class StockDataManager:
             if (current_date - mtime).days < self.config["update_interval"]:
                 print("股票列表在更新间隔内，使用缓存")
                 data = pd.read_csv(stock_full_list_file, dtype={'symbol': str})
-                print(data)
                 return _filter_stock(data)
 
         try:
@@ -185,8 +186,8 @@ class StockDataManager:
             print(f"按价格过滤后剩余: {len(filtered_df)}")
 
         # 5. 按成交量过滤
-        if self.config["min_volume"] > 0:
-            mask = filtered_df['volume'] >= self.config["min_volume"]
+        if self.config["min_amount"] > 0:
+            mask = filtered_df['volume'] * filtered_df['close'] >= self.config["min_amount"] * 1e4
             filtered_df = filtered_df[mask]
             print(f"按成交量过滤后剩余: {len(filtered_df)}")
 
@@ -226,6 +227,7 @@ class StockDataManager:
 
             # 不复权数据（原始数据）
             try:
+                time.sleep(random.uniform(0.0, 1.0))
                 df_none = ak.stock_zh_a_hist(
                     symbol=symbol,
                     period="daily",
@@ -240,6 +242,7 @@ class StockDataManager:
 
             # 前复权数据
             try:
+                time.sleep(random.uniform(0.0, 1.0))
                 df_qfq = ak.stock_zh_a_hist(
                     symbol=symbol,
                     period="daily",
@@ -254,6 +257,7 @@ class StockDataManager:
 
             # 后复权数据
             try:
+                time.sleep(random.uniform(0.0, 1.0))
                 df_hfq = ak.stock_zh_a_hist(
                     symbol=symbol,
                     period="daily",

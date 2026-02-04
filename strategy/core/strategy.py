@@ -1,21 +1,42 @@
+from .signal_engine import SignalEngine
+from .signal_store import SignalStore
+from .portfolio import PortfolioConstructor
+
 # core/strategy.py
 class Strategy:
     """
     Strategy = 各组件的组合
     """
 
-    def __init__(self, signal_engine, portfolio):
-        self.signal_engine = signal_engine
-        self.portfolio = portfolio
+    def __init__(self, init_cash, max_position):
+        self.signal_engine = SignalEngine()
+        self.portfolio = PortfolioConstructor(max_position=max_position)
         self.signal_store = SignalStore()
+        self.init_cash = init_cash
 
-    def run_day(self, date, universe, market_data):
+    def generate_signal(self, code, market_data):
         """
-        生成当天所有可执行 signal
+        生成所有 signal
         """
-        for code in universe:
-            sig = self.signal_engine.generate(code, date, market_data)
-            self.signal_store.set(code, date, sig)
+        self.signal_engine.generate(code, market_data, self.signal_store)
 
-        return self.signal_store
-
+    def generate_positions(
+        self,
+        date,
+        universe,
+        current_positions,
+        cash,
+        prices,
+    ):
+        """
+        根据signal 生成持仓target
+        """
+        return self.portfolio.build(
+            date,
+            universe,
+            current_positions,
+            self.signal_store,
+            cash,
+            prices,
+            self.init_cash
+        )
