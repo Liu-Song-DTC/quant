@@ -53,7 +53,7 @@ class BacktraderExecution(bt.Strategy):
             for d in self.datas
         }
         current_positions = {
-            d._name: self.getposition(d).value
+            d._name: self.getposition(d).size * prices[d._name]
             for d in self.datas
             if self.getposition(d).size != 0
         }
