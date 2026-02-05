@@ -8,20 +8,32 @@ from collections import defaultdict
 
 from core.strategy import Strategy
 
-CASH = 10000.0
+CASH = 100000.0
 COMMISSION = 0.0003
 PERC = 0.005
-MAX_POSITION = 10
+MAX_POSITION = 3
 REBALANCE_DAYS = 1
 
 DATA_PATH = "../data/stock_data/backtrader_data/"
 def add_data_and_signal(cerebro, strategy):
     all_items = os.listdir(DATA_PATH)
+    dates = set()
+    for item in (all_items):
+        data = pd.read_csv(DATA_PATH+item, parse_dates=['datetime'])
+        dates.update(data['datetime'])
+    calendar_index = pd.DatetimeIndex(sorted(dates))
+
+    price_cols = ['open', 'high', 'low', 'close']
     for item in tqdm(all_items, desc="loading data"):
         name = item[:-8]
         data = pd.read_csv(DATA_PATH+item, parse_dates=['datetime'])
         strategy.generate_signal(name, data)
-        datafeed = bt.feeds.PandasData(dataname=data, datetime='datetime')
+        data = data.set_index('datetime')
+        data = data.reindex(calendar_index)
+        data[price_cols] = data[price_cols].ffill()
+        if 'volume' in data.columns:
+            data['volume'] = data['volume'].fillna(0)
+        datafeed = bt.feeds.PandasData(dataname=data)
         cerebro.adddata(datafeed, name=name)
 
 class BacktraderExecution(bt.Strategy):
@@ -48,14 +60,17 @@ class BacktraderExecution(bt.Strategy):
         date = self.datas[0].datetime.date(0)
         self.last_date = date
 
-        prices = {
-            d._name: d.close[0]
-            for d in self.datas
-        }
+        prices = {}
+        for d in self.datas:
+            price = d.close[0]
+            if price is None or math.isnan(price) or price <= 0:
+                continue
+            prices[d._name] = price
+
         current_positions = {
             d._name: self.getposition(d).size * prices[d._name]
             for d in self.datas
-            if self.getposition(d).size != 0
+            if d._name in prices and self.getposition(d).size != 0
         }
 
         target = self.p.real_strategy.generate_positions(
@@ -96,6 +111,19 @@ class BacktraderExecution(bt.Strategy):
                 order = self.sell(data=d, size=size)
                 self.orders_list[date].append(order)
 
+    def notify_order(self, order):
+        # 未被处理的订单
+        if order.status in [order.Submitted, order.Accepted]:
+            return
+        # 已经处理的订单
+        if order.status in [order.Completed, order.Canceled, order.Margin]:
+            date = datetime.date.fromordinal(int(order.executed.dt))
+            if order.isbuy():
+                print(f'BUY EXECUTED, date {date}, ref: {order.ref}，Price: {order.executed.price}, '
+                      f'Cost: {order.executed.value}, Comm {order.executed.comm}, Size: {order.executed.size}, Stock: {order.data._name}')
+            else: # Sell
+                print(f'SELL EXECUTED, date {date}, ref: {order.ref}, Price: {order.executed.price}, '
+                      f'Cost: {order.executed.value}, Comm {order.executed.comm}, Size: {order.executed.size}, Stock: {order.data._name}')
 
 if __name__ == "__main__":
     cerebro = bt.Cerebro()
@@ -131,3 +159,4 @@ if __name__ == "__main__":
     print(strat.analyzers._SharpeRatio.get_analysis())
     print("--------------- DrawDown -----------------")
     print(strat.analyzers._DrawDown.get_analysis())
+    #  cerebro.plot()

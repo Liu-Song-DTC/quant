@@ -24,7 +24,7 @@ class PortfolioConstructor:
         max_gross_exposure=1.0,
 
         # 回撤控制
-        drawdown_rules=[(0.1, 0.8), (0.2, 0.6)],  # [(0.1, 0.8), (0.2, 0.6)]
+        drawdown_rules=None,  # [(0.1, 0.8), (0.2, 0.6)]
     ):
         self.max_position = max_position
         self.risk_ratio = risk_ratio
@@ -52,6 +52,12 @@ class PortfolioConstructor:
         return: Dict[code, target_value]
         """
 
+        forced_exit = set()
+        for code in universe:
+            sig = signal_store.get(code, date)
+            if sig and sig.sell:
+                forced_exit.add(code)
+
         # =====================================================
         # 1. Signal → 选股
         # =====================================================
@@ -72,9 +78,11 @@ class PortfolioConstructor:
         # =====================================================
         inv_vol = {}
         for code in selected:
-            vol = signal_store.get(code, date).vol
-            if vol and vol > 0:
-                inv_vol[code] = 1.0 / vol
+            sig = signal_store.get(code, date)
+            vol = sig.vol
+            score = sig.score
+            if score and score > 0 and vol and vol > 0:
+                inv_vol[code] = score / vol
 
         total_inv_vol = sum(inv_vol.values())
         if total_inv_vol == 0:
@@ -139,5 +147,9 @@ class PortfolioConstructor:
                 if drawdown >= dd:
                     for code in adjusted:
                         adjusted[code] *= scale
+
+        for code in forced_exit:
+            if code in current_positions:
+                adjusted[code] = 0.0
 
         return adjusted

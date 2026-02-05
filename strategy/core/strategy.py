@@ -10,7 +10,10 @@ class Strategy:
 
     def __init__(self, init_cash, max_position):
         self.signal_engine = SignalEngine()
-        self.portfolio = PortfolioConstructor(max_position=max_position)
+        self.portfolio = PortfolioConstructor(
+            max_position=max_position,
+            drawdown_rules=[(0.1, 0.8), (0.2, 0.6)]
+        )
         self.signal_store = SignalStore()
         self.init_cash = init_cash
 
