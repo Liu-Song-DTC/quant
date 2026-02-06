@@ -18,7 +18,7 @@ class PortfolioConstructor:
         exit_step=0.5,
 
         # 单票约束
-        max_weight=0.2,
+        max_weight=1.2,
 
         # 组合约束
         max_gross_exposure=1.0,
@@ -33,7 +33,7 @@ class PortfolioConstructor:
         self.entry_step = entry_step
         self.exit_step = exit_step
 
-        self.max_weight = max_weight
+        self.max_weight = 1 / max_position * max_weight
         self.max_gross_exposure = max_gross_exposure
 
         self.drawdown_rules = drawdown_rules or []
@@ -141,12 +141,11 @@ class PortfolioConstructor:
         # =====================================================
         # 6. 组合回撤控制（Equity-based scaling）
         # =====================================================
-        if initial_cash and cash:
-            drawdown = 1.0 - cash / initial_cash
-            for dd, scale in sorted(self.drawdown_rules):
-                if drawdown >= dd:
-                    for code in adjusted:
-                        adjusted[code] *= scale
+        drawdown = 1.0 - total_equity / initial_cash
+        for dd, scale in sorted(self.drawdown_rules):
+            if drawdown >= dd:
+                for code in adjusted:
+                    adjusted[code] *= scale
 
         for code in forced_exit:
             if code in current_positions:
