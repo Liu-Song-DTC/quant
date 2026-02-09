@@ -31,13 +31,13 @@ def add_data_and_signal(cerebro, strategy):
         name = item[:-8]
         data = pd.read_csv(DATA_PATH+item, parse_dates=['datetime'])
         strategy.generate_signal(name, data)
-        #  plot_signal_diagnosis(
-        #      name,
-        #      data,
-        #      strategy.signal_engine,
-        #      strategy.signal_store,
-        #  )
-        #  exit(0)
+        plot_signal_diagnosis(
+            name,
+            data,
+            strategy.signal_engine,
+            strategy.signal_store,
+        )
+        exit(0)
         data = data.set_index('datetime')
         data = data.reindex(calendar_index)
         data[price_cols] = data[price_cols].ffill()
