@@ -76,22 +76,22 @@ class PortfolioConstructor:
         # =====================================================
         # 2. 风险定价：1 / vol
         # =====================================================
-        inv_vol = {}
+        inv_risk_vol = {}
         for code in selected:
             sig = signal_store.get(code, date)
-            vol = sig.vol
+            risk_vol = sig.risk_vol
             score = sig.score
-            if score and score > 0 and vol and vol > 0:
-                inv_vol[code] = score / vol
+            if score and score > 0 and risk_vol and risk_vol > 0:
+                inv_risk_vol[code] = score / risk_vol
 
-        total_inv_vol = sum(inv_vol.values())
+        total_inv_vol = sum(inv_risk_vol.values())
         if total_inv_vol == 0:
             return {}
 
         total_equity = cash + sum(current_positions.values())
         portfolio_risk_budget = total_equity * self.risk_ratio
         desired = {}
-        for code, iv in inv_vol.items():
+        for code, iv in inv_risk_vol.items():
             weight = iv / total_inv_vol
             # 风险 → 市值
             desired[code] = weight * portfolio_risk_budget

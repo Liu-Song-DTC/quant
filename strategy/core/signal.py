@@ -9,5 +9,5 @@ class Signal:
     buy: bool
     sell: bool
     score: float = 0.0
-    vol: float = 0.0
+    risk_vol: float = 0.0
 
