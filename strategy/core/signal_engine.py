@@ -74,11 +74,13 @@ class SignalEngine:
 
         last_sig = None
         for idx in close.index:
+            regime = self._detect_regime(indicators, idx)
+
             # 组合多个策略信号
             signals = self._combine_signals(indicators, market_data, idx)
 
             # 计算最终信号
-            sig = self._generate_final_signal(signals, indicators, market_data, last_sig, idx)
+            sig = self._generate_final_signal(signals, indicators, market_data, last_sig, idx, regime)
             last_sig = sig
             date = pd.to_datetime(dates[idx]).date()
             signal_store.set(code, date, sig)
@@ -164,40 +166,38 @@ class SignalEngine:
     def _trend_strategy(self, indicators: Dict[str, np.ndarray], idx: int) -> float:
         """趋势跟踪策略"""
         # 多重均线排列
-        ma_score = 0.0
+        if (
+            np.isnan(indicators['ma_short'][idx]) or
+            np.isnan(indicators['ma_mid'][idx]) or
+            np.isnan(indicators['ma_long'][idx])
+        ):
+            return 0.0
 
         # 短期>中期>长期为强势多头趋势
         if (indicators['ma_short'][idx] > indicators['ma_mid'][idx] and
             indicators['ma_mid'][idx] > indicators['ma_long'][idx]):
-            ma_score = 1.0
+            return 1.0
         # 短期<中期<长期为强势空头趋势
         elif (indicators['ma_short'][idx] < indicators['ma_mid'][idx] and
               indicators['ma_mid'][idx] < indicators['ma_long'][idx]):
-            ma_score = -1.0
+            return -1.0
         # 均线纠缠，趋势不明
         else:
-            # 检查短期均线方向
-            if indicators['ma_short'][idx] > indicators['ma_short'][idx-5]:
-                ma_score = 0.3
-            else:
-                ma_score = -0.3
-
-        # 价格在布林带中的位置
-        close = indicators['close'][idx]
-        boll_upper = indicators['boll_upper'][idx]
-        boll_lower = indicators['boll_lower'][idx]
-
-        if close > boll_upper * 0.95:  # 接近上轨，强势
-            boll_score = 0.5
-        elif close < boll_lower * 1.05:  # 接近下轨，弱势
-            boll_score = -0.5
-        else:
-            boll_score = 0.0
-
-        return (ma_score + boll_score) / 2
+            return 0.0
 
     def _mean_reversion_strategy(self, indicators: Dict[str, np.ndarray], idx: int) -> float:
         """均值回归策略"""
+        if (
+            np.isnan(indicators['ma_short'][idx]) or
+            np.isnan(indicators['ma_long'][idx]) or
+            np.isnan(indicators['boll_middle'][idx])
+        ):
+            return 0.0
+
+        trend = indicators['ma_short'][idx] - indicators['ma_long'][idx]
+        trend_strength = abs(trend) / indicators['close'][idx]
+        if trend_strength > 0.03:
+            return 0.0
         score = 0.0
 
         # RSI超买超卖
@@ -212,9 +212,12 @@ class SignalEngine:
         boll_middle = indicators['boll_middle'][idx]
         boll_upper = indicators['boll_upper'][idx]
         boll_lower = indicators['boll_lower'][idx]
+        band_width = boll_upper - boll_lower
+        if band_width <= 0 or np.isnan(band_width):
+            return 0.0
 
         # 价格偏离中轨程度
-        deviation = (close - boll_middle) / (boll_upper - boll_lower) * 2
+        deviation = (close - boll_middle) / band_width * 2
 
         if deviation > 0.8:  # 严重偏离上轨
             score -= 0.8
@@ -226,18 +229,13 @@ class SignalEngine:
     def _momentum_strategy(self, indicators: Dict[str, np.ndarray], idx: int) -> float:
         """动量策略"""
         momentum = indicators['momentum'][idx]
+        hist = indicators['momentum'][idx-60:idx]
 
-        # 标准化动量值
-        if momentum > 0.05:  # 强正动量
-            return 1.0
-        elif momentum < -0.05:  # 强负动量
-            return -1.0
-        elif momentum > 0.02:  # 弱正动量
-            return 0.5
-        elif momentum < -0.02:  # 弱负动量
-            return -0.5
-        else:
+        if idx < 60:
             return 0.0
+        z = momentum / np.nanstd(hist)
+        return np.clip(z / 2, -1, 1)
+
 
     def _volume_price_strategy(self, indicators: Dict[str, np.ndarray], data: pd.DataFrame, idx: int) -> float:
         """量价策略"""
@@ -246,13 +244,12 @@ class SignalEngine:
         # 成交量放大确认
         volume_ratio = indicators['volume_ratio'][idx]
         change_percent = data['change_percent'].values[idx]
+        if np.isnan(volume_ratio) or volume_ratio <= 0:
+            return 0.0
 
         # 放量上涨
-        if volume_ratio > self.config['min_volume_ratio'] and change_percent > 0:
-            score += 0.8
-        # 放量下跌
-        elif volume_ratio > self.config['min_volume_ratio'] and change_percent < -1:
-            score -= 0.8
+        if volume_ratio > self.config['min_volume_ratio']:
+            score += np.sign(change_percent) * 0.8
 
         # 量价背离检测（简化版）
         price_volume_corr = indicators['price_volume_corr'][idx]
@@ -265,6 +262,19 @@ class SignalEngine:
 
     def _volatility_strategy(self, indicators: Dict[str, np.ndarray], idx: int) -> float:
         """波动率策略"""
+        if (
+            np.isnan(indicators['boll_upper'][idx]) or
+            np.isnan(indicators['boll_lower'][idx])
+        ):
+            return 0.0
+
+        range_width = (
+            indicators['boll_upper'][idx] -
+            indicators['boll_lower'][idx]
+        ) / indicators['close'][idx]
+
+        if range_width < 0.04:
+            return 0.0
         volatility = indicators['volatility'][idx]
         price_position = indicators['price_position'][idx]
 
@@ -281,27 +291,82 @@ class SignalEngine:
 
         return 0.0
 
+    def _detect_regime(self, indicators: Dict[str, np.ndarray], idx: int) -> int:
+        """
+        市场结构识别
+        返回:
+            1  -> 上行结构
+            0  -> 震荡
+           -1  -> 下行结构
+        """
+        ma_mid = indicators['ma_mid'][idx]
+        ma_long = indicators['ma_long'][idx]
+        close = indicators['close'][idx]
+
+        if np.isnan(ma_mid) or np.isnan(ma_long):
+            return 0
+
+        slope = (ma_mid - ma_long) / close
+
+        # 阈值可以后续调，但不要太小
+        if slope > 0.01:
+            return 1
+        elif slope < -0.01:
+            return -1
+        else:
+            return 0
+
     def _generate_final_signal(self, signals: Dict[str, float],
                               indicators: Dict[str, np.ndarray],
-                               data: pd.DataFrame, last_sig: Signal, idx: int) -> Signal:
+                               data: pd.DataFrame, last_sig: Signal,
+                               idx: int, regime: int) -> Signal:
         """生成最终交易信号"""
         # 加权综合分数（可根据策略表现调整权重）
-        weights = {
-            'trend': 0.3,
-            'mean_reversion': 0.25,
-            'momentum': 0.25,
-            'volume_price': 0.1,
-            'volatility': 0.1
-        }
+        trend = signals['trend']
+        momentum = signals['momentum']
+        mean_reversion = signals['mean_reversion']
+        volume_price = signals['volume_price']
+        volatility = signals['volatility']
 
-        # 计算综合分数
-        composite_score = sum(signals[key] * weights[key] for key in weights)
+        if regime == -1:
+            mean_reversion *= 0.2
+            if trend >= 0:
+                trend = -1
+        elif regime == 1:
+            if trend <= 0:
+                trend = 1
+
+        direction = (
+            0.6 * trend +
+            0.4 * momentum
+        )
+        if abs(direction) < 0.3:
+            direction = 0
+        else:
+            direction = np.sign(direction)
+
+        if direction != 0:
+            composite_score = direction * (
+                0.5 * mean_reversion +
+                0.3 * volume_price +
+                0.2 * volatility
+            )
+        else:
+            composite_score = 0.0
 
         # 平滑处理
-        if last_sig:
+        if (
+            last_sig and
+            abs(last_sig.score) > 1e-6 and
+            np.sign(composite_score) == np.sign(last_sig.score)
+        ):
             w = self.config['score_smoothing']
-            composite_score =  w * composite_score + (1 - w) * last_sig.score
-
+            composite_score = (
+                w * composite_score + (1 - w) * last_sig.score
+            )
+        else:
+            # 方向变了，直接重置
+            composite_score = composite_score
 
         # 生成买卖信号
         buy = composite_score > 0.2  # 分数阈值可调整

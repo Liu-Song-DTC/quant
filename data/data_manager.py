@@ -1,3 +1,6 @@
+import akshare_proxy_patch
+akshare_proxy_patch.install_patch("101.201.173.125", "", 30)
+
 import akshare as ak
 import pandas as pd
 import numpy as np
@@ -11,7 +14,10 @@ import hashlib
 import shutil
 import time
 import random
+
 warnings.filterwarnings('ignore')
+
+INDEX = "sh000001"
 
 class StockDataManager:
     def __init__(self, data_dir="./stock_data"):
@@ -199,12 +205,25 @@ class StockDataManager:
 
         return filtered_df
 
-    def download_raw_data(self, symbol, start_time, save_raw=True):
+    def download_raw_data(self, symbol, start_time):
         """下载原始数据（不做任何处理）"""
         symbol = str(symbol).zfill(6)
 
         try:
             # 获取上市日期
+            if symbol == INDEX:
+                start_date = start_time.strftime("%Y%m%d")
+                end_date = datetime.today().strftime("%Y%m%d")
+                if start_date >= end_date:
+                    return None
+                print(f"下载 {symbol} 数据: {start_date} 到 {end_date}")
+                sh_index_df = ak.stock_zh_index_daily_em(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                return {"qfq": sh_index_df}
+
             ipo_date = self._get_ipo_date(symbol)
             if not ipo_date:
                 print(f"无法获取 {symbol} 的上市日期")
@@ -273,20 +292,6 @@ class StockDataManager:
             if not data_dict:
                 print(f"{symbol}: 所有复权类型数据都为空")
                 return None
-
-            # 保存原始数据
-            if save_raw:
-                raw_data_path = self.raw_data_dir / f"{symbol}"
-                raw_data_path.mkdir(exist_ok=True)
-
-                for adj_type, df in data_dict.items():
-                    # 标准化列名
-                    df.columns = [col.strip() for col in df.columns]
-                    df['symbol'] = symbol
-
-                    # 保存为CSV
-                    df.to_csv(raw_data_path / f"{adj_type}.csv",
-                            index=False, encoding="utf-8")
 
             # 计算并保存复权因子
             self._calculate_adjustment_factors(symbol, data_dict)
@@ -367,23 +372,26 @@ class StockDataManager:
         existing_data = {}
         last_dates = {}
         last_date = pd.to_datetime('1990-01-01')
+        types = ['none', 'qfq', 'hfq', 'fq_factors']
+        if symbol == INDEX:
+            types = ['qfq']
         if raw_data_path.exists():
-            for adj_type in ['none', 'qfq', 'hfq', 'fq_factors']:
+            for adj_type in types:
                 file_path = raw_data_path / f"{adj_type}.csv"
                 if file_path.exists():
                     existing_data[adj_type] = pd.read_csv(file_path, parse_dates=['日期'])
                     last_dates[adj_type] = existing_data[adj_type]['日期'].max()
                     existing_data[adj_type]['日期'] = existing_data[adj_type]['日期'].dt.date
-            if len(last_dates) == 4:
+            if len(last_dates) == len(types):
                 last_date = min(last_dates.values()) + timedelta(days=1)
 
         # 获取最新数据
-        new_data = self.download_raw_data(symbol, start_time=last_date, save_raw=False)
+        new_data = self.download_raw_data(symbol, start_time=last_date)
         if new_data is None:
             return
 
         # 合并数据
-        for adj_type in ['none', 'qfq', 'hfq', 'fq_factors']:
+        for adj_type in types:
             if adj_type not in existing_data:
                 combined = new_data[adj_type]
             elif adj_type not in new_data:
@@ -472,34 +480,48 @@ class StockDataManager:
 
             try:
                 # 读取数据
-                df = pd.read_csv(data_file, parse_dates=['日期'])
-                df = df[(df['日期'] >= start_date) & (df['日期'] <= end_date)]
+                if symbol == INDEX:
+                    df = pd.read_csv(data_file, parse_dates=['date'])
+                    df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+                    bt_df = pd.DataFrame({
+                        'datetime': pd.to_datetime(df['date']),
+                        'open': df['open'].astype(float),
+                        'high': df['high'].astype(float),
+                        'low': df['low'].astype(float),
+                        'close': df['close'].astype(float),
+                        'volume': df['volume'].astype(float),
+                        'openinterest': 0,
+                        'amount': df['amount'].astype(float),
+                    })
+                else:
+                    df = pd.read_csv(data_file, parse_dates=['日期'])
+                    df = df[(df['日期'] >= start_date) & (df['日期'] <= end_date)]
 
-                # 标准化列名
-                df.columns = [col.strip() for col in df.columns]
+                    # 标准化列名
+                    df.columns = [col.strip() for col in df.columns]
 
-                # 确保有必要的列
-                required_cols = ['日期', '开盘', '最高', '最低', '收盘', '成交量']
-                for col in required_cols:
-                    if col not in df.columns:
-                        print(f"{symbol} 数据缺少必要列: {col}")
-                        continue
+                    # 确保有必要的列
+                    required_cols = ['日期', '开盘', '最高', '最低', '收盘', '成交量']
+                    for col in required_cols:
+                        if col not in df.columns:
+                            print(f"{symbol} 数据缺少必要列: {col}")
+                            continue
 
-                # 准备Backtrader格式
-                bt_df = pd.DataFrame({
-                    'datetime': pd.to_datetime(df['日期']),
-                    'open': df['开盘'].astype(float),
-                    'high': df['最高'].astype(float),
-                    'low': df['最低'].astype(float),
-                    'close': df['收盘'].astype(float),
-                    'volume': df['成交量'].astype(float),
-                    'openinterest': 0,
-                    'amount': df['成交额'].astype(float),
-                    'amplitude': df['振幅'].astype(float),
-                    'change_percent': df['涨跌幅'].astype(float),
-                    'change_amount': df['涨跌额'].astype(float),
-                    'turnover_rate': df['换手率'].astype(float)
-                })
+                    # 准备Backtrader格式
+                    bt_df = pd.DataFrame({
+                        'datetime': pd.to_datetime(df['日期']),
+                        'open': df['开盘'].astype(float),
+                        'high': df['最高'].astype(float),
+                        'low': df['最低'].astype(float),
+                        'close': df['收盘'].astype(float),
+                        'volume': df['成交量'].astype(float),
+                        'openinterest': 0,
+                        'amount': df['成交额'].astype(float),
+                        'amplitude': df['振幅'].astype(float),
+                        'change_percent': df['涨跌幅'].astype(float),
+                        'change_amount': df['涨跌额'].astype(float),
+                        'turnover_rate': df['换手率'].astype(float)
+                    })
 
                 # 处理异常值
                 bt_df = self._clean_backtrader_data(bt_df, symbol)
@@ -696,6 +718,9 @@ class StockDataManager:
 
         for symbol in symbols:
             try:
+                if symbol == INDEX:
+                    universe.append(symbol)
+                    continue
                 # 检查是否有足够的数据
                 raw_data_path = self.raw_data_dir / str(symbol).zfill(6) / "qfq.csv"
                 if not raw_data_path.exists():
@@ -736,6 +761,7 @@ def main():
     # 批量更新数据
     print("\n======> 批量更新数据...")
     sample_symbols = stock_list['symbol'].tolist()
+    sample_symbols.insert(0, INDEX)
     manager.batch_download(symbols=sample_symbols, force=False)
 
     # 创建回测股票池

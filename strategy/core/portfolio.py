@@ -1,154 +1,178 @@
 # core/portfolio.py
+import numpy as np
 from copy import deepcopy
 
 class PortfolioConstructor:
     """
-    把 signal + 约束 → 目标仓位
+    Signal -> Risk Budget -> Target Position
     """
+
     def __init__(
         self,
         max_position=10,
 
-        # 风险预算
-        risk_ratio=1.0,   # 抽象单位，总风险预算
-        target_volatility=0.2,       # 组合目标波动（用于 scaling）
+        # 风险控制
+        target_volatility=0.15,   # 组合目标波动
 
-        # 路径控制
-        entry_step=0.25,
-        exit_step=0.5,
-
-        # 单票约束
-        max_weight=1.2,
-
-        # 组合约束
-        max_gross_exposure=1.0,
-
-        # 回撤控制
-        drawdown_rules=None,  # [(0.1, 0.8), (0.2, 0.6)]
+        # 动态调仓
+        entry_speed=0.5,
+        exit_speed=0.7,
     ):
         self.max_position = max_position
-        self.risk_ratio = risk_ratio
         self.target_volatility = target_volatility
 
-        self.entry_step = entry_step
-        self.exit_step = exit_step
+        self.entry_speed = entry_speed
+        self.exit_speed = exit_speed
 
-        self.max_weight = 1 / max_position * max_weight
-        self.max_gross_exposure = max_gross_exposure
+        self.defensive_mode = False
+        self.peak_equity = None
 
-        self.drawdown_rules = drawdown_rules or []
+    # =====================================================
+    # 主构建函数
+    # =====================================================
 
     def build(
         self,
         date,
         universe,
-        current_positions,    # code -> 当前市值
+        current_positions,
         signal_store,
         cash,
         prices,
-        initial_cash,
+        market_regime,
     ):
-        """
-        return: Dict[code, target_value]
-        """
+        if market_regime == 1:
+            max_gross_exposure= 1.0
+        elif market_regime == 0:
+            max_gross_exposure = 0.6
+        else:
+            max_gross_exposure = 0.3
 
-        forced_exit = set()
-        for code in universe:
-            sig = signal_store.get(code, date)
-            if sig and sig.sell:
-                forced_exit.add(code)
+        total_equity = cash + sum(current_positions.values())
+        # 初始化 peak equity
+        if self.peak_equity is None:
+            self.peak_equity = total_equity
+        self.peak_equity = max(self.peak_equity, total_equity)
+
+        drawdown = 1 - total_equity / self.peak_equity
+
+        if drawdown > 0.2:
+            self.defensive_mode = True
+
+        if total_equity >= self.peak_equity:
+            self.defensive_mode = False
+
+        if self.defensive_mode:
+            max_gross_exposure *= 0.5
 
         # =====================================================
-        # 1. Signal → 选股
+        #  选股（只选 buy 且 score>0）
         # =====================================================
+
         candidates = []
         for code in universe:
             sig = signal_store.get(code, date)
-            if sig and sig.buy:
+            if sig and sig.buy and sig.score > 0:
                 candidates.append((sig.score, code))
 
         candidates.sort(reverse=True)
         selected = [c for _, c in candidates[: self.max_position]]
 
         if not selected:
-            return {}
+            return self._gradual_exit(current_positions)
 
         # =====================================================
-        # 2. 风险定价：1 / vol
+        #  风险权重（score / vol）
         # =====================================================
-        inv_risk_vol = {}
+
+        raw_weight = {}
         for code in selected:
             sig = signal_store.get(code, date)
-            risk_vol = sig.risk_vol
-            score = sig.score
-            if score and score > 0 and risk_vol and risk_vol > 0:
-                inv_risk_vol[code] = score / risk_vol
+            if sig.risk_vol > 0:
+                raw_weight[code] = sig.score
 
-        total_inv_vol = sum(inv_risk_vol.values())
-        if total_inv_vol == 0:
-            return {}
+        total_raw = sum(raw_weight.values())
 
-        total_equity = cash + sum(current_positions.values())
-        portfolio_risk_budget = total_equity * self.risk_ratio
-        desired = {}
-        for code, iv in inv_risk_vol.items():
-            weight = iv / total_inv_vol
-            # 风险 → 市值
-            desired[code] = weight * portfolio_risk_budget
+        # 归一化
+        weights = {c: w / total_raw for c, w in raw_weight.items()}
 
         # =====================================================
-        # 3. 动态建仓 / 减仓
+        #  目标波动控制（真正使用 target_volatility）
         # =====================================================
+
+        # 估算组合当前平均波动
+        portfolio_vol = np.sqrt(
+            sum(
+                (weights[c] * signal_store.get(c, date).risk_vol) ** 2
+                for c in weights
+            )
+        )
+
+        if portfolio_vol > self.target_volatility:
+            scale = self.target_volatility / portfolio_vol
+        else:
+            scale = 1.0
+
+        for c in weights:
+            weights[c] *= scale
+
+        # =====================================================
+        #  总仓位限制
+        # =====================================================
+
+        gross = sum(abs(w) for w in weights.values())
+        if gross > max_gross_exposure:
+            scale = max_gross_exposure / gross
+            for c in weights:
+                weights[c] *= scale
+
+        # =====================================================
+        #  转换为目标市值
+        # =====================================================
+
+        desired_value = {
+            c: weights[c] * total_equity
+            for c in weights
+        }
+
+        # =====================================================
+        #  动态调仓（平滑靠近目标）
+        # =====================================================
+
         adjusted = {}
 
-        for code, target_value in desired.items():
+        for code, target in desired_value.items():
             current = current_positions.get(code, 0.0)
+            diff = target - current
 
-            if target_value > current:
-                step = self.entry_step * target_value
-                adjusted[code] = current + min(step, target_value - current)
+            if diff > 0:
+                # 加仓
+                move = self.entry_speed * diff
             else:
-                step = self.exit_step * current
-                adjusted[code] = max(target_value, current - step)
+                # 减仓
+                move = self.exit_speed * diff
 
+            adjusted[code] = current + move
+
+        # 未被选中 → 逐步退出
         for code, current in current_positions.items():
-            if code not in desired:
-                step = self.exit_step * current
-                remain = max(0.0, current - step)
+            if code not in desired_value:
+                move = -self.exit_speed * current
+                remain = current + move
                 if remain > 0:
                     adjusted[code] = remain
 
-        # =====================================================
-        # 4. 单票最大权重限制
-        # =====================================================
-        total = sum(adjusted.values())
-        for code in adjusted:
-            adjusted[code] = min(
-                adjusted[code],
-                total * self.max_weight
-            )
-
-        # =====================================================
-        # 5. 组合级风险上限
-        # =====================================================
-        if total > 0:
-            limit = self.max_gross_exposure * total
-            if total > limit:
-                scale = limit / total
-                for code in adjusted:
-                    adjusted[code] *= scale
-
-        # =====================================================
-        # 6. 组合回撤控制（Equity-based scaling）
-        # =====================================================
-        drawdown = 1.0 - total_equity / initial_cash
-        for dd, scale in sorted(self.drawdown_rules):
-            if drawdown >= dd:
-                for code in adjusted:
-                    adjusted[code] *= scale
-
-        for code in forced_exit:
-            if code in current_positions:
-                adjusted[code] = 0.0
-
         return adjusted
+
+    # =====================================================
+    # 辅助函数：无信号时逐步退出
+    # =====================================================
+
+    def _gradual_exit(self, current_positions):
+        adjusted = {}
+        for code, value in current_positions.items():
+            remain = value * 0.5
+            if remain > 0:
+                adjusted[code] = remain
+        return adjusted
+
