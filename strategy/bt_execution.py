@@ -14,8 +14,8 @@ from utils.utils import (
 CASH = 100000.0
 COMMISSION = 0.0003
 PERC = 0.005
-MAX_POSITION = 3
-REBALANCE_DAYS = 1
+MAX_POSITION = 6
+REBALANCE_DAYS = 10
 
 DATA_PATH = "../data/stock_data/backtrader_data/"
 def add_data_and_signal(cerebro, strategy):
@@ -30,14 +30,17 @@ def add_data_and_signal(cerebro, strategy):
     for item in tqdm(all_items, desc="loading data"):
         name = item[:-8]
         data = pd.read_csv(DATA_PATH+item, parse_dates=['datetime'])
+        if name == "sh000001":
+            strategy.generate_market_regime(data)
+            continue
         strategy.generate_signal(name, data)
-        plot_signal_diagnosis(
-            name,
-            data,
-            strategy.signal_engine,
-            strategy.signal_store,
-        )
-        exit(0)
+        #  plot_signal_diagnosis(
+        #      name,
+        #      data,
+        #      strategy.signal_engine,
+        #      strategy.signal_store,
+        #  )
+        #  exit(0)
         data = data.set_index('datetime')
         data = data.reindex(calendar_index)
         data[price_cols] = data[price_cols].ffill()
@@ -115,8 +118,9 @@ class BacktraderExecution(bt.Strategy):
             if size > 0:
                 max_affordable = int(self.broker.getcash() / price / 100) * 100
                 size = min(size, max_affordable)
-                order = self.buy(data=d, size=size)
-                self.orders_list[date].append(order)
+                if size > 0:
+                    order = self.buy(data=d, size=size)
+                    self.orders_list[date].append(order)
             elif size < 0:
                 order = self.sell(data=d, size=size)
                 self.orders_list[date].append(order)
