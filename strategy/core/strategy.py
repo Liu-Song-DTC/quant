@@ -119,6 +119,8 @@ class Strategy:
         current_positions,
         cash,
         prices,
+        cost,
+        rebalance,
     ):
         """
         根据signal 生成持仓target
@@ -129,11 +131,13 @@ class Strategy:
             if not row.empty:
                 market_regime = int(row["regime"].values[0])
         return self.portfolio.build(
-            date,
-            universe,
-            current_positions,
-            self.signal_store,
-            cash,
-            prices,
+            date=date,
+            universe=universe,
+            current_positions=current_positions,
+            signal_store=self.signal_store,
+            cash=cash,
+            prices=prices,
             market_regime=market_regime,
+            cost=cost,
+            rebalance=rebalance
         )

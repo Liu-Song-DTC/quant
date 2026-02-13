@@ -31,7 +31,7 @@ class PortfolioConstructor:
     # 主构建函数
     # =====================================================
 
-    def build(
+    def _build_desired_value(
         self,
         date,
         universe,
@@ -79,7 +79,7 @@ class PortfolioConstructor:
         selected = [c for _, c in candidates[: self.max_position]]
 
         if not selected:
-            return self._gradual_exit(current_positions, prices)
+            return {}
 
         # =====================================================
         #  风险权重（score / vol）
@@ -134,12 +134,40 @@ class PortfolioConstructor:
             c: weights[c] * total_equity
             for c in weights
         }
+        return desired_value
+
+    def build(
+        self,
+        date,
+        universe,
+        current_positions,
+        signal_store,
+        cash,
+        prices,
+        market_regime,
+        cost,
+        rebalance,
+    ):
+        desired_value = {}
+        if rebalance:
+            desired_value = self._build_desired_value(
+                date=date,
+                universe=universe,
+                current_positions=current_positions,
+                signal_store=signal_store,
+                cash=cash,
+                prices=prices,
+                market_regime=market_regime,
+            )
 
         # =====================================================
         #  动态调仓（平滑靠近目标）
         # =====================================================
 
         adjusted = {}
+
+        if not rebalance:
+            adjusted = deepcopy(current_positions)
 
         for code, target in desired_value.items():
             current = current_positions.get(code, 0.0)
@@ -156,7 +184,14 @@ class PortfolioConstructor:
 
         # 未被选中 → 逐步退出
         for code, current in current_positions.items():
-            if code not in desired_value:
+            # 单股强制平仓
+            #  c = cost[code]
+            #  if current <= c[0] * c[1] * 0.0:
+            #      if code in adjusted.keys():
+            #          del adjusted[code]
+            #      continue
+
+            if rebalance and code not in desired_value:
                 move = -self.exit_speed * current
                 remain = current + move
                 if remain / prices[code] < 100:
@@ -164,19 +199,5 @@ class PortfolioConstructor:
                 if remain > 0:
                     adjusted[code] = remain
 
-        return adjusted
-
-    # =====================================================
-    # 辅助函数：无信号时逐步退出
-    # =====================================================
-
-    def _gradual_exit(self, current_positions, prices):
-        adjusted = {}
-        for code, value in current_positions.items():
-            remain = value * 0.5
-            if remain / prices[code] < 100:
-                continue
-            if remain > 0:
-                adjusted[code] = remain
         return adjusted
 

@@ -59,6 +59,7 @@ class BacktraderExecution(bt.Strategy):
         self.count = 0
         self.orders_list = defaultdict(list)
         self.last_date = None
+        self.cost = defaultdict(list)
 
     def next(self):
         if self.last_date is not None and self.last_date in self.orders_list:
@@ -66,10 +67,6 @@ class BacktraderExecution(bt.Strategy):
                 self.cancel(order)
             del self.orders_list[self.last_date]
         self.count += 1
-        if self.count < REBALANCE_DAYS:
-            return
-        else:
-            self.count = 1
         date = self.datas[0].datetime.date(0)
         self.last_date = date
 
@@ -86,12 +83,18 @@ class BacktraderExecution(bt.Strategy):
             if d._name in prices and self.getposition(d).size != 0
         }
 
+        rebalance = False
+        if self.count >= REBALANCE_DAYS:
+            self.count = 1
+            rebalance = True
         target = self.p.real_strategy.generate_positions(
             date=date,
             universe=self.universe,
             current_positions=current_positions,
             cash=self.broker.getcash(),
             prices=prices,
+            cost=self.cost,
+            rebalance=rebalance,
         )
 
         active_codes = set(target.keys()) | set(current_positions.keys())
@@ -131,6 +134,21 @@ class BacktraderExecution(bt.Strategy):
             return
         # 已经处理的订单
         if order.status in [order.Completed, order.Canceled, order.Margin]:
+            if order.status == order.Completed:
+                if order.isbuy():
+                    cost = self.cost[order.data._name]
+                    if len(cost) == 0:
+                        cost = [0, 0.0]
+                    cost[1] = (cost[0] * cost[1] + order.executed.size * order.executed.price) / (cost[0] + order.executed.size)
+                    cost[0] = cost[0] + order.executed.size
+                    self.cost[order.data._name] = cost
+                else:
+                    cost = self.cost[order.data._name]
+                    cost[0] = cost[0] + order.executed.size
+                    if cost[0] == 0:
+                        del self.cost[order.data._name]
+                    else:
+                        self.cost[order.data._name] = cost
             date = datetime.date.fromordinal(int(order.executed.dt))
             if order.isbuy():
                 print(f'BUY EXECUTED, date {date}, ref: {order.ref}，Price: {order.executed.price}, '
@@ -173,4 +191,3 @@ if __name__ == "__main__":
     print(strat.analyzers._SharpeRatio.get_analysis())
     print("--------------- DrawDown -----------------")
     print(strat.analyzers._DrawDown.get_analysis())
-    #  cerebro.plot()
