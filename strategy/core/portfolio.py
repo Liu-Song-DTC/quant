@@ -79,7 +79,7 @@ class PortfolioConstructor:
         selected = [c for _, c in candidates[: self.max_position]]
 
         if not selected:
-            return self._gradual_exit(current_positions)
+            return self._gradual_exit(current_positions, prices)
 
         # =====================================================
         #  风险权重（score / vol）
@@ -159,6 +159,8 @@ class PortfolioConstructor:
             if code not in desired_value:
                 move = -self.exit_speed * current
                 remain = current + move
+                if remain / prices[code] < 100:
+                    continue
                 if remain > 0:
                     adjusted[code] = remain
 
@@ -168,10 +170,12 @@ class PortfolioConstructor:
     # 辅助函数：无信号时逐步退出
     # =====================================================
 
-    def _gradual_exit(self, current_positions):
+    def _gradual_exit(self, current_positions, prices):
         adjusted = {}
         for code, value in current_positions.items():
             remain = value * 0.5
+            if remain / prices[code] < 100:
+                continue
             if remain > 0:
                 adjusted[code] = remain
         return adjusted
