@@ -89,8 +89,9 @@ class FactorDiagnostics:
             return report
 
         # 1. IC (Information Coefficient) - 因子与收益的相关性
+        # A股市场技术面因子IC通常在2-4%，目标3%+
         ic = fv.corr(fr)
-        report.add_metric("IC (相关系数)", ic, threshold=0.02, direction="higher")
+        report.add_metric("IC (相关系数)", ic, threshold=0.03, direction="higher")
 
         # 2. 分组回测 - 高因子组 vs 低因子组
         fv_quantile = pd.qcut(fv, q=5, labels=False, duplicates='drop')

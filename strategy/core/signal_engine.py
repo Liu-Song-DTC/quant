@@ -104,71 +104,45 @@ class SignalEngine:
         buy_score = 0.0
         sell_score = 0.0
 
-        # ==================== 技术面因子 ====================
+        # ==================== 动量 + 趋势 ====================
 
-        # 1. 20日动量 - 最可靠的因子
         mom_20 = ind['mom_20'][idx]
         mom_5 = ind['mom_5'][idx]
         mom_10 = ind['mom_10'][idx]
 
+        # 1. 20日动量
         if mom_20 > 0.20:
             buy_score += 0.60
-        elif mom_20 > 0.15:
-            buy_score += 0.45
-        elif mom_20 > 0.10:
-            buy_score += 0.30
+        elif mom_20 > 0.12:
+            buy_score += 0.40
         elif mom_20 > 0.05:
-            buy_score += 0.15
-
-        # 2. MACD histogram - 动量变化
-        macd_hist = ind['macd_hist'][idx]
-        if macd_hist > 0:
-            buy_score += min(macd_hist * 8, 0.20)
-        else:
-            sell_score += min(-macd_hist * 6, 0.15)
-
-        # 3. 均线多头排列
-        if ind['full_golden'][idx]:
             buy_score += 0.20
 
-        # 4. 动量持续向上
-        if mom_5 > 0.03 and mom_10 > 0.06:
+        # 2. 动量持续
+        if mom_5 > 0 and mom_10 > 0:
+            buy_score += 0.25
+
+        # 3. 均线多头
+        if ind['full_golden'][idx]:
+            buy_score += 0.30
+
+        # 4. MACD
+        if ind['macd_hist'][idx] > 0:
             buy_score += 0.15
 
-        # 5. EMA20 slope
-        if ind['ema20_slope'][idx] > 0.03:
+        # 5. 趋势
+        if ind['trend_strength'][idx] > 0.01:
             buy_score += 0.15
 
-        # 6. RSI - 排除超买
-        if rsi < 70:
-            buy_score += 0.10
+        # ==================== 卖出 ====================
 
-        # ==================== 基本面因子 ====================
-        # 基本面因子权重降低，作为辅助
-        if self.fundamental_data and current_date is not None and code:
-            fundamental_score = self._get_fundamental_score(code, current_date)
-            if fundamental_score:
-                buy_score += fundamental_score * 0.25
+        if mom_20 < -0.10:
+            sell_score += 0.50
+        elif mom_20 < -0.05:
+            sell_score += 0.30
 
-        # ==================== 卖出信号 ====================
-
-        # 1. 负动量
-        if mom_20 < -0.12:
-            sell_score += 0.60
-        elif mom_20 < -0.08:
-            sell_score += 0.40
-
-        # 2. 均线死叉
         if ind['full_death'][idx]:
-            sell_score += 0.25
-
-        # 3. 动量转负
-        if mom_5 < -0.03 and mom_10 < -0.05:
-            sell_score += 0.20
-
-        # 4. 趋势向下
-        if ind['trend_strength'][idx] < -0.03:
-            sell_score += 0.15
+            sell_score += 0.35
 
         score = buy_score - sell_score
 
