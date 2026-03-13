@@ -1,27 +1,75 @@
 # core/signal_engine.py
 import numpy as np
 import pandas as pd
+from typing import Optional, Dict, Any
 
 from .signal import Signal
 from .signal_store import SignalStore
+from .factors import trend_mom_v41
 
 import warnings
 warnings.filterwarnings('ignore')
 
 
 class SignalEngine:
-    """优化的均值回归+趋势策略"""
+    """优化的均值回归+趋势策略 - 支持市场状态信息"""
 
     def __init__(self, config=None):
         self.config = config or {}
-        self.min_score = 0.35  # 提高最低分数
+        self.min_score = 0.35
         self.rsi_oversold = 25
         self.rsi_overbought = 75
-        self.fundamental_data = None  # 基本面数据
+        self.fundamental_data = None
+
+        # 市场状态信息
+        self.market_regime_data = None  # DataFrame: datetime, regime, confidence, momentum_score, trend_score, volatility, is_extreme
+        self.current_idx = 0
 
     def set_fundamental_data(self, fundamental_data):
         """设置基本面数据"""
         self.fundamental_data = fundamental_data
+
+    def set_market_regime(self, regime_df: pd.DataFrame):
+        """
+        设置市场状态数据
+        DataFrame应包含列: datetime, regime, confidence, momentum_score, trend_score, volatility, is_extreme
+        """
+        if 'datetime' in regime_df.columns:
+            regime_df = regime_df.copy()
+            regime_df['datetime'] = pd.to_datetime(regime_df['datetime'])
+            self.market_regime_data = regime_df.set_index('datetime')
+
+    def _get_market_info(self, date) -> Dict[str, Any]:
+        """获取指定日期的市场状态信息"""
+        if self.market_regime_data is None:
+            return {
+                'regime': 0,
+                'confidence': 0.0,
+                'momentum_score': 0.0,
+                'trend_score': 0.0,
+                'volatility': 0.15,
+                'is_extreme': False,
+            }
+
+        dt = pd.to_datetime(date)
+        if dt in self.market_regime_data.index:
+            row = self.market_regime_data.loc[dt]
+            return {
+                'regime': int(row.get('regime', 0)),
+                'confidence': float(row.get('confidence', 0.0)),
+                'momentum_score': float(row.get('momentum_score', 0.0)),
+                'trend_score': float(row.get('trend_score', 0.0)),
+                'volatility': float(row.get('volatility', 0.15)),
+                'is_extreme': bool(row.get('is_extreme', False)),
+            }
+        return {
+            'regime': 0,
+            'confidence': 0.0,
+            'momentum_score': 0.0,
+            'trend_score': 0.0,
+            'volatility': 0.15,
+            'is_extreme': False,
+        }
 
     def generate(self, code: str, market_data: pd.DataFrame, signal_store: SignalStore):
         dates = market_data["datetime"].values
@@ -96,36 +144,88 @@ class SignalEngine:
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         """
-        信号生成 - 趋势动量V24因子
-        公式: 如果10日动量>0，用20日动量*2.1；否则用20日动量*0.04
-        IC = 8.23%
+        信号生成 - 优化版
+        保持主因子IC，同时用负IC因子做风险过滤
         """
         if idx < 60:
-            return Signal(buy=False, sell=False, score=0.0, risk_vol=0.03, factor_value=0.0)
+            return Signal(
+                buy=False, sell=False, score=0.0,
+                factor_value=0.0, factor_name='V41_only',
+                risk_vol=0.03, risk_regime=0, risk_confidence=0.0,
+                risk_extreme=False, adjusted_score=0.0
+            )
 
-        mom_20 = ind['mom_20'][idx]
-        mom_10 = ind['mom_10'][idx]
-
-        # 趋势动量V24：如果10日动量>0，用20日动量*2.1；否则用20日动量*0.04
-        if mom_10 > 0:
-            trend_mom = mom_20 * 2.1
-        else:
-            trend_mom = mom_20 * 0.04
-
-        # 原始因子值（用于IC计算）
+        # === 1. 主因子: trend_mom_v41 (IC=3.59%) ===
+        trend_mom = trend_mom_v41(ind['mom_20'][idx], ind['mom_10'][idx])
         factor_value = trend_mom
-
-        # 交易分数（用于排序）
         score = max(0, trend_mom)
 
-        # 买入：趋势动量>0
-        # 卖出：趋势动量<-0.03
-        buy = trend_mom >= 0
-        sell = trend_mom <= -0.03
+        # === 2. 负IC因子仅用于风险标记，不直接扣分 ===
+        # 记录风险状态供后续使用
+        vol_20 = self._safe_get(ind, 'volatility_20', idx, 0.02)
+        is_high_vol = vol_20 > 0.03  # 高波动标志
 
+        vpt = self._safe_get(ind, 'volume_price_trend', idx, 0)
+        is_vpt_risk = abs(vpt) > 3  # 价量背离风险
+
+        skew = self._safe_get(ind, 'return_skewness', idx, 0)
+        is_skew_risk = skew > 0.5  # 偏度风险
+
+        # === 3. 获取市场状态信息 ===
+        market_info = self._get_market_info(current_date)
+        risk_regime = market_info['regime']
+        risk_confidence = market_info['confidence']
+        risk_extreme = market_info['is_extreme']
+
+        # === 4. 波动率风险 ===
         risk_vol = ind['atr_ratio'][idx] * 2
 
-        return Signal(buy=buy, sell=sell, score=score, risk_vol=risk_vol, factor_value=factor_value)
+        # === 5. 风险调整后的分数 ===
+        regime_weight = 1.0
+        if risk_regime == -1:  # 熊市
+            regime_weight = 0.6
+        elif risk_regime == 1:  # 牛市
+            regime_weight = 1.1
+
+        if risk_extreme:
+            regime_weight *= 0.8
+
+        adjusted_score = score * regime_weight
+
+        # === 6. 交易信号 ===
+        # 买入：主因子为正，且非高风险状态
+        buy = trend_mom >= 0 and adjusted_score > 0.01
+
+        # 卖出：主因子转负
+        sell = trend_mom <= -0.03
+
+        return Signal(
+            buy=buy,
+            sell=sell,
+            score=score,
+            factor_value=factor_value,
+            factor_name='V41_only',
+            risk_vol=risk_vol,
+            risk_regime=risk_regime,
+            risk_confidence=risk_confidence,
+            risk_extreme=risk_extreme or is_high_vol,
+            adjusted_score=adjusted_score
+        )
+
+    def _safe_get(self, ind: dict, key: str, idx: int, default: float = 0.0) -> float:
+        """安全获取数组元素"""
+        arr = ind.get(key)
+        if arr is None:
+            return default
+        if isinstance(arr, (int, float)):
+            return default
+        if hasattr(arr, '__len__'):
+            if len(arr) <= idx:
+                return default
+            val = arr[idx]
+            if isinstance(val, (int, float)) and not np.isnan(val):
+                return val
+        return default
 
     def _get_fundamental_score(self, code, current_date):
         """获取基本面因子评分
