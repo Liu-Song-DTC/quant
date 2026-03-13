@@ -34,7 +34,7 @@ class SignalEngine:
 
         last_sig = None
         for idx in close.index:
-            sig = self._generate_signal(indicators, idx, last_sig, dates[idx])
+            sig = self._generate_signal(indicators, idx, last_sig, dates[idx], code)
             last_sig = sig
             date = pd.to_datetime(dates[idx]).date()
             signal_store.set(code, date, sig)
@@ -94,7 +94,7 @@ class SignalEngine:
 
         return result
 
-    def _generate_signal(self, ind, idx, last_sig, current_date=None):
+    def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         if idx < 60:
             return Signal(buy=False, sell=False, score=0.0, risk_vol=0.03)
 
@@ -112,13 +112,13 @@ class SignalEngine:
         mom_10 = ind['mom_10'][idx]
 
         if mom_20 > 0.20:
-            buy_score += 0.50
+            buy_score += 0.60
         elif mom_20 > 0.15:
-            buy_score += 0.35
+            buy_score += 0.45
         elif mom_20 > 0.10:
-            buy_score += 0.25
+            buy_score += 0.30
         elif mom_20 > 0.05:
-            buy_score += 0.10
+            buy_score += 0.15
 
         # 2. MACD histogram - 动量变化
         macd_hist = ind['macd_hist'][idx]
@@ -129,23 +129,26 @@ class SignalEngine:
 
         # 3. 均线多头排列
         if ind['full_golden'][idx]:
-            buy_score += 0.15
+            buy_score += 0.20
 
         # 4. 动量持续向上
         if mom_5 > 0.03 and mom_10 > 0.06:
-            buy_score += 0.10
+            buy_score += 0.15
 
         # 5. EMA20 slope
         if ind['ema20_slope'][idx] > 0.03:
+            buy_score += 0.15
+
+        # 6. RSI - 排除超买
+        if rsi < 70:
             buy_score += 0.10
 
         # ==================== 基本面因子 ====================
-        if self.fundamental_data and current_date is not None:
-            code = None  # 需要从外部传入
-            # 基本面因子评分
+        # 基本面因子权重降低，作为辅助
+        if self.fundamental_data and current_date is not None and code:
             fundamental_score = self._get_fundamental_score(code, current_date)
             if fundamental_score:
-                buy_score += fundamental_score
+                buy_score += fundamental_score * 0.25
 
         # ==================== 卖出信号 ====================
 
@@ -183,39 +186,53 @@ class SignalEngine:
         return Signal(buy=buy, sell=sell, score=score, risk_vol=risk_vol)
 
     def _get_fundamental_score(self, code, current_date):
-        """获取基本面因子评分"""
+        """获取基本面因子评分
+
+        注意：基本面数据是百分比形式（如ROE=12.16表示12.16%）
+        """
         if not self.fundamental_data or not code:
             return 0
 
         score = 0.0
 
-        # ROE评分
+        # ROE评分 - 最重要的因子（数据是百分比形式，如5.79表示5.79%）
         roe = self.fundamental_data.get_roe(code, current_date)
-        if roe and roe > 0.10:
-            score += 0.20
-        elif roe and roe > 0.05:
-            score += 0.10
+        if roe is not None:
+            if roe > 15:  # > 15%
+                score += 0.35
+            elif roe > 10:  # > 10%
+                score += 0.25
+            elif roe > 5:  # > 5%
+                score += 0.15
 
-        # 净利润增长
+        # 净利润增长 - 重要（数据是百分比，如66.39表示66.39%）
         profit_growth = self.fundamental_data.get_profit_growth(code, current_date)
-        if profit_growth and profit_growth > 0.20:
-            score += 0.25
-        elif profit_growth and profit_growth > 0:
-            score += 0.10
+        if profit_growth is not None:
+            # 转换为小数形式比较
+            if profit_growth > 50:  # > 50%
+                score += 0.30
+            elif profit_growth > 20:  # > 20%
+                score += 0.20
+            elif profit_growth > 0:  # > 0%
+                score += 0.10
 
         # 营业收入增长
         revenue_growth = self.fundamental_data.get_revenue_growth(code, current_date)
-        if revenue_growth and revenue_growth > 0.15:
-            score += 0.15
-        elif revenue_growth and revenue_growth > 0:
-            score += 0.08
+        if revenue_growth is not None:
+            if revenue_growth > 30:  # > 30%
+                score += 0.20
+            elif revenue_growth > 15:  # > 15%
+                score += 0.12
+            elif revenue_growth > 0:  # > 0%
+                score += 0.05
 
         # 每股收益
         eps = self.fundamental_data.get_eps(code, current_date)
-        if eps and eps > 0.5:
-            score += 0.15
-        elif eps and eps > 0:
-            score += 0.08
+        if eps is not None and eps > 0:
+            if eps > 1.0:
+                score += 0.20
+            elif eps > 0.5:
+                score += 0.12
 
         return score
 
