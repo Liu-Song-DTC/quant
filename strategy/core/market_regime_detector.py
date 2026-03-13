@@ -86,31 +86,23 @@ class MarketRegimeDetector:
 
     def _detect_single(self, i: int) -> int:
         """
-        基于风险调整的市场状态判断
-        不追求准确预测，而是识别极端风险
+        优化版市场状态判断 - 纯动量版
+        目标：熊市判断后未来收益<0%，牛市判断后未来收益>0%
         """
         if i < 120:
             return 0
 
-        # 极端风险情况 - 快速下跌（可能股灾）
-        if self.momentum_5.iloc[i] < -0.10:
+        mom_5 = self.momentum_5.iloc[i]
+        mom = self.momentum.iloc[i]
+        mom_60 = self.momentum_60.iloc[i]
+
+        # === 熊市判断：动量急跌 ===
+        if mom_5 < -0.08:
             return -1
 
-        # 极端乐观情况 - 快速上涨
-        if self.momentum_5.iloc[i] > 0.10:
+        # === 牛市判断：需要中期动量确认 ===
+        if mom > 0.06 and mom_60 > 0.04:
             return 1
-
-        # 持续上涨趋势（需要动量支持）
-        if (self.momentum.iloc[i] > 0.08 and
-            self.trend_up.iloc[i] and
-            self.long_up.iloc[i]):
-            return 1
-
-        # 持续下跌趋势
-        if (self.momentum.iloc[i] < -0.08 and
-            not self.trend_up.iloc[i] and
-            not self.long_up.iloc[i]):
-            return -1
 
         # 默认震荡市
         return 0

@@ -14,12 +14,15 @@ from utils.utils import (
 CASH = 100000.0
 COMMISSION = 0.0003
 PERC = 0.005
-MAX_POSITION = 6
-REBALANCE_DAYS = 10
+MAX_POSITION = 10
+REBALANCE_DAYS = 20
 
 DATA_PATH = "../data/stock_data/backtrader_data/"
+
 def add_data_and_signal(cerebro, strategy):
     all_items = os.listdir(DATA_PATH)
+    stock_codes = []  # 获取回测池中的股票列表
+
     dates = set()
     for item in (all_items):
         data = pd.read_csv(DATA_PATH+item, parse_dates=['datetime'])
@@ -33,6 +36,7 @@ def add_data_and_signal(cerebro, strategy):
         if name == "sh000001":
             strategy.generate_market_regime(data)
             continue
+        stock_codes.append(name)  # 记录股票代码
         strategy.generate_signal(name, data)
         #  plot_signal_diagnosis(
         #      name,
@@ -48,6 +52,16 @@ def add_data_and_signal(cerebro, strategy):
             data['volume'] = data['volume'].fillna(0)
         datafeed = bt.feeds.PandasData(dataname=data)
         cerebro.adddata(datafeed, name=name)
+
+    # 更新策略的基本面数据加载范围
+    if hasattr(strategy, 'portfolio') and hasattr(strategy.portfolio, 'fundamental_data'):
+        from core.fundamental import FundamentalData
+        fundamental_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            'data', 'stock_data', 'fundamental_data'
+        )
+        strategy.portfolio.fundamental_data = FundamentalData(fundamental_path + '/', stock_codes=stock_codes)
+        print(f"基本面数据已限制为 {len(stock_codes)} 只股票")
 
 class BacktraderExecution(bt.Strategy):
     params = dict(
