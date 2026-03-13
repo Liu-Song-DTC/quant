@@ -14,6 +14,7 @@ import hashlib
 import shutil
 import time
 import random
+from tqdm import tqdm
 
 warnings.filterwarnings('ignore')
 
@@ -26,12 +27,18 @@ class StockDataManager:
         self.raw_data_dir = self.data_dir / "raw_data"
         self.backtrader_data_dir = self.data_dir / "backtrader_data"
         self.stock_metadata_dir = self.data_dir / "stock_metadata"
+        self.fundamental_data_dir = self.data_dir / "fundamental_data"
+
+        # 基本面源数据目录（按日期存储）
+        self.fundamental_source_dir = self.stock_metadata_dir / "fundamental_source"
 
         # 创建目录
         self.data_dir.mkdir(exist_ok=True)
         self.raw_data_dir.mkdir(exist_ok=True)
         self.backtrader_data_dir.mkdir(exist_ok=True)
         self.stock_metadata_dir.mkdir(exist_ok=True)
+        self.fundamental_data_dir.mkdir(exist_ok=True)
+        self.fundamental_source_dir.mkdir(exist_ok=True)
         self.metadata_path = self.data_dir / "metadata.json"
 
         # 加载配置
@@ -743,47 +750,239 @@ class StockDataManager:
         print(f"创建回测股票池完成: {len(universe)} 只股票")
         return universe
 
+    # ==================== 基本面数据管理 ====================
+
+    def get_needed_financial_dates(self):
+        """智能获取需要更新的财务日期（自动检测已有数据）"""
+        # 需要4个文件都存在才算完整
+        required_files = ['yjbb.csv', 'zcfz.csv', 'lrb.csv', 'xjll.csv']
+
+        # 已有完整数据的日期
+        existing_dates = set()
+        for date_dir in self.fundamental_source_dir.iterdir():
+            if date_dir.is_dir():
+                files = [f.name for f in date_dir.iterdir()]
+                if all(rf in files for rf in required_files):
+                    existing_dates.add(date_dir.name)
+
+        # 需要获取的日期范围（从2010年到现在）
+        current_year = datetime.today().year
+        all_dates = []
+        for year in range(2010, current_year):
+            for month in ['0331', '0630', '0930', '1231']:
+                date = f"{year}{month}"
+                # 只返回不完整的日期
+                if date not in existing_dates:
+                    all_dates.append(date)
+
+        return all_dates
+
+    def download_financial_data_by_date(self, date):
+        """按日期下载所有股票的财务数据（源文件）"""
+        os.makedirs(self.fundamental_source_dir / f"{date}", exist_ok=True)
+        def help(source_file, func):
+            try:
+                if source_file.exists():
+                    return True
+                df = func(date=date)
+                time.sleep(0.3)  # 请求间隔，避免被限流
+
+                if df is not None and len(df) > 0:
+                    df.to_csv(source_file, index=False, encoding="utf-8")
+                    print(f"  {date}: 获取 {len(df)} 条记录")
+                    return True
+            except Exception as e:
+                print(f"  警告: {date} 获取失败: {e}")
+                return False
+        help(self.fundamental_source_dir / f"{date}" / "yjbb.csv", ak.stock_yjbb_em)
+        help(self.fundamental_source_dir / f"{date}" / "zcfz.csv", ak.stock_zcfz_em)
+        help(self.fundamental_source_dir / f"{date}" / "lrb.csv", ak.stock_lrb_em)
+        help(self.fundamental_source_dir / f"{date}" / "xjll.csv", ak.stock_xjll_em)
+        return True
+
+    def update_fundamental_source(self):
+        """更新基本面源数据（按日期，自动检测已有数据）"""
+        dates = self.get_needed_financial_dates()
+
+        if not dates:
+            print("基本面源数据已是最新，无需更新")
+            return 0, 0
+
+        print(f"开始更新基本面源数据 ({len(dates)} 个日期)...")
+
+        success = 0
+        fail = 0
+        for date in tqdm(dates, desc="下载财务数据"):
+            if self.download_financial_data_by_date(date):
+                success += 1
+            else:
+                fail += 1
+
+        print(f"源数据更新完成: 成功 {success}, 失败 {fail}")
+        return success, fail
+
+    def build_stock_fundamental_history(self):
+        """从源数据构建每只股票的历史财务数据（按日期分别合并4个表，再汇总）"""
+        # 获取股票列表（只保留当前上市股票）
+        stock_list_file = self.stock_metadata_dir / "stock_list_full.csv"
+        if not stock_list_file.exists():
+            print("未找到股票列表文件 stock_list_full.csv")
+            return
+
+        stock_df = pd.read_csv(stock_list_file, dtype={'symbol': str})
+        valid_codes = set(stock_df['symbol'].tolist())
+        print(f"只保留 stock_list_full.csv 中的 {len(valid_codes)} 只股票")
+
+        print("步骤1: 读取并合并数据（按日期）...")
+
+        # 获取所有日期目录
+        date_dirs = sorted([d for d in self.fundamental_source_dir.iterdir() if d.is_dir()])
+
+        # 先读取所有文件，按日期合并
+        all_merged = []
+
+        for date_dir in tqdm(date_dirs, desc="处理日期"):
+            date = date_dir.name
+
+            # 读取4个报表文件
+            yjbb_df = None
+            zcfz_df = None
+            lrb_df = None
+            xjll_df = None
+
+            # 业绩报表
+            yjbb_file = date_dir / "yjbb.csv"
+            if yjbb_file.exists():
+                yjbb_df = pd.read_csv(yjbb_file, dtype={'股票代码': str})
+
+            # 资产负债表
+            zcfz_file = date_dir / "zcfz.csv"
+            if zcfz_file.exists():
+                zcfz_df = pd.read_csv(zcfz_file, dtype={'股票代码': str})
+                zcfz_df = zcfz_df.add_prefix('zcfz_')
+                zcfz_df = zcfz_df.rename(columns={'zcfz_股票代码': '股票代码'})
+
+            # 利润表
+            lrb_file = date_dir / "lrb.csv"
+            if lrb_file.exists():
+                lrb_df = pd.read_csv(lrb_file, dtype={'股票代码': str})
+                lrb_df = lrb_df.add_prefix('lrb_')
+                lrb_df = lrb_df.rename(columns={'lrb_股票代码': '股票代码'})
+
+            # 现金流量表
+            xjll_file = date_dir / "xjll.csv"
+            if xjll_file.exists():
+                xjll_df = pd.read_csv(xjll_file, dtype={'股票代码': str})
+                xjll_df = xjll_df.add_prefix('xjll_')
+                xjll_df = xjll_df.rename(columns={'xjll_股票代码': '股票代码'})
+
+            # 合并该日期的所有数据
+            if yjbb_df is not None:
+                yjbb_df['报告期'] = date
+                yjbb_df['数据可用日期'] = date  # 添加数据可用日期，防止数据泄露
+                merged = yjbb_df
+
+                # 按股票代码合并其他表
+                if zcfz_df is not None and not zcfz_df.empty:
+                    merged = merged.merge(zcfz_df, on='股票代码', how='left')
+                if lrb_df is not None and not lrb_df.empty:
+                    merged = merged.merge(lrb_df, on='股票代码', how='left')
+                if xjll_df is not None and not xjll_df.empty:
+                    merged = merged.merge(xjll_df, on='股票代码', how='left')
+
+                all_merged.append(merged)
+
+        if not all_merged:
+            print("没有数据可处理")
+            return
+
+        # 合并所有日期
+        print("步骤2: 合并所有日期数据...")
+        df_all = pd.concat(all_merged, ignore_index=True)
+
+        # 获取所有股票代码（只保留 stock_list_full.csv 中的股票）
+        all_codes = df_all['股票代码'].unique().tolist()
+        stock_codes = [c for c in all_codes if c in valid_codes]
+        print(f"共 {len(stock_codes)} 只股票需要处理")
+
+        # 按股票保存
+        print("步骤3: 按股票保存...")
+        success = 0
+
+        for code in tqdm(stock_codes, desc="保存股票数据"):
+            output_file = self.fundamental_data_dir / f"{code}.csv"
+
+            # 已存在则跳过（增量更新）
+            if output_file.exists():
+                continue
+
+            stock_data = df_all[df_all['股票代码'] == code]
+            if len(stock_data) > 0:
+                stock_data.to_csv(output_file, index=False, encoding="utf-8")
+                success += 1
+
+        print(f"构建完成: 成功 {success}")
+        return success
+
+    def incremental_update_fundamental(self):
+        """增量更新基本面数据"""
+        print("\n======> 增量更新基本面数据...")
+
+        # Step 1: 更新源数据（自动检测已有数据）
+        print("Step 1: 更新财务数据源文件...")
+        self.update_fundamental_source()
+
+        # Step 2: 从源文件构建股票历史数据
+        print("\nStep 2: 构建股票历史数据...")
+        self.build_stock_fundamental_history()
+
+        print("\n基本面数据更新完成!")
+
 
 def main():
     """主函数"""
     # 初始化数据管理器
     manager = StockDataManager()
 
-    print("=" * 50)
-    print("股票数据管理系统")
-    print("=" * 50)
+    #  print("=" * 50)
+    #  print("股票数据管理系统")
+    #  print("=" * 50)
 
     # 获取股票列表
-    print("\n======> 获取股票列表...")
-    stock_list = manager.get_stock_list()
-    print(f"股票列表共 {len(stock_list)} 只股票")
+    #  print("\n======> 获取股票列表...")
+    #  stock_list = manager.get_stock_list()
+    #  print(f"股票列表共 {len(stock_list)} 只股票")
 
     # 批量更新数据
-    print("\n======> 批量更新数据...")
-    sample_symbols = stock_list['symbol'].tolist()
-    sample_symbols.insert(0, INDEX)
-    manager.batch_download(symbols=sample_symbols, force=False)
+    #  print("\n======> 批量更新数据...")
+    #  sample_symbols = stock_list['symbol'].tolist()
+    #  sample_symbols.insert(0, INDEX)
+    #  manager.batch_download(symbols=sample_symbols, force=False)
 
     # 创建回测股票池
-    print("\n======> 创建回测股票池...")
-    universe = manager.create_universe_for_backtest(
-        symbols=sample_symbols,
-        start_date='2015-01-01',
-        end_date='2025-12-31',
-        min_days=600
-    )
+    #  print("\n======> 创建回测股票池...")
+    #  universe = manager.create_universe_for_backtest(
+    #      symbols=sample_symbols,
+    #      start_date='2015-01-01',
+    #      end_date='2025-12-31',
+    #      min_days=600
+    #  )
 
-    print("\n" + "=" * 50)
-    print("数据管理完成")
-    print("=" * 50)
+    #  print("\n" + "=" * 50)
+    #  print("数据管理完成")
+    #  print("=" * 50)
 
     # 打印汇总信息
-    print(f"\n汇总信息:")
-    print(f"- 股票列表: {len(stock_list)} 只")
-    print(f"- 回测股票池: {len(universe)} 只")
-    print(f"- 数据目录: {manager.data_dir}")
-    print(f"- 原始数据: {len(list(manager.raw_data_dir.glob('*/*.csv')))} 个文件")
-    print(f"- 处理数据: {len(list(manager.backtrader_data_dir.glob('**/*.csv')))} 个文件")
+    #  print(f"\n汇总信息:")
+    #  print(f"- 股票列表: {len(stock_list)} 只")
+    #  print(f"- 回测股票池: {len(universe)} 只")
+    #  print(f"- 数据目录: {manager.data_dir}")
+    #  print(f"- 原始数据: {len(list(manager.raw_data_dir.glob('*/*.csv')))} 个文件")
+    #  print(f"- 处理数据: {len(list(manager.backtrader_data_dir.glob('**/*.csv')))} 个文件")
+
+    # 增量更新基本面数据
+    print("\n======> 增量更新基本面数据...")
+    manager.incremental_update_fundamental()
 
 
 if __name__ == "__main__":
