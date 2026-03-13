@@ -10,13 +10,13 @@ warnings.filterwarnings('ignore')
 
 
 class SignalEngine:
-    """均值回归 + 趋势跟踪混合策略 - 最优版本"""
+    """优化的均值回归+趋势策略"""
 
     def __init__(self, config=None):
         self.config = config or {}
-        self.min_score = 0.35
-        self.rsi_oversold = 30
-        self.rsi_overbought = 70
+        self.min_score = 0.32
+        self.rsi_oversold = 28
+        self.rsi_overbought = 72
 
     def generate(self, code: str, market_data: pd.DataFrame, signal_store: SignalStore):
         dates = market_data["datetime"].values
@@ -101,7 +101,7 @@ class SignalEngine:
 
         # ==================== 买入信号 ====================
 
-        # 1. 超跌反弹 - 核心策略
+        # 1. 超跌反弹 - 更敏感
         if rsi < self.rsi_oversold:
             buy_score += 0.25
 
@@ -110,12 +110,12 @@ class SignalEngine:
             buy_score += 0.20
 
         # 3. 动量反弹
-        if ind['mom_5'][idx] > 0 and ind['mom_10'][idx] > -0.03:
+        if ind['mom_5'][idx] > 0 and ind['mom_10'][idx] > -0.02:
             buy_score += 0.15
 
         # 4. 站上均线
         if ind['ema5_above_20'][idx]:
-            buy_score += 0.15
+            buy_score += 0.12
 
         # 5. 趋势向上
         if ind['trend_strength'][idx] > 0:

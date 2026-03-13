@@ -3,16 +3,16 @@ import numpy as np
 from copy import deepcopy
 
 class PortfolioConstructor:
-    """最优版本的仓位管理"""
+    """最终优化版仓位管理"""
 
     def __init__(
         self,
-        max_position=8,
-        target_volatility=0.15,
+        max_position=7,
+        target_volatility=0.14,
         entry_speed=0.8,
         exit_speed=1.0,
-        position_stop_loss=0.12,
-        portfolio_stop_loss=0.10,
+        position_stop_loss=0.10,
+        portfolio_stop_loss=0.08,
     ):
         self.max_position = max_position
         self.target_volatility = target_volatility
@@ -22,6 +22,7 @@ class PortfolioConstructor:
         self.portfolio_stop_loss = portfolio_stop_loss
         self.peak_equity = None
         self.position_cost = {}
+        self.consecutive_losses = 0
 
     def _build_desired_value(
         self,
@@ -34,11 +35,17 @@ class PortfolioConstructor:
         market_regime,
     ):
         if market_regime == 1:
-            max_gross_exposure = 1.0
+            max_gross_exposure = 1.1
         elif market_regime == 0:
-            max_gross_exposure = 0.6
+            if self.consecutive_losses >= 2:
+                max_gross_exposure = 0.35
+            else:
+                max_gross_exposure = 0.6
         else:
-            max_gross_exposure = 0.2
+            if self.consecutive_losses >= 1:
+                max_gross_exposure = 0.1
+            else:
+                max_gross_exposure = 0.2
 
         total_equity = cash + sum(current_positions.values())
         if self.peak_equity is None:
@@ -48,11 +55,18 @@ class PortfolioConstructor:
         drawdown = 1 - total_equity / self.peak_equity
 
         if drawdown > 0.10:
-            max_gross_exposure *= 0.15
-        elif drawdown > 0.06:
-            max_gross_exposure *= 0.3
+            max_gross_exposure *= 0.1
+        elif drawdown > 0.07:
+            max_gross_exposure *= 0.2
+        elif drawdown > 0.05:
+            max_gross_exposure *= 0.35
         elif drawdown > 0.03:
             max_gross_exposure *= 0.5
+
+        if drawdown > 0.02:
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = max(0, self.consecutive_losses - 1)
 
         candidates = []
         for code in universe:
