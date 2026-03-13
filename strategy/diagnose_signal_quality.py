@@ -76,13 +76,23 @@ if __name__ == "__main__":
                 if i < len(df) - 20:
                     date = row['datetime'].date() if hasattr(row['datetime'], 'date') else pd.to_datetime(row['datetime']).date()
                     sig = signal_store1.get(code, date)
-                    if sig:
-                        tech_signals.append(sig.score)
-                        future_price = df.iloc[i+20]['close'] if i+20 < len(df) else row['close']
-                        ret = future_price / row['close'] - 1
-                        tech_returns.append(ret)
+                    # 使用有效的因子值（过滤异常值）
+                    if sig and sig.factor_value is not None:
+                        # 过滤异常动量值和收益
+                        if abs(sig.factor_value) < 1.0:
+                            future_price = df.iloc[i+20]['close'] if i+20 < len(df) else row['close']
+                            ret = future_price / row['close'] - 1
+                            if abs(ret) < 1.0:  # 过滤异常收益
+                                tech_signals.append(sig.factor_value)
+                                tech_returns.append(ret)
         except:
             continue
+
+    # 打印分数分布
+    if len(tech_signals) > 0:
+        import numpy as np
+        s = np.array(tech_signals)
+        print(f"分数分布: min={s.min():.3f}, max={s.max():.3f}, mean={s.mean():.3f}")
 
     if len(tech_signals) > 100:
         sig_report = FactorDiagnostics.diagnose_factor(

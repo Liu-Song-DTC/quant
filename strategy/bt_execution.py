@@ -7,6 +7,7 @@ import math
 from collections import defaultdict
 
 from core.strategy import Strategy
+from core.fundamental import FundamentalData
 from utils.utils import (
     plot_signal_diagnosis,
 )
@@ -15,9 +16,10 @@ CASH = 100000.0
 COMMISSION = 0.0003
 PERC = 0.005
 MAX_POSITION = 10
-REBALANCE_DAYS = 20
+REBALANCE_DAYS = 60
 
 DATA_PATH = "../data/stock_data/backtrader_data/"
+FUNDAMENTAL_PATH = "../data/stock_data/fundamental_data/"
 
 def add_data_and_signal(cerebro, strategy):
     all_items = os.listdir(DATA_PATH)
@@ -172,10 +174,16 @@ class BacktraderExecution(bt.Strategy):
                       f'Cost: {order.executed.value}, Comm {order.executed.comm}, Size: {order.executed.size}, Stock: {order.data._name}')
 
 if __name__ == "__main__":
+    # 加载基本面数据
+    stock_codes = [f.replace('_qfq.csv', '') for f in os.listdir(DATA_PATH)
+                   if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv']
+    fundamental_data = FundamentalData(FUNDAMENTAL_PATH, stock_codes)
+
     cerebro = bt.Cerebro()
     strategy = Strategy(
         init_cash=CASH,
-        max_position=MAX_POSITION
+        max_position=MAX_POSITION,
+        fundamental_data=fundamental_data
     )
 
     add_data_and_signal(cerebro, strategy)
