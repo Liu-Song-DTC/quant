@@ -14,9 +14,9 @@ class SignalEngine:
 
     def __init__(self, config=None):
         self.config = config or {}
-        self.min_score = 0.32
-        self.rsi_oversold = 28
-        self.rsi_overbought = 72
+        self.min_score = 0.35  # 提高最低分数
+        self.rsi_oversold = 25
+        self.rsi_overbought = 75
 
     def generate(self, code: str, market_data: pd.DataFrame, signal_store: SignalStore):
         dates = market_data["datetime"].values
@@ -99,67 +99,50 @@ class SignalEngine:
         buy_score = 0.0
         sell_score = 0.0
 
-        # ==================== 买入信号 ====================
+        # ==================== 简化版：动量为主 ====================
 
-        # 1. 超跌反弹 - 更敏感
-        if rsi < self.rsi_oversold:
-            buy_score += 0.25
-
-        # 2. 均线多头排列
-        if ind['full_golden'][idx]:
-            buy_score += 0.20
-
-        # 3. 动量反弹
-        if ind['mom_5'][idx] > 0 and ind['mom_10'][idx] > -0.02:
+        # 1. 20日动量 - 最可靠的因子
+        mom_20 = ind['mom_20'][idx]
+        if mom_20 > 0.08:
+            buy_score += 0.50
+        elif mom_20 > 0.04:
+            buy_score += 0.30
+        elif mom_20 > 0:
             buy_score += 0.15
 
-        # 4. 站上均线
-        if ind['ema5_above_20'][idx]:
-            buy_score += 0.12
+        # 2. 均线多头排列 - 趋势确认
+        if ind['full_golden'][idx]:
+            buy_score += 0.25
 
-        # 5. 趋势向上
+        # 3. 动量持续向上
+        if ind['mom_5'][idx] > 0 and ind['mom_10'][idx] > 0:
+            buy_score += 0.20
+
+        # 4. 趋势向上
         if ind['trend_strength'][idx] > 0:
-            buy_score += 0.10
+            buy_score += 0.15
 
-        # 6. MACD金叉
-        if idx > 0:
-            if ind['macd_hist'][idx] > 0 and ind['macd_hist'][idx-1] <= 0:
-                buy_score += 0.15
-
-        # 7. 价格在低位
-        if close <= ind['low_20'][idx] * 1.05:
-            buy_score += 0.10
-
-        # 8. 成交量放大
-        if ind['volume_ratio'][idx] > 1.3:
+        # 5. 成交量放大
+        if ind['volume_ratio'][idx] > 1.5:
             buy_score += 0.10
 
         # ==================== 卖出信号 ====================
 
-        # 1. 超买
-        if rsi > self.rsi_overbought:
-            sell_score += 0.25
+        # 1. 负动量
+        if mom_20 < -0.05:
+            sell_score += 0.40
 
         # 2. 均线死叉
         if ind['full_death'][idx]:
+            sell_score += 0.30
+
+        # 3. 动量转负
+        if ind['mom_5'][idx] < 0 and ind['mom_10'][idx] < 0:
             sell_score += 0.20
 
-        # 3. 动量转跌
-        if ind['mom_10'][idx] < -0.05:
-            sell_score += 0.20
-
-        # 4. 跌破均线
-        if not ind['ema5_above_20'][idx] and idx > 0 and ind['ema5_above_20'][idx-1]:
-            sell_score += 0.15
-
-        # 5. 趋势向下
+        # 4. 趋势向下
         if ind['trend_strength'][idx] < -0.02:
-            sell_score += 0.10
-
-        # 6. MACD死叉
-        if idx > 0:
-            if ind['macd_hist'][idx] < 0 and ind['macd_hist'][idx-1] >= 0:
-                sell_score += 0.10
+            sell_score += 0.15
 
         score = buy_score - sell_score
 
