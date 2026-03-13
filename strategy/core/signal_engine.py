@@ -99,37 +99,42 @@ class SignalEngine:
         buy_score = 0.0
         sell_score = 0.0
 
-        # ==================== 简化版：动量为主 ====================
+        # ==================== 动量为主 - 更严格版 ====================
 
-        # 1. 20日动量 - 最可靠的因子
+        # 1. 20日动量 - 更严格的阈值
         mom_20 = ind['mom_20'][idx]
-        if mom_20 > 0.08:
+        mom_5 = ind['mom_5'][idx]
+        mom_10 = ind['mom_10'][idx]
+
+        if mom_20 > 0.15:
+            buy_score += 0.70
+        elif mom_20 > 0.10:
             buy_score += 0.50
-        elif mom_20 > 0.04:
+        elif mom_20 > 0.06:
             buy_score += 0.30
-        elif mom_20 > 0:
-            buy_score += 0.15
 
-        # 2. 均线多头排列 - 趋势确认
+        # 2. 均线多头排列 - 趋势确认（强信号）
         if ind['full_golden'][idx]:
-            buy_score += 0.25
+            buy_score += 0.30
 
-        # 3. 动量持续向上
-        if ind['mom_5'][idx] > 0 and ind['mom_10'][idx] > 0:
+        # 3. 动量持续向上（短期中期都向上）
+        if mom_5 > 0.02 and mom_10 > 0.04:
             buy_score += 0.20
 
         # 4. 趋势向上
-        if ind['trend_strength'][idx] > 0:
+        if ind['trend_strength'][idx] > 0.015:
             buy_score += 0.15
 
-        # 5. 成交量放大
-        if ind['volume_ratio'][idx] > 1.5:
+        # 5. RSI合理区间（不追高）
+        if 35 < rsi < 65:
             buy_score += 0.10
 
         # ==================== 卖出信号 ====================
 
-        # 1. 负动量
-        if mom_20 < -0.05:
+        # 1. 负动量 - 更严格
+        if mom_20 < -0.10:
+            sell_score += 0.60
+        elif mom_20 < -0.06:
             sell_score += 0.40
 
         # 2. 均线死叉
@@ -137,8 +142,8 @@ class SignalEngine:
             sell_score += 0.30
 
         # 3. 动量转负
-        if ind['mom_5'][idx] < 0 and ind['mom_10'][idx] < 0:
-            sell_score += 0.20
+        if mom_5 < -0.02 and mom_10 < -0.04:
+            sell_score += 0.25
 
         # 4. 趋势向下
         if ind['trend_strength'][idx] < -0.02:
@@ -146,13 +151,14 @@ class SignalEngine:
 
         score = buy_score - sell_score
 
-        if score < self.min_score:
+        # 提高最低分数阈值
+        if score < 0.50:
             buy = False
             score = max(0, score)
         else:
             buy = True
 
-        sell = score < -0.15
+        sell = score < -0.25
 
         risk_vol = ind['atr_ratio'][idx] * 2
 
