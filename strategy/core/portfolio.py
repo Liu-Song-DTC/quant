@@ -8,7 +8,7 @@ class PortfolioConstructor:
     def __init__(
         self,
         max_position=7,
-        target_volatility=0.14,
+        target_volatility=0.20,
         entry_speed=0.8,
         exit_speed=1.0,
         position_stop_loss=0.10,
@@ -35,17 +35,17 @@ class PortfolioConstructor:
         market_regime,
     ):
         if market_regime == 1:
-            max_gross_exposure = 1.1
+            max_gross_exposure = 1.0
         elif market_regime == 0:
             if self.consecutive_losses >= 2:
-                max_gross_exposure = 0.35
+                max_gross_exposure = 0.5
             else:
-                max_gross_exposure = 0.6
+                max_gross_exposure = 0.8
         else:
             if self.consecutive_losses >= 1:
-                max_gross_exposure = 0.1
-            else:
                 max_gross_exposure = 0.2
+            else:
+                max_gross_exposure = 0.4
 
         total_equity = cash + sum(current_positions.values())
         if self.peak_equity is None:
@@ -54,14 +54,13 @@ class PortfolioConstructor:
 
         drawdown = 1 - total_equity / self.peak_equity
 
+        # 回撤限制
         if drawdown > 0.10:
-            max_gross_exposure *= 0.1
-        elif drawdown > 0.07:
             max_gross_exposure *= 0.2
+        elif drawdown > 0.07:
+            max_gross_exposure *= 0.4
         elif drawdown > 0.05:
-            max_gross_exposure *= 0.35
-        elif drawdown > 0.03:
-            max_gross_exposure *= 0.5
+            max_gross_exposure *= 0.6
 
         if drawdown > 0.02:
             self.consecutive_losses += 1
@@ -71,7 +70,7 @@ class PortfolioConstructor:
         candidates = []
         for code in universe:
             sig = signal_store.get(code, date)
-            min_score = 0.30 if market_regime >= 0 else 0.40
+            min_score = 0.02 if market_regime >= 0 else 0.04
             if sig and sig.buy and sig.score > min_score:
                 candidates.append((sig.score, code, sig.risk_vol))
 
@@ -82,32 +81,17 @@ class PortfolioConstructor:
         if not selected:
             return {}
 
+        # 简化权重：直接按动量分数分配
         raw_weight = {}
         for code in selected:
             sig = signal_store.get(code, date)
-            if sig.risk_vol > 0:
-                raw_weight[code] = sig.score / sig.risk_vol
+            raw_weight[code] = sig.score
 
         if not raw_weight:
             return {}
 
         total_raw = sum(raw_weight.values())
         weights = {c: w / total_raw for c, w in raw_weight.items()}
-
-        portfolio_vol = np.sqrt(
-            sum(
-                (weights[c] * signal_store.get(c, date).risk_vol) ** 2
-                for c in weights
-            )
-        )
-
-        if portfolio_vol > self.target_volatility:
-            scale = self.target_volatility / portfolio_vol
-        else:
-            scale = 1.0
-
-        for c in weights:
-            weights[c] *= scale
 
         gross = sum(abs(w) for w in weights.values())
         if gross > max_gross_exposure:
