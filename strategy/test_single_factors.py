@@ -107,6 +107,42 @@ def calc_indicators(df):
     # 趋势动量V17：10日>0用20日*2.0
     trend_mom_v17 = np.where(mom_10 > 0, mom_20 * 2.0, mom_20 * 0.05)
 
+    # 趋势动量V18：10日>0用20日*2.5
+    trend_mom_v18 = np.where(mom_10 > 0, mom_20 * 2.5, mom_20 * 0.03)
+
+    # 趋势动量V19：10日>0用20日*3.0
+    trend_mom_v19 = np.where(mom_10 > 0, mom_20 * 3.0, mom_20 * 0.02)
+
+    # 趋势动量V20：只用10日动量
+    trend_mom_v20 = np.where(mom_10 > 0, mom_10 * 1.5, mom_10 * 0.5)
+
+    # 趋势动量V21：3日动量作为趋势判断
+    trend_mom_v21 = np.where(mom_5 > 0, mom_20 * 2.0, mom_20 * 0.05)
+
+    # 趋势动量V22：更激进的版本
+    trend_mom_v22 = np.where(mom_10 > 0, mom_20 * 2.2, mom_20 * 0.04)
+
+    # 趋势动量V23：10日>0用20日*1.9
+    trend_mom_v23 = np.where(mom_10 > 0, mom_20 * 1.9, mom_20 * 0.06)
+
+    # 趋势动量V24：10日>0用20日*2.1
+    trend_mom_v24 = np.where(mom_10 > 0, mom_20 * 2.1, mom_20 * 0.04)
+
+    # 趋势动量V25：10日>0用20日*2.05
+    trend_mom_v25 = np.where(mom_10 > 0, mom_20 * 2.05, mom_20 * 0.045)
+
+    # 趋势动量V26：微调
+    trend_mom_v26 = np.where(mom_10 > 0, mom_20 * 1.95, mom_20 * 0.055)
+
+    # 趋势动量V27：2.15倍
+    trend_mom_v27 = np.where(mom_10 > 0, mom_20 * 2.15, mom_20 * 0.035)
+
+    # 趋势动量V28：2.3倍
+    trend_mom_v28 = np.where(mom_10 > 0, mom_20 * 2.3, mom_20 * 0.03)
+
+    # 趋势动量V29：更细的调整
+    trend_mom_v29 = np.where(mom_10 > 0, mom_20 * 2.12, mom_20 * 0.038)
+
     # 未来收益
     future_ret = np.roll(close, -20) / close - 1
 
@@ -137,6 +173,18 @@ def calc_indicators(df):
         'trend_mom_v15': trend_mom_v15,
         'trend_mom_v16': trend_mom_v16,
         'trend_mom_v17': trend_mom_v17,
+        'trend_mom_v18': trend_mom_v18,
+        'trend_mom_v19': trend_mom_v19,
+        'trend_mom_v20': trend_mom_v20,
+        'trend_mom_v21': trend_mom_v21,
+        'trend_mom_v22': trend_mom_v22,
+        'trend_mom_v23': trend_mom_v23,
+        'trend_mom_v24': trend_mom_v24,
+        'trend_mom_v25': trend_mom_v25,
+        'trend_mom_v26': trend_mom_v26,
+        'trend_mom_v27': trend_mom_v27,
+        'trend_mom_v28': trend_mom_v28,
+        'trend_mom_v29': trend_mom_v29,
         'future_ret': future_ret
     }
 
@@ -188,6 +236,18 @@ if __name__ == "__main__":
         '趋势动量V15(10日*1.7)': ind['trend_mom_v15'],
         '趋势动量V16(10日*1.8)': ind['trend_mom_v16'],
         '趋势动量V17(10日*2.0)': ind['trend_mom_v17'],
+        '趋势动量V18(10日*2.5)': ind['trend_mom_v18'],
+        '趋势动量V19(10日*3.0)': ind['trend_mom_v19'],
+        '趋势动量V20(只用10日)': ind['trend_mom_v20'],
+        '趋势动量V21(5日趋势)': ind['trend_mom_v21'],
+        '趋势动量V22(更激进)': ind['trend_mom_v22'],
+        '趋势动量V23(1.9倍)': ind['trend_mom_v23'],
+        '趋势动量V24(2.1倍)': ind['trend_mom_v24'],
+        '趋势动量V25(2.05倍)': ind['trend_mom_v25'],
+        '趋势动量V26(1.95倍)': ind['trend_mom_v26'],
+        '趋势动量V27(2.15倍)': ind['trend_mom_v27'],
+        '趋势动量V28(2.3倍)': ind['trend_mom_v28'],
+        '趋势动量V29(2.12倍)': ind['trend_mom_v29'],
     }
 
     for name, values in factors.items():
