@@ -96,40 +96,29 @@ class SignalEngine:
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         """
-        信号生成 - 纯20日动量评分
+        信号生成 - 20日动量分档评分（极简版）
         """
         if idx < 60:
             return Signal(buy=False, sell=False, score=0.0, risk_vol=0.03)
 
         mom_20 = ind['mom_20'][idx]
 
-        buy_score = 0.0
-        sell_score = 0.0
-
-        # 动量评分
+        # 分档评分
         if mom_20 > 0.15:
-            buy_score = 1.0
+            score = 1.0
         elif mom_20 > 0.10:
-            buy_score = 0.75
+            score = 0.7
         elif mom_20 > 0.05:
-            buy_score = 0.50
-        elif mom_20 > 0:
-            buy_score = 0.25
-        elif mom_20 < -0.10:
-            sell_score = 0.80
-        elif mom_20 < -0.05:
-            sell_score = 0.50
+            score = 0.4
         else:
-            sell_score = 0.25
+            score = 0
 
-        score = buy_score - sell_score
-
-        buy = score >= 0.40
-        sell = score <= -0.25
+        buy = score >= 0.4
+        sell = mom_20 < -0.08
 
         risk_vol = ind['atr_ratio'][idx] * 2
 
-        return Signal(buy=buy, sell=sell, score=max(0, score), risk_vol=risk_vol)
+        return Signal(buy=buy, sell=sell, score=score, risk_vol=risk_vol)
 
     def _get_fundamental_score(self, code, current_date):
         """获取基本面因子评分
