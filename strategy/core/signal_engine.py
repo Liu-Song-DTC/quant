@@ -95,22 +95,22 @@ class SignalEngine:
         return result
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
+        """
+        信号生成 - 动量策略
+        """
         if idx < 60:
             return Signal(buy=False, sell=False, score=0.0, risk_vol=0.03)
 
         close = ind['close'][idx]
         rsi = ind['rsi'][idx]
+        mom_20 = ind['mom_20'][idx]
+        mom_10 = ind['mom_10'][idx]
+        mom_5 = ind['mom_5'][idx]
 
         buy_score = 0.0
         sell_score = 0.0
 
-        # ==================== 动量 + 趋势 ====================
-
-        mom_20 = ind['mom_20'][idx]
-        mom_5 = ind['mom_5'][idx]
-        mom_10 = ind['mom_10'][idx]
-
-        # 1. 20日动量
+        # ==================== 动量因子 ====================
         if mom_20 > 0.20:
             buy_score += 0.60
         elif mom_20 > 0.12:
@@ -118,24 +118,16 @@ class SignalEngine:
         elif mom_20 > 0.05:
             buy_score += 0.20
 
-        # 2. 动量持续
         if mom_5 > 0 and mom_10 > 0:
             buy_score += 0.25
 
-        # 3. 均线多头
         if ind['full_golden'][idx]:
             buy_score += 0.30
 
-        # 4. MACD
-        if ind['macd_hist'][idx] > 0:
-            buy_score += 0.15
-
-        # 5. 趋势
         if ind['trend_strength'][idx] > 0.01:
             buy_score += 0.15
 
         # ==================== 卖出 ====================
-
         if mom_20 < -0.10:
             sell_score += 0.50
         elif mom_20 < -0.05:
