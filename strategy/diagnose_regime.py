@@ -7,19 +7,97 @@ import pandas as pd
 import numpy as np
 
 
+def diagnose_regime_comprehensive(index_df: pd.DataFrame, regime_series: list) -> dict:
+    """
+    综合诊断 - 多维度评价体系
+    1. 方向准确率
+    2. 相对基准超额收益
+    3. 统计显著性（t检验）
+    4. 信息比率
+    """
+    df = index_df.copy()
+    df['regime'] = regime_series
+
+    # 计算不同持有期的收益
+    results = {}
+
+    for look_ahead in [5, 10, 20]:
+        # 构建收益表
+        data = []
+        for i in range(len(df) - look_ahead):
+            ret = df['close'].iloc[i + look_ahead] / df['close'].iloc[i] - 1
+            data.append({'regime': df['regime'].iloc[i], 'return': ret})
+
+        ret_df = pd.DataFrame(data)
+
+        # 计算各项指标
+        results[look_ahead] = {}
+
+        for regime in [-1, 0, 1]:
+            regime_name = {-1: '熊市', 0: '震荡市', 1: '牛市'}[regime]
+            subset = ret_df[ret_df['regime'] == regime]['return']
+
+            if len(subset) == 0:
+                continue
+
+            mean_ret = subset.mean()
+            std_ret = subset.std()
+            count = len(subset)
+
+            # 方向准确率：收益符号是否正确
+            if regime == 1:  # 牛市
+                direction_acc = (subset > 0).mean()
+                expected_sign = 1
+            elif regime == -1:  # 熊市
+                direction_acc = (subset < 0).mean()
+                expected_sign = -1
+            else:  # 震荡市
+                direction_acc = (subset.abs() < 0.02).mean()  # 接近0
+                expected_sign = 0
+
+            # 相对基准（随机选择）的超额收益
+            baseline_ret = ret_df['return'].mean()
+            excess_ret = mean_ret - baseline_ret
+
+            # t检验（简化版）
+            from scipy import stats
+            if count > 10 and std_ret > 0:
+                t_stat, p_value = stats.ttest_1samp(subset, 0)
+            else:
+                t_stat, p_value = 0, 1
+
+            results[look_ahead][regime_name] = {
+                '样本数': count,
+                '平均收益': mean_ret,
+                '标准差': std_ret,
+                '方向准确率': direction_acc,
+                '超额收益': excess_ret,
+                't统计量': t_stat,
+                'p值': p_value,
+                '显著': '***' if p_value < 0.01 else '**' if p_value < 0.05 else '*' if p_value < 0.1 else ''
+            }
+
+    return results
+
+
 def diagnose_regime_in_period(index_df: pd.DataFrame, regime_series: list) -> dict:
     """
-    诊断市场状态判断的质量
+    诊断市场状态判断的质量 - 增强版
 
-    看看在判断为某种状态后，接下来 N 天的累计收益
+    1. 不同持有期的收益（1,3,5,10,20天）
+    2. 状态持续验证（状态持续N天才计入统计）
     """
     df = index_df.copy()
     df['regime'] = regime_series
 
     results = {}
 
-    # 计算接下来N天的累计收益
-    for look_ahead in [5, 10, 20]:
+    # 1. 不同持有期的收益
+    print("\n" + "="*60)
+    print("【不同持有期收益分析】")
+    print("="*60)
+
+    for look_ahead in [1, 3, 5, 10, 20]:
         returns = []
         for i in range(len(df) - look_ahead):
             ret = df['close'].iloc[i + look_ahead] / df['close'].iloc[i] - 1
@@ -27,12 +105,46 @@ def diagnose_regime_in_period(index_df: pd.DataFrame, regime_series: list) -> di
 
         ret_df = pd.DataFrame(returns, columns=['regime', 'return'])
 
+        print(f"\n持有{look_ahead}天:")
         for regime in [-1, 0, 1]:
             regime_name = {-1: '熊市', 0: '震荡市', 1: '牛市'}[regime]
             subset = ret_df[ret_df['regime'] == regime]['return']
-            if regime_name not in results:
-                results[regime_name] = {}
-            results[regime_name][f'{look_ahead}天累计'] = subset.mean()
+            count = len(subset)
+            mean_ret = subset.mean() if count > 0 else 0
+            print(f"  {regime_name}: 样本{count:4d}个, 平均收益{mean_ret:7.2%}")
+
+    # 2. 状态持续验证
+    print("\n" + "="*60)
+    print("【状态持续验证】- 只统计状态连续保持N天的情况")
+    print("="*60)
+
+    for persist_days in [1, 3, 5]:
+        print(f"\n状态持续{persist_days}天以上:")
+
+        # 计算状态持续天数
+        persist_count = 0
+        for i in range(len(df) - persist_days):
+            # 检查接下来persist_days天是否都是同一状态
+            regime = df['regime'].iloc[i]
+            is_persistent = all(df['regime'].iloc[i:i+persist_days] == regime)
+
+            if is_persistent:
+                ret = df['close'].iloc[i + persist_days] / df['close'].iloc[i] - 1
+
+                if regime not in results:
+                    results[regime] = {}
+                if f'persist_{persist_days}' not in results[regime]:
+                    results[regime][f'persist_{persist_days}'] = []
+                results[regime][f'persist_{persist_days}'].append(ret)
+
+        for regime in [-1, 0, 1]:
+            regime_name = {-1: '熊市', 0: '震荡市', 1: '牛市'}[regime]
+            key = f'persist_{persist_days}'
+            if regime in results and key in results[regime]:
+                subset = results[regime][key]
+                count = len(subset)
+                mean_ret = np.mean(subset) if count > 0 else 0
+                print(f"  {regime_name}: 样本{count:4d}个, 平均收益{mean_ret:7.2%}")
 
     return results
 
@@ -89,29 +201,70 @@ if __name__ == "__main__":
     detector = MarketRegimeDetector()
     result = detector.generate(index_data)
 
-    # 诊断未来收益
-    results = diagnose_regime_in_period(index_data, result['regime'].tolist())
+    # 综合诊断
+    results = diagnose_regime_comprehensive(index_data, result['regime'].tolist())
 
-    print("="*60)
-    print("市场状态判断质量诊断（判断后未来N天累计收益）")
-    print("="*60)
+    print("="*70)
+    print("【综合诊断报告】- 多维度评价体系")
+    print("="*70)
 
-    for regime_name, stats in results.items():
-        print(f"\n【{regime_name}】")
-        for period, ret in stats.items():
-            print(f"  {period}: {ret:.2%}")
+    for look_ahead, regime_results in results.items():
+        print(f"\n持有期: {look_ahead}天")
+        print("-"*70)
+        print(f"{'状态':<8} {'样本数':>8} {'平均收益':>10} {'方向准确率':>10} {'超额收益':>10} {'p值':>8} {'显著':>6}")
+        print("-"*70)
 
-    print("\n" + "="*60)
-    print("判断标准：")
-    print("  牛市判断正确 -> 未来收益应该 > 0")
-    print("  熊市判断正确 -> 未来收益应该 < 0")
-    print("  震荡市判断正确 -> 未来收益应该接近 0")
-    print("="*60)
+        for regime_name, stats in regime_results.items():
+            print(f"{regime_name:<8} {stats['样本数']:>8} {stats['平均收益']:>10.2%} "
+                  f"{stats['方向准确率']:>10.2%} {stats['超额收益']:>10.2%} "
+                  f"{stats['p值']:>8.3f} {stats['显著']:>6}")
+
+    print("\n" + "="*70)
+    print("【判断标准说明】")
+    print("  方向准确率: 预测方向正确的概率")
+    print("  超额收益: 相对于随机选择的超额收益")
+    print("  p值: 统计显著性 (<0.05为显著, <0.01为高度显著)")
+    print("  *** p<0.01, ** p<0.05, * p<0.1")
+    print("="*70)
+
+    # 测试动量分数
+    print("\n\n" + "="*70)
+    print("【动量分数诊断】- 连续值信号")
+    print("="*70)
+
+    # 使用动量分数构建信号
+    momentum_signals = []
+    for i in range(len(result)):
+        score = result['momentum_score'].iloc[i]
+        # 将连续值转为离散信号
+        if score > 0.3:
+            sig = 1
+        elif score < -0.3:
+            sig = -1
+        else:
+            sig = 0
+        momentum_signals.append(sig)
+
+    results_mom = diagnose_regime_comprehensive(index_data, momentum_signals)
+
+    for look_ahead, regime_results in results_mom.items():
+        print(f"\n持有期: {look_ahead}天")
+        print("-"*70)
+        for regime_name, stats in regime_results.items():
+            if stats['样本数'] > 0:
+                print(f"{regime_name:<8} 样本{stats['样本数']:>4} 平均{stats['平均收益']:>8.2%} 方向{stats['方向准确率']:>7.2%} p={stats['p值']:.3f} {stats['显著']}")
+
+    # 输出示例数据
+    print("\n\n" + "="*70)
+    print("【信号输出示例】- 最后10天")
+    print("="*70)
+    sample = result[['datetime', 'close', 'regime', 'confidence', 'momentum_score', 'trend_score', 'volatility', 'is_extreme']].tail(10)
+    print(sample.to_string(index=False))
 
     # 分年份诊断
-    print("\n\n" + "="*60)
+    print("\n\n" + "="*70)
     print("分年份统计")
-    print("="*60)
+    print("="*70)
 
     yearly_df = diagnose_yearly(index_data, result['regime'].tolist())
     print(yearly_df.to_string(index=False))
