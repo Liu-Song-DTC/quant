@@ -63,29 +63,43 @@ def calculate_ic_ir(signal_store, price_data: dict, look_ahead: int = 20) -> dic
     """
     计算IC (Information Coefficient) 和 IR (Information Ratio)
 
-    IC: 因子值与未来收益的相关系数
-    IR: IC均值/IC标准差 (稳定性)
+    与因子测试对齐：过滤极端值
     """
     factor_values = []
     future_returns = []
 
     for code, df in price_data.items():
         df = df.copy()
-        df['date'] = pd.to_datetime(df['datetime']).dt.date
+        df = df.sort_values('datetime').reset_index(drop=True)
+        close = df['close'].values
 
-        for idx in range(len(df) - look_ahead):
-            date = df['date'].iloc[idx]
+        # 使用和因子测试相同的方式计算未来收益
+        future_ret = np.roll(close, -look_ahead) / close - 1
+
+        for idx in range(look_ahead, len(df) - look_ahead):
+            date = df['datetime'].iloc[idx].date()
             sig = signal_store.get(code, date)
 
             if sig is None or sig.score == 0:
                 continue
 
-            future_price = df['close'].iloc[idx + look_ahead]
-            current_price = df['close'].iloc[idx]
-            ret = future_price / current_price - 1
-
+            # 获取因子值
             factor_values.append(sig.score)
-            future_returns.append(ret)
+            future_returns.append(future_ret[idx])
+
+    # 转换为数组并过滤（与因子测试对齐）
+    factor_values = np.array(factor_values)
+    future_returns = np.array(future_returns)
+
+    # 过滤极端值（与因子测试相同）
+    valid = (~np.isnan(factor_values)) & (~np.isnan(future_returns)) & (np.abs(future_returns) < 1)
+    valid = valid & (np.abs(factor_values) < 1)  # 过滤极端因子值
+
+    if valid.sum() < 100:
+        return {'ic': 0, 'ir': 0, 'sample_count': 0}
+
+    factor_values = factor_values[valid]
+    future_returns = future_returns[valid]
 
     # 计算IC
     ic = np.corrcoef(factor_values, future_returns)[0, 1]
@@ -245,7 +259,7 @@ def run_signal_diagnostic():
 
     signal_store = SignalStore()
 
-    # 加载股票数据 - 增加样本量
+    # 加载全部股票数据
     sample_stocks = []
     for item in os.listdir(DATA_PATH):
         if not item.endswith('.csv'):
@@ -254,8 +268,6 @@ def run_signal_diagnostic():
         if code == 'sh000001':
             continue
         sample_stocks.append(code)
-        if len(sample_stocks) >= 50:  # 增加到50只
-            break
 
     price_data = {}
 
