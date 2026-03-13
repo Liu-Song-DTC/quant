@@ -96,60 +96,40 @@ class SignalEngine:
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         """
-        信号生成 - 动量策略
+        信号生成 - 纯20日动量评分
         """
         if idx < 60:
             return Signal(buy=False, sell=False, score=0.0, risk_vol=0.03)
 
-        close = ind['close'][idx]
-        rsi = ind['rsi'][idx]
         mom_20 = ind['mom_20'][idx]
-        mom_10 = ind['mom_10'][idx]
-        mom_5 = ind['mom_5'][idx]
 
         buy_score = 0.0
         sell_score = 0.0
 
-        # ==================== 动量因子 ====================
-        if mom_20 > 0.20:
-            buy_score += 0.60
-        elif mom_20 > 0.12:
-            buy_score += 0.40
+        # 动量评分
+        if mom_20 > 0.15:
+            buy_score = 1.0
+        elif mom_20 > 0.10:
+            buy_score = 0.75
         elif mom_20 > 0.05:
-            buy_score += 0.20
-
-        if mom_5 > 0 and mom_10 > 0:
-            buy_score += 0.25
-
-        if ind['full_golden'][idx]:
-            buy_score += 0.30
-
-        if ind['trend_strength'][idx] > 0.01:
-            buy_score += 0.15
-
-        # ==================== 卖出 ====================
-        if mom_20 < -0.10:
-            sell_score += 0.50
+            buy_score = 0.50
+        elif mom_20 > 0:
+            buy_score = 0.25
+        elif mom_20 < -0.10:
+            sell_score = 0.80
         elif mom_20 < -0.05:
-            sell_score += 0.30
-
-        if ind['full_death'][idx]:
-            sell_score += 0.35
+            sell_score = 0.50
+        else:
+            sell_score = 0.25
 
         score = buy_score - sell_score
 
-        # 阈值
-        if score < 0.50:
-            buy = False
-            score = max(0, score)
-        else:
-            buy = True
-
-        sell = score < -0.25
+        buy = score >= 0.40
+        sell = score <= -0.25
 
         risk_vol = ind['atr_ratio'][idx] * 2
 
-        return Signal(buy=buy, sell=sell, score=score, risk_vol=risk_vol)
+        return Signal(buy=buy, sell=sell, score=max(0, score), risk_vol=risk_vol)
 
     def _get_fundamental_score(self, code, current_date):
         """获取基本面因子评分
