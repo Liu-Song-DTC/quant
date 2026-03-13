@@ -144,47 +144,34 @@ class SignalEngine:
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         """
-        信号生成 - 优化版
-        保持主因子IC，同时用负IC因子做风险过滤
+        信号生成 - 多因子组合版
+        支持不同因子组合，可通过配置切换
         """
         if idx < 60:
             return Signal(
                 buy=False, sell=False, score=0.0,
-                factor_value=0.0, factor_name='V41_only',
+                factor_value=0.0, factor_name='V41',
                 risk_vol=0.03, risk_regime=0, risk_confidence=0.0,
                 risk_extreme=False, adjusted_score=0.0
             )
 
-        # === 1. 主因子: trend_mom_v41 (IC=3.59%) ===
-        trend_mom = trend_mom_v41(ind['mom_20'][idx], ind['mom_10'][idx])
-        factor_value = trend_mom
-        score = max(0, trend_mom)
-
-        # === 2. 负IC因子仅用于风险标记，不直接扣分 ===
-        # 记录风险状态供后续使用
-        vol_20 = self._safe_get(ind, 'volatility_20', idx, 0.02)
-        is_high_vol = vol_20 > 0.03  # 高波动标志
-
-        vpt = self._safe_get(ind, 'volume_price_trend', idx, 0)
-        is_vpt_risk = abs(vpt) > 3  # 价量背离风险
-
-        skew = self._safe_get(ind, 'return_skewness', idx, 0)
-        is_skew_risk = skew > 0.5  # 偏度风险
-
-        # === 3. 获取市场状态信息 ===
+        # 获取市场状态
         market_info = self._get_market_info(current_date)
         risk_regime = market_info['regime']
         risk_confidence = market_info['confidence']
         risk_extreme = market_info['is_extreme']
 
-        # === 4. 波动率风险 ===
+        # === 根据市场状态选择因子组合 ===
+        factor_name, factor_value, risk_info = self._select_factor(ind, idx, risk_regime)
+
+        score = max(0, factor_value)
         risk_vol = ind['atr_ratio'][idx] * 2
 
-        # === 5. 风险调整后的分数 ===
+        # === 风险调整 ===
         regime_weight = 1.0
-        if risk_regime == -1:  # 熊市
+        if risk_regime == -1:
             regime_weight = 0.6
-        elif risk_regime == 1:  # 牛市
+        elif risk_regime == 1:
             regime_weight = 1.1
 
         if risk_extreme:
@@ -192,25 +179,62 @@ class SignalEngine:
 
         adjusted_score = score * regime_weight
 
-        # === 6. 交易信号 ===
-        # 买入：主因子为正，且非高风险状态
-        buy = trend_mom >= 0 and adjusted_score > 0.01
-
-        # 卖出：主因子转负
-        sell = trend_mom <= -0.03
+        # === 交易信号 ===
+        buy = factor_value >= 0 and adjusted_score > 0.01
+        sell = factor_value <= -0.03
 
         return Signal(
             buy=buy,
             sell=sell,
             score=score,
             factor_value=factor_value,
-            factor_name='V41_only',
+            factor_name=factor_name,
             risk_vol=risk_vol,
             risk_regime=risk_regime,
             risk_confidence=risk_confidence,
-            risk_extreme=risk_extreme or is_high_vol,
+            risk_extreme=risk_extreme or risk_info.get('is_high_vol', False),
             adjusted_score=adjusted_score
         )
+
+    def _select_factor(self, ind, idx, regime: int):
+        """
+        根据市场状态选择因子组合
+
+        因子IC（单因子测试）:
+        - trend_mom_v41: 3.59%
+        - price_position: 3.44%
+        - rsi_factor: 3.04%
+        - bb_width: 3.24%
+        """
+        mom_20 = ind['mom_20'][idx]
+        mom_10 = ind['mom_10'][idx]
+        rsi = ind['rsi'][idx]
+        price_pos = self._safe_get(ind, 'price_position_20', idx, 0.5)
+
+        # 统一计算各因子
+        v41 = trend_mom_v41(mom_20, mom_10)
+        rsi_val = (rsi - 50) / 100
+        price_val = price_pos - 0.5
+
+        # 风险因子
+        vol_20 = self._safe_get(ind, 'volatility_20', idx, 0.02)
+        risk_info = {
+            'is_high_vol': vol_20 > 0.03,
+        }
+
+        # === 牛市/震荡市: 使用趋势动量因子 ===
+        if regime >= 0:
+            # 组合: V41(80%) + RSI(10%) + 价格位置(10%)
+            factor_value = v41 * 0.8 + rsi_val * 0.1 + price_val * 0.1
+            factor_name = 'V41_combo'
+        # === 熊市: 使用防御性因子 ===
+        else:
+            # 熊市用低波动 + 价格位置
+            vol_factor = -vol_20 * 5  # 负波动率因子
+            factor_value = vol_factor * 0.5 + price_val * 0.5
+            factor_name = 'defensive'
+
+        return factor_name, factor_value, risk_info
 
     def _safe_get(self, ind: dict, key: str, idx: int, default: float = 0.0) -> float:
         """安全获取数组元素"""
