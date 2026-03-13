@@ -96,12 +96,12 @@ class MarketRegimeDetector:
         mom = self.momentum.iloc[i]
         mom_60 = self.momentum_60.iloc[i]
 
-        # === 熊市判断：动量急跌 ===
-        if mom_5 < -0.08:
+        # === 熊市判断：5日急跌 或 20日急跌 ===
+        if mom_5 < -0.10 or mom < -0.12:
             return -1
 
-        # === 牛市判断：需要中期动量确认 ===
-        if mom > 0.06 and mom_60 > 0.04:
+        # === 牛市判断：20日+60日动量确认 ===
+        if mom > 0.08 and mom_60 > 0.05:
             return 1
 
         # 默认震荡市
