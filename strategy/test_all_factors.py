@@ -16,10 +16,14 @@ DATA_PATH = '../data/stock_data/backtrader_data/'
 FUNDAMENTAL_PATH = '../data/stock_data/fundamental_data/'
 
 
-def load_stock_data(max_stocks=30):
-    """加载股票数据"""
-    all_items = [f for f in os.listdir(DATA_PATH)
-                if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv'][:max_stocks]
+def load_stock_data(max_stocks=None):
+    """加载全部股票数据"""
+    if max_stocks is None:
+        all_items = [f for f in os.listdir(DATA_PATH)
+                    if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv']
+    else:
+        all_items = [f for f in os.listdir(DATA_PATH)
+                    if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv'][:max_stocks]
 
     all_data = []
     for item in all_items:
@@ -220,7 +224,7 @@ def test_tech_fund_combo(df, fund_data):
 
 if __name__ == "__main__":
     print("加载股票数据...")
-    df = load_stock_data(max_stocks=50)
+    df = load_stock_data()  # 加载全部股票
     print(f"总数据量: {len(df)}")
     stock_codes = df['code'].unique().tolist()
     print(f"股票数: {len(stock_codes)}")
