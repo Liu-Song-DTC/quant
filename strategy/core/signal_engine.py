@@ -96,29 +96,36 @@ class SignalEngine:
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         """
-        信号生成 - 20日动量分档评分（极简版）
+        信号生成 - 趋势动量V17因子
+        公式: 如果10日动量>0，用20日动量*2.0；否则用20日动量*0.05
+        IC = 8.18%
         """
         if idx < 60:
-            return Signal(buy=False, sell=False, score=0.0, risk_vol=0.03)
+            return Signal(buy=False, sell=False, score=0.0, risk_vol=0.03, factor_value=0.0)
 
         mom_20 = ind['mom_20'][idx]
+        mom_10 = ind['mom_10'][idx]
 
-        # 分档评分
-        if mom_20 > 0.15:
-            score = 1.0
-        elif mom_20 > 0.10:
-            score = 0.7
-        elif mom_20 > 0.05:
-            score = 0.4
+        # 趋势动量V17：如果10日动量>0，用20日动量*2.0；否则用20日动量*0.05
+        if mom_10 > 0:
+            trend_mom = mom_20 * 2.0
         else:
-            score = 0
+            trend_mom = mom_20 * 0.05
 
-        buy = score >= 0.4
-        sell = mom_20 < -0.08
+        # 原始因子值（用于IC计算）
+        factor_value = trend_mom
+
+        # 交易分数（用于排序）
+        score = max(0, trend_mom)
+
+        # 买入：趋势动量>0
+        # 卖出：趋势动量<-0.03
+        buy = trend_mom >= 0
+        sell = trend_mom <= -0.03
 
         risk_vol = ind['atr_ratio'][idx] * 2
 
-        return Signal(buy=buy, sell=sell, score=score, risk_vol=risk_vol)
+        return Signal(buy=buy, sell=sell, score=score, risk_vol=risk_vol, factor_value=factor_value)
 
     def _get_fundamental_score(self, code, current_date):
         """获取基本面因子评分
