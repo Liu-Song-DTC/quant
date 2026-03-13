@@ -96,9 +96,9 @@ class SignalEngine:
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         """
-        信号生成 - 趋势动量V17因子
-        公式: 如果10日动量>0，用20日动量*2.0；否则用20日动量*0.05
-        IC = 8.18%
+        信号生成 - 趋势动量V24因子
+        公式: 如果10日动量>0，用20日动量*2.1；否则用20日动量*0.04
+        IC = 8.23%
         """
         if idx < 60:
             return Signal(buy=False, sell=False, score=0.0, risk_vol=0.03, factor_value=0.0)
@@ -106,11 +106,11 @@ class SignalEngine:
         mom_20 = ind['mom_20'][idx]
         mom_10 = ind['mom_10'][idx]
 
-        # 趋势动量V17：如果10日动量>0，用20日动量*2.0；否则用20日动量*0.05
+        # 趋势动量V24：如果10日动量>0，用20日动量*2.1；否则用20日动量*0.04
         if mom_10 > 0:
-            trend_mom = mom_20 * 2.0
+            trend_mom = mom_20 * 2.1
         else:
-            trend_mom = mom_20 * 0.05
+            trend_mom = mom_20 * 0.04
 
         # 原始因子值（用于IC计算）
         factor_value = trend_mom
