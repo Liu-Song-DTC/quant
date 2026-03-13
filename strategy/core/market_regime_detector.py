@@ -70,36 +70,49 @@ class MarketRegimeDetector:
         self.momentum_10 = close / close.shift(10) - 1
         self.momentum_5 = close / close.shift(5) - 1
 
+        # 动量变化趋势（前瞻性指标）
+        self.momentum_change = self.momentum - self.momentum.shift(5)
+
         # 波动率
         returns = close.pct_change()
         self.volatility = returns.rolling(20).std() * np.sqrt(252)
 
+        # 成交量的变化
+        if 'volume' in self.index_data.columns:
+            volume = self.index_data['volume']
+            self.volume_ma = volume.rolling(20).mean()
+            self.volume_ratio = volume / (self.volume_ma + 1e-10)
+            self.volume_change = self.volume_ratio / self.volume_ratio.shift(5) - 1
+
     def _detect_single(self, i: int) -> int:
-        """检测单日市场状态"""
+        """
+        基于风险调整的市场状态判断
+        不追求准确预测，而是识别极端风险
+        """
         if i < 120:
             return 0
 
-        # 紧急熊市 - 快速下跌
-        if self.momentum_5.iloc[i] < self.mom5_bear:
+        # 极端风险情况 - 快速下跌（可能股灾）
+        if self.momentum_5.iloc[i] < -0.10:
             return -1
 
-        # 显著下跌
-        if self.momentum.iloc[i] < self.momentum_bear1:
-            return -1
-
-        # 下跌 + 趋势向下
-        if self.momentum.iloc[i] < self.momentum_bear2 and not self.trend_up.iloc[i]:
-            return -1
-
-        # 明确的牛市
-        if self.long_up.iloc[i] and self.trend_up.iloc[i] and self.momentum_60.iloc[i] > self.momentum_bull2:
+        # 极端乐观情况 - 快速上涨
+        if self.momentum_5.iloc[i] > 0.10:
             return 1
 
-        # 快速上涨
-        if self.momentum.iloc[i] > self.momentum_bull1:
+        # 持续上涨趋势（需要动量支持）
+        if (self.momentum.iloc[i] > 0.08 and
+            self.trend_up.iloc[i] and
+            self.long_up.iloc[i]):
             return 1
 
-        # 震荡市
+        # 持续下跌趋势
+        if (self.momentum.iloc[i] < -0.08 and
+            not self.trend_up.iloc[i] and
+            not self.long_up.iloc[i]):
+            return -1
+
+        # 默认震荡市
         return 0
 
     def get_regime(self, date) -> int:

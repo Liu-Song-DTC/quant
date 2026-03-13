@@ -3,6 +3,7 @@ import pandas as pd
 from .signal_engine import SignalEngine
 from .signal_store import SignalStore
 from .portfolio import PortfolioConstructor
+from .market_regime_detector import MarketRegimeDetector
 
 
 class Strategy:
@@ -19,60 +20,12 @@ class Strategy:
 
         self.index_data = None
 
+        # 使用独立的市场状态检测器
+        self.regime_detector = MarketRegimeDetector()
+
     def generate_market_regime(self, index_df):
-
-        self.index_data = index_df.copy()
-        close = index_df["close"]
-
-        # EMA
-        ema20 = close.ewm(span=20).mean()
-        ema60 = close.ewm(span=60).mean()
-        ema120 = close.ewm(span=120).mean()
-
-        # 趋势
-        trend_up = ema20 > ema60
-        long_up = ema60 > ema120
-
-        # 动量
-        momentum = close / close.shift(20) - 1
-
-        # 快速下跌检测
-        mom_5 = close / close.shift(5) - 1
-
-        regime = []
-
-        for i in range(len(index_df)):
-
-            if i < 120:
-                regime.append(0)
-                continue
-
-            # 紧急熊市检测 - 快速下跌
-            if mom_5.iloc[i] < -0.10:
-                regime.append(-1)
-                continue
-
-            # 显著下跌
-            if momentum.iloc[i] < -0.15:
-                regime.append(-1)
-                continue
-
-            if momentum.iloc[i] < -0.08 and not trend_up.iloc[i]:
-                regime.append(-1)
-                continue
-
-            # 牛市
-            if trend_up.iloc[i] and long_up.iloc[i] and momentum.iloc[i] > 0:
-                regime.append(1)
-                continue
-
-            if momentum.iloc[i] > 0.05:
-                regime.append(1)
-                continue
-
-            regime.append(0)
-
-        self.index_data["regime"] = regime
+        # 使用独立的市场状态检测器
+        self.index_data = self.regime_detector.generate(index_df)
 
     def generate_signal(self, code, market_data):
         self.signal_engine.generate(code, market_data, self.signal_store)
