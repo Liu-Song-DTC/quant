@@ -14,8 +14,8 @@ from utils.utils import (
 CASH = 100000.0
 COMMISSION = 0.0003
 PERC = 0.005
-MAX_POSITION = 6
-REBALANCE_DAYS = 10
+MAX_POSITION = 5          # 增加持仓数量
+REBALANCE_DAYS = 10       # 缩短调仓周期，提高效率
 
 DATA_PATH = "../data/stock_data/backtrader_data/"
 def add_data_and_signal(cerebro, strategy):
