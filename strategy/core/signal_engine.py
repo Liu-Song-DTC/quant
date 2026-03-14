@@ -47,6 +47,15 @@ class SignalEngine:
             # 极端状态权重
             self.extreme_weight = config_loader.get('extreme_adjustments.regime_weight', 0.85)
 
+            # 基本面因子配置
+            fundamental_config = config_loader.get('fundamental_weights', {})
+            self.fundamental_enabled = fundamental_config.get('enabled', True)
+            self.fundamental_weight = fundamental_config.get('weight', 0.30)
+            self.technical_weight = fundamental_config.get('technical_weight', 0.70)
+
+            # 市场状态动态权重
+            self.regime_weights = config_loader.get('regime_weights', {})
+
         except Exception:
             # 使用默认值，确保与原有逻辑一致
             self.vol_weight = 0.30
@@ -57,6 +66,16 @@ class SignalEngine:
             self.adjusted_buy_threshold = 0.05
             self.sell_threshold = -0.05
             self.extreme_weight = 0.85
+            # 基本面默认值
+            self.fundamental_enabled = True
+            self.fundamental_weight = 0.30
+            self.technical_weight = 0.70
+            # 市场状态权重默认值
+            self.regime_weights = {
+                'bull': {'volatility_10': 0.20, 'rsi_average': 0.20, 'bb_width': 0.10, 'momentum': 0.50},
+                'bear': {'volatility_10': 0.40, 'rsi_average': 0.30, 'bb_width': 0.10, 'momentum': 0.20},
+                'neutral': {'volatility_10': 0.30, 'rsi_average': 0.25, 'bb_width': 0.15, 'momentum': 0.30},
+            }
 
     def set_fundamental_data(self, fundamental_data):
         """设置基本面数据"""
@@ -202,7 +221,7 @@ class SignalEngine:
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         """
-        信号生成 - 纯因子组合版
+        信号生成 - 因子组合版（技术面 + 基本面）
         不依赖市场状态判断，依赖因子本身的自适应性
         """
         if idx < 60:
@@ -222,7 +241,28 @@ class SignalEngine:
         # === 使用纯因子组合，不依赖市场状态 ===
         factor_name, factor_value, risk_info = self._select_factor(ind, idx, risk_regime)
 
-        score = max(0, factor_value)
+        # === 获取基本面因子 ===
+        fundamental_score = 0.0
+        has_fundamental = False
+        if self.fundamental_enabled and code:
+            fundamental_score = self._get_fundamental_score(code, current_date)
+            has_fundamental = fundamental_score > 0
+
+        # === 技术面分数 (已经是 0+ 的值) ===
+        tech_score = max(0, factor_value)
+
+        # === 组合分数：技术面分数 + 基本面加分 ===
+        # 基本面因子作为加成：当基本面良好时，在技术面分数基础上加分
+        # 这样既保留技术面信号，又能让基本面好的股票获得更高分数
+        if fundamental_score > 0:
+            # 基本面分数归一化 (0-1范围) 作为加成系数
+            # 例如: tech_score=0.2, fundamental_score=0.5 => combined = 0.2 * (1 + 0.5*0.3) = 0.23
+            bonus = 1.0 + fundamental_score * self.fundamental_weight
+            combined_score = tech_score * bonus
+        else:
+            combined_score = tech_score
+
+        score = max(0, combined_score)
         risk_vol = ind['atr_ratio'][idx] * 2
 
         # === 极端波动时降低仓位 ===
@@ -236,6 +276,12 @@ class SignalEngine:
         # 买入阈值
         buy = factor_value > 0.15 and adjusted_score > 0.05
         sell = factor_value <= -0.05
+
+        # 添加基本面标记到因子名称
+        if has_fundamental:
+            factor_name = factor_name + '_F'
+        else:
+            factor_name = factor_name + '_T'
 
         return Signal(
             buy=buy,
@@ -259,6 +305,11 @@ class SignalEngine:
         - volatility_5: IC=3.21%
         - rsi_8: IC=2.37%
         - bb_width_20: IC=2.33%
+
+        根据市场状态动态调整权重:
+        - 牛市: 提高动量权重
+        - 熊市: 提高波动率/防御权重
+        - 震荡: 均衡配置
         """
         # 获取各因子值
         vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
@@ -297,17 +348,45 @@ class SignalEngine:
             'vol_factor': vol_factor,
         }
 
-        # === 核心组合: 使用配置文件中的权重 ===
-        factor_value = (vol_factor * self.vol_weight +
-                       rsi_avg_val * self.rsi_weight +
-                       bb_val * self.bb_weight +
-                       mom_val * self.mom_weight)
-        factor_name = f'V{int(self.vol_weight*100)}_RSIavg{int(self.rsi_weight*100)}_BB{int(self.bb_weight*100)}_Mom{int(self.mom_weight*100)}'
+        # === 根据市场状态动态调整权重 ===
+        # 默认权重
+        vol_w = self.vol_weight
+        rsi_w = self.rsi_weight
+        bb_w = self.bb_weight
+        mom_w = self.mom_weight
+
+        # 从配置中获取动态权重
+        if self.regime_weights:
+            if regime == 1:  # 牛市
+                regime_cfg = self.regime_weights.get('bull', {})
+                vol_w = regime_cfg.get('volatility_10', vol_w)
+                rsi_w = regime_cfg.get('rsi_average', rsi_w)
+                bb_w = regime_cfg.get('bb_width', bb_w)
+                mom_w = regime_cfg.get('momentum', mom_w)
+            elif regime == -1:  # 熊市
+                regime_cfg = self.regime_weights.get('bear', {})
+                vol_w = regime_cfg.get('volatility_10', vol_w)
+                rsi_w = regime_cfg.get('rsi_average', rsi_w)
+                bb_w = regime_cfg.get('bb_width', bb_w)
+                mom_w = regime_cfg.get('momentum', mom_w)
+            else:  # 震荡市
+                regime_cfg = self.regime_weights.get('neutral', {})
+                vol_w = regime_cfg.get('volatility_10', vol_w)
+                rsi_w = regime_cfg.get('rsi_average', rsi_w)
+                bb_w = regime_cfg.get('bb_width', bb_w)
+                mom_w = regime_cfg.get('momentum', mom_w)
+
+        # === 核心组合: 使用动态权重 ===
+        factor_value = (vol_factor * vol_w +
+                       rsi_avg_val * rsi_w +
+                       bb_val * bb_w +
+                       mom_val * mom_w)
+        factor_name = f'V{int(vol_w*100)}_RSIavg{int(rsi_w*100)}_BB{int(bb_w*100)}_Mom{int(mom_w*100)}'
 
         # === 熊市: 降低权重 ===
         if regime == -1:
             factor_value = factor_value * 0.7
-            factor_name = 'V30_RSIavg25_BB15_Mom30_bear'
+            factor_name = factor_name + '_bear'
 
         return factor_name, factor_value, risk_info
 
@@ -329,40 +408,39 @@ class SignalEngine:
     def _get_fundamental_score(self, code, current_date):
         """获取基本面因子评分
 
-        注意：基本面数据是百分比形式（如ROE=12.16表示12.16%）
+        数据已经是小数形式（如ROE=0.12表示12%）
         """
-        if not self.fundamental_data or not code:
-            return 0
+        if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
+            return 0.0
 
         score = 0.0
 
-        # ROE评分 - 最重要的因子（数据是百分比形式，如5.79表示5.79%）
+        # ROE评分 - 最重要的因子（小数形式，如0.15表示15%）
         roe = self.fundamental_data.get_roe(code, current_date)
         if roe is not None:
-            if roe > 15:  # > 15%
+            if roe > 0.15:  # > 15%
                 score += 0.35
-            elif roe > 10:  # > 10%
+            elif roe > 0.10:  # > 10%
                 score += 0.25
-            elif roe > 5:  # > 5%
+            elif roe > 0.05:  # > 5%
                 score += 0.15
 
-        # 净利润增长 - 重要（数据是百分比，如66.39表示66.39%）
+        # 净利润增长（小数形式）
         profit_growth = self.fundamental_data.get_profit_growth(code, current_date)
         if profit_growth is not None:
-            # 转换为小数形式比较
-            if profit_growth > 50:  # > 50%
+            if profit_growth > 0.50:  # > 50%
                 score += 0.30
-            elif profit_growth > 20:  # > 20%
+            elif profit_growth > 0.20:  # > 20%
                 score += 0.20
             elif profit_growth > 0:  # > 0%
                 score += 0.10
 
-        # 营业收入增长
+        # 营业收入增长（小数形式）
         revenue_growth = self.fundamental_data.get_revenue_growth(code, current_date)
         if revenue_growth is not None:
-            if revenue_growth > 30:  # > 30%
+            if revenue_growth > 0.30:  # > 30%
                 score += 0.20
-            elif revenue_growth > 15:  # > 15%
+            elif revenue_growth > 0.15:  # > 15%
                 score += 0.12
             elif revenue_growth > 0:  # > 0%
                 score += 0.05
@@ -375,7 +453,8 @@ class SignalEngine:
             elif eps > 0.5:
                 score += 0.12
 
-        return score
+        # 归一化到 0-1 范围
+        return min(1.0, score)
 
     # 辅助函数
     def _sma(self, arr, window):
