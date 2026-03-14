@@ -17,3 +17,39 @@ signal_thresholds:
 # 极端状态调整 (默认) - 与原代码保持一致
 extreme_adjustments:
   regime_weight: 0.85
+
+# 基本面因子权重 (新增)
+fundamental_weights:
+  enabled: true
+  weight: 0.30  # 基本面权重30%，技术面70%
+  technical_weight: 0.70
+
+# 市场状态动态权重 (新增)
+regime_weights:
+  bull:
+    volatility_10: 0.20
+    rsi_average: 0.20
+    bb_width: 0.10
+    momentum: 0.50  # 牛市提高动量权重
+  bear:
+    volatility_10: 0.40  # 熊市提高波动率权重
+    rsi_average: 0.30
+    bb_width: 0.10
+    momentum: 0.20
+  neutral:
+    volatility_10: 0.30
+    rsi_average: 0.25
+    bb_width: 0.15
+    momentum: 0.30
+
+# 波动率控制 (新增)
+volatility_control:
+  enabled: true
+  target_volatility: 0.20
+  lookback_period: 20
+
+# 组合止损 (新增)
+portfolio_stop_loss:
+  enabled: true
+  drawdown_threshold: 0.08  # 从高点回撤8%触发
+  emergency_exposure: 0.30  # 触发后仓位上限
