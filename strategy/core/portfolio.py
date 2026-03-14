@@ -8,9 +8,9 @@ class PortfolioConstructor:
 
     def __init__(
         self,
-        max_position=7,
+        max_position=5,
         target_volatility=0.20,
-        entry_speed=0.8,
+        entry_speed=1.0,
         exit_speed=1.0,
         position_stop_loss=0.10,
         portfolio_stop_loss=0.08,
@@ -95,7 +95,7 @@ class PortfolioConstructor:
 
         for code in universe:
             sig = signal_store.get(code, date)
-            if sig and sig.buy and sig.score > 0.02:
+            if sig and sig.buy and sig.score > 0.10:
                 # 检查极端状态
                 if sig.risk_extreme:
                     risk_extreme_exists = True

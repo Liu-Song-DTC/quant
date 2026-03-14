@@ -16,7 +16,7 @@ CASH = 100000.0
 COMMISSION = 0.0003
 PERC = 0.005
 MAX_POSITION = 10
-REBALANCE_DAYS = 60
+REBALANCE_DAYS = 20
 
 DATA_PATH = "../data/stock_data/backtrader_data/"
 FUNDAMENTAL_PATH = "../data/stock_data/fundamental_data/"
