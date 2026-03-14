@@ -944,41 +944,41 @@ def main():
     # 初始化数据管理器
     manager = StockDataManager()
 
-    #  print("=" * 50)
-    #  print("股票数据管理系统")
-    #  print("=" * 50)
+    print("=" * 50)
+    print("股票数据管理系统")
+    print("=" * 50)
 
-    # 获取股票列表
-    #  print("\n======> 获取股票列表...")
-    #  stock_list = manager.get_stock_list()
-    #  print(f"股票列表共 {len(stock_list)} 只股票")
+    #  获取股票列表
+    print("\n======> 获取股票列表...")
+    stock_list = manager.get_stock_list()
+    print(f"股票列表共 {len(stock_list)} 只股票")
 
-    # 批量更新数据
-    #  print("\n======> 批量更新数据...")
-    #  sample_symbols = stock_list['symbol'].tolist()
-    #  sample_symbols.insert(0, INDEX)
-    #  manager.batch_download(symbols=sample_symbols, force=False)
+    #  批量更新数据
+    print("\n======> 批量更新数据...")
+    sample_symbols = stock_list['symbol'].tolist()
+    sample_symbols.insert(0, INDEX)
+    manager.batch_download(symbols=sample_symbols, force=False)
 
-    # 创建回测股票池
-    #  print("\n======> 创建回测股票池...")
-    #  universe = manager.create_universe_for_backtest(
-    #      symbols=sample_symbols,
-    #      start_date='2015-01-01',
-    #      end_date='2025-12-31',
-    #      min_days=600
-    #  )
+    #  创建回测股票池
+    print("\n======> 创建回测股票池...")
+    universe = manager.create_universe_for_backtest(
+        symbols=sample_symbols,
+        start_date='2015-01-01',
+        end_date='2025-12-31',
+        min_days=600
+    )
 
-    #  print("\n" + "=" * 50)
-    #  print("数据管理完成")
-    #  print("=" * 50)
+    print("\n" + "=" * 50)
+    print("数据管理完成")
+    print("=" * 50)
 
-    # 打印汇总信息
-    #  print(f"\n汇总信息:")
-    #  print(f"- 股票列表: {len(stock_list)} 只")
-    #  print(f"- 回测股票池: {len(universe)} 只")
-    #  print(f"- 数据目录: {manager.data_dir}")
-    #  print(f"- 原始数据: {len(list(manager.raw_data_dir.glob('*/*.csv')))} 个文件")
-    #  print(f"- 处理数据: {len(list(manager.backtrader_data_dir.glob('**/*.csv')))} 个文件")
+    #  打印汇总信息
+    print(f"\n汇总信息:")
+    print(f"- 股票列表: {len(stock_list)} 只")
+    print(f"- 回测股票池: {len(universe)} 只")
+    print(f"- 数据目录: {manager.data_dir}")
+    print(f"- 原始数据: {len(list(manager.raw_data_dir.glob('*/*.csv')))} 个文件")
+    print(f"- 处理数据: {len(list(manager.backtrader_data_dir.glob('**/*.csv')))} 个文件")
 
     # 增量更新基本面数据
     print("\n======> 增量更新基本面数据...")

@@ -422,20 +422,6 @@ class SignalEngine:
         # 动量因子
         mom_val = mom_10 * 2
 
-        # === 新增：趋势确认因子 (牛市优化) ===
-        # MACD金叉信号 (macd > macd_signal)
-        macd = self._safe_get(ind, 'macd', idx, 0)
-        macd_signal = self._safe_get(ind, 'macd_signal', idx, 0)
-        macd_golden = 1 if macd > macd_signal else 0
-
-        # 价格突破20日高点
-        close = self._safe_get(ind, 'close', idx, 0)
-        high_20 = self._safe_get(ind, 'high_20', idx, 0)
-        price_breakout = 1 if close > high_20 else 0
-
-        # 趋势确认因子 (0-0.1范围，降低权重保护夏普)
-        trend_confirm = (macd_golden + price_breakout) * 0.05
-
         # 风险信息
         risk_info = {
             'is_high_vol': vol_20 > 0.05,  # 5%以上才算高波动
