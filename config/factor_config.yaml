@@ -1,0 +1,19 @@
+# 因子配置 - 用于量化交易策略的因子权重管理
+# 当前使用默认值，与原有代码保持一致
+
+# 技术面因子权重 (默认) - 与原代码 V30_RSIavg25_BB15_Mom30 一致
+technical_weights:
+  volatility_10: 0.30
+  rsi_average: 0.25
+  bb_width: 0.15
+  momentum: 0.30
+
+# 信号阈值 (默认) - 与原代码保持一致
+signal_thresholds:
+  buy: 0.15
+  adjusted_buy: 0.05
+  sell: -0.05
+
+# 极端状态调整 (默认) - 与原代码保持一致
+extreme_adjustments:
+  regime_weight: 0.85
