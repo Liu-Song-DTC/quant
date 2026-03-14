@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 
 from .signal import Signal
 from .signal_store import SignalStore
-from .factor_library import calc_factor_volatility_10, calc_factor_rsi_8, calc_factor_bb_width_20, calc_factor_mom1_rsi7_bb10
+from .factor_library import calc_factor_volatility_10, calc_factor_rsi_8, calc_factor_bb_width_20
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -18,9 +18,45 @@ class SignalEngine:
         self.config = config or {}
         self.min_score = 0.35
 
+        # 加载因子配置
+        self._load_config()
+
         # 市场状态信息
         self.market_regime_data = None
         self.current_idx = 0
+
+    def _load_config(self):
+        """从配置文件加载参数（使用默认值，与原有逻辑一致）"""
+        try:
+            from .config_loader import load_config
+            config_loader = load_config()
+            tech_weights = config_loader.get_technical_weights()
+            thresholds = config_loader.get_signal_thresholds()
+
+            # 技术面因子权重
+            self.vol_weight = tech_weights.get('volatility_10', 0.30)
+            self.rsi_weight = tech_weights.get('rsi_average', 0.25)
+            self.bb_weight = tech_weights.get('bb_width', 0.15)
+            self.mom_weight = tech_weights.get('momentum', 0.30)
+
+            # 信号阈值
+            self.buy_threshold = thresholds.get('buy', 0.15)
+            self.adjusted_buy_threshold = thresholds.get('adjusted_buy', 0.05)
+            self.sell_threshold = thresholds.get('sell', -0.05)
+
+            # 极端状态权重
+            self.extreme_weight = config_loader.get('extreme_adjustments.regime_weight', 0.85)
+
+        except Exception:
+            # 使用默认值，确保与原有逻辑一致
+            self.vol_weight = 0.30
+            self.rsi_weight = 0.25
+            self.bb_weight = 0.15
+            self.mom_weight = 0.30
+            self.buy_threshold = 0.15
+            self.adjusted_buy_threshold = 0.05
+            self.sell_threshold = -0.05
+            self.extreme_weight = 0.85
 
     def set_fundamental_data(self, fundamental_data):
         """设置基本面数据"""
@@ -261,9 +297,12 @@ class SignalEngine:
             'vol_factor': vol_factor,
         }
 
-        # === 核心组合: 波动率(30%) + 多周期RSI平均(25%) + 布林带(15%) + 动量(30%) ===
-        factor_value = vol_factor * 0.30 + rsi_avg_val * 0.25 + bb_val * 0.15 + mom_val * 0.30
-        factor_name = 'V30_RSIavg25_BB15_Mom30'
+        # === 核心组合: 使用配置文件中的权重 ===
+        factor_value = (vol_factor * self.vol_weight +
+                       rsi_avg_val * self.rsi_weight +
+                       bb_val * self.bb_weight +
+                       mom_val * self.mom_weight)
+        factor_name = f'V{int(self.vol_weight*100)}_RSIavg{int(self.rsi_weight*100)}_BB{int(self.bb_weight*100)}_Mom{int(self.mom_weight*100)}'
 
         # === 熊市: 降低权重 ===
         if regime == -1:
