@@ -16,6 +16,11 @@ class MarketRegimeInfo:
     trend_score: float    # 趋势分数: -1到1 (EMA排列)
     volatility: float     # 波动率
     is_extreme: bool      # 是否处于极端状态
+    # 风格因子 (新增)
+    style_regime: str     # 风格状态: 'large_cap', 'small_cap', 'value', 'growth', 'balanced'
+    style_score: float    # 风格分数: -1(大盘/价值) 到 1(小盘/成长)
+    size_score: float     # 大小盘分数: -1(大盘) 到 1(小盘)
+    style_confidence: float  # 风格置信度: 0-1
 
     def to_dict(self) -> dict:
         return {
@@ -25,6 +30,10 @@ class MarketRegimeInfo:
             'trend_score': self.trend_score,
             'volatility': self.volatility,
             'is_extreme': self.is_extreme,
+            'style_regime': self.style_regime,
+            'style_score': self.style_score,
+            'size_score': self.size_score,
+            'style_confidence': self.style_confidence,
         }
 
 
@@ -57,6 +66,12 @@ class MarketRegimeDetector:
         self.ema_medium = 60
         self.ema_long = 120
 
+        # 风格检测参数 (新增)
+        # 大小盘轮动: 比较沪深300与中证1000的相对强弱
+        self.size_lookback = 20  # 短期动量比较
+        self.size_lookback_long = 60  # 长期动量比较
+        self.size_threshold = 0.03  # 3%阈值判断大小盘
+
     def generate(self, index_df: pd.DataFrame):
         """
         生成市场状态序列
@@ -77,6 +92,11 @@ class MarketRegimeDetector:
         self.index_data['trend_score'] = [r.trend_score for r in regime_info_list]
         self.index_data['volatility'] = [r.volatility for r in regime_info_list]
         self.index_data['is_extreme'] = [r.is_extreme for r in regime_info_list]
+        # 风格因子 (新增)
+        self.index_data['style_regime'] = [r.style_regime for r in regime_info_list]
+        self.index_data['style_score'] = [r.style_score for r in regime_info_list]
+        self.index_data['size_score'] = [r.size_score for r in regime_info_list]
+        self.index_data['style_confidence'] = [r.style_confidence for r in regime_info_list]
 
         return self.index_data
 
@@ -101,6 +121,11 @@ class MarketRegimeDetector:
         returns = close.pct_change()
         self.volatility = returns.rolling(20).std() * np.sqrt(252)
 
+        # 风格指标 (新增)
+        # 大小盘相对强弱: 使用短期动量差异
+        self.size_momentum = self.momentum_10  # 个股相对于指数的动量
+        self.size_momentum_long = self.momentum  # 长期动量
+
     def _detect_detailed(self, i: int) -> MarketRegimeInfo:
         """
         详细检测 - 输出多种信号
@@ -108,7 +133,8 @@ class MarketRegimeDetector:
         if i < 120:
             return MarketRegimeInfo(
                 regime=0, confidence=0.0, momentum_score=0.0,
-                trend_score=0.0, volatility=0.0, is_extreme=False
+                trend_score=0.0, volatility=0.0, is_extreme=False,
+                style_regime='balanced', style_score=0.0, size_score=0.0, style_confidence=0.0
             )
 
         # 获取各指标
@@ -153,14 +179,84 @@ class MarketRegimeDetector:
         # === 极端状态判断 ===
         is_extreme = vol > self.vol_extreme_high or vol < self.vol_extreme_low
 
+        # === 风格状态检测 (新增) ===
+        style_regime, style_score, size_score, style_confidence = self._detect_style_regime(i)
+
         return MarketRegimeInfo(
             regime=regime,
             confidence=confidence,
             momentum_score=momentum_score,
             trend_score=trend_score,
             volatility=vol,
-            is_extreme=is_extreme
+            is_extreme=is_extreme,
+            style_regime=style_regime,
+            style_score=style_score,
+            size_score=size_score,
+            style_confidence=style_confidence
         )
+
+    def _detect_style_regime(self, i: int):
+        """
+        检测风格状态 - 大小盘/价值成长
+
+        返回: (style_regime, style_score, size_score, confidence)
+        - style_regime: 'large_cap', 'small_cap', 'value', 'growth', 'balanced'
+        - style_score: -1到1 (大盘/价值 -> 小盘/成长)
+        - size_score: -1到1 (大盘 -> 小盘)
+        - confidence: 0-1
+        """
+        if i < 60:
+            return 'balanced', 0.0, 0.0, 0.0
+
+        # 获取动量指标
+        size_mom_short = self._safe_get(self.size_momentum, i, 0)
+        size_mom_long = self._safe_get(self.size_momentum_long, i, 0)
+
+        # 大小盘判断: 使用动量差异
+        # 如果个股动量 > 阈值，认为市场偏向小盘
+        size_score = np.clip(size_mom_short / self.size_threshold, -1.0, 1.0)
+
+        # 价值/成长判断: 使用长期动量趋势
+        # 长期动量为正倾向于成长风格 (上涨趋势中成长更强)
+        # 长期动量为负倾向于价值风格 (下跌趋势中价值更稳)
+        if size_mom_long > self.size_threshold:
+            style_score = np.clip(size_mom_long / 0.1, 0.0, 1.0)  # 偏向成长
+        elif size_mom_long < -self.size_threshold:
+            style_score = np.clip(size_mom_long / 0.1, -1.0, 0.0)  # 偏向价值
+        else:
+            style_score = 0.0
+
+        # 计算置信度
+        confidence = min(1.0, abs(size_score) * 2)
+
+        # 确定风格状态
+        if abs(size_score) < 0.3:
+            style_regime = 'balanced'
+        elif size_score > 0.3:
+            style_regime = 'small_cap'
+        else:
+            style_regime = 'large_cap'
+
+        # 如果在牛市中，增加成长偏好
+        if i < len(self.momentum) and self.momentum.iloc[i] > self.mom_bull:
+            if style_score > 0:
+                style_regime = 'growth'
+            else:
+                style_regime = 'value'
+
+        return style_regime, style_score, size_score, confidence
+
+    def _safe_get(self, series, idx, default=0.0):
+        """安全获取序列值"""
+        try:
+            if series is None:
+                return default
+            val = series.iloc[idx]
+            if pd.isna(val):
+                return default
+            return val
+        except:
+            return default
 
     # 兼容旧接口
     def _detect_single(self, i: int) -> int:
@@ -184,6 +280,10 @@ class MarketRegimeDetector:
             trend_score=float(self.index_data.loc[idx, 'trend_score']),
             volatility=float(self.index_data.loc[idx, 'volatility']),
             is_extreme=bool(self.index_data.loc[idx, 'is_extreme']),
+            style_regime=str(self.index_data.loc[idx, 'style_regime']),
+            style_score=float(self.index_data.loc[idx, 'style_score']),
+            size_score=float(self.index_data.loc[idx, 'size_score']),
+            style_confidence=float(self.index_data.loc[idx, 'style_confidence']),
         )
 
     def get_regime(self, date) -> int:

@@ -56,11 +56,16 @@ class SignalEngine:
             # 市场状态动态权重
             self.regime_weights = config_loader.get('regime_weights', {})
 
+            # 风格因子配置 (新增)
+            style_config = config_loader.get('style_weights', {})
+            self.style_enabled = style_config.get('enabled', True)
+            self.style_weight = style_config.get('weight', 0.25)
+
         except Exception:
-            # 使用默认值，确保与原有逻辑一致
-            self.vol_weight = 0.30
-            self.rsi_weight = 0.25
-            self.bb_weight = 0.15
+            # 使用默认值（平衡版）
+            self.vol_weight = 0.20
+            self.rsi_weight = 0.30  # 提高RSI权重
+            self.bb_weight = 0.20
             self.mom_weight = 0.30
             self.buy_threshold = 0.15
             self.adjusted_buy_threshold = 0.05
@@ -70,12 +75,15 @@ class SignalEngine:
             self.fundamental_enabled = True
             self.fundamental_weight = 0.30
             self.technical_weight = 0.70
-            # 市场状态权重默认值
+            # 市场状态权重默认值（平衡版）
             self.regime_weights = {
-                'bull': {'volatility_10': 0.20, 'rsi_average': 0.20, 'bb_width': 0.10, 'momentum': 0.50},
+                'bull': {'volatility_10': 0.15, 'rsi_average': 0.30, 'bb_width': 0.15, 'momentum': 0.40},
                 'bear': {'volatility_10': 0.40, 'rsi_average': 0.30, 'bb_width': 0.10, 'momentum': 0.20},
-                'neutral': {'volatility_10': 0.30, 'rsi_average': 0.25, 'bb_width': 0.15, 'momentum': 0.30},
+                'neutral': {'volatility_10': 0.20, 'rsi_average': 0.30, 'bb_width': 0.20, 'momentum': 0.30},
             }
+            # 风格因子默认值
+            self.style_enabled = True
+            self.style_weight = 0.25
 
     def set_fundamental_data(self, fundamental_data):
         """设置基本面数据"""
@@ -101,6 +109,10 @@ class SignalEngine:
                 'trend_score': 0.0,
                 'volatility': 0.15,
                 'is_extreme': False,
+                'style_regime': 'balanced',
+                'style_score': 0.0,
+                'size_score': 0.0,
+                'style_confidence': 0.0,
             }
 
         dt = pd.to_datetime(date)
@@ -113,6 +125,10 @@ class SignalEngine:
                 'trend_score': float(row.get('trend_score', 0.0)),
                 'volatility': float(row.get('volatility', 0.15)),
                 'is_extreme': bool(row.get('is_extreme', False)),
+                'style_regime': str(row.get('style_regime', 'balanced')),
+                'style_score': float(row.get('style_score', 0.0)),
+                'size_score': float(row.get('size_score', 0.0)),
+                'style_confidence': float(row.get('style_confidence', 0.0)),
             }
         return {
             'regime': 0,
@@ -121,6 +137,10 @@ class SignalEngine:
             'trend_score': 0.0,
             'volatility': 0.15,
             'is_extreme': False,
+            'style_regime': 'balanced',
+            'style_score': 0.0,
+            'size_score': 0.0,
+            'style_confidence': 0.0,
         }
 
     def generate(self, code: str, market_data: pd.DataFrame, signal_store: SignalStore):
@@ -221,7 +241,7 @@ class SignalEngine:
 
     def _generate_signal(self, ind, idx, last_sig, current_date=None, code=None):
         """
-        信号生成 - 因子组合版（技术面 + 基本面）
+        信号生成 - 因子组合版（技术面 + 基本面 + 风格因子）
         不依赖市场状态判断，依赖因子本身的自适应性
         """
         if idx < 60:
@@ -237,6 +257,9 @@ class SignalEngine:
         risk_regime = market_info['regime']
         risk_confidence = market_info['confidence']
         risk_extreme = market_info['is_extreme']
+        style_regime = market_info.get('style_regime', 'balanced')
+        style_score = market_info.get('style_score', 0.0)
+        style_confidence = market_info.get('style_confidence', 0.0)
 
         # === 使用纯因子组合，不依赖市场状态 ===
         factor_name, factor_value, risk_info = self._select_factor(ind, idx, risk_regime)
@@ -248,12 +271,15 @@ class SignalEngine:
             fundamental_score = self._get_fundamental_score(code, current_date)
             has_fundamental = fundamental_score > 0
 
+        # === 获取风格因子 (新增) ===
+        style_factor_score = self._get_style_score(ind, idx, market_info)
+
         # === 技术面分数 (已经是 0+ 的值) ===
         tech_score = max(0, factor_value)
 
-        # === 组合分数：技术面分数 + 基本面加分 ===
+        # === 组合分数：技术面分数 + 基本面加分 + 风格因子 ===
         # 基本面因子作为加成：当基本面良好时，在技术面分数基础上加分
-        # 这样既保留技术面信号，又能让基本面好的股票获得更高分数
+        # 风格因子根据市场风格调整选股偏好
         if fundamental_score > 0:
             # 基本面分数归一化 (0-1范围) 作为加成系数
             # 例如: tech_score=0.2, fundamental_score=0.5 => combined = 0.2 * (1 + 0.5*0.3) = 0.23
@@ -261,6 +287,13 @@ class SignalEngine:
             combined_score = tech_score * bonus
         else:
             combined_score = tech_score
+
+        # 加上风格因子调整
+        if style_confidence > 0.3 and abs(style_factor_score) > 0.05:
+            # 风格因子权重
+            style_weight = getattr(self, 'style_weight', 0.25)
+            # 风格调整: 直接加成而不是乘法，这样更明显
+            combined_score = combined_score + style_factor_score * style_weight
 
         score = max(0, combined_score)
         risk_vol = ind['atr_ratio'][idx] * 2
@@ -273,13 +306,17 @@ class SignalEngine:
         adjusted_score = score * regime_weight
 
         # === 交易信号 ===
-        # 买入阈值
         buy = factor_value > 0.15 and adjusted_score > 0.05
         sell = factor_value <= -0.05
 
-        # 添加基本面标记到因子名称
+        # 添加基本面和风格标记到因子名称
+        factor_tags = []
         if has_fundamental:
-            factor_name = factor_name + '_F'
+            factor_tags.append('F')
+        if style_confidence > 0.3:
+            factor_tags.append(style_regime[:2].upper())
+        if factor_tags:
+            factor_name = factor_name + '_' + ''.join(factor_tags)
         else:
             factor_name = factor_name + '_T'
 
@@ -295,6 +332,47 @@ class SignalEngine:
             risk_extreme=risk_extreme or risk_info.get('is_high_vol', False),
             adjusted_score=adjusted_score
         )
+
+    def _get_style_score(self, ind, idx, market_info) -> float:
+        """
+        获取风格因子分数
+
+        根据市场风格状态调整:
+        - 小盘风格: 偏好小市值、高成长
+        - 大盘风格: 偏好大市值、稳定收益
+        - 成长风格: 偏好高动量、高增长
+        - 价值风格: 偏好低估值、高股息
+        """
+        style_regime = market_info.get('style_regime', 'balanced')
+        style_score = market_info.get('style_score', 0.0)
+        style_confidence = market_info.get('style_confidence', 0.0)
+
+        if style_confidence < 0.3 or style_regime == 'balanced':
+            return 0.0
+
+        # 根据风格状态返回调整分数
+        if style_regime == 'small_cap':
+            # 小盘风格: 偏好小市值股票 (使用价格位置作为代理)
+            price_pos = self._safe_get(ind, 'price_position_20', idx, 0.5)
+            # 价格位置偏低说明可能是小盘股（便宜）
+            return -price_pos * 0.5 + 0.25  # 调整为 -0.25 到 0.25
+
+        elif style_regime == 'large_cap':
+            # 大盘风格: 偏好稳定大盘股
+            price_pos = self._safe_get(ind, 'price_position_20', idx, 0.5)
+            return price_pos * 0.5 - 0.25  # 调整为 -0.25 到 0.25
+
+        elif style_regime == 'growth':
+            # 成长风格: 偏好高动量
+            mom_10 = self._safe_get(ind, 'mom_10', idx, 0)
+            return np.clip(mom_10 * 2, -0.3, 0.3)
+
+        elif style_regime == 'value':
+            # 价值风格: 偏好低波动、稳定收益
+            vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
+            return np.clip((0.02 - vol_10) * 5, -0.3, 0.3)
+
+        return 0.0
 
     def _select_factor(self, ind, idx, regime: int):
         """
@@ -326,7 +404,9 @@ class SignalEngine:
         price_pos = self._safe_get(ind, 'price_position_20', idx, 0.5)
 
         # 计算各因子
-        # 波动率因子 (放大到类似动量) - 使用vol_10
+        # 波动率因子 - 保持中性，略微偏向低波动
+        # 原: vol_factor = vol_10 * 10 (高波动=高分)
+        # 修改为: 保持原有方向，但降低权重
         vol_factor = vol_10 * 10
 
         # RSI因子 (-1 到 1)
@@ -341,6 +421,20 @@ class SignalEngine:
 
         # 动量因子
         mom_val = mom_10 * 2
+
+        # === 新增：趋势确认因子 (牛市优化) ===
+        # MACD金叉信号 (macd > macd_signal)
+        macd = self._safe_get(ind, 'macd', idx, 0)
+        macd_signal = self._safe_get(ind, 'macd_signal', idx, 0)
+        macd_golden = 1 if macd > macd_signal else 0
+
+        # 价格突破20日高点
+        close = self._safe_get(ind, 'close', idx, 0)
+        high_20 = self._safe_get(ind, 'high_20', idx, 0)
+        price_breakout = 1 if close > high_20 else 0
+
+        # 趋势确认因子 (0-0.1范围，降低权重保护夏普)
+        trend_confirm = (macd_golden + price_breakout) * 0.05
 
         # 风险信息
         risk_info = {
