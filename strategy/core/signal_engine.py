@@ -1,4 +1,5 @@
 # core/signal_engine.py
+import os
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Any
@@ -9,6 +10,103 @@ from .factor_library import calc_factor_volatility_10, calc_factor_rsi_8, calc_f
 
 import warnings
 warnings.filterwarnings('ignore')
+
+
+# 行业分类映射 - 将相近行业归类
+INDUSTRY_CATEGORY = {
+    '科技/成长': ['半导体', '通信设备', '计算机应用', '软件开发', '互联网', '电子', '光电', '自动化', '电气设备', '电池', '光伏', '新能源', '高端装备'],
+    '周期/资源': ['工业金属', '钢铁', '煤炭', '石油石化', '化工', '有色金属', '建材', '工程机械', '汽车', '航运', '航空', '地产', '基建'],
+    '消费/稳定': ['食品饮料', '家电', '纺织服装', '商贸零售', '医药', '农业', '旅游', '酒店餐饮', '传媒', '环保', '电力', '燃气', '水务'],
+    '金融/大盘': ['银行Ⅱ', '证券Ⅱ', '保险Ⅱ', '多元金融', '房地产', '铁路公路', '机场航空', '港口航运']
+}
+
+# 分行业因子权重配置 (基于行业IC分析结果)
+# 结构: {行业类型: {因子名: 权重}}
+# 使用默认值，可通过配置文件覆盖
+INDUSTRY_FACTOR_WEIGHTS = {
+    '科技/成长': {
+        'volatility_10': 0.25,  # 波动率因子
+        'rsi_average': 0.35,   # RSI因子 - 科技股对超买超卖更敏感
+        'bb_width': 0.15,      # 布林带
+        'momentum': 0.25,      # 动量
+    },
+    '周期/资源': {
+        'volatility_10': 0.40,  # 波动率 - 周期股对波动更敏感
+        'rsi_average': 0.30,     # RSI
+        'bb_width': 0.10,
+        'momentum': 0.20,
+    },
+    '消费/稳定': {
+        'volatility_10': 0.30,  # 波动率
+        'rsi_average': 0.20,
+        'bb_width': 0.30,       # 布林带 - 消费股均值回归明显
+        'momentum': 0.20,
+    },
+    '金融/大盘': {
+        'volatility_10': 0.35,  # 波动率
+        'rsi_average': 0.20,
+        'bb_width': 0.15,
+        'momentum': 0.30,       # 动量 - 大盘股趋势更强
+    },
+    'default': {
+        'volatility_10': 0.25,
+        'rsi_average': 0.30,
+        'bb_width': 0.20,
+        'momentum': 0.25,
+    }
+}
+
+# 保存默认权重
+_DEFAULT_INDUSTRY_WEIGHTS = INDUSTRY_FACTOR_WEIGHTS.copy()
+
+# 尝试从配置文件加载行业因子权重（可选功能）
+# 只有当配置文件中的因子能明确匹配时才覆盖默认值
+def _load_industry_weights_from_config():
+    """从配置文件加载行业因子权重（如果可用）- 保守加载"""
+    global INDUSTRY_FACTOR_WEIGHTS
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'industry_best_factors.json')
+        if os.path.exists(config_path):
+            import json
+            with open(config_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # 配置文件格式: {行业名: {top_factors: [[因子名, IC值], ...]}}
+            for industry, info in data.items():
+                if 'top_factors' in info and info['top_factors']:
+                    # 根据top因子自动设置权重
+                    weights = {'volatility_10': 0, 'rsi_average': 0, 'bb_width': 0, 'momentum': 0}
+                    top_factors = info['top_factors'][:5]
+                    for factor_name, ic in top_factors:
+                        factor_lower = factor_name.lower()
+                        # 根据因子名确定权重类型
+                        if 'vol_' in factor_lower:  # 更严格匹配
+                            weights['volatility_10'] += abs(ic)
+                        elif 'rsi_' in factor_lower:
+                            weights['rsi_average'] += abs(ic)
+                        elif 'bb_' in factor_lower or 'bb_pos' in factor_lower:
+                            weights['bb_width'] += abs(ic)
+                        elif any(x in factor_lower for x in ['mom_', 'ret_', 'trend_', 'ma_cross', 'price_ma']):
+                            weights['momentum'] += abs(ic)
+
+                    # 归一化权重
+                    total = sum(weights.values())
+                    if total > 0.1:  # 至少有可识别的因子
+                        weights = {k: v/total for k, v in weights.items()}
+                        # 只在有明确主要因子时更新（最大权重>40%）
+                        if max(weights.values()) > 0.4:
+                            # 找到对应的行业类型
+                            for cat, inds in INDUSTRY_CATEGORY.items():
+                                if any(ind in industry for ind in inds):
+                                    INDUSTRY_FACTOR_WEIGHTS[cat] = weights
+                                    break
+    except Exception as e:
+        pass  # 使用默认权重
+
+# 尝试加载配置（可选）
+try:
+    _load_industry_weights_from_config()
+except:
+    pass
 
 
 class SignalEngine:
@@ -261,8 +359,11 @@ class SignalEngine:
         style_score = market_info.get('style_score', 0.0)
         style_confidence = market_info.get('style_confidence', 0.0)
 
+        # === 获取行业类型用于因子权重调整 ===
+        industry_category = self._get_industry_category(code, current_date)
+
         # === 使用纯因子组合，不依赖市场状态 ===
-        factor_name, factor_value, risk_info = self._select_factor(ind, idx, risk_regime)
+        factor_name, factor_value, risk_info = self._select_factor(ind, idx, risk_regime, industry_category)
 
         # === 获取基本面因子 ===
         fundamental_score = 0.0
@@ -374,9 +475,9 @@ class SignalEngine:
 
         return 0.0
 
-    def _select_factor(self, ind, idx, regime: int):
+    def _select_factor(self, ind, idx, regime: int, industry_category: str = 'default'):
         """
-        根据市场状态选择因子组合
+        根据市场状态和行业选择因子组合
 
         使用高质量因子库:
         - volatility_10: IC=4.02%, IR=1.07 (A股最佳)
@@ -388,6 +489,12 @@ class SignalEngine:
         - 牛市: 提高动量权重
         - 熊市: 提高波动率/防御权重
         - 震荡: 均衡配置
+
+        根据行业调整权重:
+        - 科技/成长: 提高RSI和动量权重
+        - 周期/资源: 提高波动率权重
+        - 消费/稳定: 提高布林带权重
+        - 金融/大盘: 提高动量和波动率权重
         """
         # 获取各因子值
         vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
@@ -456,6 +563,15 @@ class SignalEngine:
                 bb_w = regime_cfg.get('bb_width', bb_w)
                 mom_w = regime_cfg.get('momentum', mom_w)
 
+        # === 根据行业类型调整权重 ===
+        if industry_category != 'default':
+            industry_weights = INDUSTRY_FACTOR_WEIGHTS.get(industry_category, INDUSTRY_FACTOR_WEIGHTS['default'])
+            # 行业权重与市场状态权重混合 (50%行业 + 50%市场状态)
+            vol_w = vol_w * 0.5 + industry_weights.get('volatility_10', vol_w) * 0.5
+            rsi_w = rsi_w * 0.5 + industry_weights.get('rsi_average', rsi_w) * 0.5
+            bb_w = bb_w * 0.5 + industry_weights.get('bb_width', bb_w) * 0.5
+            mom_w = mom_w * 0.5 + industry_weights.get('momentum', mom_w) * 0.5
+
         # === 核心组合: 使用动态权重 ===
         factor_value = (vol_factor * vol_w +
                        rsi_avg_val * rsi_w +
@@ -467,6 +583,13 @@ class SignalEngine:
         if regime == -1:
             factor_value = factor_value * 0.7
             factor_name = factor_name + '_bear'
+
+        # === 添加行业标记 ===
+        if industry_category != 'default':
+            # 简写行业名称
+            industry_short = {'科技/成长': 'TC', '周期/资源': 'CY', '消费/稳定': 'XF', '金融/大盘': 'JR'}
+            ind_tag = industry_short.get(industry_category, industry_category[:2])
+            factor_name = factor_name + f'_{ind_tag}'
 
         return factor_name, factor_value, risk_info
 
@@ -484,6 +607,28 @@ class SignalEngine:
             if isinstance(val, (int, float)) and not np.isnan(val):
                 return val
         return default
+
+    def _get_industry_category(self, code, current_date) -> str:
+        """获取股票所属行业类型
+
+        Returns:
+            行业类型字符串: '科技/成长', '周期/资源', '消费/稳定', '金融/大盘', 'default'
+        """
+        if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
+            return 'default'
+
+        try:
+            industry = self.fundamental_data.get_industry(code, current_date)
+            if not industry:
+                return 'default'
+
+            # 查找行业类型
+            for category, industries in INDUSTRY_CATEGORY.items():
+                if any(ind in str(industry) for ind in industries):
+                    return category
+        except:
+            pass
+        return 'default'
 
     def _get_fundamental_score(self, code, current_date):
         """获取基本面因子评分
