@@ -4,18 +4,26 @@ from .signal_engine import SignalEngine
 from .signal_store import SignalStore
 from .portfolio import PortfolioConstructor
 from .market_regime_detector import MarketRegimeDetector
-from .stock_pool_filter import StockPoolFilter
+from .config_loader import load_config
 
 
 class Strategy:
     """带股灾检测的市场状态判断"""
 
-    def __init__(self, init_cash, max_position, fundamental_data=None):
+    def __init__(self, init_cash, max_position=None, fundamental_data=None):
         self.signal_engine = SignalEngine()
         if fundamental_data:
             self.signal_engine.set_fundamental_data(fundamental_data)
+
+        # 从配置加载组合参数
+        config = load_config()
+        portfolio_config = config.get_portfolio_config()
+
+        # 使用传入的 max_position 或配置文件中的值
+        final_max_position = max_position if max_position is not None else portfolio_config.get('max_position', 10)
+
         self.portfolio = PortfolioConstructor(
-            max_position=max_position,
+            max_position=final_max_position,
         )
         self.market_regime = []
         self.signal_store = SignalStore()
@@ -25,9 +33,6 @@ class Strategy:
 
         # 使用独立的市场状态检测器
         self.regime_detector = MarketRegimeDetector()
-
-        # 季度股票池筛选器（暂时关闭）
-        self.stock_pool_filter = None
 
     def generate_market_regime(self, index_df):
         # 使用独立的市场状态检测器
@@ -46,10 +51,6 @@ class Strategy:
         cost,
         rebalance,
     ):
-        # 季度股票池筛选
-        if self.stock_pool_filter:
-            universe = self.stock_pool_filter.filter_quarterly(universe, date)
-
         market_regime = 0
         if self.index_data is not None:
             row = self.index_data[self.index_data["datetime"].dt.date == date]

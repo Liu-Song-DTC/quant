@@ -44,15 +44,15 @@ regime_weights:
     bb_width: 0.15
     momentum: 0.30
 
-# 波动率控制 (新增)
+# 波动率控制 (默认关闭)
 volatility_control:
-  enabled: true
+  enabled: false
   target_volatility: 0.20
   lookback_period: 20
 
-# 组合止损 (新增)
+# 组合止损 (默认关闭)
 portfolio_stop_loss:
-  enabled: true
+  enabled: false
   drawdown_threshold: 0.08  # 从高点回撤8%触发
   emergency_exposure: 0.30  # 触发后仓位上限
 
@@ -66,3 +66,109 @@ style_weights:
     large_cap_threshold: -0.03  # 大盘偏好阈值
     confidence_threshold: 0.3  # 风格置信度阈值
     momentum_boost: 1.5  # 牛市风格动量增强系数
+
+# 回测参数配置
+backtest:
+  cash: 100000.0            # 初始资金
+  commission: 0.0015        # 佣金费率
+  slippage: 0.0015          # 滑点
+  max_position: 10          # 最大持仓股票数
+  rebalance_days: 20        # 调仓周期(天)
+  num_workers: 8            # 并行进程数
+
+# 组合配置
+portfolio:
+  max_position: 10          # 最大持仓股票数
+  target_volatility: 0.20   # 目标波动率
+  entry_speed: 1.0          # 建仓速度 (1.0=一次性建仓)
+  exit_speed: 1.0           # 平仓速度 (1.0=一次性平仓)
+  position_stop_loss: 0.10   # 个股止损线
+  portfolio_stop_loss: 0.08 # 组合止损线(回撤)
+
+# 数据路径
+paths:
+  data: "../data/stock_data/backtrader_data/"
+  fundamental: "../data/stock_data/fundamental_data/"
+
+# 行业分类映射 - 将相近行业归类
+industry_category:
+  科技/成长:
+    - "半导体"
+    - "通信设备"
+    - "计算机应用"
+    - "软件开发"
+    - "互联网"
+    - "电子"
+    - "光电"
+    - "自动化"
+    - "电气设备"
+    - "电池"
+    - "光伏"
+    - "新能源"
+    - "高端装备"
+  周期/资源:
+    - "工业金属"
+    - "钢铁"
+    - "煤炭"
+    - "石油石化"
+    - "化工"
+    - "有色金属"
+    - "建材"
+    - "工程机械"
+    - "汽车"
+    - "航运"
+    - "航空"
+    - "地产"
+    - "基建"
+  消费/稳定:
+    - "食品饮料"
+    - "家电"
+    - "纺织服装"
+    - "商贸零售"
+    - "医药"
+    - "农业"
+    - "旅游"
+    - "酒店餐饮"
+    - "传媒"
+    - "环保"
+    - "电力"
+    - "燃气"
+    - "水务"
+  金融/大盘:
+    - "银行Ⅱ"
+    - "证券Ⅱ"
+    - "保险Ⅱ"
+    - "多元金融"
+    - "房地产"
+    - "铁路公路"
+    - "机场航空"
+    - "港口航运"
+
+# 分行业因子权重配置
+# 结构: {行业类型: {因子名: 权重}}
+industry_factor_weights:
+  科技/成长:
+    volatility_10: 0.25
+    rsi_average: 0.35
+    bb_width: 0.15
+    momentum: 0.25
+  周期/资源:
+    volatility_10: 0.40
+    rsi_average: 0.30
+    bb_width: 0.10
+    momentum: 0.20
+  消费/稳定:
+    volatility_10: 0.30
+    rsi_average: 0.20
+    bb_width: 0.30
+    momentum: 0.20
+  金融/大盘:
+    volatility_10: 0.35
+    rsi_average: 0.20
+    bb_width: 0.15
+    momentum: 0.30
+  default:
+    volatility_10: 0.25
+    rsi_average: 0.30
+    bb_width: 0.20
+    momentum: 0.25

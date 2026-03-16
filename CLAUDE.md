@@ -11,12 +11,24 @@ A quantitative trading system for A-shares (Chinese stock market) built with Pyt
 ### Run Backtest
 ```bash
 cd strategy && python bt_execution.py
+# or use the shell script
+cd strategy && ./run_bt.sh
 ```
 
 ### Download/Update Stock Data
 ```bash
 cd data && python data_manager.py
 ```
+
+### Configuration
+All parameters are defined in `config/factor_config.yaml`:
+- `backtest` - 回测参数 (cash, commission, slippage, max_position, rebalance_days, num_workers)
+- `portfolio` - 组合参数 (max_position, target_volatility, entry_speed, exit_speed, stop losses)
+- `paths` - 数据路径
+- `technical_weights` - 技术面因子权重
+- `regime_weights` - 市场状态动态权重
+- `fundamental_weights` - 基本面因子配置
+- `style_weights` - 风格因子配置
 
 ## Architecture
 
@@ -39,6 +51,7 @@ StockDataManager (data fetch) → Strategy (signal generation) → BacktraderExe
 - Volume-price analysis
 - Volatility-based signals
 - Signals are combined with regime-aware weighting and smoothing
+- Integrates style factors (small-cap/large-cap, value/growth rotation)
 
 **strategy/core/portfolio.py** - `PortfolioConstructor` converts signals to positions:
 - Risk budget allocation based on signal score and volatility
@@ -47,7 +60,22 @@ StockDataManager (data fetch) → Strategy (signal generation) → BacktraderExe
 - Drawdown-based defensive mode
 - Gradual position entry/exit (entry_speed, exit_speed parameters)
 
+**strategy/core/market_regime_detector.py** - `MarketRegimeDetector` identifies market states:
+- Detects bull, bear, and neutral regimes
+- Uses index technical indicators for regime classification
+- Provides regime-aware factor weighting
+
 **strategy/core/signal_store.py** - `SignalStore` caches signals by (code, date) tuple
+
+**strategy/core/factors.py** - Technical factor calculations:
+- Volatility factors (volatility_10, etc.)
+- RSI calculation
+- Bollinger Bands width
+- Momentum indicators
+
+**strategy/core/fundamental.py** - Fundamental data processing:
+- Financial metrics for stock filtering
+- Supports基本面因子权重 in config
 
 **strategy/bt_execution.py** - Backtrader integration layer:
 - `BacktraderExecution` wraps the strategy for Backtrader

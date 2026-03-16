@@ -12,19 +12,22 @@ from core.strategy import Strategy
 from core.fundamental import FundamentalData
 from core.signal_engine import SignalEngine
 from core.signal_store import SignalStore
-from utils.utils import (
-    plot_signal_diagnosis,
-)
+from core.config_loader import load_config
 
-CASH = 100000.0
-COMMISSION = 0.0015
-PERC = 0.0015
-MAX_POSITION = 10
-REBALANCE_DAYS = 20
-NUM_WORKERS = min(mp.cpu_count(), 8)  # 最多8个进程
+# 加载配置
+config = load_config()
 
-DATA_PATH = "../data/stock_data/backtrader_data/"
-FUNDAMENTAL_PATH = "../data/stock_data/fundamental_data/"
+# 回测参数 - 从配置文件读取
+CASH = config.get('backtest.cash', 100000.0)
+COMMISSION = config.get('backtest.commission', 0.0015)
+PERC = config.get('backtest.slippage', 0.0015)
+MAX_POSITION = config.get('backtest.max_position', 10)
+REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
+NUM_WORKERS = config.get('backtest.num_workers', 8)
+
+# 数据路径 - 从配置文件读取
+DATA_PATH = config.get('paths.data', '../data/stock_data/backtrader_data/')
+FUNDAMENTAL_PATH = config.get('paths.fundamental', '../data/stock_data/fundamental_data/')
 
 
 def generate_signal_worker(args):

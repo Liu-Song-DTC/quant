@@ -1,6 +1,7 @@
 # core/portfolio.py
 import numpy as np
 from copy import deepcopy
+from .config_loader import load_config
 
 
 class PortfolioConstructor:
@@ -8,33 +9,38 @@ class PortfolioConstructor:
 
     def __init__(
         self,
-        max_position=5,
-        target_volatility=0.20,
-        entry_speed=1.0,
-        exit_speed=1.0,
-        position_stop_loss=0.10,
-        portfolio_stop_loss=0.08,
-        volatility_control_enabled=True,
-        portfolio_stop_loss_enabled=True,
+        max_position=None,
+        target_volatility=None,
+        entry_speed=None,
+        exit_speed=None,
+        position_stop_loss=None,
+        portfolio_stop_loss=None,
     ):
-        self.max_position = max_position
-        self.target_volatility = target_volatility
-        self.entry_speed = entry_speed
-        self.exit_speed = exit_speed
-        self.position_stop_loss = position_stop_loss
-        self.portfolio_stop_loss = portfolio_stop_loss
-        self.volatility_control_enabled = False  # 默认关闭波动率控制，避免过度干扰
-        self.portfolio_stop_loss_enabled = False  # 默认关闭组合止损，需要更精确的参数调优
+        # 从配置文件加载默认值
+        config = load_config()
+        portfolio_config = config.get_portfolio_config()
+
+        self.max_position = max_position if max_position is not None else portfolio_config.get('max_position', 10)
+        self.target_volatility = target_volatility if target_volatility is not None else portfolio_config.get('target_volatility', 0.20)
+        self.entry_speed = entry_speed if entry_speed is not None else portfolio_config.get('entry_speed', 1.0)
+        self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 1.0)
+        self.position_stop_loss = position_stop_loss if position_stop_loss is not None else portfolio_config.get('position_stop_loss', 0.10)
+        self.portfolio_stop_loss = portfolio_stop_loss if portfolio_stop_loss is not None else portfolio_config.get('portfolio_stop_loss', 0.08)
+
+        # 波动率控制和组合止损默认关闭
+        self.volatility_control_enabled = portfolio_config.get('volatility_control_enabled', False)
+        self.portfolio_stop_loss_enabled = portfolio_config.get('portfolio_stop_loss_enabled', False)
+        self.emergency_exposure = portfolio_config.get('emergency_exposure', 0.30)
+
         self.peak_equity = None
         self.position_cost = {}
         self.consecutive_losses = 0
         # 波动率控制相关
         self.equity_history = []  # 历史净值
-        self.volatility_lookback = 20  # 波动率回看周期
+        self.volatility_lookback = config.get('volatility_control.lookback_period', 20)
         self.current_volatility = 0.0
         # 组合止损相关
         self.portfolio_stop_loss_triggered = False
-        self.emergency_exposure = 0.30  # 触发止损后的仓位上限
 
     def _calculate_position_limit(self, drawdown, risk_extreme_exists):
         """根据回撤和极端状态计算总仓位上限"""

@@ -7,10 +7,17 @@ from typing import Optional, Dict, Any
 from .signal import Signal
 from .signal_store import SignalStore
 from .factor_library import calc_factor_volatility_10, calc_factor_rsi_8, calc_factor_bb_width_20
+from .config_loader import load_config
 
 import warnings
 warnings.filterwarnings('ignore')
 
+# 加载配置
+_config = load_config()
+
+# 从配置文件加载行业配置
+INDUSTRY_CATEGORY = _config.get_industry_category()
+INDUSTRY_FACTOR_WEIGHTS = _config.get_industry_factor_weights()
 
 # 行业最优因子配置（基于滚动验证结果）
 # 结构: {具体行业名: {factors: [因子列表], direction: {因子名: 方向}}}
@@ -65,102 +72,6 @@ INDUSTRY_FACTORS = {
         'direction': {'ret_30': 1, 'mom_30': 1, 'price_ma_60': 1, 'vol_10': 1, 'rsi_14': 1},
     },
 }
-
-# 行业分类映射 - 将相近行业归类
-INDUSTRY_CATEGORY = {
-    '科技/成长': ['半导体', '通信设备', '计算机应用', '软件开发', '互联网', '电子', '光电', '自动化', '电气设备', '电池', '光伏', '新能源', '高端装备'],
-    '周期/资源': ['工业金属', '钢铁', '煤炭', '石油石化', '化工', '有色金属', '建材', '工程机械', '汽车', '航运', '航空', '地产', '基建'],
-    '消费/稳定': ['食品饮料', '家电', '纺织服装', '商贸零售', '医药', '农业', '旅游', '酒店餐饮', '传媒', '环保', '电力', '燃气', '水务'],
-    '金融/大盘': ['银行Ⅱ', '证券Ⅱ', '保险Ⅱ', '多元金融', '房地产', '铁路公路', '机场航空', '港口航运']
-}
-
-# 分行业因子权重配置 (基于行业IC分析结果)
-# 结构: {行业类型: {因子名: 权重}}
-# 使用默认值，可通过配置文件覆盖
-INDUSTRY_FACTOR_WEIGHTS = {
-    '科技/成长': {
-        'volatility_10': 0.25,  # 波动率因子
-        'rsi_average': 0.35,   # RSI因子 - 科技股对超买超卖更敏感
-        'bb_width': 0.15,      # 布林带
-        'momentum': 0.25,      # 动量
-    },
-    '周期/资源': {
-        'volatility_10': 0.40,  # 波动率 - 周期股对波动更敏感
-        'rsi_average': 0.30,     # RSI
-        'bb_width': 0.10,
-        'momentum': 0.20,
-    },
-    '消费/稳定': {
-        'volatility_10': 0.30,  # 波动率
-        'rsi_average': 0.20,
-        'bb_width': 0.30,       # 布林带 - 消费股均值回归明显
-        'momentum': 0.20,
-    },
-    '金融/大盘': {
-        'volatility_10': 0.35,  # 波动率
-        'rsi_average': 0.20,
-        'bb_width': 0.15,
-        'momentum': 0.30,       # 动量 - 大盘股趋势更强
-    },
-    'default': {
-        'volatility_10': 0.25,
-        'rsi_average': 0.30,
-        'bb_width': 0.20,
-        'momentum': 0.25,
-    }
-}
-
-# 保存默认权重
-_DEFAULT_INDUSTRY_WEIGHTS = INDUSTRY_FACTOR_WEIGHTS.copy()
-
-# 尝试从配置文件加载行业因子权重（可选功能）
-# 只有当配置文件中的因子能明确匹配时才覆盖默认值
-def _load_industry_weights_from_config():
-    """从配置文件加载行业因子权重（如果可用）- 保守加载"""
-    global INDUSTRY_FACTOR_WEIGHTS
-    try:
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'industry_best_factors.json')
-        if os.path.exists(config_path):
-            import json
-            with open(config_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            # 配置文件格式: {行业名: {top_factors: [[因子名, IC值], ...]}}
-            for industry, info in data.items():
-                if 'top_factors' in info and info['top_factors']:
-                    # 根据top因子自动设置权重
-                    weights = {'volatility_10': 0, 'rsi_average': 0, 'bb_width': 0, 'momentum': 0}
-                    top_factors = info['top_factors'][:5]
-                    for factor_name, ic in top_factors:
-                        factor_lower = factor_name.lower()
-                        # 根据因子名确定权重类型
-                        if 'vol_' in factor_lower:  # 更严格匹配
-                            weights['volatility_10'] += abs(ic)
-                        elif 'rsi_' in factor_lower:
-                            weights['rsi_average'] += abs(ic)
-                        elif 'bb_' in factor_lower or 'bb_pos' in factor_lower:
-                            weights['bb_width'] += abs(ic)
-                        elif any(x in factor_lower for x in ['mom_', 'ret_', 'trend_', 'ma_cross', 'price_ma']):
-                            weights['momentum'] += abs(ic)
-
-                    # 归一化权重
-                    total = sum(weights.values())
-                    if total > 0.1:  # 至少有可识别的因子
-                        weights = {k: v/total for k, v in weights.items()}
-                        # 只在有明确主要因子时更新（最大权重>40%）
-                        if max(weights.values()) > 0.4:
-                            # 找到对应的行业类型
-                            for cat, inds in INDUSTRY_CATEGORY.items():
-                                if any(ind in industry for ind in inds):
-                                    INDUSTRY_FACTOR_WEIGHTS[cat] = weights
-                                    break
-    except Exception as e:
-        pass  # 使用默认权重
-
-# 尝试加载配置（可选）
-try:
-    _load_industry_weights_from_config()
-except:
-    pass
 
 
 class SignalEngine:
