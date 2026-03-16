@@ -12,6 +12,60 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+# 行业最优因子配置（基于滚动验证结果）
+# 结构: {具体行业名: {factors: [因子列表], direction: {因子名: 方向}}}
+# direction: 1=正向(因子值高买), -1=反向(因子值低买)
+INDUSTRY_FACTORS = {
+    '银行Ⅱ': {
+        'factors': ['trend_30', 'price_ma_30', 'ret_30', 'rsi_14', 'vol_10'],
+        'direction': {'trend_30': -1, 'price_ma_30': -1, 'ret_30': -1, 'rsi_14': -1, 'vol_10': -1},
+    },
+    '贵金属': {
+        'factors': ['ma_cross_10_60', 'ret_30', 'mom_30', 'price_ma_60', 'vol_20'],
+        'direction': {'ma_cross_10_60': 1, 'ret_30': 1, 'mom_30': 1, 'price_ma_60': 1, 'vol_20': 1},
+    },
+    '消费电子': {
+        'factors': ['bb_pos_30', 'price_ma_60', 'price_pos_20', 'rsi_20', 'vol_10'],
+        'direction': {'bb_pos_30': 1, 'price_ma_60': -1, 'price_pos_20': -1, 'rsi_20': 1, 'vol_10': -1},
+    },
+    '电池': {
+        'factors': ['ma_cross_10_60', 'price_ma_60', 'price_ma_120', 'vol_20', 'atr_ratio_20'],
+        'direction': {'ma_cross_10_60': -1, 'price_ma_60': -1, 'price_ma_120': -1, 'vol_20': -1, 'atr_ratio_20': -1},
+    },
+    '工业金属': {
+        'factors': ['price_ma_60', 'ma_cross_10_60', 'ma_golden_20_60', 'rsi_14', 'bb_width_20'],
+        'direction': {'price_ma_60': -1, 'ma_cross_10_60': -1, 'ma_golden_20_60': -1, 'rsi_14': -1, 'bb_width_20': -1},
+    },
+    '基础建设': {
+        'factors': ['rsi_14', 'rsi_20', 'bb_width_20', 'vol_20', 'atr_20'],
+        'direction': {'rsi_14': -1, 'rsi_20': -1, 'bb_width_20': -1, 'vol_20': -1, 'atr_20': -1},
+    },
+    '电网设备': {
+        'factors': ['price_ma_60', 'ma_all', 'vol_30', 'atr_10', 'rsi_20'],
+        'direction': {'price_ma_60': 1, 'ma_all': 1, 'vol_30': 1, 'atr_10': 1, 'rsi_20': 1},
+    },
+    '光伏设备': {
+        'factors': ['price_ma_60', 'price_ma_120', 'ma_cross_10_60', 'vol_10', 'bb_width_30'],
+        'direction': {'price_ma_60': 1, 'price_ma_120': 1, 'ma_cross_10_60': 1, 'vol_10': 1, 'bb_width_30': 1},
+    },
+    '通信设备': {
+        'factors': ['bb_width_30', 'vol_20', 'vol_30', 'rsi_20', 'ma_cross_10_20'],
+        'direction': {'bb_width_30': 1, 'vol_20': 1, 'vol_30': 1, 'rsi_20': 1, 'ma_cross_10_20': 1},
+    },
+    '电力': {
+        'factors': ['trend_30', 'price_ma_30', 'rsi_14', 'rsi_20', 'bb_pos_30'],
+        'direction': {'trend_30': -1, 'price_ma_30': -1, 'rsi_14': -1, 'rsi_20': -1, 'bb_pos_30': -1},
+    },
+    '元件': {
+        'factors': ['price_ma_60', 'ma_cross_10_60', 'price_ma_30', 'rsi_20', 'bb_pos_30'],
+        'direction': {'price_ma_60': -1, 'ma_cross_10_60': -1, 'price_ma_30': 1, 'rsi_20': 1, 'bb_pos_30': 1},
+    },
+    '半导体': {
+        'factors': ['ret_30', 'mom_30', 'price_ma_60', 'vol_10', 'rsi_14'],
+        'direction': {'ret_30': 1, 'mom_30': 1, 'price_ma_60': 1, 'vol_10': 1, 'rsi_14': 1},
+    },
+}
+
 # 行业分类映射 - 将相近行业归类
 INDUSTRY_CATEGORY = {
     '科技/成长': ['半导体', '通信设备', '计算机应用', '软件开发', '互联网', '电子', '光电', '自动化', '电气设备', '电池', '光伏', '新能源', '高端装备'],
@@ -270,7 +324,7 @@ class SignalEngine:
             result[f'ema{span}'] = self._ema(close, span)
 
         # MA
-        for span in [5, 10, 20, 60]:
+        for span in [5, 10, 20, 30, 60]:
             result[f'ma{span}'] = self._sma(close, span)
 
         # RSI - 更多周期
@@ -327,6 +381,52 @@ class SignalEngine:
         # MACD
         result['macd'], result['macd_signal'], result['macd_hist'] = self._macd(close)
 
+        # ==== 行业因子补充计算 ====
+        # RSI 20周期
+        result['rsi_20'] = self._rsi(close, 20)
+
+        # 布林带位置和宽度 (30周期)
+        bb_upper_30, bb_middle_30, bb_lower_30 = self._bollinger(close, 30, 2)
+        bb_std_30 = np.zeros_like(close)
+        bb_std_30[30:] = np.array([np.std(close[max(0,i-30):i]) for i in range(30, len(close))])
+        result['bb_width_30'] = 4 * bb_std_30 / (bb_middle_30 + 1e-10)
+        result['bb_pos_30'] = (close - bb_lower_30) / (bb_upper_30 - bb_lower_30 + 1e-10)
+
+        # 价格相对均线 (30, 60, 120周期)
+        result['price_ma_30'] = close / (result['ma30'] + 1e-10) - 1
+        result['price_ma_60'] = close / (result['ma60'] + 1e-10) - 1
+        # 计算ma120
+        ma120 = self._sma(close, 120)
+        result['price_ma_120'] = close / (ma120 + 1e-10) - 1
+
+        # 均线交叉
+        ma10 = result['ma10']
+        ma20 = result['ma20']
+        ma60 = result['ma60']
+        result['ma_cross_10_60'] = ma10 / (ma60 + 1e-10) - 1
+        result['ma_cross_10_20'] = ma10 / (ma20 + 1e-10) - 1
+        result['ma_golden_20_60'] = (ma20 > ma60).astype(float)
+        result['ma_all'] = ((result['ma5'] > ma20) & (ma20 > ma60)).astype(float)
+
+        # 趋势因子
+        ma30 = result['ma30']
+        result['trend_30'] = (close - ma30) / (ma30 + 1e-10)
+
+        # 价格位置 (20周期)
+        result['price_pos_20'] = (close - result['low_20']) / (result['high_20'] - result['low_20'] + 1e-10)
+
+        # 成交量相关
+        result['vol_20'] = self._rolling_std(returns, 20)
+        result['vol_30'] = self._rolling_std(returns, 30)
+
+        # ATR相关
+        result['atr_10'] = self._atr(high, low, close, 10)
+        result['atr_20'] = self._atr(high, low, close, 20)
+        result['atr_ratio_20'] = result['atr_20'] / close
+
+        # 收益率
+        result['ret_30'] = close / self._shift(close, 30) - 1
+
         return result
 
     def _rolling_std(self, arr, window):
@@ -363,7 +463,9 @@ class SignalEngine:
         industry_category = self._get_industry_category(code, current_date)
 
         # === 使用纯因子组合，不依赖市场状态 ===
-        factor_name, factor_value, risk_info = self._select_factor(ind, idx, risk_regime, industry_category)
+        factor_name, factor_value, risk_info = self._select_factor(
+            ind, idx, risk_regime, industry_category, code=code, current_date=current_date
+        )
 
         # === 获取基本面因子 ===
         fundamental_score = 0.0
@@ -475,9 +577,13 @@ class SignalEngine:
 
         return 0.0
 
-    def _select_factor(self, ind, idx, regime: int, industry_category: str = 'default'):
+    def _select_factor(self, ind, idx, regime: int, industry_category: str = 'default', code=None, current_date=None):
         """
         根据市场状态和行业选择因子组合
+
+        优先级:
+        1. 如果行业有特定因子配置（INDUSTRY_FACTORS），使用行业特定因子
+        2. 否则使用默认的4大类因子组合
 
         使用高质量因子库:
         - volatility_10: IC=4.02%, IR=1.07 (A股最佳)
@@ -496,6 +602,24 @@ class SignalEngine:
         - 消费/稳定: 提高布林带权重
         - 金融/大盘: 提高动量和波动率权重
         """
+        # === 优先使用行业特定因子 ===
+        if code and current_date:
+            specific_industry = self._get_specific_industry(code, current_date)
+            if specific_industry:
+                result = self._calculate_industry_factor_score(ind, idx, specific_industry)
+                if result:
+                    factor_name, factor_value, risk_info = result
+
+                    # 熊市: 降低权重
+                    if regime == -1:
+                        factor_value = factor_value * 0.7
+                        factor_name = factor_name + '_bear'
+
+                    # 添加行业标记
+                    factor_name = factor_name + f'_{specific_industry[:2]}'
+                    return factor_name, factor_value, risk_info
+
+        # === 默认因子组合逻辑 ===
         # 获取各因子值
         vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
         vol_5 = self._safe_get(ind, 'volatility_5', idx, 0.02)
@@ -629,6 +753,107 @@ class SignalEngine:
         except:
             pass
         return 'default'
+
+    def _get_specific_industry(self, code, current_date) -> str:
+        """获取股票所属具体行业名
+
+        Returns:
+            具体行业名（如'银行Ⅱ'、'半导体'）或None
+        """
+        if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
+            return None
+
+        try:
+            industry = self.fundamental_data.get_industry(code, current_date)
+            if industry and industry in INDUSTRY_FACTORS:
+                return industry
+        except:
+            pass
+        return None
+
+    def _calculate_industry_factor_score(self, ind, idx, industry: str) -> tuple:
+        """计算行业特定因子的得分
+
+        Args:
+            ind: 因子数据字典
+            idx: 当前索引
+            industry: 具体行业名
+
+        Returns:
+            (factor_name, factor_value, risk_info)
+        """
+        if industry not in INDUSTRY_FACTORS:
+            return None
+
+        config = INDUSTRY_FACTORS[industry]
+        factors = config.get('factors', [])
+        direction = config.get('direction', {})
+
+        factor_scores = []
+        factor_names = []
+
+        for factor_name in factors:
+            # 获取因子值
+            factor_val = self._safe_get(ind, factor_name, idx, 0.0)
+
+            # 标准化因子值到 -1 到 1 范围
+            if factor_name.startswith('rsi_'):
+                # RSI: 50为中心，0-100范围
+                normalized = (factor_val - 50) / 50
+            elif factor_name.startswith('vol_') or factor_name.startswith('volatility_'):
+                # 波动率: 0.02为中性
+                normalized = (factor_val - 0.02) / 0.02
+            elif factor_name.startswith('bb_pos_'):
+                # 布林带位置: 0.5为中性
+                normalized = (factor_val - 0.5) * 2
+            elif factor_name.startswith('bb_width_'):
+                # 布林带宽度: 0.05为中性
+                normalized = (factor_val - 0.05) / 0.05
+            elif factor_name.startswith('price_pos_') or factor_name.startswith('price_position_'):
+                # 价格位置: 0.5为中性
+                normalized = (factor_val - 0.5) * 2
+            elif factor_name.startswith('price_ma_'):
+                # 价格相对均线: 0为中性
+                normalized = factor_val * 5  # 放大
+            elif factor_name.startswith('ma_cross_'):
+                # 均线交叉: 0为中性
+                normalized = factor_val * 3
+            elif factor_name.startswith('ma_golden_') or factor_name == 'ma_all':
+                # 黄金交叉信号: 0或1
+                normalized = factor_val * 2 - 1
+            elif factor_name.startswith('trend_'):
+                # 趋势: 0为中性
+                normalized = factor_val * 3
+            elif factor_name.startswith('mom_') or factor_name.startswith('ret_'):
+                # 动量/收益率: 0为中性
+                normalized = factor_val * 3
+            elif factor_name.startswith('atr_'):
+                # ATR: 归一化处理
+                normalized = np.clip(factor_val / (ind['close'][idx] + 1e-10) * 10, -2, 2)
+            elif factor_name == 'vol_20' or factor_name == 'vol_30':
+                normalized = (factor_val - 0.02) / 0.02
+            else:
+                normalized = factor_val
+
+            # 应用方向
+            factor_dir = direction.get(factor_name, 1)
+            adjusted_score = normalized * factor_dir
+
+            factor_scores.append(adjusted_score)
+            factor_names.append(factor_name)
+
+        # 计算综合得分
+        if factor_scores:
+            # 使用平均得分，乘以1.5放大信号
+            factor_value = np.mean(factor_scores) * 1.5
+            # 限制范围
+            factor_value = np.clip(factor_value, -1, 1)
+        else:
+            factor_value = 0
+
+        risk_info = {'is_high_vol': False, 'industry_factor': True}
+
+        return f'IND_{industry[:4]}', factor_value, risk_info
 
     def _get_fundamental_score(self, code, current_date):
         """获取基本面因子评分

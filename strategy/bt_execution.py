@@ -5,9 +5,13 @@ import os
 from tqdm import tqdm
 import math
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
 
 from core.strategy import Strategy
 from core.fundamental import FundamentalData
+from core.signal_engine import SignalEngine
+from core.signal_store import SignalStore
 from utils.utils import (
     plot_signal_diagnosis,
 )
@@ -17,36 +21,75 @@ COMMISSION = 0.0015
 PERC = 0.0015
 MAX_POSITION = 10
 REBALANCE_DAYS = 20
+NUM_WORKERS = min(mp.cpu_count(), 8)  # 最多8个进程
 
 DATA_PATH = "../data/stock_data/backtrader_data/"
 FUNDAMENTAL_PATH = "../data/stock_data/fundamental_data/"
+
+
+def generate_signal_worker(args):
+    """子进程工作函数：生成单只股票的信号"""
+    code, data_dict = args
+    # 在子进程中重新创建 SignalEngine（因为不能pickle）
+    engine = SignalEngine()
+    store = SignalStore()
+
+    # 重建 DataFrame
+    data = pd.DataFrame(data_dict)
+
+    # 生成信号
+    engine.generate(code, data, store)
+
+    # 返回结果：code -> {(date,): signal} 需要转换为可哈希的键
+    return code, store._store
 
 def add_data_and_signal(cerebro, strategy):
     all_items = os.listdir(DATA_PATH)
     stock_codes = []  # 获取回测池中的股票列表
 
+    # 只读取一次CSV数据
+    stock_data_dict = {}
+    for item in tqdm(all_items, desc="loading data"):
+        name = item[:-8]
+        data = pd.read_csv(DATA_PATH + item, parse_dates=['datetime'])
+        stock_data_dict[name] = data
+
+    # 从任意一个DataFrame获取日期（所有股票数据共享日历）
     dates = set()
-    for item in (all_items):
-        data = pd.read_csv(DATA_PATH+item, parse_dates=['datetime'])
+    for data in stock_data_dict.values():
         dates.update(data['datetime'])
     calendar_index = pd.DatetimeIndex(sorted(dates))
 
+    # 处理指数数据
+    if "sh000001" in stock_data_dict:
+        strategy.generate_market_regime(stock_data_dict["sh000001"])
+
+    # 并行生成信号（排除指数）
+    stock_items = [(name, data.to_dict()) for name, data in stock_data_dict.items()
+                  if name != "sh000001"]
+    stock_codes = [name for name, _ in stock_items]
+
+    print(f"使用 {NUM_WORKERS} 个进程并行生成信号...")
+    with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
+        results = list(tqdm(
+            executor.map(generate_signal_worker, stock_items),
+            total=len(stock_items),
+            desc="generating signals"
+        ))
+
+    # 将结果写入 signal_store
+    # _store 的键是 (code, datetime.date) -> signal
+    for code, store_data in results:
+        for (c, date), signal in store_data.items():
+            # 确保 date 是 datetime.date 类型
+            if hasattr(date, 'date'):
+                date = date.date()
+            strategy.signal_store.set(c, date, signal)
+
     price_cols = ['open', 'high', 'low', 'close']
-    for item in tqdm(all_items, desc="loading data"):
-        name = item[:-8]
-        data = pd.read_csv(DATA_PATH+item, parse_dates=['datetime'])
+    for name, data in tqdm(stock_data_dict.items(), desc="preparing datafeeds"):
         if name == "sh000001":
-            strategy.generate_market_regime(data)
             continue
-        stock_codes.append(name)  # 记录股票代码
-        strategy.generate_signal(name, data)
-        #  plot_signal_diagnosis(
-        #      name,
-        #      data,
-        #      strategy.signal_engine,
-        #      strategy.signal_store,
-        #  )
-        #  exit(0)
         data = data.set_index('datetime')
         data = data.reindex(calendar_index)
         data[price_cols] = data[price_cols].ffill()
