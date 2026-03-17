@@ -524,7 +524,7 @@ class SignalEngine:
                 # 技术因子：从 ind 字典获取
                 factor_val = self._safe_get(ind, factor_name, idx, None)
 
-            # 直接使用原始因子值，不做归一化（与因子验证一致）
+            # 直接使用原始因子值
             if factor_val is not None and not np.isnan(factor_val):
                 factor_dir = direction.get(factor_name, 1)
                 factor_scores.append(factor_val * factor_dir)
@@ -533,11 +533,10 @@ class SignalEngine:
         if not factor_scores:
             return None
 
-        # 直接使用 Top1 因子（与因子验证一致）
-        # 取第一个因子（Top1）
+        # 使用 Top1 因子
         factor_value = factor_scores[0]
 
-        return f'IND_{industry[:4]}', factor_value, {'is_high_vol': False, 'industry_factor': True}
+        return f'IND_{industry[:4]}', factor_value, {'is_high_vol': False, 'industry_factor': True, 'n_factors': len(factor_scores)}
 
     def _get_style_score(self, ind: dict, idx: int, market_info: dict) -> float:
         """获取风格因子分数"""

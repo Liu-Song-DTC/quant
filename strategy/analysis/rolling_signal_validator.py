@@ -127,57 +127,9 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
     valid = signals_df.dropna(subset=['score', 'future_ret'])
     print(f"有效数据: {len(valid)} 条")
 
-    # 1. 总体
+    # 分行业验证（与因子验证一致）
     print("\n" + "=" * 60)
-    print("总体信号验证")
-    print("=" * 60)
-
-    # 对信号分数按行业做 Rank 标准化（与因子验证一致）
-    valid = valid.copy()
-    valid['industry'] = valid['factor_name'].str.extract(r'IND_([^_]+)')
-
-    ic_list = []
-    for date, group in valid.groupby('date'):
-        if len(group) >= 10:
-            # 对每个行业内的分数做 Rank 百分位标准化
-            fv_rank = np.zeros(len(group))
-            fr = group['future_ret'].values
-
-            for i, (idx, row) in enumerate(group.iterrows()):
-                ind_name = row['industry']
-                ind_mask = group['industry'] == ind_name
-                ind_scores = group.loc[ind_mask, 'score'].values
-                # 百分位排名
-                n = len(ind_scores)
-                if n > 1:
-                    rank = np.argsort(np.argsort(ind_scores)) / (n - 1)
-                else:
-                    rank = np.array([0.5])
-                # 找到当前股票在行业内的排名
-                local_idx = list(ind_scores).index(row['score'])
-                fv_rank[i] = rank[local_idx]
-
-            valid_mask = ~np.isnan(fv_rank) & ~np.isnan(fr)
-            if valid_mask.sum() >= 5:
-                ic, _ = stats.spearmanr(fv_rank[valid_mask], fr[valid_mask])
-                if not np.isnan(ic):
-                    ic_list.append(ic)
-
-    if ic_list:
-        ic_mean = np.mean(ic_list)
-        ic_std = np.std(ic_list)
-        ir = ic_mean / (ic_std + 1e-10)
-        win_rate = np.mean([1 if i > 0 else 0 for i in ic_list])
-
-        print(f"IC均值: {ic_mean:.4f} ({ic_mean*100:.2f}%)")
-        print(f"IC标准差: {ic_std:.4f}")
-        print(f"IR: {ir:.4f}")
-        print(f"胜率: {win_rate:.2%}")
-        print(f"验证期数: {len(ic_list)}")
-
-    # 2. 分行业（行业内Rank标准化）
-    print("\n" + "=" * 60)
-    print("分行业验证 (与因子验证一致)")
+    print("分行业验证")
     print("=" * 60)
 
     industry_results = {}
@@ -222,28 +174,11 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
     for cat, st in sorted(industry_results.items(), key=lambda x: -x[1].get('ir', 0)):
         print(f"{cat}: IC={st['ic_mean']:.4f}, IR={st['ir']:.4f}, 胜率={st['win_rate']:.1%}")
 
-    # 3. 因子统计
-    print("\n" + "=" * 60)
-    print("因子使用统计")
-    print("=" * 60)
-
-    if 'factor_name' in signals_df.columns:
-        factor_counts = signals_df['factor_name'].value_counts().head(10)
-        print("Top10因子:")
-        for name, count in factor_counts.items():
-            print(f"  {name}: {count}")
-
     # 保存结果
     results_dir = os.path.join(project_root, 'strategy/rolling_validation_results')
     os.makedirs(results_dir, exist_ok=True)
 
-    signals_df.to_csv(os.path.join(results_dir, 'signal_validation_results.csv'), index=False)
-
     rows = []
-    if ic_list:
-        rows.append({'category': '总体', 'ic_mean': ic_mean, 'ic_std': ic_std,
-                     'ir': ir, 'win_rate': win_rate, 'n_periods': len(ic_list)})
-
     for cat, st in industry_results.items():
         rows.append({'category': cat, **st})
 
@@ -251,8 +186,6 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
         pd.DataFrame(rows).to_csv(os.path.join(results_dir, 'signal_quality_report.csv'), index=False)
 
     print(f"\n结果已保存到 {results_dir}/")
-
-    return signals_df
 
 
 if __name__ == '__main__':
