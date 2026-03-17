@@ -131,7 +131,7 @@ def calc_base_indicators(close, high=None, low=None, volume=None):
     return result
 
 
-def calc_all_factors_for_validation(close, high=None, low=None, volume=None):
+def calc_all_factors_for_validation(close, high=None, low=None, volume=None, fundamental_data=None, code=None, eval_date=None):
     """计算所有用于验证的因子（供验证脚本使用）
 
     基于 calc_base_indicators 的结果，计算所有复合因子
@@ -141,6 +141,9 @@ def calc_all_factors_for_validation(close, high=None, low=None, volume=None):
         high: 最高价数组
         low: 最低价数组
         volume: 成交量数组
+        fundamental_data: 基本面数据对象（可选）
+        code: 股票代码（基本面数据用）
+        eval_date: 评估日期（基本面数据用）
 
     Returns:
         dict: 包含所有因子的字典
@@ -229,6 +232,39 @@ def calc_all_factors_for_validation(close, high=None, low=None, volume=None):
     # 动量反转
     if 'mom_5' in factors and 'mom_20' in factors:
         factors['momentum_reversal'] = factors['mom_5'] - factors['mom_20']
+
+    # ===== 基本面因子 =====
+    if fundamental_data is not None and code is not None and eval_date is not None:
+        try:
+            roe = fundamental_data.get_roe(code, eval_date)
+            if roe is not None:
+                factors['fund_roe'] = roe
+
+            profit_growth = fundamental_data.get_profit_growth(code, eval_date)
+            if profit_growth is not None:
+                factors['fund_profit_growth'] = profit_growth
+
+            revenue_growth = fundamental_data.get_revenue_growth(code, eval_date)
+            if revenue_growth is not None:
+                factors['fund_revenue_growth'] = revenue_growth
+
+            eps = fundamental_data.get_eps(code, eval_date)
+            if eps is not None:
+                factors['fund_eps'] = eps
+
+            debt_ratio = fundamental_data.get_debt_ratio(code, eval_date)
+            if debt_ratio is not None:
+                factors['fund_debt_ratio'] = debt_ratio
+
+            gross_margin = fundamental_data.get_gross_margin(code, eval_date)
+            if gross_margin is not None:
+                factors['fund_gross_margin'] = gross_margin
+
+            fund_score = fundamental_data.get_fundamental_score(code, eval_date)
+            if fund_score is not None:
+                factors['fund_score'] = fund_score
+        except:
+            pass
 
     return factors
 

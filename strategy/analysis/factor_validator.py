@@ -29,7 +29,7 @@ detailed_industries = config.config.get('detailed_industries', {})
 
 def process_stock(args):
     """处理单只股票的所有时间点"""
-    code, df, sample_dates = args
+    code, df, sample_dates, fd = args
     stock_dates = sorted(df.index.tolist())
 
     results = []
@@ -48,18 +48,26 @@ def process_stock(args):
         if len(history) < 60:
             continue
 
-        # 使用因子库的统一函数计算所有因子
+        # 使用因子库的统一函数计算所有因子（含基本面）
         factors = calc_all_factors_for_validation(
             history['close'].values,
             history['high'].values if 'high' in history.columns else history['close'].values,
             history['low'].values if 'low' in history.columns else history['close'].values,
-            history['volume'].values if 'volume' in history.columns else np.ones(len(history))
+            history['volume'].values if 'volume' in history.columns else np.ones(len(history)),
+            fundamental_data=fd,
+            code=code,
+            eval_date=eval_date
         )
 
         row = {'code': code, 'date': eval_date}
         for fn, vals in factors.items():
-            if len(vals) > 0 and not np.isnan(vals[-1]):
-                row[fn] = float(vals[-1])
+            # 处理数组和单个值
+            if hasattr(vals, '__len__') and len(vals) > 0:
+                val = vals[-1]
+            else:
+                val = vals
+            if val is not None and not np.isnan(val):
+                row[fn] = float(val)
 
         if idx + 20 < len(df):
             future_price = df.iloc[idx + 20]['close']
@@ -71,7 +79,7 @@ def process_stock(args):
     return results
 
 
-def precompute_all_factors(stock_data, num_workers=8):
+def precompute_all_factors(stock_data, fd, num_workers=8):
     """预计算所有因子"""
     all_dates = set()
     for df in stock_data.values():
@@ -81,7 +89,7 @@ def precompute_all_factors(stock_data, num_workers=8):
 
     print(f"预计算因子 ({len(stock_data)} 只股票, {len(sample_dates)} 个时间点)...")
 
-    args_list = [(code, df, sample_dates) for code, df in stock_data.items()]
+    args_list = [(code, df, sample_dates, fd) for code, df in stock_data.items()]
 
     all_factor_data = []
     with Pool(num_workers) as pool:
@@ -122,7 +130,7 @@ def validate_factor_vectorized(factor_name, factor_df, min_stocks=10):
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("因子验证 - 使用统一因子库")
+    print("因子验证 - 使用统一因子库（含基本面）")
     print("=" * 60)
 
     DATA_PATH = os.path.join(project_root, 'data/stock_data/backtrader_data/')
@@ -141,7 +149,7 @@ if __name__ == '__main__':
 
     print(f"加载 {len(stock_data)} 只股票")
 
-    # 加载行业
+    # 加载行业和基本面数据
     from core.fundamental import FundamentalData
     fd = FundamentalData(FUND_PATH, list(stock_data.keys()))
 
@@ -164,8 +172,8 @@ if __name__ == '__main__':
         if len(v) > 0:
             print(f"  {k}: {len(v)}")
 
-    # 计算因子
-    factor_df = precompute_all_factors(stock_data, num_workers=8)
+    # 计算因子（含基本面）
+    factor_df = precompute_all_factors(stock_data, fd, num_workers=8)
 
     # 添加行业
     factor_df['industry'] = factor_df['code'].map(
