@@ -195,6 +195,41 @@ def calc_all_factors_for_validation(close, high=None, low=None, volume=None):
                                        (factors['ma10'] > factors['ma20']).astype(float) +
                                        (factors['ma20'] > factors['ma60']).astype(float))
 
+    # ===== 新增组合因子 =====
+    # RSI + 波动率
+    if 'rsi_14' in factors and 'volatility_20' in factors:
+        factors['rsi_vol_combo'] = (50 - factors['rsi_14']) / 100 - factors['volatility_20'] * 0.5
+
+    # 布林带 + RSI
+    if 'bb_percent_b' in factors and 'rsi_14' in factors:
+        factors['bb_rsi_combo'] = (50 - factors['rsi_14']) / 100 - factors['bb_percent_b'] * 0.3
+
+    # 动量 + 成交量
+    if 'mom_20' in factors and 'volume_ratio' in factors:
+        vol_factor = np.clip(factors['volume_ratio'] - 1, -0.5, 1)
+        factors['price_mom_volume'] = factors['mom_20'] * (1 + vol_factor)
+
+    # 均线交叉 + 成交量
+    if 'ma_cross_5_10' in factors and 'volume_ratio' in factors:
+        vol_factor = np.clip(factors['volume_ratio'] - 1, -0.3, 0.5)
+        factors['ma_cross_volume'] = factors['ma_cross_5_10'] * (1 + vol_factor)
+
+    # 高动量 + 低波动
+    if 'mom_20' in factors and 'volatility_20' in factors:
+        factors['highmom_lowvol'] = factors['mom_20'] - factors['volatility_20'] * 0.5
+
+    # 趋势强度
+    if 'mom_5' in factors and 'mom_10' in factors and 'mom_20' in factors:
+        score = np.zeros_like(factors['mom_5'])
+        score = np.where(factors['mom_5'] > 0, score + 1, score)
+        score = np.where(factors['mom_10'] > 0, score + 1, score)
+        score = np.where(factors['mom_20'] > 0, score + 1, score)
+        factors['trend_strength'] = score / 3
+
+    # 动量反转
+    if 'mom_5' in factors and 'mom_20' in factors:
+        factors['momentum_reversal'] = factors['mom_5'] - factors['mom_20']
+
     return factors
 
 
@@ -911,7 +946,184 @@ def tech_fund_combo(mom_20, mom_10, rsi, fundamental_score_val):
     return tech_score + fund_score
 
 
-# 导出常用因子名称
+# ====================== 新增组合因子 ======================
+
+@FactorRegistry.register('mom_roe_combo')
+def mom_roe_combo(mom_20, roe_factor_val):
+    """动量+ROE组合因子
+
+    Args:
+        mom_20: 20日动量
+        roe_factor_val: ROE因子值
+
+    Returns:
+        组合因子值 (动量70% + ROE 30%)
+    """
+    return mom_20 * 0.7 + roe_factor_val * 0.3
+
+
+@FactorRegistry.register('mom_profit_combo')
+def mom_profit_combo(mom_20, profit_growth_val):
+    """动量+净利润增长组合因子
+
+    Args:
+        mom_20: 20日动量
+        profit_growth_val: 净利润增长因子值
+
+    Returns:
+        组合因子值
+    """
+    return mom_20 * 0.7 + profit_growth_val * 0.3
+
+
+@FactorRegistry.register('rsi_vol_combo')
+def rsi_vol_combo(rsi_14, volatility_20):
+    """RSI+波动率组合
+
+    Args:
+        rsi_14: 14日RSI
+        volatility_20: 20日波动率
+
+    Returns:
+        RSI超卖且低波动时更强
+    """
+    # RSI低于30为超卖(正面)，波动率低为正面
+    rsi_signal = (50 - rsi_14) / 100  # 转正值
+    return rsi_signal - volatility_20 * 0.5
+
+
+@FactorRegistry.register('bb_rsi_combo')
+def bb_rsi_combo(bb_percent_b, rsi_14):
+    """布林带+RSI组合
+
+    Args:
+        bb_percent_b: 布林带%B
+        rsi_14: 14日RSI
+
+    Returns:
+        价格在布林带低位且RSI超卖时更强
+    """
+    bb_signal = bb_percent_b  # 0-1之间，越低越好
+    rsi_signal = (50 - rsi_14) / 100  # 转正值
+    return rsi_signal - bb_signal * 0.3
+
+
+@FactorRegistry.register('price_mom_volume')
+def price_mom_volume(mom_20, volume_ratio):
+    """价格动量+成交量组合
+
+    Args:
+        mom_20: 20日动量
+        volume_ratio: 成交量比率
+
+    Returns:
+        动量向上且放量时更强
+    """
+    return mom_20 * (1 + np.clip(volume_ratio - 1, -0.5, 1))
+
+
+@FactorRegistry.register('ma_cross_volume')
+def ma_cross_volume(ma_cross, volume_ratio):
+    """均线交叉+成交量组合
+
+    Args:
+        ma_cross: 均线交叉信号
+        volume_ratio: 成交量比率
+
+    Returns:
+        金叉且放量时更强
+    """
+    return ma_cross * (1 + np.clip(volume_ratio - 1, -0.3, 0.5))
+
+
+@FactorRegistry.register('lowvol_highroe')
+def lowvol_highroe(volatility_20, roe_factor_val):
+    """低波动+高ROE组合 (经典smart beta)
+
+    Args:
+        volatility_20: 20日波动率
+        roe_factor_val: ROE因子值
+
+    Returns:
+        低波动且高ROE的股票
+    """
+    return -volatility_20 * 0.6 + roe_factor_val * 0.4
+
+
+@FactorRegistry.register('highmom_lowvol')
+def highmom_lowvol(mom_20, volatility_20):
+    """高动量+低波动组合
+
+    Args:
+        mom_20: 20日动量
+        volatility_20: 20日波动率
+
+    Returns:
+        动量强且波动低的股票
+    """
+    return mom_20 - volatility_20 * 0.5
+
+
+@FactorRegistry.register('trend_strength')
+def trend_strength(mom_5, mom_10, mom_20):
+    """趋势强度因子
+
+    多周期动量一致向上时更强
+
+    Args:
+        mom_5: 5日动量
+        mom_10: 10日动量
+        mom_20: 20日动量
+
+    Returns:
+        趋势强度得分
+    """
+    score = 0
+    if mom_5 > 0:
+        score += 1
+    if mom_10 > 0:
+        score += 1
+    if mom_20 > 0:
+        score += 1
+    return score / 3
+
+
+@FactorRegistry.register('reversal_strength')
+def reversal_strength(rsi_14, volatility_20):
+    """反转强度因子
+
+    RSI超卖且波动率高时可能反转
+
+    Args:
+        rsi_14: 14日RSI
+        volatility_20: 20日波动率
+
+    Returns:
+        反转强度得分
+    """
+    # RSI低于30为超卖，波动率高可能反弹
+    oversold = np.where(rsi_14 < 30, 1, 0)
+    high_vol = np.where(volatility_20 > np.mean(volatility_20), 1, 0)
+    return oversold * 0.6 + high_vol * 0.4
+
+
+@FactorRegistry.register('momentum_reversal')
+def momentum_reversal(mom_5, mom_20):
+    """动量反转因子
+
+    短期动量强于长期动量可能延续，短期弱于长期可能反转
+
+    Args:
+        mom_5: 5日动量
+        mom_20: 20日动量
+
+    Returns:
+        动量差
+    """
+    return mom_5 - mom_20
+
+
+# ====================== 导出的因子列表 ======================
 SINGLE_FACTORS = [
     # 趋势动量因子
     'trend_mom_v41',

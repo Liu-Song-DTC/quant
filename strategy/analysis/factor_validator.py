@@ -204,7 +204,7 @@ if __name__ == '__main__':
             print("Top5: {}".format([(r['factor'], 'IC={:.3f}'.format(r['ic_mean'])) for r in cat_results[:5]]))
 
     # 保存结果
-    results_dir = os.path.join(project_root, 'factor_validation_results')
+    results_dir = os.path.join(project_root, 'strategy/factor_validation_results')
     os.makedirs(results_dir, exist_ok=True)
     all_rows = []
     for cat, rs in results.items():
