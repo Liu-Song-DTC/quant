@@ -221,3 +221,30 @@ volatility_control:
   enabled: false
   lookback_period: 20
   target_volatility: 0.2
+
+# 行业因子配置（基于分行业验证结果）
+# 使用方法: 从 core/industry_factor_config.py 加载配置
+industry_factor_config:
+  enabled: true
+  lookback_days: 120  # 滚动验证回看期
+  forward_days: 20     # 滚动验证展望期（与调仓周期一致）
+
+# 技术指标参数
+indicator_params:
+  # EMA周期
+  ema_periods: [5, 10, 20, 60]
+  # MA周期
+  ma_periods: [5, 10, 20, 30, 60]
+  # RSI周期
+  rsi_periods: [6, 8, 10, 14]
+  # 布林带参数
+  bb_window: 20
+  bb_std: 2
+  # 动量周期
+  momentum_periods: [3, 5, 10, 20, 30]
+  # 波动率周期
+  volatility_periods: [5, 10, 20]
+  # ATR周期
+  atr_periods: [10, 14, 20]
+  # 成交量MA周期
+  volume_ma_period: 20

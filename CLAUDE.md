@@ -21,7 +21,7 @@ cd data && python data_manager.py
 ```
 
 ### Configuration
-All parameters are defined in `config/factor_config.yaml`:
+All parameters are defined in `strategy/config/factor_config.yaml`:
 - `backtest` - 回测参数 (cash, commission, slippage, max_position, rebalance_days, num_workers)
 - `portfolio` - 组合参数 (max_position, target_volatility, entry_speed, exit_speed, stop losses)
 - `paths` - 数据路径
