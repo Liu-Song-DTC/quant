@@ -64,34 +64,31 @@ def calc_base_indicators(close, high=None, low=None, volume=None):
     for span in [5, 10, 20, 60]:
         result[f'ma{span}'] = pd.Series(close).rolling(span).mean().values
 
-    # RSI (14日)
+    # RSI 多周期
     delta = np.diff(close, prepend=close[0])
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(14).mean().values
-    avg_loss = pd.Series(loss).rolling(14).mean().values
-    rs = avg_gain / (avg_loss + 1e-10)
-    rsi = 100 - (100 / (1 + rs))
-    result['rsi'] = rsi
-
-    # RSI (6日)
-    avg_gain6 = pd.Series(gain).rolling(6).mean().values
-    avg_loss6 = pd.Series(loss).rolling(6).mean().values
-    rs6 = avg_gain6 / (avg_loss6 + 1e-10)
-    result['rsi_6'] = 100 - (100 / (1 + rs6))
+    for p in [6, 10, 14]:
+        avg_gain = pd.Series(gain).rolling(p).mean().values
+        avg_loss = pd.Series(loss).rolling(p).mean().values
+        rs = avg_gain / (avg_loss + 1e-10)
+        result[f'rsi_{p}'] = 100 - (100 / (1 + rs))
+    result['rsi'] = result['rsi_14']  # 保持兼容性
 
     # RSI变化
-    result['rsi_change'] = rsi - pd.Series(rsi).shift(5).values
+    if 'rsi_14' in result:
+        result['rsi_change'] = result['rsi_14'] - pd.Series(result['rsi_14']).shift(5).values
 
     # RSI位置
-    rsi_high = pd.Series(rsi).rolling(20).max().values
-    rsi_low = pd.Series(rsi).rolling(20).min().values
-    result['rsi_position'] = (rsi - rsi_low) / (rsi_high - rsi_low + 1e-10)
+    if 'rsi_14' in result:
+        rsi_high = pd.Series(result['rsi_14']).rolling(20).max().values
+        rsi_low = pd.Series(result['rsi_14']).rolling(20).min().values
+        result['rsi_position'] = (result['rsi_14'] - rsi_low) / (rsi_high - rsi_low + 1e-10)
 
     # 波动率
     returns = pd.Series(close).pct_change().values
-    result['volatility_20'] = pd.Series(returns).rolling(20).std().values
-    result['volatility_60'] = pd.Series(returns).rolling(60).std().values
+    for p in [5, 10, 20, 60]:
+        result[f'volatility_{p}'] = pd.Series(returns).rolling(p).std().values
 
     if high is not None and low is not None:
         # 价格位置
@@ -101,13 +98,15 @@ def calc_base_indicators(close, high=None, low=None, volume=None):
             result[f'price_position_{period}'] = (close - low_p) / (high_p - low_p + 1e-10)
 
     if volume is not None:
-        # 成交量因子
-        volume_ma20 = pd.Series(volume).rolling(20).mean().values
+        # 成交量均线
+        for p in [5, 10, 20]:
+            vol_ma = pd.Series(volume).rolling(p).mean().values
+            result[f'vol_ma_{p}'] = volume / (vol_ma + 1e-10)
+            result[f'vol_change_{p}'] = volume / (np.roll(volume, p) + 1e-10) - 1
+        # 保持兼容性
+        volume_ma20 = result['vol_ma_20']
         result['volume_ratio'] = volume / (volume_ma20 + 1e-10)
-
-        # 成交量变化率
-        vol_ma5 = pd.Series(volume).rolling(5).mean().values
-        result['volume_change'] = volume / (vol_ma5 + 1e-10) - 1
+        result['volume_change'] = result['vol_change_5']
 
     # MACD
     ema_12 = result['ema12']
@@ -130,6 +129,73 @@ def calc_base_indicators(close, high=None, low=None, volume=None):
     result['ema_trend'] = result['ema10'] - result['ema20']
 
     return result
+
+
+def calc_all_factors_for_validation(close, high=None, low=None, volume=None):
+    """计算所有用于验证的因子（供验证脚本使用）
+
+    基于 calc_base_indicators 的结果，计算所有复合因子
+
+    Args:
+        close: 收盘价数组
+        high: 最高价数组
+        low: 最低价数组
+        volume: 成交量数组
+
+    Returns:
+        dict: 包含所有因子的字典
+    """
+    # 先计算基础指标
+    base = calc_base_indicators(close, high, low, volume)
+    factors = base.copy()
+
+    # 复合因子计算
+    # 动量差
+    if 'mom_3' in factors and 'mom_5' in factors:
+        factors['mom_diff_3_5'] = factors['mom_3'] - factors['mom_5']
+    if 'mom_5' in factors and 'mom_10' in factors:
+        factors['mom_diff_5_10'] = factors['mom_5'] - factors['mom_10']
+    if 'mom_5' in factors and 'mom_20' in factors:
+        factors['mom_diff_5_20'] = factors['mom_5'] - factors['mom_20']
+    if 'mom_10' in factors and 'mom_20' in factors:
+        factors['mom_diff_10_20'] = factors['mom_10'] - factors['mom_20']
+
+    # 动量×低波动
+    if 'mom_10' in factors and 'volatility_10' in factors:
+        factors['mom_x_lowvol_10_10'] = factors['mom_10'] * (-factors['volatility_10'])
+    if 'mom_10' in factors and 'volatility_20' in factors:
+        factors['mom_x_lowvol_10_20'] = factors['mom_10'] * (-factors['volatility_20'])
+    if 'mom_20' in factors and 'volatility_10' in factors:
+        factors['mom_x_lowvol_20_10'] = factors['mom_20'] * (-factors['volatility_10'])
+    if 'mom_20' in factors and 'volatility_20' in factors:
+        factors['mom_x_lowvol_20_20'] = factors['mom_20'] * (-factors['volatility_20'])
+
+    # RSI + 动量
+    if 'rsi_10' in factors and 'mom_5' in factors:
+        factors['rsi_mom_10_5'] = (50 - factors['rsi_10']) / 100 + factors['mom_5']
+    if 'rsi_14' in factors and 'mom_5' in factors:
+        factors['rsi_mom_14_5'] = (50 - factors['rsi_14']) / 100 + factors['mom_5']
+
+    # 低波动+高位置
+    if 'price_position_20' in factors and 'volatility_10' in factors:
+        factors['low_vol_high_pos'] = -factors['volatility_10'] + factors['price_position_20']
+
+    # 收益波动率比
+    if 'mom_10' in factors and 'volatility_10' in factors:
+        factors['ret_vol_ratio_10'] = factors['mom_10'] / (factors['volatility_10'] + 1e-10)
+    if 'mom_20' in factors and 'volatility_20' in factors:
+        factors['ret_vol_ratio_20'] = factors['mom_20'] / (factors['volatility_20'] + 1e-10)
+
+    # MA交叉
+    if 'ma5' in factors and 'ma10' in factors and 'ma20' in factors:
+        factors['ma_cross_5_10'] = (factors['ma5'] - factors['ma10']) / (factors['ma10'] + 1e-10)
+        factors['ma_cross_10_20'] = (factors['ma10'] - factors['ma20']) / (factors['ma20'] + 1e-10)
+        if 'ma60' in factors:
+            factors['ma_golden_count'] = ((factors['ma5'] > factors['ma10']).astype(float) +
+                                       (factors['ma10'] > factors['ma20']).astype(float) +
+                                       (factors['ma20'] > factors['ma60']).astype(float))
+
+    return factors
 
 
 # ====================== 单因子定义 ======================
@@ -718,6 +784,106 @@ def calc_industry_momentum(close, industry_returns):
     return result
 
 
+# ====================== 复合因子 ======================
+
+@FactorRegistry.register('mom_diff_3_5')
+def mom_diff_3_5(mom_3, mom_5):
+    """动量差因子: 3日动量 - 5日动量"""
+    return mom_3 - mom_5
+
+
+@FactorRegistry.register('mom_diff_5_10')
+def mom_diff_5_10(mom_5, mom_10):
+    """动量差因子: 5日动量 - 10日动量"""
+    return mom_5 - mom_10
+
+
+@FactorRegistry.register('mom_diff_5_20')
+def mom_diff_5_20(mom_5, mom_20):
+    """动量差因子: 5日动量 - 20日动量"""
+    return mom_5 - mom_20
+
+
+@FactorRegistry.register('mom_diff_10_20')
+def mom_diff_10_20(mom_10, mom_20):
+    """动量差因子: 10日动量 - 20日动量"""
+    return mom_10 - mom_20
+
+
+@FactorRegistry.register('mom_x_lowvol_10_10')
+def mom_x_lowvol_10_10(mom_10, volatility_10):
+    """动量×低波动因子: 10日动量 × (-波动率)"""
+    return mom_10 * (-volatility_10)
+
+
+@FactorRegistry.register('mom_x_lowvol_10_20')
+def mom_x_lowvol_10_20(mom_10, volatility_20):
+    """动量×低波动因子: 10日动量 × (-波动率)"""
+    return mom_10 * (-volatility_20)
+
+
+@FactorRegistry.register('mom_x_lowvol_20_10')
+def mom_x_lowvol_20_10(mom_20, volatility_10):
+    """动量×低波动因子: 20日动量 × (-波动率)"""
+    return mom_20 * (-volatility_10)
+
+
+@FactorRegistry.register('mom_x_lowvol_20_20')
+def mom_x_lowvol_20_20(mom_20, volatility_20):
+    """动量×低波动因子: 20日动量 × (-波动率)"""
+    return mom_20 * (-volatility_20)
+
+
+@FactorRegistry.register('rsi_mom_10_5')
+def rsi_mom_10_5(rsi_10, mom_5):
+    """RSI+动量组合: (50-RSI)/100 + 动量"""
+    return (50 - rsi_10) / 100 + mom_5
+
+
+@FactorRegistry.register('rsi_mom_14_5')
+def rsi_mom_14_5(rsi_14, mom_5):
+    """RSI+动量组合: (50-RSI)/100 + 动量"""
+    return (50 - rsi_14) / 100 + mom_5
+
+
+@FactorRegistry.register('low_vol_high_pos')
+def low_vol_high_pos(volatility_10, price_position_20):
+    """低波动+高位置因子"""
+    return -volatility_10 + price_position_20
+
+
+@FactorRegistry.register('ret_vol_ratio_10')
+def ret_vol_ratio_10(mom_10, volatility_10):
+    """收益波动率比: 动量/波动率"""
+    return mom_10 / (volatility_10 + 1e-10)
+
+
+@FactorRegistry.register('ret_vol_ratio_20')
+def ret_vol_ratio_20(mom_20, volatility_20):
+    """收益波动率比: 动量/波动率"""
+    return mom_20 / (volatility_20 + 1e-10)
+
+
+@FactorRegistry.register('ma_golden_count')
+def ma_golden_count(ma5, ma10, ma20, ma60):
+    """均线多头排列计数"""
+    return ((ma5 > ma10).astype(float) +
+            (ma10 > ma20).astype(float) +
+            (ma20 > ma60).astype(float))
+
+
+@FactorRegistry.register('ma_cross_5_10')
+def ma_cross_5_10(ma5, ma10):
+    """均线交叉: (MA5-MA10)/MA10"""
+    return (ma5 - ma10) / (ma10 + 1e-10)
+
+
+@FactorRegistry.register('ma_cross_10_20')
+def ma_cross_10_20(ma10, ma20):
+    """均线交叉: (MA10-MA20)/MA20"""
+    return (ma10 - ma20) / (ma20 + 1e-10)
+
+
 # ====================== 综合多因子 ======================
 
 @FactorRegistry.register('tech_fund_combo')
@@ -781,6 +947,23 @@ SINGLE_FACTORS = [
     # 均线因子
     'ma_momentum',
     'ema_momentum',
+    # 复合因子
+    'mom_diff_3_5',
+    'mom_diff_5_10',
+    'mom_diff_5_20',
+    'mom_diff_10_20',
+    'mom_x_lowvol_10_10',
+    'mom_x_lowvol_10_20',
+    'mom_x_lowvol_20_10',
+    'mom_x_lowvol_20_20',
+    'rsi_mom_10_5',
+    'rsi_mom_14_5',
+    'low_vol_high_pos',
+    'ret_vol_ratio_10',
+    'ret_vol_ratio_20',
+    'ma_golden_count',
+    'ma_cross_5_10',
+    'ma_cross_10_20',
 ]
 
 COMBO_FACTORS = [
