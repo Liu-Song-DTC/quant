@@ -264,6 +264,17 @@ class FundamentalData:
             return None
         return latest.get('xjll_经营性现金流-现金流量净额', None)
 
+    def get_cf_to_profit(self, code, current_date):
+        """获取经营性现金流/净利润比率"""
+        latest = self._get_latest(code, current_date)
+        if latest is None:
+            return None
+        cf = latest.get('xjll_经营性现金流-现金流量净额', None)
+        profit = latest.get('lrb_净利润', None)
+        if cf is not None and profit is not None and profit > 0:
+            return cf / profit
+        return None
+
     def get_total_assets(self, code, current_date):
         """获取总资产"""
         latest = self._get_latest(code, current_date)

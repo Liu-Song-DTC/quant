@@ -23,7 +23,7 @@ sys.path.insert(0, strategy_dir)
 from core.config_loader import load_config
 from core.factors import calc_all_factors_for_validation
 
-config = load_config(os.path.join(project_root, 'config/factor_config.yaml'))
+config = load_config(os.path.join(project_root, 'strategy/config/factor_config.yaml'))
 detailed_industries = config.config.get('detailed_industries', {})
 
 

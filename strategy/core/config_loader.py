@@ -92,6 +92,28 @@ class ConfigLoader:
         """获取行业分类映射"""
         return self.get('industry_category', {})
 
+    def get_industry_factor_config(self) -> Dict[str, Any]:
+        """获取行业因子配置"""
+        return self.get('industry_factor_config', {
+            'enabled': True,
+            'lookback_days': 120,
+            'forward_days': 20,
+        })
+
+    def get_indicator_params(self) -> Dict[str, Any]:
+        """获取技术指标参数"""
+        return self.get('indicator_params', {
+            'ema_periods': [5, 10, 20, 60],
+            'ma_periods': [5, 10, 20, 30, 60],
+            'rsi_periods': [6, 8, 10, 14],
+            'bb_window': 20,
+            'bb_std': 2,
+            'momentum_periods': [3, 5, 10, 20, 30],
+            'volatility_periods': [5, 10, 20],
+            'atr_periods': [10, 14, 20],
+            'volume_ma_period': 20,
+        })
+
     @property
     def config(self) -> Dict[str, Any]:
         """获取完整配置"""
@@ -101,8 +123,8 @@ class ConfigLoader:
 def load_config(config_path: str = None) -> ConfigLoader:
     """加载配置的便捷函数"""
     if config_path is None:
-        # 从项目根目录加载
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        # 从strategy目录加载
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         config_path = os.path.join(base_dir, 'config', 'factor_config.yaml')
 
     loader = ConfigLoader()
