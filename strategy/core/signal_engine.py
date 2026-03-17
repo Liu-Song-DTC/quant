@@ -490,7 +490,7 @@ class SignalEngine:
             return None
 
         factors = config.get('factors', [])
-        direction = config.get('direction', {})
+        direction = config.get('direction', {}) if 'direction' in config else {}
 
         factor_scores = []
         valid_factors = []
@@ -533,8 +533,18 @@ class SignalEngine:
         if not factor_scores:
             return None
 
-        # 使用 Top1 因子
-        factor_value = factor_scores[0]
+        # 根据method选择合并方式
+        method = config.get('method', 'top1')
+        weights = config.get('weights', None)
+
+        if method == 'weighted' and weights and len(weights) >= len(factor_scores):
+            # 使用权重加权
+            w = weights[:len(factor_scores)]
+            total_w = sum(w)
+            factor_value = sum(s * w_i for s, w_i in zip(factor_scores, w)) / total_w
+        else:
+            # 使用Top1
+            factor_value = factor_scores[0]
 
         return f'IND_{industry[:4]}', factor_value, {'is_high_vol': False, 'industry_factor': True, 'n_factors': len(factor_scores)}
 
