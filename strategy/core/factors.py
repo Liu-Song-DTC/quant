@@ -260,11 +260,65 @@ def calc_all_factors_for_validation(close, high=None, low=None, volume=None, fun
             if gross_margin is not None:
                 factors['fund_gross_margin'] = gross_margin
 
+            # 经营性现金流/净利润（质量因子）
+            operating_cf = fundamental_data.get_operating_cash_flow(code, eval_date)
+            profit = fundamental_data.get_profit(code, eval_date)
+            if operating_cf is not None and profit is not None and profit > 0:
+                factors['fund_cf_to_profit'] = operating_cf / profit
+
             fund_score = fundamental_data.get_fundamental_score(code, eval_date)
             if fund_score is not None:
                 factors['fund_score'] = fund_score
         except:
             pass
+
+    # ===== 量价背离因子 =====
+    # 价涨量缩（动量向上但成交量向下）
+    if 'mom_5' in factors and 'vol_change_5' in factors:
+        factors['price_volume_divergence_up'] = factors['mom_5'] - np.clip(factors['vol_change_5'], -0.5, 0.5)
+
+    # 价跌量增（动量向下但成交量向上）
+    if 'mom_5' in factors and 'vol_change_5' in factors:
+        factors['price_volume_divergence_down'] = -factors['mom_5'] + np.clip(factors['vol_change_5'], -0.5, 0.5)
+
+    # 综合背离信号
+    if 'price_volume_divergence_up' in factors and 'price_volume_divergence_down' in factors:
+        factors['divergence_signal'] = factors['price_volume_divergence_up'] - factors['price_volume_divergence_down']
+
+    # 收盘价 vs 成交量背离（20日）
+    if 'mom_20' in factors and 'vol_change_20' in factors:
+        factors['price_vol_divergence_20'] = factors['mom_20'] - np.clip(factors['vol_change_20'], -0.5, 0.5)
+
+    # ===== 新增组合因子 =====
+    # 动量 + 质量（基本面）
+    if 'mom_10' in factors and 'fund_score' in factors:
+        # 需要在有基本面数据时才能计算
+        pass
+
+    # 低波动 + 高RSI位置
+    if 'volatility_10' in factors and 'rsi_position' in factors:
+        factors['lowvol_high_rsi_pos'] = -factors['volatility_10'] + factors['rsi_position']
+
+    # 趋势强度 + 波动率
+    if 'trend_strength' in factors and 'volatility_10' in factors:
+        factors['trend_volatility_combo'] = factors['trend_strength'] - factors['volatility_10'] * 0.5
+
+    # 收益风险比（动量/波动率）
+    if 'mom_20' in factors and 'volatility_20' in factors:
+        factors['return_risk_ratio'] = factors['mom_20'] / (factors['volatility_20'] + 1e-10)
+
+    # 动量加速度
+    if 'mom_5' in factors and 'mom_20' in factors:
+        factors['momentum_acceleration'] = factors['mom_5'] - factors['mom_20']
+
+    # RSI超卖反弹
+    if 'rsi_14' in factors and 'mom_5' in factors:
+        factors['rsi_oversold_rebound'] = (30 - np.clip(factors['rsi_14'], 0, 30)) / 30 + np.clip(factors['mom_5'], -0.1, 0.2)
+
+    # 布林带突破 + 成交量确认
+    if 'bb_percent_b' in factors and 'volume_ratio' in factors:
+        bb_signal = np.where(factors['bb_percent_b'] > 0.8, 1, np.where(factors['bb_percent_b'] < 0.2, -1, 0))
+        factors['bb_volume_confirm'] = bb_signal * np.clip(factors['volume_ratio'], 0.5, 2)
 
     return factors
 
