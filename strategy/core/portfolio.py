@@ -223,7 +223,7 @@ class PortfolioConstructor:
         if not candidates:
             return {}
 
-        # 按基础仓位排序，选出前N个
+        # 按仓位排序，选出前N个
         candidates.sort(key=lambda x: x['position'], reverse=True)
         selected = candidates[:self.max_position]
 

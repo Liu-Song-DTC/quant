@@ -12,6 +12,7 @@ class Strategy:
 
     def __init__(self, init_cash, max_position=None, fundamental_data=None):
         self.signal_engine = SignalEngine()
+        self.fundamental_data = fundamental_data
         if fundamental_data:
             self.signal_engine.set_fundamental_data(fundamental_data)
 

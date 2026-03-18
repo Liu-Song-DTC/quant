@@ -217,6 +217,21 @@ technical_weights:
   momentum: 0.3
   rsi_average: 0.3
   volatility_10: 0.2
+
+# 组合仓位管理配置
+portfolio:
+  max_position: 10
+  target_volatility: 0.20
+  entry_speed: 1.0
+  exit_speed: 1.0
+  position_stop_loss: 0.10
+  portfolio_stop_loss: 0.08
+
+# 组合止损配置
+portfolio_stop_loss:
+  enabled: false
+  emergency_exposure: 0.30
+
 volatility_control:
   enabled: false
   lookback_period: 20
