@@ -3,6 +3,18 @@ import numpy as np
 from copy import deepcopy
 from .config_loader import load_config
 
+# 弱势行业减配系数（基于滚动验证IR结果）
+# IR < 0.1: 减配50%
+# IR < 0.15: 减配25%
+INDUSTRY_DISCOUNT = {
+    '交运': 0.5,           # IR=0.05
+    '通信/计算机': 0.5,    # IR=-0.04
+    '半导体/光伏': 0.75,   # IR=0.12
+}
+
+# 换仓门槛（降低换手率）
+REBALANCE_THRESHOLD = 0.15  # 持仓变化超过15%才调仓
+
 
 class PortfolioConstructor:
     """仓位管理器 - 基于信号质量和风险信息分配仓位"""
@@ -42,17 +54,28 @@ class PortfolioConstructor:
         # 组合止损相关
         self.portfolio_stop_loss_triggered = False
 
-    def _calculate_position_limit(self, drawdown, risk_extreme_exists):
-        """根据回撤和极端状态计算总仓位上限"""
-        # 基础仓位上限
-        if drawdown > 0.15:
-            max_gross_exposure = 0.30
+    def _calculate_position_limit(self, drawdown, risk_extreme_exists, market_regime=0):
+        """根据回撤和极端状态计算总仓位上限
+
+        A股优化：放宽阈值，5%回撤是常态
+        - 原：5%/10%/15% → 0.80/0.50/0.30
+        - 新：10%/15%/20% → 0.85/0.60/0.40
+
+        熊市保护：market_regime=-1时降低仓位
+        """
+        # 基础仓位上限（放宽阈值）
+        if drawdown > 0.20:
+            max_gross_exposure = 0.40
+        elif drawdown > 0.15:
+            max_gross_exposure = 0.60
         elif drawdown > 0.10:
-            max_gross_exposure = 0.50
-        elif drawdown > 0.05:
-            max_gross_exposure = 0.80
+            max_gross_exposure = 0.85
         else:
             max_gross_exposure = 1.0
+
+        # 熊市仓位保护
+        if market_regime == -1:
+            max_gross_exposure = max_gross_exposure * 0.6  # 熊市降仓40%
 
         # 极端波动状态额外降仓
         if risk_extreme_exists:
@@ -155,6 +178,7 @@ class PortfolioConstructor:
         公式:
         1. 基础仓位 = score * (1 / risk_vol)
         2. 极端降仓 = 基础仓位 * 0.7 if risk_extreme else 1.0
+        3. 行业减配 = 基础仓位 * industry_discount（弱势行业）
         """
         if not sig or not sig.buy or sig.score <= 0:
             return 0.0
@@ -173,6 +197,10 @@ class PortfolioConstructor:
         if sig.risk_extreme:
             base_position *= 0.7
 
+        # 行业减配（弱势行业）
+        if sig.industry and sig.industry in INDUSTRY_DISCOUNT:
+            base_position *= INDUSTRY_DISCOUNT[sig.industry]
+
         return base_position
 
     def _build_desired_value(
@@ -183,8 +211,12 @@ class PortfolioConstructor:
         signal_store,
         cash,
         prices,
+        market_regime=0,
     ):
-        """构建目标持仓"""
+        """构建目标持仓
+
+        优化: 使用排名百分位分配仓位，而非score绝对值
+        """
         total_equity = cash + sum(current_positions.values())
 
         # 检查并更新组合止损状态
@@ -197,34 +229,57 @@ class PortfolioConstructor:
 
         drawdown = 1 - total_equity / self.peak_equity if self.peak_equity > 0 else 0.0
 
-        # 检查是否存在极端状态
+        # 收集所有候选股票
         risk_extreme_exists = False
         candidates = []
 
         for code in universe:
             sig = signal_store.get(code, date)
-            if sig and sig.buy and sig.score > 0.10:
+            if sig and sig.buy and sig.score > 0:
                 # 检查极端状态
                 if sig.risk_extreme:
                     risk_extreme_exists = True
 
-                # 计算基础仓位
-                position = self._calculate_stock_position(sig)
-
-                if position > 0:
-                    candidates.append({
-                        'code': code,
-                        'position': position,
-                        'score': sig.score,
-                        'risk_vol': sig.risk_vol,
-                        'sig': sig,
-                    })
+                candidates.append({
+                    'code': code,
+                    'score': sig.score,
+                    'risk_vol': sig.risk_vol,
+                    'sig': sig,
+                })
 
         if not candidates:
             return {}
 
-        # 按仓位排序，选出前N个
-        candidates.sort(key=lambda x: x['position'], reverse=True)
+        # 按score排序（用于计算排名百分位）
+        candidates.sort(key=lambda x: x['score'], reverse=True)
+
+        # 计算排名百分位并转换为仓位权重
+        n_candidates = len(candidates)
+        for i, c in enumerate(candidates):
+            # 排名百分位: 第1名=1.0, 最后一名=0.0
+            rank_pct = 1.0 - i / max(n_candidates - 1, 1)
+
+            # 基础权重 = 排名百分位（前10%权重高）
+            # 使用非线性映射，让头部股票权重更高
+            base_weight = rank_pct ** 0.5  # 平方根使分布更平滑
+
+            # 波动率调整（低波动加分）
+            risk_vol = max(0.01, min(1.0, c['risk_vol']))
+            vol_factor = 1.0 / risk_vol
+            vol_factor = min(vol_factor, 3.0)  # 限制最大倍数
+
+            # 极端状态降仓
+            extreme_factor = 0.7 if c['sig'].risk_extreme else 1.0
+
+            # 行业减配
+            industry_factor = 1.0
+            if c['sig'].industry and c['sig'].industry in INDUSTRY_DISCOUNT:
+                industry_factor = INDUSTRY_DISCOUNT[c['sig'].industry]
+
+            # 最终仓位权重
+            c['position'] = base_weight * vol_factor * extreme_factor * industry_factor
+
+        # 选出前N个（已按score排序，直接取前N）
         selected = candidates[:self.max_position]
 
         if not selected:
@@ -233,8 +288,8 @@ class PortfolioConstructor:
         # 计算总仓位
         total_position = sum(c['position'] for c in selected)
 
-        # 计算总仓位上限
-        max_gross_exposure = self._calculate_position_limit(drawdown, risk_extreme_exists)
+        # 计算总仓位上限（使用market_regime进行熊市保护）
+        max_gross_exposure = self._calculate_position_limit(drawdown, risk_extreme_exists, market_regime)
 
         # 应用波动率控制
         max_gross_exposure = self._apply_volatility_control(max_gross_exposure)
@@ -262,7 +317,7 @@ class PortfolioConstructor:
         signal_store,
         cash,
         prices,
-        market_regime,  # 保留参数但不使用
+        market_regime,  # 市场状态用于熊市保护
         cost,
         rebalance,
     ):
@@ -299,6 +354,7 @@ class PortfolioConstructor:
                 signal_store=signal_store,
                 cash=cash,
                 prices=prices,
+                market_regime=market_regime,
             )
 
         # 强制卖出
@@ -311,13 +367,18 @@ class PortfolioConstructor:
         if not rebalance and not stop_loss_sells:
             adjusted = deepcopy(current_positions)
 
-        # 调仓逻辑
+        # 调仓逻辑（添加换仓门槛降低换手）
         for code, target in desired_value.items():
             current = current_positions.get(code, 0.0)
             diff = target - current
 
             if code in stop_loss_sells:
                 adjusted[code] = 0.0
+                continue
+
+            # 换仓门槛：变化小于阈值时不调整（降低换手率）
+            if abs(diff) < total_equity * REBALANCE_THRESHOLD * 0.1:  # 变化小于总资产1.5%不调
+                adjusted[code] = current
                 continue
 
             # 渐进进出

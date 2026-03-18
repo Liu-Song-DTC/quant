@@ -146,14 +146,6 @@ class SignalEngine:
             date = pd.to_datetime(dates[i]).date()
             signal_store.set(code, date, sig)
 
-        for i in sorted_indices:
-            if i < 60:
-                continue
-            sig = self._generate_signal(indicators, i, last_sig, dates[i], code)
-            last_sig = sig
-            date = pd.to_datetime(dates[i]).date()
-            signal_store.set(code, date, sig)
-
     def _calculate_indicators(self, data: pd.DataFrame) -> dict:
         """计算技术指标"""
         params = self.indicator_params
@@ -365,40 +357,33 @@ class SignalEngine:
         # 风格因子
         style_factor_score = self._get_style_score(ind, idx, market_info)
 
-        # 技术面分数 - 保留正负信号，不要强制变成0
-        # 但如果是行业因子，factor_value 已经是合成后的分数，保持其正负
-        tech_score = factor_value
+        # === 信号系统 v2 (2026-03-18) ===
+        # 核心思想: 因子值标准化后作为排序分数
 
-        # 组合分数 - 行业因子已经包含了基本面信息，不需要再叠加
-        if is_industry:
-            # 行业因子直接使用，保留其原始信号
-            combined_score = tech_score
-        else:
-            # 非行业因子，使用原来的逻辑
-            if fundamental_score > 0:
-                bonus = 1.0 + fundamental_score * self.fundamental_weight
-                combined_score = max(0, tech_score) * bonus
-            else:
-                combined_score = max(0, tech_score)
+        # 1. 基础分数 = 因子值
+        # 注意: 不同因子值域不同，需要在组合层用排名而非绝对值
+        base_score = factor_value
 
-        # 加上风格因子调整（只在正信号时加成）
-        if style_confidence > 0.3 and abs(style_factor_score) > 0.05 and combined_score > 0:
-            combined_score = combined_score + style_factor_score * self.style_weight * 0.5
+        # 2. 基本面增强（仅对非行业因子生效）
+        if not is_industry and fundamental_score > 0:
+            base_score = base_score + fundamental_score * 0.1
 
-        # 保留负信号，但最终 score 只取正（用于排序）
-        raw_score = combined_score
-        score = max(0, combined_score)
+        # 3. 最终分数（用于排序，不做复杂变换）
+        score = base_score
 
-        # 使用 volatility_10 作为风险指标（因子库有）
-        risk_vol = self._safe_get(ind, 'volatility_10', idx, 0.02) * 2
+        # 4. 波动率风险指标
+        risk_vol = self._safe_get(ind, 'volatility_10', idx, 0.02)
 
-        # 极端波动调整
-        regime_weight = 0.85 if risk_extreme else 1.0
+        # 5. 极端市场调整
+        regime_weight = 0.9 if risk_extreme else 1.0
         adjusted_score = score * regime_weight
 
-        # 交易信号 - 基于原始 factor_value
-        buy = factor_value > 0.15 and adjusted_score > 0.05
-        sell = factor_value <= -0.05
+        # 6. 交易信号
+        # 买入: 分数在正向区间（用分位数判断更合理，但这里简化处理）
+        # 不同因子值域不同，这里用相对宽松的条件，让组合层用排名筛选
+        # 关键: 买入信号应该是"候选池"，最终选股靠排名
+        buy = score > 0  # 放宽条件，让组合层决定
+        sell = factor_value < -0.1  # 因子明显看空时卖出
 
         # 添加标签
         factor_tags = []
@@ -408,9 +393,13 @@ class SignalEngine:
             factor_tags.append(style_regime[:2].upper())
         factor_name = factor_name + ('_' + ''.join(factor_tags) if factor_tags else '_T')
 
+        # 获取具体行业用于组合层减配
+        specific_industry = self._get_specific_industry(code, current_date) if code else ''
+
         return Signal(
             buy=buy, sell=sell, score=score, factor_value=factor_value,
-            factor_name=factor_name, risk_vol=risk_vol, risk_regime=risk_regime,
+            factor_name=factor_name, industry=specific_industry or '',
+            risk_vol=risk_vol, risk_regime=risk_regime,
             risk_confidence=market_info.get('confidence', 0.0),
             risk_extreme=risk_extreme or risk_info.get('is_high_vol', False),
             adjusted_score=adjusted_score
@@ -442,41 +431,32 @@ class SignalEngine:
         return factor_name, factor_value, risk_info, False
 
     def _calculate_default_factor(self, ind: dict, idx: int, regime: int, industry_category: str) -> tuple:
-        """计算默认因子组合"""
+        """计算默认因子组合
+
+        使用稳定的基本面+动量因子组合，值域标准化到[-1, 1]左右
+        """
+        # 获取原始指标
         vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
-        rsi_8 = self._safe_get(ind, 'rsi_8', idx, 50)
-        rsi_6 = self._safe_get(ind, 'rsi_6', idx, 50)
-        rsi_10 = self._safe_get(ind, 'rsi_10', idx, 50)
-        bb_width = self._safe_get(ind, 'bb_width_20', idx, 0.05)
         mom_10 = self._safe_get(ind, 'mom_10', idx, 0)
+        mom_20 = self._safe_get(ind, 'mom_20', idx, 0)
 
-        # 因子值
-        vol_factor = vol_10 * 10
-        rsi_avg = (rsi_6 + rsi_8 + rsi_10) / 3
-        rsi_avg_val = (rsi_avg - 50) / 50
-        bb_val = bb_width
-        mom_val = mom_10 * 2
+        # 动量×低波动因子（最稳定的技术面因子）
+        # 值域约在 [-0.1, 0.1] 之间
+        mom_lowvol = mom_20 * (1 - vol_10 * 10)  # 低波动加成
+        mom_lowvol = np.clip(mom_lowvol, -0.5, 0.5)  # 截断极端值
 
-        # 动态权重
-        vol_w, rsi_w, bb_w, mom_w = self.vol_weight, self.rsi_weight, self.bb_weight, self.mom_weight
-        if self.regime_weights:
-            regime_key = {1: 'bull', -1: 'bear', 0: 'neutral'}.get(regime, 'neutral')
-            cfg = self.regime_weights.get(regime_key, {})
-            vol_w = cfg.get('volatility_10', vol_w)
-            rsi_w = cfg.get('rsi_average', rsi_w)
-            bb_w = cfg.get('bb_width', bb_w)
-            mom_w = cfg.get('momentum', mom_w)
+        # 组合因子值
+        factor_value = mom_lowvol
 
-        factor_value = vol_factor * vol_w + rsi_avg_val * rsi_w + bb_val * bb_w + mom_val * mom_w
-
+        # 熊市折扣
         if regime == -1:
             factor_value = factor_value * 0.7
 
-        factor_name = f'V{int(vol_w*100)}_RSIavg{int(rsi_w*100)}_BB{int(bb_w*100)}_Mom{int(mom_w*100)}'
+        factor_name = 'DEFAULT_MomLowVol'
         if regime == -1:
             factor_name = factor_name + '_bear'
 
-        risk_info = {'is_high_vol': self._safe_get(ind, 'volatility_20', idx, 0.02) > 0.05}
+        risk_info = {'is_high_vol': vol_10 > 0.04}
         return factor_name, factor_value, risk_info
 
     def _calculate_industry_factor_score(self, ind: dict, idx: int, industry: str,
@@ -498,26 +478,42 @@ class SignalEngine:
         for i, factor_name in enumerate(factors):
             factor_val = None
 
-            # 基本面因子：从 fundamental_data 获取
+            # 基本面因子：从 fundamental_data 获取，并标准化到合理范围
             if factor_name.startswith('fund_'):
                 if hasattr(self, 'fundamental_data') and self.fundamental_data and code and current_date:
                     try:
                         if factor_name == 'fund_score':
-                            factor_val = self.fundamental_data.get_fundamental_score(code, current_date)
+                            raw = self.fundamental_data.get_fundamental_score(code, current_date)
+                            # fund_score 原始范围 0-100，标准化到 -0.5 ~ 0.5
+                            factor_val = (raw - 50) / 100 if raw is not None else None
                         elif factor_name == 'fund_profit_growth':
-                            factor_val = self.fundamental_data.get_profit_growth(code, current_date)
+                            raw = self.fundamental_data.get_profit_growth(code, current_date)
+                            # 利润增长率，截断到 -1 ~ 1
+                            factor_val = np.clip(raw, -1, 1) if raw is not None else None
                         elif factor_name == 'fund_roe':
-                            factor_val = self.fundamental_data.get_roe(code, current_date)
+                            raw = self.fundamental_data.get_roe(code, current_date)
+                            # ROE 原始是百分比数值如 8.28，标准化
+                            factor_val = (raw - 10) / 20 if raw is not None else None  # 10%为中位
                         elif factor_name == 'fund_revenue_growth':
-                            factor_val = self.fundamental_data.get_revenue_growth(code, current_date)
+                            raw = self.fundamental_data.get_revenue_growth(code, current_date)
+                            # 营收增长率，截断到 -1 ~ 1
+                            factor_val = np.clip(raw, -1, 1) if raw is not None else None
                         elif factor_name == 'fund_eps':
-                            factor_val = self.fundamental_data.get_eps(code, current_date)
+                            raw = self.fundamental_data.get_eps(code, current_date)
+                            # EPS 标准化
+                            factor_val = np.clip(raw / 2, -1, 1) if raw is not None else None
                         elif factor_name == 'fund_cf_to_profit':
-                            factor_val = self.fundamental_data.get_cf_to_profit(code, current_date)
+                            raw = self.fundamental_data.get_cf_to_profit(code, current_date)
+                            # 现金流/利润比，1为正常，截断
+                            factor_val = np.clip((raw - 1), -1, 1) if raw is not None else None
                         elif factor_name == 'fund_debt_ratio':
-                            factor_val = self.fundamental_data.get_debt_ratio(code, current_date)
+                            raw = self.fundamental_data.get_debt_ratio(code, current_date)
+                            # 负债率，反向（低负债好）
+                            factor_val = (50 - raw) / 50 if raw is not None else None
                         elif factor_name == 'fund_gross_margin':
-                            factor_val = self.fundamental_data.get_gross_margin(code, current_date)
+                            raw = self.fundamental_data.get_gross_margin(code, current_date)
+                            # 毛利率，标准化
+                            factor_val = (raw - 30) / 30 if raw is not None else None  # 30%为中位
                     except:
                         factor_val = None
             else:
@@ -533,17 +529,20 @@ class SignalEngine:
         if not factor_scores:
             return None
 
-        # 根据method选择合并方式
-        method = config.get('method', 'top1')
+        # 根据method选择合并方式 (2026-03-18优化: 默认使用equal)
+        method = config.get('method', 'equal')
         weights = config.get('weights', None)
 
         if method == 'weighted' and weights and len(weights) >= len(factor_scores):
-            # 使用权重加权
+            # 使用指定权重
             w = weights[:len(factor_scores)]
             total_w = sum(w)
             factor_value = sum(s * w_i for s, w_i in zip(factor_scores, w)) / total_w
+        elif method == 'equal':
+            # 等权平均（推荐，更稳健）
+            factor_value = np.mean(factor_scores)
         else:
-            # 使用Top1
+            # Top1（保留兼容性，但不推荐）
             factor_value = factor_scores[0]
 
         return f'IND_{industry[:4]}', factor_value, {'is_high_vol': False, 'industry_factor': True, 'n_factors': len(factor_scores)}
@@ -706,17 +705,21 @@ class SignalEngine:
         return self._sma(tr, window)
 
     def _rolling_max(self, arr, window):
+        """滚动最大值 - 不包含当天，避免数据泄露"""
         result = np.zeros_like(arr, dtype=float)
         result[:] = np.nan
-        for i in range(window-1, len(arr)):
-            result[i] = np.max(arr[i-window+1:i+1])
+        for i in range(window, len(arr)):
+            # 使用 arr[i-window:i]，不包含当天 arr[i]
+            result[i] = np.max(arr[i-window:i])
         return result
 
     def _rolling_min(self, arr, window):
+        """滚动最小值 - 不包含当天，避免数据泄露"""
         result = np.zeros_like(arr, dtype=float)
         result[:] = np.nan
-        for i in range(window-1, len(arr)):
-            result[i] = np.min(arr[i-window+1:i+1])
+        for i in range(window, len(arr)):
+            # 使用 arr[i-window:i]，不包含当天 arr[i]
+            result[i] = np.min(arr[i-window:i])
         return result
 
     def _shift(self, arr, periods):

@@ -1,15 +1,15 @@
 # analysis/rolling_signal_validator.py
 """
-滚动信号验证模块
+滚动信号验证模块 (Walk-Forward Validation)
 
-使用实际SignalEngine验证信号质量:
-- 回看期: 120天
-- 展望期: 20天
-- 采样频率: 每20天（减少计算量）
+这是正确的样本外验证方法:
+- 每个验证时点只使用该时点之前的数据选择因子
+- 不依赖预先配置好的因子，动态选择
 
-评估:
-- 分行业信号质量
-- 全市场统一排序选股质量
+参数:
+- 训练窗口: 250天 (约1年)
+- 验证周期: 20天 (与回测调仓周期一致)
+- 因子选择: 基于训练窗口内的IR选Top3因子
 """
 
 import os
@@ -22,206 +22,342 @@ from multiprocessing import Pool
 import warnings
 warnings.filterwarnings('ignore')
 
-# 添加路径
+# 路径设置
 script_dir = os.path.dirname(os.path.abspath(__file__))
 strategy_dir = os.path.dirname(script_dir)
 project_root = os.path.dirname(strategy_dir)
 sys.path.insert(0, strategy_dir)
 
 from core.config_loader import load_config
-from core.signal_engine import SignalEngine
+from core.factors import calc_all_factors_for_validation
 from core.fundamental import FundamentalData
-from core.signal_store import SignalStore
 
 config = load_config(os.path.join(project_root, 'strategy/config/factor_config.yaml'))
 detailed_industries = config.config.get('detailed_industries', {})
 
-# 读取配置
-MAX_POSITION = config.config.get('backtest', {}).get('max_position', 10)
+# 配置参数
+TRAIN_WINDOW = 250  # 训练窗口天数
+FORWARD_PERIOD = 20  # 前瞻期
+LOOKBACK = 120  # 因子计算回看期
+MIN_TRAIN_SAMPLES = 50  # 最少训练样本数
+TOP_N_FACTORS = 3  # 使用Top N因子等权
 
 
-def generate_signals_for_stock(args):
-    """为单只股票生成信号"""
-    code, df, sample_dates, fd = args
+def calc_ic(factor_values, returns):
+    """计算IC"""
+    valid_mask = ~(np.isnan(factor_values) | np.isnan(returns))
+    if valid_mask.sum() < 5:
+        return np.nan
+    ic, _ = stats.spearmanr(factor_values[valid_mask], returns[valid_mask])
+    return ic
+
+
+def process_stock_factors(args):
+    """计算单只股票所有日期的因子值"""
+    code, df, all_sample_dates, fd = args
     stock_dates = sorted(df.index.tolist())
 
-    # 在每个进程中创建SignalEngine（无法跨进程传递）
-    signal_engine = SignalEngine()
-    signal_engine.set_fundamental_data(fd)
-
     results = []
-    date_to_idx = {d: i for i, d in enumerate(stock_dates)}
-
-    for sample_date in sample_dates:
+    for sample_date in all_sample_dates:
         valid_dates = [d for d in stock_dates if d <= sample_date]
-        if len(valid_dates) < 120:
-            continue
-        eval_date = valid_dates[-1]
-        idx = date_to_idx.get(eval_date)
-        if idx is None or idx < 120:
+        if len(valid_dates) < LOOKBACK:
             continue
 
-        history = df.iloc[:idx+1].iloc[-120:]
+        eval_date = valid_dates[-1]
+        idx = stock_dates.index(eval_date)
+
+        if idx < LOOKBACK:
+            continue
+
+        history = df.iloc[:idx+1].iloc[-LOOKBACK:]
         if len(history) < 60:
             continue
 
-        history_copy = history.copy()
-        history_copy['datetime'] = history_copy.index
+        # 计算因子
+        factors = calc_all_factors_for_validation(
+            history['close'].values,
+            history['high'].values if 'high' in history.columns else history['close'].values,
+            history['low'].values if 'low' in history.columns else history['close'].values,
+            history['volume'].values if 'volume' in history.columns else np.ones(len(history)),
+            fundamental_data=fd,
+            code=code,
+            eval_date=eval_date
+        )
 
-        signal_store = SignalStore()
-        signal_engine.generate_at_indices(code, history_copy, [len(history_copy)-1], signal_store)
+        row = {'code': code, 'date': eval_date}
+        for fn, vals in factors.items():
+            if hasattr(vals, '__len__') and len(vals) > 0:
+                val = vals[-1]
+            else:
+                val = vals
+            if val is not None and not np.isnan(val):
+                row[fn] = float(val)
 
-        sig = signal_store.get(code, eval_date.date() if hasattr(eval_date, 'date') else eval_date)
-        if sig and idx + 20 < len(df):
-            future_price = df.iloc[idx + 20]['close']
+        # 计算未来收益
+        if idx + FORWARD_PERIOD < len(df):
+            future_price = df.iloc[idx + FORWARD_PERIOD]['close']
             current_price = df.iloc[idx]['close']
             if current_price > 0:
-                future_ret = (future_price - current_price) / current_price
-                results.append({
-                    'code': code,
-                    'date': eval_date,
-                    'score': sig.factor_value,
-                    'buy': sig.buy,
-                    'factor_name': sig.factor_name,
-                    'future_ret': future_ret,
-                })
+                row['future_ret'] = (future_price - current_price) / current_price
+                results.append(row)
 
     return results
 
 
+def select_factors_in_window(train_df, factor_names, industry_codes, min_samples=MIN_TRAIN_SAMPLES):
+    """在训练窗口内选择最优因子"""
+    industry_factors = {}
+
+    for cat, codes in industry_codes.items():
+        if len(codes) < 3:
+            continue
+
+        cat_df = train_df[train_df['code'].isin(codes)]
+        if len(cat_df) < min_samples:
+            continue
+
+        # 计算每个因子的平均IC
+        factor_ics = []
+        for fn in factor_names:
+            if fn not in cat_df.columns:
+                continue
+
+            ic_list = []
+            for date, group in cat_df.groupby('date'):
+                if len(group) >= 3:
+                    ic = calc_ic(group[fn].values, group['future_ret'].values)
+                    if not np.isnan(ic):
+                        ic_list.append(ic)
+
+            if len(ic_list) >= 5:
+                factor_ics.append({
+                    'factor': fn,
+                    'ic_mean': np.mean(ic_list),
+                    'ir': np.mean(ic_list) / (np.std(ic_list) + 1e-10)
+                })
+
+        # 按IR排序选Top N
+        if factor_ics:
+            factor_ics.sort(key=lambda x: x['ir'], reverse=True)
+            industry_factors[cat] = [f['factor'] for f in factor_ics[:TOP_N_FACTORS]]
+
+    return industry_factors
+
+
+def generate_signal_with_factors(row, factor_list):
+    """使用给定因子列表生成综合信号"""
+    if not factor_list:
+        return np.nan
+
+    scores = []
+    for fn in factor_list:
+        if fn in row and not np.isnan(row[fn]):
+            scores.append(row[fn])
+
+    if not scores:
+        return np.nan
+
+    return np.mean(scores)
+
+
 def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
-    """运行验证"""
+    """执行滚动验证"""
     print("=" * 60)
-    print("滚动信号验证 - 使用SignalEngine")
-    print(f"回看期: 120天, 展望期: 20天")
+    print("滚动信号验证 (Walk-Forward)")
+    print(f"训练窗口: {TRAIN_WINDOW}天, 前瞻期: {FORWARD_PERIOD}天")
+    print(f"每个验证点动态选择Top-{TOP_N_FACTORS}因子")
     print("=" * 60)
 
-    # 生成采样日期
+    # 获取所有日期
     all_dates = set()
     for df in stock_data.values():
         all_dates.update(df.index.tolist())
+    all_dates = sorted(all_dates)
 
-    common_dates = sorted(all_dates)[120:-20]
-    sample_dates = common_dates[::5]
+    # 验证时间点
+    start_idx = LOOKBACK + TRAIN_WINDOW
+    validation_dates = all_dates[start_idx:-FORWARD_PERIOD:FORWARD_PERIOD]
 
-    print(f"采样日期数量: {len(sample_dates)}")
+    print(f"验证时间点: {len(validation_dates)} 个")
+    print(f"验证区间: {validation_dates[0]} ~ {validation_dates[-1]}")
 
-    print("\n生成信号...")
-    codes = list(stock_data.keys())
-    args_list = [(code, stock_data[code], sample_dates, fd) for code in codes]
+    # 预计算因子
+    print("\n计算因子...")
+    all_sample_dates = all_dates[LOOKBACK:-FORWARD_PERIOD:5]
 
-    all_signals = []
+    args_list = [(code, stock_data[code], all_sample_dates, fd) for code in stock_data.keys()]
+
+    all_factor_data = []
     with Pool(num_workers) as pool:
-        for res in tqdm(pool.imap(generate_signals_for_stock, args_list, chunksize=10), total=len(args_list), desc="计算信号"):
-            all_signals.extend(res)
+        for res in tqdm(pool.imap(process_stock_factors, args_list, chunksize=10),
+                       total=len(args_list), desc="计算因子"):
+            all_factor_data.extend(res)
 
-    signals_df = pd.DataFrame(all_signals)
-    print(f"信号数据: {len(signals_df)} 条")
+    factor_df = pd.DataFrame(all_factor_data)
+    print(f"因子数据: {len(factor_df)} 条")
 
-    if len(signals_df) == 0:
-        print("没有信号数据!")
+    if len(factor_df) == 0:
+        print("没有因子数据!")
         return
 
-    valid = signals_df.dropna(subset=['score', 'future_ret'])
-    print(f"有效数据: {len(valid)} 条")
+    # 因子列表
+    exclude_cols = ['code', 'date', 'future_ret']
+    factor_names = [c for c in factor_df.columns if c not in exclude_cols]
+    print(f"因子数量: {len(factor_names)}")
 
-    # 分行业验证
-    print("\n" + "=" * 60)
-    print("分行业验证")
-    print("=" * 60)
+    # 行业映射
+    industry_codes = {cat: [] for cat in detailed_industries.keys()}
+    for code in stock_data.keys():
+        try:
+            ind = fd.get_industry(code, all_dates[100])
+            for cat, keywords in detailed_industries.items():
+                if any(kw in str(ind) for kw in keywords):
+                    industry_codes[cat].append(code)
+                    break
+        except:
+            pass
 
-    industry_results = {}
-    for cat in detailed_industries.keys():
-        cat_codes = []
-        for code in codes:
-            try:
-                ind = fd.get_industry(code, '2024-01-01')
-                if any(kw in str(ind) for kw in detailed_industries[cat]):
-                    cat_codes.append(code)
-            except:
-                pass
+    # 滚动验证
+    print("\n滚动验证...")
+    validation_results = []
+    factor_selection_log = []
 
-        if len(cat_codes) < 5:
+    for val_date in tqdm(validation_dates, desc="滚动验证"):
+        # 确定训练窗口
+        train_end_idx = all_dates.index(val_date)
+        train_start_date = all_dates[max(0, train_end_idx - TRAIN_WINDOW)]
+
+        # 训练数据（严格只用val_date之前的数据）
+        train_df = factor_df[
+            (factor_df['date'] >= train_start_date) &
+            (factor_df['date'] < val_date)
+        ]
+
+        if len(train_df) < MIN_TRAIN_SAMPLES:
             continue
 
-        cat_df = valid[valid['code'].isin(cat_codes)]
-        if len(cat_df) < 10:
+        # 选择因子
+        industry_factors = select_factors_in_window(train_df, factor_names, industry_codes)
+
+        # 记录因子选择
+        for cat, factors in industry_factors.items():
+            factor_selection_log.append({
+                'date': val_date,
+                'industry': cat,
+                'factors': ','.join(factors)
+            })
+
+        # 验证数据
+        val_df = factor_df[factor_df['date'] == val_date].copy()
+        if len(val_df) < 10:
+            continue
+
+        # 生成信号
+        for idx, row in val_df.iterrows():
+            code = row['code']
+
+            stock_industry = None
+            for cat, codes in industry_codes.items():
+                if code in codes:
+                    stock_industry = cat
+                    break
+
+            if stock_industry and stock_industry in industry_factors:
+                signal = generate_signal_with_factors(row, industry_factors[stock_industry])
+            else:
+                signal = generate_signal_with_factors(row, factor_names[:TOP_N_FACTORS])
+
+            if not np.isnan(signal):
+                validation_results.append({
+                    'date': val_date,
+                    'code': code,
+                    'industry': stock_industry,
+                    'signal': signal,
+                    'future_ret': row['future_ret']
+                })
+
+    results_df = pd.DataFrame(validation_results)
+    print(f"\n验证结果: {len(results_df)} 条")
+
+    # 评估
+    print("\n" + "=" * 60)
+    print("验证结果")
+    print("=" * 60)
+
+    # 整体IC
+    overall_ic_list = []
+    for date, group in results_df.groupby('date'):
+        if len(group) >= 10:
+            ic = calc_ic(group['signal'].values, group['future_ret'].values)
+            if not np.isnan(ic):
+                overall_ic_list.append(ic)
+
+    if overall_ic_list:
+        print(f"\n整体表现:")
+        print(f"  IC均值: {np.mean(overall_ic_list):.4f}")
+        print(f"  IR: {np.mean(overall_ic_list) / (np.std(overall_ic_list) + 1e-10):.4f}")
+        print(f"  胜率: {np.mean([1 if i > 0 else 0 for i in overall_ic_list]):.1%}")
+
+    # 分行业
+    print(f"\n分行业表现:")
+    industry_results = {}
+    for cat in detailed_industries.keys():
+        cat_df = results_df[results_df['industry'] == cat]
+        if len(cat_df) < 20:
             continue
 
         ic_list = []
         for date, group in cat_df.groupby('date'):
             if len(group) >= 3:
-                fv = group['score'].values
-                fr = group['future_ret'].values
-                valid_mask = ~(np.isnan(fv) | np.isnan(fr))
-                if valid_mask.sum() >= 2:
-                    ic, _ = stats.spearmanr(fv[valid_mask], fr[valid_mask])
-                    if not np.isnan(ic):
-                        ic_list.append(ic)
+                ic = calc_ic(group['signal'].values, group['future_ret'].values)
+                if not np.isnan(ic):
+                    ic_list.append(ic)
 
-        if ic_list:
+        if len(ic_list) >= 5:
             industry_results[cat] = {
                 'ic_mean': np.mean(ic_list),
-                'ic_std': np.std(ic_list),
                 'ir': np.mean(ic_list) / (np.std(ic_list) + 1e-10),
-                'win_rate': np.mean([1 if i > 0 else 0 for i in ic_list]),
-                'n_periods': len(ic_list),
+                'win_rate': np.mean([1 if i > 0 else 0 for i in ic_list])
             }
 
-    for cat, st in sorted(industry_results.items(), key=lambda x: -x[1].get('ir', 0)):
-        print(f"{cat}: IC={st['ic_mean']:.4f}, IR={st['ir']:.4f}, 胜率={st['win_rate']:.1%}")
+    for cat, res in sorted(industry_results.items(), key=lambda x: -x[1]['ir']):
+        print(f"  {cat}: IC={res['ic_mean']:.4f}, IR={res['ir']:.4f}, 胜率={res['win_rate']:.1%}")
 
-    # 全市场统一排序选股验证
-    print("\n" + "=" * 60)
-    print(f"全市场统一排序选股验证 (Top-{MAX_POSITION})")
-    print("=" * 60)
-
+    # Top-N选股
+    print(f"\n全市场Top-10选股:")
     portfolio_returns = []
-    period_ic_list = []
 
-    for date, date_group in valid.groupby('date'):
-        if len(date_group) < MAX_POSITION:
+    for date, group in results_df.groupby('date'):
+        if len(group) < 10:
             continue
-
-        # 直接用原始分数排序选top N
-        sorted_df = date_group.sort_values('score', ascending=False)
-        top_n = sorted_df.head(MAX_POSITION)
-
-        avg_ret = top_n['future_ret'].mean()
-        portfolio_returns.append(avg_ret)
-
-        if len(top_n) >= 3:
-            ic, _ = stats.spearmanr(top_n['score'], top_n['future_ret'])
-            if not np.isnan(ic):
-                period_ic_list.append(ic)
+        top_n = group.nlargest(10, 'signal')
+        portfolio_returns.append(top_n['future_ret'].mean())
 
     if portfolio_returns:
-        print(f"选股数量: {MAX_POSITION}")
-        print(f"回测期数: {len(portfolio_returns)}")
-        print(f"平均收益: {np.mean(portfolio_returns)*100:.2f}%")
-        print(f"总体IC: {np.mean(period_ic_list):.4f}")
-        print(f"IR: {np.mean(period_ic_list)/np.std(period_ic_list):.4f}")
-        print(f"胜率: {np.mean([1 if i > 0 else 0 for i in period_ic_list]):.1%}")
+        print(f"  平均收益: {np.mean(portfolio_returns) * 100:.2f}%")
+        print(f"  夏普比率: {np.mean(portfolio_returns) / (np.std(portfolio_returns) + 1e-10) * np.sqrt(12):.2f}")
+        print(f"  正收益占比: {np.mean([1 if r > 0 else 0 for r in portfolio_returns]):.1%}")
 
-    # 保存结果
+    # 保存
     results_dir = os.path.join(project_root, 'strategy/rolling_validation_results')
     os.makedirs(results_dir, exist_ok=True)
 
-    rows = []
-    for cat, st in industry_results.items():
-        rows.append({'category': cat, **st})
-
-    if rows:
-        pd.DataFrame(rows).to_csv(os.path.join(results_dir, 'signal_quality_report.csv'), index=False)
+    results_df.to_csv(os.path.join(results_dir, 'rolling_signals.csv'), index=False)
+    pd.DataFrame(factor_selection_log).to_csv(
+        os.path.join(results_dir, 'factor_selection_log.csv'), index=False
+    )
 
     print(f"\n结果已保存到 {results_dir}/")
+
+    return results_df
 
 
 if __name__ == '__main__':
     DATA_PATH = os.path.join(project_root, 'data/stock_data/backtrader_data/')
     FUND_PATH = os.path.join(project_root, 'data/stock_data/fundamental_data/')
 
-    # 加载股票数据
+    # 加载数据
+    print("加载数据...")
     files = [f for f in os.listdir(DATA_PATH)
              if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv']
 
@@ -229,13 +365,12 @@ if __name__ == '__main__':
     for f in files:
         code = f.replace('_qfq.csv', '')
         df = pd.read_csv(os.path.join(DATA_PATH, f), parse_dates=['datetime']).set_index('datetime').sort_index()
-        if len(df) >= 200:
+        if len(df) >= 300:
             stock_data[code] = df
 
     print(f"加载 {len(stock_data)} 只股票")
 
     # 加载基本面数据
-    print("加载基本面数据...")
     fd = FundamentalData(FUND_PATH, list(stock_data.keys()))
 
     # 运行验证

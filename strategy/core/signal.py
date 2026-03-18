@@ -15,6 +15,9 @@ class Signal:
     factor_value: float = 0.0    # 原始因子值（用于IC计算）
     factor_name: str = ""         # 因子名称
 
+    # === 行业信息 ===
+    industry: str = ""            # 行业分类
+
     # === 风险信息 ===
     risk_vol: float = 0.0        # 波动率风险
     risk_regime: int = 0          # 市场状态风险: -1(熊), 0(震荡), 1(牛)
@@ -32,6 +35,7 @@ class Signal:
             'score': self.score,
             'factor_value': self.factor_value,
             'factor_name': self.factor_name,
+            'industry': self.industry,
             'risk_vol': self.risk_vol,
             'risk_regime': self.risk_regime,
             'risk_confidence': self.risk_confidence,
