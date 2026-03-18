@@ -15,6 +15,16 @@ cd strategy && python bt_execution.py
 cd strategy && ./run_bt.sh
 ```
 
+### Run Factor Validation
+```bash
+cd strategy && python analysis/factor_validator.py
+```
+
+### Run Rolling Signal Validation
+```bash
+cd strategy && python analysis/rolling_signal_validator.py
+```
+
 ### Download/Update Stock Data
 ```bash
 cd data && python data_manager.py
@@ -24,11 +34,11 @@ cd data && python data_manager.py
 All parameters are defined in `strategy/config/factor_config.yaml`:
 - `backtest` - 回测参数 (cash, commission, slippage, max_position, rebalance_days, num_workers)
 - `portfolio` - 组合参数 (max_position, target_volatility, entry_speed, exit_speed, stop losses)
-- `paths` - 数据路径
+- `detailed_industries` - 行业分类定义
+- `signal_thresholds` - 买入/卖出阈值
 - `technical_weights` - 技术面因子权重
 - `regime_weights` - 市场状态动态权重
 - `fundamental_weights` - 基本面因子配置
-- `style_weights` - 风格因子配置
 
 ## Architecture
 
@@ -52,6 +62,7 @@ StockDataManager (data fetch) → Strategy (signal generation) → BacktraderExe
 - Volatility-based signals
 - Signals are combined with regime-aware weighting and smoothing
 - Integrates style factors (small-cap/large-cap, value/growth rotation)
+- Supports industry-specific factor selection via `industry_factor_config.py`
 
 **strategy/core/portfolio.py** - `PortfolioConstructor` converts signals to positions:
 - Risk budget allocation based on signal score and volatility
@@ -65,17 +76,27 @@ StockDataManager (data fetch) → Strategy (signal generation) → BacktraderExe
 - Uses index technical indicators for regime classification
 - Provides regime-aware factor weighting
 
+**strategy/core/industry_factor_config.py** - Industry-specific factor configuration:
+- Based on factor validation results
+- Each industry has optimized factor selection (top1 or weighted method)
+- Supports 14 industry categories
+
 **strategy/core/signal_store.py** - `SignalStore` caches signals by (code, date) tuple
 
-**strategy/core/factors.py** - Technical factor calculations:
-- Volatility factors (volatility_10, etc.)
-- RSI calculation
-- Bollinger Bands width
-- Momentum indicators
+**strategy/core/factor_library.py** - Factor calculation library:
+- Unified factor calculation interface
+- Used by both signal engine and validation scripts
+- Consistent 120-day lookback, 20-day forward period
 
-**strategy/core/fundamental.py** - Fundamental data processing:
-- Financial metrics for stock filtering
-- Supports基本面因子权重 in config
+**strategy/analysis/factor_validator.py** - Factor validation:
+- Validates individual factor IC/IR/win rate
+- Per-industry factor ranking
+- Results saved to `factor_validation_results/`
+
+**strategy/analysis/rolling_signal_validator.py** - Signal validation:
+- Uses SignalEngine to generate real signals
+- Validates signal quality (IC, IR, win rate)
+- Per-industry and overall market validation
 
 **strategy/bt_execution.py** - Backtrader integration layer:
 - `BacktraderExecution` wraps the strategy for Backtrader
@@ -91,7 +112,8 @@ StockDataManager (data fetch) → Strategy (signal generation) → BacktraderExe
 ### Data Paths
 - Raw data: `data/stock_data/raw_data/{symbol}/`
 - Backtrader data: `data/stock_data/backtrader_data/{symbol}_qfq.csv`
+- Fundamental data: `data/stock_data/fundamental_data/`
 - Index: sh000001 (Shanghai Composite)
 
 ### Signal Data Structure
-`Signal` dataclass: `buy`, `sell`, `score`, `risk_vol`
+`Signal` dataclass: `buy`, `sell`, `score`, `factor_value`, `risk_vol`, `risk_extreme`
