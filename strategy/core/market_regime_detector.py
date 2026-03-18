@@ -49,13 +49,13 @@ class MarketRegimeDetector:
 
     def _init_params(self):
         """初始化参数"""
-        # 熊市阈值
-        self.mom5_bear = -0.10
-        self.mom_bear = -0.12
+        # 熊市阈值（放宽，更敏感）
+        self.mom5_bear = -0.05    # 5日动量 < -5%
+        self.mom_bear = -0.08     # 20日动量 < -8%
 
-        # 牛市阈值
-        self.mom_bull = 0.08
-        self.mom60_bull = 0.05
+        # 牛市阈值（放宽，更敏感）
+        self.mom_bull = 0.05      # 20日动量 > 5%
+        self.mom60_bull = 0.03    # 60日动量 > 3%
 
         # 极端波动阈值
         self.vol_extreme_high = 0.30
