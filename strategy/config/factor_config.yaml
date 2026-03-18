@@ -247,7 +247,7 @@ industry_factor_config:
 # 动态因子选择配置（Walk-Forward动态选择）
 # 启用后，每个验证时点基于训练窗口内的IC/IR选择Top-N因子
 dynamic_factor:
-  enabled: false
+  enabled: true
   train_window: 250       # 训练窗口天数
   forward_period: 20       # 前瞻期（与调仓周期一致）
   top_n_factors: 3        # 选择Top-N因子

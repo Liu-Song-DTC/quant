@@ -6,12 +6,15 @@
 - 行业自适应因子选择
 - 市场状态动态权重
 - 风格因子调整
+- 动态因子选择（Walk-Forward）
 """
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from scipy import stats
+from multiprocessing import Pool
+from tqdm import tqdm
 
 from .signal import Signal
 from .signal_store import SignalStore
@@ -21,6 +24,131 @@ from .factors import calc_all_factors_for_validation
 
 import warnings
 warnings.filterwarnings('ignore')
+
+
+# ============================================================
+# 公共函数：预计算因子数据（供评估和回测使用）
+# ============================================================
+
+def prepare_factor_data(stock_data: dict, fd,
+                       detailed_industries: dict,
+                       num_workers: int = 8) -> Tuple[pd.DataFrame, dict, list]:
+    """预计算所有股票的因子数据（用于动态因子选择）
+
+    这个函数在系统初始化时调用一次，之后 SignalEngine 生成信号时
+    直接使用缓存的因子数据进行动态因子选择。
+
+    实时系统扩展：
+    - 每天新数据来临时，调用此函数增量更新因子数据
+    - 或者直接更新因子DataFrame，SignalEngine会自动使用
+
+    Args:
+        stock_data: {code: DataFrame} 股票历史数据
+        fd: FundamentalData 实例
+        detailed_industries: 行业分类配置
+        num_workers: 并行进程数
+
+    Returns:
+        tuple: (factor_data, industry_codes, all_dates)
+            - factor_data: 所有股票在所有日期的因子值 DataFrame
+            - industry_codes: {category: [codes]} 行业映射
+            - all_dates: 所有交易日期列表
+    """
+    config_loader = load_config()
+    lookback = config_loader.get('industry_factor_config.lookback_days', 120)
+    forward_period = config_loader.get('dynamic_factor.forward_period', 20)
+
+    # 构建行业映射
+    industry_codes = {cat: [] for cat in detailed_industries.keys()}
+    all_dates = set()
+    for df in stock_data.values():
+        all_dates.update(df.index.tolist())
+    all_dates = sorted(all_dates)
+
+    for code in stock_data.keys():
+        try:
+            sample_date = all_dates[100]  # 用较早的日期获取行业
+            ind = fd.get_industry(code, sample_date)
+            for cat, keywords in detailed_industries.items():
+                if any(kw in str(ind) for kw in keywords):
+                    industry_codes[cat].append(code)
+                    break
+        except:
+            pass
+
+    # 采样日期（每5天采样一次，减少计算量）
+    sample_dates = all_dates[lookback:-forward_period:5]
+    print(f"预计算因子数据: {len(sample_dates)} 个时间点, {len(stock_data)} 只股票")
+
+    # 并行计算因子
+    args_list = [
+        (code, stock_data[code], sample_dates, lookback, forward_period)
+        for code in stock_data.keys()
+    ]
+
+    all_factor_data = []
+    with Pool(num_workers) as pool:
+        for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=10),
+                       total=len(args_list), desc="计算因子"):
+            all_factor_data.extend(res)
+
+    factor_data = pd.DataFrame(all_factor_data) if all_factor_data else pd.DataFrame()
+    print(f"因子数据: {len(factor_data)} 条")
+
+    return factor_data, industry_codes, all_dates
+
+
+def _compute_stock_factors_worker(args):
+    """多进程 worker: 计算单只股票的因子数据"""
+    code, df, sample_dates, lookback, forward_period = args
+    stock_dates = sorted(df.index.tolist())
+
+    results = []
+    for sample_date in sample_dates:
+        valid_dates = [d for d in stock_dates if d <= sample_date]
+        if len(valid_dates) < lookback:
+            continue
+
+        eval_date = valid_dates[-1]
+        idx = stock_dates.index(eval_date)
+
+        if idx < lookback:
+            continue
+
+        history = df.iloc[:idx+1].iloc[-lookback:]
+        if len(history) < 60:
+            continue
+
+        # 计算因子
+        from .factors import calc_all_factors_for_validation
+        factors = calc_all_factors_for_validation(
+            history['close'].values,
+            history['high'].values if 'high' in history.columns else history['close'].values,
+            history['low'].values if 'low' in history.columns else history['close'].values,
+            history['volume'].values if 'volume' in history.columns else np.ones(len(history)),
+            fundamental_data=None,  # worker 中不传递 fd
+            code=code,
+            eval_date=eval_date
+        )
+
+        row = {'code': code, 'date': eval_date}
+        for fn, vals in factors.items():
+            if hasattr(vals, '__len__') and len(vals) > 0:
+                val = vals[-1]
+            else:
+                val = vals
+            if val is not None and not np.isnan(val):
+                row[fn] = float(val)
+
+        # 计算未来收益
+        if idx + forward_period < len(df):
+            future_price = df.iloc[idx + forward_period]['close']
+            current_price = df.iloc[idx]['close']
+            if current_price > 0:
+                row['future_ret'] = (future_price - current_price) / current_price
+                results.append(row)
+
+    return results
 
 
 class DynamicFactorSelector:

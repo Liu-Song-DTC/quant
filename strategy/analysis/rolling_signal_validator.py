@@ -33,7 +33,7 @@ sys.path.insert(0, strategy_dir)
 from core.config_loader import load_config
 from core.factors import calc_all_factors_for_validation
 from core.fundamental import FundamentalData
-from core.signal_engine import DynamicFactorSelector
+from core.signal_engine import DynamicFactorSelector, prepare_factor_data
 
 config = load_config(os.path.join(project_root, 'strategy/config/factor_config.yaml'))
 detailed_industries = config.config.get('detailed_industries', {})
@@ -54,58 +54,6 @@ def calc_ic(factor_values, returns):
         return np.nan
     ic, _ = stats.spearmanr(factor_values[valid_mask], returns[valid_mask])
     return ic
-
-
-def process_stock_factors(args):
-    """计算单只股票所有日期的因子值"""
-    code, df, all_sample_dates, fd = args
-    stock_dates = sorted(df.index.tolist())
-
-    results = []
-    for sample_date in all_sample_dates:
-        valid_dates = [d for d in stock_dates if d <= sample_date]
-        if len(valid_dates) < LOOKBACK:
-            continue
-
-        eval_date = valid_dates[-1]
-        idx = stock_dates.index(eval_date)
-
-        if idx < LOOKBACK:
-            continue
-
-        history = df.iloc[:idx+1].iloc[-LOOKBACK:]
-        if len(history) < 60:
-            continue
-
-        # 计算因子
-        factors = calc_all_factors_for_validation(
-            history['close'].values,
-            history['high'].values if 'high' in history.columns else history['close'].values,
-            history['low'].values if 'low' in history.columns else history['close'].values,
-            history['volume'].values if 'volume' in history.columns else np.ones(len(history)),
-            fundamental_data=fd,
-            code=code,
-            eval_date=eval_date
-        )
-
-        row = {'code': code, 'date': eval_date}
-        for fn, vals in factors.items():
-            if hasattr(vals, '__len__') and len(vals) > 0:
-                val = vals[-1]
-            else:
-                val = vals
-            if val is not None and not np.isnan(val):
-                row[fn] = float(val)
-
-        # 计算未来收益
-        if idx + FORWARD_PERIOD < len(df):
-            future_price = df.iloc[idx + FORWARD_PERIOD]['close']
-            current_price = df.iloc[idx]['close']
-            if current_price > 0:
-                row['future_ret'] = (future_price - current_price) / current_price
-                results.append(row)
-
-    return results
 
 
 def generate_signal_with_factors(row, factor_list):
@@ -132,11 +80,18 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
     print(f"每个验证点动态选择Top-{TOP_N_FACTORS}因子")
     print("=" * 60)
 
-    # 获取所有日期
-    all_dates = set()
-    for df in stock_data.values():
-        all_dates.update(df.index.tolist())
-    all_dates = sorted(all_dates)
+    # 使用统一的函数预计算因子数据
+    print("\n预计算因子数据...")
+    factor_df, industry_codes, all_dates = prepare_factor_data(
+        stock_data=stock_data,
+        fd=fd,
+        detailed_industries=detailed_industries,
+        num_workers=num_workers
+    )
+
+    if factor_df is None or len(factor_df) == 0:
+        print("没有因子数据!")
+        return
 
     # 验证时间点
     start_idx = LOOKBACK + TRAIN_WINDOW
@@ -145,41 +100,10 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
     print(f"验证时间点: {len(validation_dates)} 个")
     print(f"验证区间: {validation_dates[0]} ~ {validation_dates[-1]}")
 
-    # 预计算因子
-    print("\n计算因子...")
-    all_sample_dates = all_dates[LOOKBACK:-FORWARD_PERIOD:5]
-
-    args_list = [(code, stock_data[code], all_sample_dates, fd) for code in stock_data.keys()]
-
-    all_factor_data = []
-    with Pool(num_workers) as pool:
-        for res in tqdm(pool.imap(process_stock_factors, args_list, chunksize=10),
-                       total=len(args_list), desc="计算因子"):
-            all_factor_data.extend(res)
-
-    factor_df = pd.DataFrame(all_factor_data)
-    print(f"因子数据: {len(factor_df)} 条")
-
-    if len(factor_df) == 0:
-        print("没有因子数据!")
-        return
-
     # 因子列表
     exclude_cols = ['code', 'date', 'future_ret']
     factor_names = [c for c in factor_df.columns if c not in exclude_cols]
     print(f"因子数量: {len(factor_names)}")
-
-    # 行业映射
-    industry_codes = {cat: [] for cat in detailed_industries.keys()}
-    for code in stock_data.keys():
-        try:
-            ind = fd.get_industry(code, all_dates[100])
-            for cat, keywords in detailed_industries.items():
-                if any(kw in str(ind) for kw in keywords):
-                    industry_codes[cat].append(code)
-                    break
-        except:
-            pass
 
     # 创建动态因子选择器
     factor_selector = DynamicFactorSelector()

@@ -28,7 +28,7 @@ project_root = os.path.dirname(strategy_dir)
 sys.path.insert(0, strategy_dir)
 
 from core.config_loader import load_config
-from core.signal_engine import SignalEngine
+from core.signal_engine import SignalEngine, prepare_factor_data
 from core.signal_store import SignalStore
 from core.fundamental import FundamentalData
 
@@ -36,13 +36,62 @@ config = load_config(os.path.join(project_root, 'strategy/config/factor_config.y
 detailed_industries = config.config.get('detailed_industries', {})
 
 
-def generate_signals_for_stock(args):
-    """为单只股票生成信号"""
-    code, df, sample_dates, fd = args
+def generate_signals_for_stock_with_engine(args):
+    """为单只股票生成信号（使用已创建的 SignalEngine）"""
+    code, df, sample_dates, fd, signal_engine = args
     stock_dates = sorted(df.index.tolist())
 
-    signal_engine = SignalEngine()
-    signal_engine.set_fundamental_data(fd)
+    results = []
+    date_to_idx = {d: i for i, d in enumerate(stock_dates)}
+
+    for sample_date in sample_dates:
+        valid_dates = [d for d in stock_dates if d <= sample_date]
+        if len(valid_dates) < 120:
+            continue
+
+        eval_date = valid_dates[-1]
+        idx = date_to_idx.get(eval_date)
+        if idx is None or idx < 120:
+            continue
+
+        history = df.iloc[:idx+1].iloc[-120:]
+        if len(history) < 60:
+            continue
+
+        history_copy = history.copy()
+        history_copy['datetime'] = history_copy.index
+
+        signal_store = SignalStore()
+        signal_engine.generate_at_indices(code, history_copy, [len(history_copy)-1], signal_store)
+
+        sig = signal_store.get(code, eval_date.date() if hasattr(eval_date, 'date') else eval_date)
+        if sig and idx + 20 < len(df):
+            future_price = df.iloc[idx + 20]['close']
+            current_price = df.iloc[idx]['close']
+            if current_price > 0:
+                future_ret = (future_price - current_price) / current_price
+                results.append({
+                    'code': code,
+                    'date': eval_date,
+                    'score': sig.score,
+                    'factor_value': sig.factor_value,
+                    'buy': sig.buy,
+                    'sell': sig.sell,
+                    'factor_name': sig.factor_name,
+                    'future_ret': future_ret,
+                })
+
+    return results
+
+
+def generate_signals_for_stock(args):
+    """为单只股票生成信号"""
+    code, df, sample_dates, fd, signal_engine = args
+    stock_dates = sorted(df.index.tolist())
+
+    if signal_engine is None:
+        signal_engine = SignalEngine()
+        signal_engine.set_fundamental_data(fd)
 
     results = []
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}
@@ -377,19 +426,54 @@ def run_evaluation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
     print("信号系统评估")
     print("=" * 60)
 
-    # 生成采样日期
-    all_dates = set()
-    for df in stock_data.values():
-        all_dates.update(df.index.tolist())
+    # 检查动态因子配置
+    dynamic_config = config.config.get('dynamic_factor', {})
+    use_dynamic = dynamic_config.get('enabled', False)
 
-    common_dates = sorted(all_dates)[120:-20]
+    # 预计算因子数据（用于动态因子选择）
+    factor_data = None
+    industry_codes = {}
+    all_dates = []
+
+    if use_dynamic:
+        print("动态因子模式已启用，预计算因子数据...")
+        factor_data, industry_codes, all_dates = prepare_factor_data(
+            stock_data=stock_data,
+            fd=fd,
+            detailed_industries=detailed_industries,
+            num_workers=num_workers
+        )
+
+    # 生成采样日期
+    all_dates_set = set()
+    for df in stock_data.values():
+        all_dates_set.update(df.index.tolist())
+
+    common_dates = sorted(all_dates_set)[120:-20]
     sample_dates = common_dates[::20]  # 每20天采样一次，与调仓周期一致
 
     print(f"采样日期: {len(sample_dates)} 个")
 
-    # 生成信号
+    # 创建带有因子数据的 SignalEngine（用于动态因子选择）
+    # 注意：因子数据需要在每个 worker 进程中可用
+    # 由于多进程无法传递大型 DataFrame，这里使用单进程生成信号
     print("\n生成信号...")
-    args_list = [(code, stock_data[code], sample_dates, fd) for code in stock_data.keys()]
+
+    # 创建主进程 SignalEngine（包含因子数据）
+    main_engine = SignalEngine()
+    main_engine.set_fundamental_data(fd)
+    if use_dynamic and factor_data is not None and len(factor_data) > 0:
+        main_engine.set_factor_data(factor_data)
+        main_engine.set_industry_mapping(industry_codes)
+
+    # 单进程生成信号（避免多进程传递 factor_data）
+    args_list = [(code, stock_data[code], sample_dates, fd, main_engine) for code in stock_data.keys()]
+
+    all_signals = []
+    from tqdm import tqdm
+    for res in tqdm(map(generate_signals_for_stock_with_engine, args_list),
+                   total=len(args_list), desc="计算信号"):
+        all_signals.extend(res)
 
     all_signals = []
     with Pool(num_workers) as pool:
