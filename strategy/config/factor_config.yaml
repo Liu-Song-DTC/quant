@@ -226,6 +226,7 @@ portfolio:
   exit_speed: 1.0
   position_stop_loss: 0.10
   portfolio_stop_loss: 0.08
+  enable_industry_weighting: true  # 行业权重优化选股
 
 # 组合止损配置
 portfolio_stop_loss:

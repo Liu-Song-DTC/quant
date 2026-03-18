@@ -20,9 +20,9 @@ cd strategy && ./run_bt.sh
 cd strategy && python analysis/factor_validator.py
 ```
 
-### Run Rolling Signal Validation
+### Run Signal Validation (Unified)
 ```bash
-cd strategy && python analysis/rolling_signal_validator.py
+cd strategy && python analysis/signal_validator.py
 ```
 
 ### Download/Update Stock Data
