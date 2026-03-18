@@ -10,7 +10,8 @@
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
+from scipy import stats
 
 from .signal import Signal
 from .signal_store import SignalStore
@@ -20,6 +21,169 @@ from .factors import calc_all_factors_for_validation
 
 import warnings
 warnings.filterwarnings('ignore')
+
+
+class DynamicFactorSelector:
+    """动态因子选择器 - 基于Walk-Forward验证的动态因子选择
+
+    在每个验证时点，使用训练窗口内的历史数据计算各因子的IC/IR，
+    动态选择IR最高的Top-N因子，避免静态配置的过拟合问题。
+    """
+
+    def __init__(self, config: dict = None):
+        self.config = config or {}
+        self._load_config()
+
+        # 缓存: {date: {industry: [factors]}}
+        self._factor_cache = {}
+
+        # 因子数据: DataFrame with columns [code, date, factor1, factor2, ..., future_ret]
+        self.factor_df = None
+
+        # 行业映射: {category: [codes]}
+        self.industry_codes = {}
+
+    def _load_config(self):
+        """加载配置"""
+        config_loader = load_config()
+        dynamic_config = config_loader.get('dynamic_factor', {})
+
+        self.enabled = dynamic_config.get('enabled', False)
+        self.train_window = dynamic_config.get('train_window', 250)
+        self.forward_period = dynamic_config.get('forward_period', 20)
+        self.top_n_factors = dynamic_config.get('top_n_factors', 3)
+        self.min_train_samples = dynamic_config.get('min_train_samples', 50)
+        self.min_ic_dates = dynamic_config.get('min_ic_dates', 5)
+
+    def set_factor_data(self, factor_df: pd.DataFrame):
+        """设置因子数据
+
+        Args:
+            factor_df: DataFrame with columns [code, date, factor1, factor2, ..., future_ret]
+        """
+        self.factor_df = factor_df
+        self._factor_cache.clear()
+
+    def set_industry_mapping(self, industry_codes: Dict[str, List[str]]):
+        """设置行业映射
+
+        Args:
+            industry_codes: {category: [stock_codes]}
+        """
+        self.industry_codes = industry_codes
+
+    def _calc_ic(self, factor_values: np.ndarray, returns: np.ndarray) -> float:
+        """计算IC (Spearman秩相关系数)"""
+        valid_mask = ~(np.isnan(factor_values) | np.isnan(returns))
+        if valid_mask.sum() < 5:
+            return np.nan
+        ic, _ = stats.spearmanr(factor_values[valid_mask], returns[valid_mask])
+        return ic
+
+    def _select_factors_for_industry(self, train_df: pd.DataFrame, industry: str,
+                                     factor_names: List[str]) -> List[str]:
+        """为一个行业选择最优因子
+
+        Args:
+            train_df: 训练数据
+            industry: 行业类别
+            factor_names: 可选因子列表
+
+        Returns:
+            选中的因子列表
+        """
+        codes = self.industry_codes.get(industry, [])
+        if not codes:
+            return []
+
+        # 筛选该行业的股票
+        ind_df = train_df[train_df['code'].isin(codes)]
+        if len(ind_df) < self.min_train_samples:
+            return []
+
+        # 计算每个因子的IC和IR
+        factor_metrics = []
+        for fn in factor_names:
+            if fn not in ind_df.columns:
+                continue
+
+            ic_list = []
+            for date, group in ind_df.groupby('date'):
+                if len(group) >= 3 and 'future_ret' in group.columns:
+                    ic = self._calc_ic(group[fn].values, group['future_ret'].values)
+                    if not np.isnan(ic):
+                        ic_list.append(ic)
+
+            if len(ic_list) >= self.min_ic_dates:
+                ic_mean = np.mean(ic_list)
+                ic_std = np.std(ic_list) + 1e-10
+                factor_metrics.append({
+                    'factor': fn,
+                    'ic_mean': ic_mean,
+                    'ir': ic_mean / ic_std,
+                    'ic_list': ic_list
+                })
+
+        if not factor_metrics:
+            return []
+
+        # 按IR排序选Top-N
+        factor_metrics.sort(key=lambda x: x['ir'], reverse=True)
+        return [f['factor'] for f in factor_metrics[:self.top_n_factors]]
+
+    def select_factors_for_date(self, val_date: str, all_dates: List[str]) -> Dict[str, List[str]]:
+        """为指定日期选择各行业的最优因子
+
+        Args:
+            val_date: 验证日期
+            all_dates: 所有可用日期列表
+
+        Returns:
+            {industry: [factors]} 各行业选中的因子
+        """
+        # 检查缓存
+        if val_date in self._factor_cache:
+            return self._factor_cache[val_date]
+
+        if self.factor_df is None or len(self.factor_df) == 0:
+            return {}
+
+        # 确定训练窗口
+        try:
+            val_idx = all_dates.index(val_date)
+        except ValueError:
+            return {}
+
+        train_start_idx = max(0, val_idx - self.train_window)
+        train_start_date = all_dates[train_start_idx]
+
+        # 训练数据（严格只用val_date之前的数据）
+        train_df = self.factor_df[
+            (self.factor_df['date'] >= train_start_date) &
+            (self.factor_df['date'] < val_date)
+        ]
+
+        if len(train_df) < self.min_train_samples:
+            return {}
+
+        # 因子列表
+        exclude_cols = ['code', 'date', 'future_ret']
+        factor_names = [c for c in self.factor_df.columns if c not in exclude_cols]
+
+        # 为每个行业选择因子
+        result = {}
+        for industry in self.industry_codes.keys():
+            factors = self._select_factors_for_industry(train_df, industry, factor_names)
+            if factors:
+                result[industry] = factors
+
+        # 缓存结果
+        self._factor_cache[val_date] = result
+        return result
+
+    def clear_cache(self):
+        """清空缓存"""
+        self._factor_cache.clear()
 
 
 class SignalEngine:
@@ -79,6 +243,29 @@ class SignalEngine:
 
         # 技术指标参数
         self.indicator_params = config_loader.get_indicator_params()
+
+        # 动态因子选择器
+        self.dynamic_factor_selector = DynamicFactorSelector()
+        self.dynamic_factor_enabled = self.dynamic_factor_selector.enabled
+
+        # 动态因子数据（用于信号生成时选择因子）
+        self._dynamic_industry_factors = {}  # {industry: [factors]}
+
+    def set_factor_data(self, factor_df: pd.DataFrame):
+        """设置因子数据（用于动态因子选择）
+
+        Args:
+            factor_df: DataFrame with columns [code, date, factor1, factor2, ..., future_ret]
+        """
+        self.dynamic_factor_selector.set_factor_data(factor_df)
+
+    def set_industry_mapping(self, industry_codes: Dict[str, List[str]]):
+        """设置行业映射（用于动态因子选择）
+
+        Args:
+            industry_codes: {category: [stock_codes]}
+        """
+        self.dynamic_factor_selector.set_industry_mapping(industry_codes)
 
     def set_fundamental_data(self, fundamental_data):
         """设置基本面数据"""
@@ -412,7 +599,13 @@ class SignalEngine:
         Returns:
             (factor_name, factor_value, risk_info, is_industry_factor)
         """
-        # 优先使用行业特定因子
+        # 优先使用动态因子选择（如果启用）
+        if self.dynamic_factor_enabled and code and current_date:
+            result = self._select_factor_dynamic(ind, idx, regime, code, current_date)
+            if result:
+                return result
+
+        # 静态行业因子配置
         if self.industry_factor_enabled and code and current_date:
             specific_industry = self._get_specific_industry(code, current_date)
             if specific_industry and specific_industry in INDUSTRY_FACTOR_CONFIG:
@@ -429,6 +622,110 @@ class SignalEngine:
         # 默认因子组合
         factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
         return factor_name, factor_value, risk_info, False
+
+    def _select_factor_dynamic(self, ind: dict, idx: int, regime: int,
+                                code=None, current_date=None) -> Optional[tuple]:
+        """动态因子选择
+
+        使用DynamicFactorSelector在每个时点动态选择最优因子
+
+        Returns:
+            (factor_name, factor_value, risk_info, is_industry_factor) or None
+        """
+        if not code or not current_date:
+            return None
+
+        # 获取当前日期的字符串形式
+        if hasattr(current_date, 'date'):
+            current_date_str = str(current_date.date())
+        else:
+            current_date_str = str(current_date)
+
+        # 获取股票所属行业
+        specific_industry = self._get_specific_industry(code, current_date)
+        if not specific_industry:
+            return None
+
+        # 获取动态选择的因子
+        # 检查缓存中是否有当前时点对应的因子
+        # 这里简化处理：每次调用都尝试更新行业因子
+        try:
+            all_dates = sorted(self.dynamic_factor_selector.factor_df['date'].unique().tolist()) if self.dynamic_factor_selector.factor_df is not None else []
+            industry_factors = self.dynamic_factor_selector.select_factors_for_date(current_date_str, all_dates)
+        except:
+            industry_factors = {}
+
+        if not industry_factors or specific_industry not in industry_factors:
+            return None
+
+        selected_factors = industry_factors[specific_industry]
+        if not selected_factors:
+            return None
+
+        # 计算动态因子得分
+        factor_scores = []
+        valid_factors = []
+
+        for factor_name in selected_factors:
+            # 基本面因子
+            if factor_name.startswith('fund_'):
+                factor_val = self._get_fundamental_factor_value(code, current_date, factor_name)
+            else:
+                # 技术因子
+                factor_val = self._safe_get(ind, factor_name, idx, None)
+
+            if factor_val is not None and not np.isnan(factor_val):
+                factor_scores.append(factor_val)
+                valid_factors.append(factor_name)
+
+        if not factor_scores:
+            return None
+
+        # 等权平均
+        factor_value = np.mean(factor_scores)
+
+        # 熊市调整
+        if regime == -1:
+            factor_value = factor_value * 0.7
+
+        factor_name = f'DYN_{specific_industry[:4]}_{len(valid_factors)}F'
+        risk_info = {'is_high_vol': False, 'dynamic_factor': True, 'n_factors': len(valid_factors)}
+
+        return factor_name, factor_value, risk_info, True
+
+    def _get_fundamental_factor_value(self, code, current_date, factor_name: str) -> Optional[float]:
+        """获取基本面因子值"""
+        if not hasattr(self, 'fundamental_data') or not self.fundamental_data:
+            return None
+
+        try:
+            if factor_name == 'fund_score':
+                raw = self.fundamental_data.get_fundamental_score(code, current_date)
+                return (raw - 50) / 100 if raw is not None else None
+            elif factor_name == 'fund_profit_growth':
+                raw = self.fundamental_data.get_profit_growth(code, current_date)
+                return np.clip(raw, -1, 1) if raw is not None else None
+            elif factor_name == 'fund_roe':
+                raw = self.fundamental_data.get_roe(code, current_date)
+                return (raw - 10) / 20 if raw is not None else None
+            elif factor_name == 'fund_revenue_growth':
+                raw = self.fundamental_data.get_revenue_growth(code, current_date)
+                return np.clip(raw, -1, 1) if raw is not None else None
+            elif factor_name == 'fund_eps':
+                raw = self.fundamental_data.get_eps(code, current_date)
+                return np.clip(raw / 2, -1, 1) if raw is not None else None
+            elif factor_name == 'fund_cf_to_profit':
+                raw = self.fundamental_data.get_cf_to_profit(code, current_date)
+                return np.clip((raw - 1), -1, 1) if raw is not None else None
+            elif factor_name == 'fund_debt_ratio':
+                raw = self.fundamental_data.get_debt_ratio(code, current_date)
+                return (50 - raw) / 50 if raw is not None else None
+            elif factor_name == 'fund_gross_margin':
+                raw = self.fundamental_data.get_gross_margin(code, current_date)
+                return (raw - 30) / 30 if raw is not None else None
+        except:
+            pass
+        return None
 
     def _calculate_default_factor(self, ind: dict, idx: int, regime: int, industry_category: str) -> tuple:
         """计算默认因子组合

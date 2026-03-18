@@ -4,12 +4,14 @@
 
 这是正确的样本外验证方法:
 - 每个验证时点只使用该时点之前的数据选择因子
-- 不依赖预先配置好的因子，动态选择
+- 使用 signal_engine.DynamicFactorSelector 动态选择因子
 
-参数:
-- 训练窗口: 250天 (约1年)
-- 验证周期: 20天 (与回测调仓周期一致)
-- 因子选择: 基于训练窗口内的IR选Top3因子
+参数从 factor_config.yaml 读取:
+- dynamic_factor.train_window: 训练窗口 (默认250天)
+- dynamic_factor.forward_period: 前瞻期 (默认20天)
+- dynamic_factor.top_n_factors: 选择Top-N因子 (默认3)
+- dynamic_factor.min_train_samples: 最少训练样本数 (默认50)
+- dynamic_factor.min_ic_dates: 最少有效IC天数 (默认5)
 """
 
 import os
@@ -31,20 +33,22 @@ sys.path.insert(0, strategy_dir)
 from core.config_loader import load_config
 from core.factors import calc_all_factors_for_validation
 from core.fundamental import FundamentalData
+from core.signal_engine import DynamicFactorSelector
 
 config = load_config(os.path.join(project_root, 'strategy/config/factor_config.yaml'))
 detailed_industries = config.config.get('detailed_industries', {})
 
-# 配置参数
-TRAIN_WINDOW = 250  # 训练窗口天数
-FORWARD_PERIOD = 20  # 前瞻期
-LOOKBACK = 120  # 因子计算回看期
-MIN_TRAIN_SAMPLES = 50  # 最少训练样本数
-TOP_N_FACTORS = 3  # 使用Top N因子等权
+# 配置参数 - 从配置文件读取
+dynamic_config = config.config.get('dynamic_factor', {})
+TRAIN_WINDOW = dynamic_config.get('train_window', 250)
+FORWARD_PERIOD = dynamic_config.get('forward_period', 20)
+LOOKBACK = config.config.get('industry_factor_config', {}).get('lookback_days', 120)
+MIN_TRAIN_SAMPLES = dynamic_config.get('min_train_samples', 50)
+TOP_N_FACTORS = dynamic_config.get('top_n_factors', 3)
 
 
 def calc_ic(factor_values, returns):
-    """计算IC"""
+    """计算IC (Spearman秩相关)"""
     valid_mask = ~(np.isnan(factor_values) | np.isnan(returns))
     if valid_mask.sum() < 5:
         return np.nan
@@ -102,46 +106,6 @@ def process_stock_factors(args):
                 results.append(row)
 
     return results
-
-
-def select_factors_in_window(train_df, factor_names, industry_codes, min_samples=MIN_TRAIN_SAMPLES):
-    """在训练窗口内选择最优因子"""
-    industry_factors = {}
-
-    for cat, codes in industry_codes.items():
-        if len(codes) < 3:
-            continue
-
-        cat_df = train_df[train_df['code'].isin(codes)]
-        if len(cat_df) < min_samples:
-            continue
-
-        # 计算每个因子的平均IC
-        factor_ics = []
-        for fn in factor_names:
-            if fn not in cat_df.columns:
-                continue
-
-            ic_list = []
-            for date, group in cat_df.groupby('date'):
-                if len(group) >= 3:
-                    ic = calc_ic(group[fn].values, group['future_ret'].values)
-                    if not np.isnan(ic):
-                        ic_list.append(ic)
-
-            if len(ic_list) >= 5:
-                factor_ics.append({
-                    'factor': fn,
-                    'ic_mean': np.mean(ic_list),
-                    'ir': np.mean(ic_list) / (np.std(ic_list) + 1e-10)
-                })
-
-        # 按IR排序选Top N
-        if factor_ics:
-            factor_ics.sort(key=lambda x: x['ir'], reverse=True)
-            industry_factors[cat] = [f['factor'] for f in factor_ics[:TOP_N_FACTORS]]
-
-    return industry_factors
 
 
 def generate_signal_with_factors(row, factor_list):
@@ -217,27 +181,24 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
         except:
             pass
 
+    # 创建动态因子选择器
+    factor_selector = DynamicFactorSelector()
+    factor_selector.set_factor_data(factor_df)
+    factor_selector.set_industry_mapping(industry_codes)
+
     # 滚动验证
     print("\n滚动验证...")
     validation_results = []
     factor_selection_log = []
 
     for val_date in tqdm(validation_dates, desc="滚动验证"):
-        # 确定训练窗口
-        train_end_idx = all_dates.index(val_date)
-        train_start_date = all_dates[max(0, train_end_idx - TRAIN_WINDOW)]
+        # 使用 DynamicFactorSelector 选择因子
+        industry_factors = factor_selector.select_factors_for_date(val_date, all_dates)
 
-        # 训练数据（严格只用val_date之前的数据）
-        train_df = factor_df[
-            (factor_df['date'] >= train_start_date) &
-            (factor_df['date'] < val_date)
-        ]
-
-        if len(train_df) < MIN_TRAIN_SAMPLES:
-            continue
-
-        # 选择因子
-        industry_factors = select_factors_in_window(train_df, factor_names, industry_codes)
+        # 如果动态选择失败，使用默认因子
+        if not industry_factors:
+            industry_factors = {cat: factor_names[:TOP_N_FACTORS]
+                              for cat in detailed_industries.keys()}
 
         # 记录因子选择
         for cat, factors in industry_factors.items():
