@@ -8,8 +8,8 @@
 - 采样频率: 每20天（减少计算量）
 
 评估:
-- 总体IC/IR/胜率
 - 分行业信号质量
+- 全市场统一排序选股质量
 """
 
 import os
@@ -36,6 +36,9 @@ from core.signal_store import SignalStore
 config = load_config(os.path.join(project_root, 'strategy/config/factor_config.yaml'))
 detailed_industries = config.config.get('detailed_industries', {})
 
+# 读取配置
+MAX_POSITION = config.config.get('backtest', {}).get('max_position', 10)
+
 
 def generate_signals_for_stock(args):
     """为单只股票生成信号"""
@@ -47,7 +50,6 @@ def generate_signals_for_stock(args):
     signal_engine.set_fundamental_data(fd)
 
     results = []
-    # 找到每个采样日期对应的索引
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}
 
     for sample_date in sample_dates:
@@ -59,16 +61,13 @@ def generate_signals_for_stock(args):
         if idx is None or idx < 120:
             continue
 
-        # 提取120天历史窗口（与因子验证一致）
         history = df.iloc[:idx+1].iloc[-120:]
         if len(history) < 60:
             continue
 
-        # 添加datetime列
         history_copy = history.copy()
         history_copy['datetime'] = history_copy.index
 
-        # 生成信号
         signal_store = SignalStore()
         signal_engine.generate_at_indices(code, history_copy, [len(history_copy)-1], signal_store)
 
@@ -81,7 +80,7 @@ def generate_signals_for_stock(args):
                 results.append({
                     'code': code,
                     'date': eval_date,
-                    'score': sig.factor_value,  # 使用原始因子值，与因子验证一致
+                    'score': sig.factor_value,
                     'buy': sig.buy,
                     'factor_name': sig.factor_name,
                     'future_ret': future_ret,
@@ -97,13 +96,13 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
     print(f"回看期: 120天, 展望期: 20天")
     print("=" * 60)
 
-    # 生成采样日期（每20天，减少计算量）
+    # 生成采样日期
     all_dates = set()
     for df in stock_data.values():
         all_dates.update(df.index.tolist())
 
     common_dates = sorted(all_dates)[120:-20]
-    sample_dates = common_dates[::5]  # 每5天采样，与因子验证一致
+    sample_dates = common_dates[::5]
 
     print(f"采样日期数量: {len(sample_dates)}")
 
@@ -123,11 +122,10 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
         print("没有信号数据!")
         return
 
-    # 验证
     valid = signals_df.dropna(subset=['score', 'future_ret'])
     print(f"有效数据: {len(valid)} 条")
 
-    # 分行业验证（与因子验证一致）
+    # 分行业验证
     print("\n" + "=" * 60)
     print("分行业验证")
     print("=" * 60)
@@ -153,7 +151,6 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
         ic_list = []
         for date, group in cat_df.groupby('date'):
             if len(group) >= 3:
-                # 直接用原始分数（与因子验证一致）
                 fv = group['score'].values
                 fr = group['future_ret'].values
                 valid_mask = ~(np.isnan(fv) | np.isnan(fr))
@@ -173,6 +170,38 @@ def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
 
     for cat, st in sorted(industry_results.items(), key=lambda x: -x[1].get('ir', 0)):
         print(f"{cat}: IC={st['ic_mean']:.4f}, IR={st['ir']:.4f}, 胜率={st['win_rate']:.1%}")
+
+    # 全市场统一排序选股验证
+    print("\n" + "=" * 60)
+    print(f"全市场统一排序选股验证 (Top-{MAX_POSITION})")
+    print("=" * 60)
+
+    portfolio_returns = []
+    period_ic_list = []
+
+    for date, date_group in valid.groupby('date'):
+        if len(date_group) < MAX_POSITION:
+            continue
+
+        # 直接用原始分数排序选top N
+        sorted_df = date_group.sort_values('score', ascending=False)
+        top_n = sorted_df.head(MAX_POSITION)
+
+        avg_ret = top_n['future_ret'].mean()
+        portfolio_returns.append(avg_ret)
+
+        if len(top_n) >= 3:
+            ic, _ = stats.spearmanr(top_n['score'], top_n['future_ret'])
+            if not np.isnan(ic):
+                period_ic_list.append(ic)
+
+    if portfolio_returns:
+        print(f"选股数量: {MAX_POSITION}")
+        print(f"回测期数: {len(portfolio_returns)}")
+        print(f"平均收益: {np.mean(portfolio_returns)*100:.2f}%")
+        print(f"总体IC: {np.mean(period_ic_list):.4f}")
+        print(f"IR: {np.mean(period_ic_list)/np.std(period_ic_list):.4f}")
+        print(f"胜率: {np.mean([1 if i > 0 else 0 for i in period_ic_list]):.1%}")
 
     # 保存结果
     results_dir = os.path.join(project_root, 'strategy/rolling_validation_results')
