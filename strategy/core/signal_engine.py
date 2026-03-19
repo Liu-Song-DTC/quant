@@ -695,7 +695,7 @@ class SignalEngine:
         # 6. 交易信号
         # 买入: 因子值 > 0.1（提高阈值减少噪音）
         # 卖出: 因子值 < -0.1
-        buy = score > 0.1
+        buy = score > self.buy_threshold
         sell = factor_value < -0.1
 
         # 添加标签
