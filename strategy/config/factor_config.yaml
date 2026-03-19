@@ -210,7 +210,7 @@ regime_weights:
     volatility_10: 0.3
 signal_thresholds:
   adjusted_buy: 0.05
-  buy: 0.1
+  buy: 0.15
   sell: -0.1
 technical_weights:
   bb_width: 0.2

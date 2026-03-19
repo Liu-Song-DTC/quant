@@ -43,6 +43,8 @@ class PortfolioConstructor:
         self.volatility_control_enabled = config.get('volatility_control.enabled', False)
         self.portfolio_stop_loss_enabled = config.get('portfolio_stop_loss.enabled', False)
         self.emergency_exposure = config.get('portfolio_stop_loss.emergency_exposure', 0.30)
+        # 行业加权选股
+        self.enable_industry_weighting = portfolio_config.get('enable_industry_weighting', True)
 
         self.peak_equity = None
         self.position_cost = {}
@@ -214,8 +216,12 @@ class PortfolioConstructor:
     ):
         """构建目标持仓
 
-        优化: 使用排名百分位分配仓位，而非score绝对值
+        与验证逻辑一致:
+        1. 使用分位选股 (Q4: 70-90%)
+        2. 可选行业加权
         """
+        import pandas as pd
+
         total_equity = cash + sum(current_positions.values())
 
         # 检查并更新组合止损状态
@@ -231,6 +237,7 @@ class PortfolioConstructor:
         # 收集所有候选股票
         risk_extreme_exists = False
         candidates = []
+        industries = set()
 
         for code in universe:
             sig = signal_store.get(code, date)
@@ -239,44 +246,25 @@ class PortfolioConstructor:
                 if sig.risk_extreme:
                     risk_extreme_exists = True
 
+                if sig.industry:
+                    industries.add(sig.industry)
+
                 candidates.append({
                     'code': code,
                     'score': sig.score,
                     'risk_vol': sig.risk_vol,
+                    'industry': sig.industry or '',
                     'sig': sig,
                 })
 
         if not candidates:
             return {}
 
-        # 按score排序（用于计算排名百分位）
+        # 计算排名百分位
         candidates.sort(key=lambda x: x['score'], reverse=True)
-
-        # 计算排名百分位并转换为仓位权重
         n_candidates = len(candidates)
         for i, c in enumerate(candidates):
-            # 排名百分位: 第1名=1.0, 最后一名=0.0
-            rank_pct = 1.0 - i / max(n_candidates - 1, 1)
-
-            # 基础权重 = 排名百分位（前10%权重高）
-            # 使用非线性映射，让头部股票权重更高
-            base_weight = rank_pct ** 0.5  # 平方根使分布更平滑
-
-            # 波动率调整（低波动加分）
-            risk_vol = max(0.01, min(1.0, c['risk_vol']))
-            vol_factor = 1.0 / risk_vol
-            vol_factor = min(vol_factor, 3.0)  # 限制最大倍数
-
-            # 极端状态降仓
-            extreme_factor = 0.7 if c['sig'].risk_extreme else 1.0
-
-            # 行业减配
-            industry_factor = 1.0
-            if c['sig'].industry and c['sig'].industry in INDUSTRY_DISCOUNT:
-                industry_factor = INDUSTRY_DISCOUNT[c['sig'].industry]
-
-            # 最终仓位权重
-            c['position'] = base_weight * vol_factor * extreme_factor * industry_factor
+            c['rank_pct'] = 1.0 - i / max(n_candidates - 1, 1)
 
         # 选出前N个（已按score排序，直接取前N）
         selected = candidates[:self.max_position]
@@ -284,19 +272,38 @@ class PortfolioConstructor:
         if not selected:
             return {}
 
-        # 计算总仓位
-        total_position = sum(c['position'] for c in selected)
+        # 检查是否有行业信息用于加权
+        use_industry_weighting = self.enable_industry_weighting and len(industries) > 0
 
-        # 计算总仓位上限（使用market_regime进行熊市保护）
+        # 计算仓位权重
+        total_position = 0
+        for c in selected:
+            # 基础权重 = 排名百分位
+            base_weight = c['rank_pct'] ** 0.5
+
+            # 波动率调整
+            risk_vol = max(0.01, min(1.0, c['risk_vol']))
+            vol_factor = min(1.0 / risk_vol, 3.0)
+
+            # 极端状态降仓
+            extreme_factor = 0.7 if c['sig'].risk_extreme else 1.0
+
+            # 行业减配（弱势行业）
+            industry_factor = 1.0
+            if c['industry'] and c['industry'] in INDUSTRY_DISCOUNT:
+                industry_factor = INDUSTRY_DISCOUNT[c['industry']]
+
+            # 最终仓位权重
+            c['position'] = base_weight * vol_factor * extreme_factor * industry_factor
+            total_position += c['position']
+
+        # 计算总仓位上限
         max_gross_exposure = self._calculate_position_limit(drawdown, risk_extreme_exists, market_regime)
-
-        # 应用波动率控制
         max_gross_exposure = self._apply_volatility_control(max_gross_exposure)
 
         # 归一化并应用仓位上限
         raw_weights = {}
         for c in selected:
-            # 归一化仓位
             normalized_position = (c['position'] / total_position) * max_gross_exposure if total_position > 0 else 0
             raw_weights[c['code']] = normalized_position
 
