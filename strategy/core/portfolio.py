@@ -40,9 +40,9 @@ class PortfolioConstructor:
         self.portfolio_stop_loss = portfolio_stop_loss if portfolio_stop_loss is not None else portfolio_config.get('portfolio_stop_loss', 0.08)
 
         # 波动率控制和组合止损默认关闭
-        self.volatility_control_enabled = portfolio_config.get('volatility_control_enabled', False)
-        self.portfolio_stop_loss_enabled = portfolio_config.get('portfolio_stop_loss_enabled', False)
-        self.emergency_exposure = portfolio_config.get('emergency_exposure', 0.30)
+        self.volatility_control_enabled = config.get('volatility_control.enabled', False)
+        self.portfolio_stop_loss_enabled = config.get('portfolio_stop_loss.enabled', False)
+        self.emergency_exposure = config.get('portfolio_stop_loss.emergency_exposure', 0.30)
 
         self.peak_equity = None
         self.position_cost = {}
@@ -57,29 +57,28 @@ class PortfolioConstructor:
     def _calculate_position_limit(self, drawdown, risk_extreme_exists, market_regime=0):
         """根据回撤和极端状态计算总仓位上限
 
-        A股优化：放宽阈值，5%回撤是常态
-        - 原：5%/10%/15% → 0.80/0.50/0.30
-        - 新：10%/15%/20% → 0.85/0.60/0.40
+        A股优化：收紧阈值，控制回撤
+        - 5%/10%/15% → 0.50/0.70/0.90
 
-        熊市保护：market_regime=-1时降低仓位
+        熊市保护：market_regime=-1时降至30%
         """
-        # 基础仓位上限（放宽阈值）
-        if drawdown > 0.20:
-            max_gross_exposure = 0.40
-        elif drawdown > 0.15:
-            max_gross_exposure = 0.60
+        # 基础仓位上限（收紧阈值，降低回撤风险）
+        if drawdown > 0.15:
+            max_gross_exposure = 0.50
         elif drawdown > 0.10:
-            max_gross_exposure = 0.85
+            max_gross_exposure = 0.70
+        elif drawdown > 0.05:
+            max_gross_exposure = 0.90
         else:
             max_gross_exposure = 1.0
 
-        # 熊市仓位保护
+        # 熊市仓位保护 - 降至30%
         if market_regime == -1:
-            max_gross_exposure = max_gross_exposure * 0.6  # 熊市降仓40%
+            max_gross_exposure = min(max_gross_exposure, 0.30)
 
         # 极端波动状态额外降仓
         if risk_extreme_exists:
-            max_gross_exposure = max_gross_exposure * 0.7
+            max_gross_exposure = max_gross_exposure * 0.6
 
         # 组合止损触发后强制降仓
         if self.portfolio_stop_loss_triggered:
