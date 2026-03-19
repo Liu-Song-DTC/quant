@@ -422,27 +422,46 @@ class SignalValidator:
                 'win_rate': (ret_df['return'] > 0).mean(),
             }
 
-        # 2. 行业权重选股 - 使用统一方法
+        # 2. 行业权重选股 - 直接实现（与之前逻辑一致）
         if ENABLE_INDUSTRY_WEIGHTING:
-            # 先计算行业权重
             industry_weights = self._calc_industry_weights(df)
             if industry_weights:
-                selected_ind = PortfolioConstructor.select_stocks(
-                    df_renamed,
-                    top_n=top_n,
-                    use_percentile=True,
-                    percentile_range=(0.7, 0.9),
-                    industry_weights=industry_weights
-                )
-                if len(selected_ind) > 0:
-                    port_ret_ind = selected_ind.groupby('date')['return'].mean()
-                    ret_df_ind = port_ret_ind.to_frame()
+                # 使用rank_pct直接计算选股收益
+                df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
+                portfolio_returns = []
+                for date, group in df.groupby('date'):
+                    if len(group) < top_n * 2:
+                        continue
+
+                    weighted_return = 0
+                    total_weight = 0
+
+                    for cat, weight in industry_weights.items():
+                        cat_group = group[group['industry'] == cat]
+                        if len(cat_group) == 0:
+                            continue
+
+                        # 选70-90%分位(Q4)
+                        top_cat = cat_group[(cat_group['rank_pct'] > 0.7) &
+                                           (cat_group['rank_pct'] < 0.9)]
+                        if len(top_cat) < 2:
+                            n_select = max(1, int(top_n * weight * 3))
+                            top_cat = cat_group.nlargest(n_select, 'rank_pct')
+
+                        cat_ret = top_cat['future_ret'].mean()
+                        weighted_return += cat_ret * weight
+                        total_weight += weight
+
+                    if total_weight > 0:
+                        portfolio_returns.append(weighted_return / total_weight)
+
+                if portfolio_returns:
+                    ret_arr = np.array(portfolio_returns)
                     results['top_n_industry_weighted'] = {
-                        'n': top_n,
-                        'periods': len(ret_df_ind),
-                        'avg_return': ret_df_ind['return'].mean(),
-                        'sharpe': ret_df_ind['return'].mean() / (ret_df_ind['return'].std() + 1e-10) * np.sqrt(12),
-                        'win_rate': (ret_df_ind['return'] > 0).mean(),
+                        'periods': len(portfolio_returns),
+                        'avg_return': np.mean(ret_arr),
+                        'sharpe': np.mean(ret_arr) / (np.std(ret_arr) + 1e-10) * np.sqrt(12),
+                        'win_rate': np.mean(ret_arr > 0),
                     }
 
         # 3. 五分位分组
@@ -477,7 +496,15 @@ class SignalValidator:
         return results
 
     def _calc_industry_weights(self, df: pd.DataFrame) -> dict:
-        """计算行业权重（基于IR）"""
+        """计算行业权重（基于IR）
+
+        使用rank_pct计算，因为组合层选股也是基于rank_pct
+        """
+        # 计算排名百分位
+        if 'rank_pct' not in df.columns:
+            df = df.copy()
+            df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
+
         industry_ir = {}
         for cat in detailed_industries.keys():
             cat_df = df[df['industry'] == cat]
@@ -486,7 +513,8 @@ class SignalValidator:
             ic_list = []
             for date, group in cat_df.groupby('date'):
                 if len(group) >= 3:
-                    ic = calc_ic(group['signal'].values, group['future_ret'].values)
+                    # 使用rank_pct计算IC，与组合层选股逻辑一致
+                    ic = calc_ic(group['rank_pct'].values, group['future_ret'].values)
                     if not np.isnan(ic):
                         ic_list.append(ic)
             if len(ic_list) >= 3:
