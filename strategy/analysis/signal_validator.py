@@ -33,6 +33,7 @@ from core.factors import calc_all_factors_for_validation
 from core.fundamental import FundamentalData
 from core.signal_engine import DynamicFactorSelector, prepare_factor_data, SignalEngine
 from core.signal_store import SignalStore
+from core.portfolio import PortfolioConstructor
 
 config = load_config(os.path.join(project_root, 'strategy/config/factor_config.yaml'))
 detailed_industries = config.config.get('detailed_industries', {})
@@ -391,37 +392,28 @@ class SignalValidator:
 
         return results
 
-    def evaluate_portfolio_layer(self, top_n: int = 10, top_pct: float = 0.7) -> dict:
-        """组合层评估: Top-N选股、五分位、行业权重优化
-
-        优化: 使用排名(percentile)排序，选70-80%分位(Q4)避免极端反转
-        """
+    def evaluate_portfolio_layer(self, top_n: int = 10) -> dict:
+        """组合层评估: 使用统一的PortfolioConstructor选股"""
         if self.results_df is None or len(self.results_df) == 0:
             return {}
 
         df = self.results_df.copy()
         results = {}
 
-        # 计算每只股票在其日期内的排名百分位 (0-1)
-        df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
+        # 1. 等权选股 - 使用统一方法
+        # 重命名列以匹配PortfolioConstructor.select_stocks
+        df_renamed = df.rename(columns={'signal': 'score', 'future_ret': 'return'})
 
-        # 1. Top-N选股（等权）- 选70-80%分位(Q4)避免极端反转
-        # 原因: Q5(最高分)往往存在反转效应，Q4表现更稳定
-        portfolio_returns = []
-        for date, group in df.groupby('date'):
-            if len(group) < top_n:
-                continue
-            # 选70-90%分位（Q4），避免选最高分
-            top = group[(group['rank_pct'] > 0.7) & (group['rank_pct'] < 0.9)]
-            if len(top) < 3:
-                top = group.nlargest(top_n, 'rank_pct')  # 回退到Top-N
-            portfolio_returns.append({
-                'date': date,
-                'return': top['future_ret'].mean(),
-            })
+        selected = PortfolioConstructor.select_stocks(
+            df_renamed,
+            top_n=top_n,
+            use_percentile=True,
+            percentile_range=(0.7, 0.9)
+        )
 
-        if portfolio_returns:
-            ret_df = pd.DataFrame(portfolio_returns)
+        if len(selected) > 0:
+            portfolio_returns = selected.groupby('date')['return'].mean()
+            ret_df = portfolio_returns.to_frame()
             results['top_n_equal_weight'] = {
                 'n': top_n,
                 'periods': len(ret_df),
@@ -430,22 +422,37 @@ class SignalValidator:
                 'win_rate': (ret_df['return'] > 0).mean(),
             }
 
-        # 2. 行业权重优化选股
+        # 2. 行业权重选股 - 使用统一方法
         if ENABLE_INDUSTRY_WEIGHTING:
-            optimized_returns = self._evaluate_industry_weighted_portfolio(df, top_n)
-            if optimized_returns:
-                results['top_n_industry_weighted'] = optimized_returns
+            # 先计算行业权重
+            industry_weights = self._calc_industry_weights(df)
+            if industry_weights:
+                selected_ind = PortfolioConstructor.select_stocks(
+                    df_renamed,
+                    top_n=top_n,
+                    use_percentile=True,
+                    percentile_range=(0.7, 0.9),
+                    industry_weights=industry_weights
+                )
+                if len(selected_ind) > 0:
+                    port_ret_ind = selected_ind.groupby('date')['return'].mean()
+                    ret_df_ind = port_ret_ind.to_frame()
+                    results['top_n_industry_weighted'] = {
+                        'n': top_n,
+                        'periods': len(ret_df_ind),
+                        'avg_return': ret_df_ind['return'].mean(),
+                        'sharpe': ret_df_ind['return'].mean() / (ret_df_ind['return'].std() + 1e-10) * np.sqrt(12),
+                        'win_rate': (ret_df_ind['return'] > 0).mean(),
+                    }
 
-        # 3. 五分位分组 - 使用排名百分位
+        # 3. 五分位分组
+        df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
         quintile_returns = {i: [] for i in range(1, 6)}
         for date, group in df.groupby('date'):
             if len(group) < 25:
                 continue
-
             group = group.copy()
-            # 使用排名百分位分五分位
             group['quintile'] = pd.qcut(group['rank_pct'], 5, labels=[1,2,3,4,5], duplicates='drop')
-
             for q in range(1, 6):
                 q_ret = group[group['quintile'] == q]['future_ret'].mean()
                 if not np.isnan(q_ret):
@@ -456,7 +463,6 @@ class SignalValidator:
             for q in range(1, 6)
         }
 
-        # 单调性检验
         q1_avg = np.mean(quintile_returns[1]) if quintile_returns[1] else 0
         q5_avg = np.mean(quintile_returns[5]) if quintile_returns[5] else 0
         results['monotonicity'] = {
@@ -469,6 +475,30 @@ class SignalValidator:
         results['industry_performance'] = industry_eval
 
         return results
+
+    def _calc_industry_weights(self, df: pd.DataFrame) -> dict:
+        """计算行业权重（基于IR）"""
+        industry_ir = {}
+        for cat in detailed_industries.keys():
+            cat_df = df[df['industry'] == cat]
+            if len(cat_df) < 20:
+                continue
+            ic_list = []
+            for date, group in cat_df.groupby('date'):
+                if len(group) >= 3:
+                    ic = calc_ic(group['signal'].values, group['future_ret'].values)
+                    if not np.isnan(ic):
+                        ic_list.append(ic)
+            if len(ic_list) >= 3:
+                industry_ir[cat] = np.mean(ic_list) / (np.std(ic_list) + 1e-10)
+
+        if not industry_ir:
+            return None
+
+        # softmax归一化
+        ir_values = np.array([max(v, 0) for v in industry_ir.values()])
+        weights = np.exp(ir_values * 10) / np.sum(np.exp(ir_values * 10))
+        return {k: v for k, v in zip(industry_ir.keys(), weights)}
 
     def _evaluate_industry_weighted_portfolio(self, df: pd.DataFrame, top_n: int) -> dict:
         """行业权重优化选股

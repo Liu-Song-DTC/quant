@@ -309,6 +309,88 @@ class PortfolioConstructor:
 
         return desired_value
 
+    @staticmethod
+    def select_stocks(signals_df: 'pd.DataFrame',
+                     top_n: int = 10,
+                     use_percentile: bool = True,
+                     percentile_range: tuple = (0.7, 0.9),
+                     industry_weights: dict = None) -> 'pd.DataFrame':
+        """统一选股方法
+
+        使用排名百分位选股，避免极端反转效应。
+        此方法被验证和回测共同使用，保证逻辑一致。
+
+        Args:
+            signals_df: 包含 code, score, industry 列的 DataFrame
+            top_n: 选股数量
+            use_percentile: 是否使用分位选股（默认True，选70-90%分位）
+            percentile_range: 分位范围，默认(0.7, 0.9)即Q4
+            industry_weights: 行业权重 dict，如 {'自动化/制造': 0.2, ...}
+
+        Returns:
+            选中的股票 DataFrame
+        """
+        import pandas as pd
+        import numpy as np
+
+        if signals_df is None or len(signals_df) == 0:
+            return pd.DataFrame()
+
+        df = signals_df.copy()
+
+        # 计算排名百分位
+        df['rank_pct'] = df.groupby('date')['score'].rank(pct=True)
+
+        if industry_weights is None:
+            # 等权选股：使用分位选股
+            selected = []
+            for date, group in df.groupby('date'):
+                if use_percentile:
+                    # 选70-90%分位(Q4)
+                    top = group[(group['rank_pct'] > percentile_range[0]) &
+                               (group['rank_pct'] < percentile_range[1])]
+                    if len(top) < 3:
+                        top = group.nlargest(top_n, 'rank_pct')
+                else:
+                    top = group.nlargest(top_n, 'rank_pct')
+                selected.append(top)
+
+            if selected:
+                return pd.concat(selected, ignore_index=True)
+            return pd.DataFrame()
+        else:
+            # 行业加权选股
+            selected = []
+            for date, group in df.groupby('date'):
+                weighted_stocks = []
+                total_weight = 0
+
+                for industry, weight in industry_weights.items():
+                    ind_group = group[group['industry'] == industry]
+                    if len(ind_group) == 0:
+                        continue
+
+                    # 行业内的股票也按分位选
+                    if use_percentile:
+                        top_ind = ind_group[(ind_group['rank_pct'] > percentile_range[0]) &
+                                           (ind_group['rank_pct'] < percentile_range[1])]
+                        if len(top_ind) < 2:
+                            n_select = max(1, int(top_n * weight * 3))
+                            top_ind = ind_group.nlargest(n_select, 'rank_pct')
+                    else:
+                        n_select = max(1, int(top_n * weight * 3))
+                        top_ind = ind_group.nlargest(n_select, 'rank_pct')
+
+                    weighted_stocks.append(top_ind)
+                    total_weight += weight
+
+                if weighted_stocks:
+                    selected.append(pd.concat(weighted_stocks, ignore_index=True))
+
+            if selected:
+                return pd.concat(selected, ignore_index=True)
+            return pd.DataFrame()
+
     def build(
         self,
         date,
