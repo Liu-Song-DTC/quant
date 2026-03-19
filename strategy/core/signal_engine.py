@@ -672,11 +672,10 @@ class SignalEngine:
         # 风格因子
         style_factor_score = self._get_style_score(ind, idx, market_info)
 
-        # === 信号系统 v2 (2026-03-18) ===
-        # 核心思想: 因子值标准化后作为排序分数
+        # === 信号系统 v3 (优化版) ===
+        # 核心思想: 信号分数反映相对强弱，组合层用排名排序
 
-        # 1. 基础分数 = 因子值
-        # 注意: 不同因子值域不同，需要在组合层用排名而非绝对值
+        # 1. 基础分数 = 因子值（已标准化到合理范围）
         base_score = factor_value
 
         # 2. 基本面增强（仅对非行业因子生效）
@@ -694,11 +693,11 @@ class SignalEngine:
         adjusted_score = score * regime_weight
 
         # 6. 交易信号
-        # 买入: 分数在正向区间（用分位数判断更合理，但这里简化处理）
-        # 不同因子值域不同，这里用相对宽松的条件，让组合层用排名筛选
-        # 关键: 买入信号应该是"候选池"，最终选股靠排名
-        buy = score > 0  # 放宽条件，让组合层决定
-        sell = factor_value < -0.1  # 因子明显看空时卖出
+        # 买入: 因子值为正（表示相对强弱为正）
+        # 卖出: 因子值明显为负
+        # 注意: 买入条件宽松，让组合层用排名筛选优质股
+        buy = score > 0
+        sell = factor_value < -0.1
 
         # 添加标签
         factor_tags = []

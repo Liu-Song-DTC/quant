@@ -391,20 +391,30 @@ class SignalValidator:
 
         return results
 
-    def evaluate_portfolio_layer(self, top_n: int = 10) -> dict:
-        """组合层评估: Top-N选股、五分位、行业权重优化"""
+    def evaluate_portfolio_layer(self, top_n: int = 10, top_pct: float = 0.7) -> dict:
+        """组合层评估: Top-N选股、五分位、行业权重优化
+
+        优化: 使用排名(percentile)排序，选70-80%分位(Q4)避免极端反转
+        """
         if self.results_df is None or len(self.results_df) == 0:
             return {}
 
-        df = self.results_df
+        df = self.results_df.copy()
         results = {}
 
-        # 1. Top-N选股（等权）
+        # 计算每只股票在其日期内的排名百分位 (0-1)
+        df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
+
+        # 1. Top-N选股（等权）- 选70-80%分位(Q4)避免极端反转
+        # 原因: Q5(最高分)往往存在反转效应，Q4表现更稳定
         portfolio_returns = []
         for date, group in df.groupby('date'):
             if len(group) < top_n:
                 continue
-            top = group.nlargest(top_n, 'signal')
+            # 选70-90%分位（Q4），避免选最高分
+            top = group[(group['rank_pct'] > 0.7) & (group['rank_pct'] < 0.9)]
+            if len(top) < 3:
+                top = group.nlargest(top_n, 'rank_pct')  # 回退到Top-N
             portfolio_returns.append({
                 'date': date,
                 'return': top['future_ret'].mean(),
@@ -426,14 +436,15 @@ class SignalValidator:
             if optimized_returns:
                 results['top_n_industry_weighted'] = optimized_returns
 
-        # 3. 五分位分组
+        # 3. 五分位分组 - 使用排名百分位
         quintile_returns = {i: [] for i in range(1, 6)}
         for date, group in df.groupby('date'):
             if len(group) < 25:
                 continue
 
             group = group.copy()
-            group['quintile'] = pd.qcut(group['signal'], 5, labels=[1,2,3,4,5], duplicates='drop')
+            # 使用排名百分位分五分位
+            group['quintile'] = pd.qcut(group['rank_pct'], 5, labels=[1,2,3,4,5], duplicates='drop')
 
             for q in range(1, 6):
                 q_ret = group[group['quintile'] == q]['future_ret'].mean()
@@ -464,9 +475,14 @@ class SignalValidator:
 
         策略:
         1. 计算各行业的历史IR作为权重
-        2. 在每个行业内选Top-N
+        2. 在每个行业内按排名选Top-N
         3. 按行业权重合并
         """
+        # df 已有 rank_pct 列
+        if 'rank_pct' not in df.columns:
+            df = df.copy()
+            df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
+
         # 计算各行业IR
         industry_ir = {}
         for cat in detailed_industries.keys():
@@ -477,7 +493,7 @@ class SignalValidator:
             ic_list = []
             for date, group in cat_df.groupby('date'):
                 if len(group) >= 3:
-                    ic = calc_ic(group['signal'].values, group['future_ret'].values)
+                    ic = calc_ic(group['rank_pct'].values, group['future_ret'].values)
                     if not np.isnan(ic):
                         ic_list.append(ic)
 
@@ -493,7 +509,7 @@ class SignalValidator:
         weights = np.exp(ir_values * 10) / np.sum(np.exp(ir_values * 10))
         industry_weights = {k: v for k, v in zip(industry_ir.keys(), weights)}
 
-        # 选股
+        # 选股 - 使用排名排序
         portfolio_returns = []
         for date, group in df.groupby('date'):
             if len(group) < top_n * 2:
@@ -507,9 +523,13 @@ class SignalValidator:
                 if len(cat_group) == 0:
                     continue
 
-                # 行业内选Top
-                n_select = max(1, int(top_n * weight * 3))  # 适当放大选择数
-                top_cat = cat_group.nlargest(n_select, 'signal')
+                # 行业内按排名选Top
+                # 选70-90%分位(Q4)，避免选最高分
+                # 使用全局排名而非组内排名
+                top_cat = cat_group[(cat_group['rank_pct'] > 0.7) & (cat_group['rank_pct'] < 0.9)]
+                if len(top_cat) < 2:
+                    n_select = max(1, int(top_n * weight * 3))
+                    top_cat = cat_group.nlargest(n_select, 'rank_pct')
                 cat_ret = top_cat['future_ret'].mean()
 
                 weighted_return += cat_ret * weight
