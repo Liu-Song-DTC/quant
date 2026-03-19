@@ -35,6 +35,12 @@ class Strategy:
         # 使用独立的市场状态检测器
         self.regime_detector = MarketRegimeDetector()
 
+    def set_factor_data(self, factor_df, industry_codes):
+        """设置因子数据（用于动态因子选择）"""
+        self.signal_engine.set_factor_data(factor_df)
+        self.signal_engine.set_industry_mapping(industry_codes)
+        print(f"动态因子数据已设置: {len(factor_df)} 条记录")
+
     def generate_market_regime(self, index_df):
         # 使用独立的市场状态检测器
         self.index_data = self.regime_detector.generate(index_df)

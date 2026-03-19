@@ -60,25 +60,38 @@ def prepare_factor_data(stock_data: dict, fd,
 
     # 构建行业映射
     industry_codes = {cat: [] for cat in detailed_industries.keys()}
+    unmatched_count = 0
     all_dates = set()
     for df in stock_data.values():
-        all_dates.update(df.index.tolist())
+        # 使用 'datetime' 列而不是 index
+        if 'datetime' in df.columns:
+            all_dates.update(df['datetime'].tolist())
+        else:
+            all_dates.update(df.index.tolist())
     all_dates = sorted(all_dates)
 
     for code in stock_data.keys():
+        matched = False
         try:
             sample_date = all_dates[100]  # 用较早的日期获取行业
-            ind = fd.get_industry(code, sample_date)
+            ind = fd.get_industry(code, sample_date) if fd else None
             for cat, keywords in detailed_industries.items():
-                if any(kw in str(ind) for kw in keywords):
+                if ind and any(kw in str(ind) for kw in keywords):
                     industry_codes[cat].append(code)
+                    matched = True
                     break
         except:
             pass
+        if not matched:
+            unmatched_count += 1
 
     # 采样日期（每5天采样一次，减少计算量）
     sample_dates = all_dates[lookback:-forward_period:5]
     print(f"预计算因子数据: {len(sample_dates)} 个时间点, {len(stock_data)} 只股票")
+    print(f"行业映射: 未匹配 {unmatched_count}/{len(stock_data)} 只股票")
+    for cat, codes in industry_codes.items():
+        if codes:
+            print(f"  {cat}: {len(codes)} 只")
 
     # 并行计算因子
     args_list = [
@@ -101,7 +114,11 @@ def prepare_factor_data(stock_data: dict, fd,
 def _compute_stock_factors_worker(args):
     """多进程 worker: 计算单只股票的因子数据"""
     code, df, sample_dates, lookback, forward_period = args
-    stock_dates = sorted(df.index.tolist())
+    # 使用 datetime 列而非 index
+    if 'datetime' in df.columns:
+        stock_dates = sorted(df['datetime'].tolist())
+    else:
+        stock_dates = sorted(df.index.tolist())
 
     results = []
     for sample_date in sample_dates:
@@ -394,6 +411,8 @@ class SignalEngine:
             industry_codes: {category: [stock_codes]}
         """
         self.dynamic_factor_selector.set_industry_mapping(industry_codes)
+        # 同时保存到 SignalEngine 自身，方便 _select_factor_dynamic 访问
+        self.industry_codes = industry_codes
 
     def set_fundamental_data(self, fundamental_data):
         """设置基本面数据"""
@@ -770,6 +789,17 @@ class SignalEngine:
         # 获取股票所属行业
         specific_industry = self._get_specific_industry(code, current_date)
         if not specific_industry:
+            # 没有行业信息的股票跳过动态因子
+            return None
+
+        # 检查行业是否在映射中
+        if not hasattr(self, 'industry_codes') or not self.industry_codes:
+            return None
+
+        # 检查该股票是否在行业映射中
+        codes_in_industry = self.industry_codes.get(specific_industry, [])
+        if code not in codes_in_industry:
+            # 调试：打印未匹配股票数量
             return None
 
         # 获取动态选择的因子
@@ -1007,7 +1037,14 @@ class SignalEngine:
 
     def _get_specific_industry(self, code, current_date) -> str:
         """获取具体行业名（使用detailed_industries映射）"""
+        # 动态因子模式下，允许没有 fundamental_data
+        # 但如果没有 fundamental_data，尝试从 industry_codes 推断
         if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
+            # 尝试从 industry_codes 映射中查找
+            if hasattr(self, 'industry_codes') and self.industry_codes:
+                for ind_name, codes in self.industry_codes.items():
+                    if code in codes:
+                        return ind_name
             return None
         try:
             # 获取原始行业名（去除可能的特殊字符）

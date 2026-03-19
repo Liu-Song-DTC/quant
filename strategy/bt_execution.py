@@ -5,12 +5,10 @@ import os
 from tqdm import tqdm
 import math
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor
-import multiprocessing as mp
 
 from core.strategy import Strategy
 from core.fundamental import FundamentalData
-from core.signal_engine import SignalEngine
+from core.signal_engine import SignalEngine, prepare_factor_data
 from core.signal_store import SignalStore
 from core.config_loader import load_config
 
@@ -31,11 +29,16 @@ FUNDAMENTAL_PATH = config.get('paths.fundamental', '../data/stock_data/fundament
 
 
 def generate_signal_worker(args):
-    """子进程工作函数：生成单只股票的信号"""
-    code, data_dict = args
-    # 在子进程中重新创建 SignalEngine（因为不能pickle）
+    """单进程工作函数：生成单只股票的信号"""
+    code, data_dict, factor_data, industry_codes, use_dynamic = args
+    # 重新创建 SignalEngine
     engine = SignalEngine()
     store = SignalStore()
+
+    # 设置动态因子数据
+    if use_dynamic and factor_data is not None and industry_codes is not None:
+        engine.set_factor_data(factor_data)
+        engine.set_industry_mapping(industry_codes)
 
     # 重建 DataFrame
     data = pd.DataFrame(data_dict)
@@ -43,10 +46,10 @@ def generate_signal_worker(args):
     # 生成信号
     engine.generate(code, data, store)
 
-    # 返回结果：code -> {(date,): signal} 需要转换为可哈希的键
+    # 返回结果
     return code, store._store
 
-def add_data_and_signal(cerebro, strategy):
+def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     all_items = os.listdir(DATA_PATH)
     stock_codes = []  # 获取回测池中的股票列表
 
@@ -67,18 +70,48 @@ def add_data_and_signal(cerebro, strategy):
     if "sh000001" in stock_data_dict:
         strategy.generate_market_regime(stock_data_dict["sh000001"])
 
-    # 并行生成信号（排除指数）
-    stock_items = [(name, data.to_dict()) for name, data in stock_data_dict.items()
-                  if name != "sh000001"]
-    stock_codes = [name for name, _ in stock_items]
+    # 准备动态因子数据
+    dynamic_config = config.config.get('dynamic_factor', {})
+    if dynamic_config.get('enabled', False):
+        print("准备动态因子数据...")
+        # 获取股票代码列表（排除指数）
+        stock_codes = [name for name in stock_data_dict.keys() if name != "sh000001"]
+        factor_df, industry_codes, all_dates = prepare_factor_data(
+            stock_data_dict,
+            fundamental_data,
+            config.config.get('detailed_industries', {}),
+            NUM_WORKERS
+        )
+        strategy.set_factor_data(factor_df, industry_codes)
+        print(f"动态因子模式已启用: {len(industry_codes)} 个行业")
 
-    print(f"使用 {NUM_WORKERS} 个进程并行生成信号...")
-    with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        results = list(tqdm(
-            executor.map(generate_signal_worker, stock_items),
-            total=len(stock_items),
-            desc="generating signals"
-        ))
+    # 生成信号（单进程，避免多进程大数据传递问题）
+    use_dynamic = dynamic_config.get('enabled', False)
+    stock_codes = [name for name in stock_data_dict.keys() if name != "sh000001"]
+
+    # 创建带动态因子的 SignalEngine（如果启用）
+    main_engine = None
+    if use_dynamic:
+        main_engine = SignalEngine()
+        main_engine.set_factor_data(factor_df)
+        main_engine.set_industry_mapping(industry_codes)
+        print(f"主引擎已设置动态因子数据")
+
+    print("单进程生成信号...")
+    results = []
+    stock_items = [(name, data.to_dict()) for name, data in stock_data_dict.items() if name != "sh000001"]
+
+    for item in tqdm(stock_items, desc="generating signals"):
+        code, data_dict = item
+        # 复用主引擎或新建
+        if main_engine:
+            engine = main_engine
+        else:
+            engine = SignalEngine()
+        store = SignalStore()
+        data = pd.DataFrame(data_dict)
+        engine.generate(code, data, store)
+        results.append((code, store._store))
 
     # 将结果写入 signal_store
     # _store 的键是 (code, datetime.date) -> signal
@@ -232,7 +265,7 @@ if __name__ == "__main__":
         fundamental_data=fundamental_data
     )
 
-    add_data_and_signal(cerebro, strategy)
+    add_data_and_signal(cerebro, strategy, fundamental_data)
     cerebro.broker.setcash(CASH)
     cerebro.broker.setcommission(commission=COMMISSION)
     cerebro.broker.set_slippage_perc(perc=PERC)
