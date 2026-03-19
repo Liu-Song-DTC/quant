@@ -693,10 +693,9 @@ class SignalEngine:
         adjusted_score = score * regime_weight
 
         # 6. 交易信号
-        # 买入: 因子值为正（表示相对强弱为正）
-        # 卖出: 因子值明显为负
-        # 注意: 买入条件宽松，让组合层用排名筛选优质股
-        buy = score > 0
+        # 买入: 因子值 > 0.1（提高阈值减少噪音）
+        # 卖出: 因子值 < -0.1
+        buy = score > 0.1
         sell = factor_value < -0.1
 
         # 添加标签

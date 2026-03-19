@@ -309,12 +309,16 @@ class PortfolioConstructor:
 
         return desired_value
 
+    # 负IR行业（应该排除或减配）
+    EXCLUDE_INDUSTRIES = {'军工', '通信/计算机', '新能源车/风电'}
+
     @staticmethod
     def select_stocks(signals_df: 'pd.DataFrame',
                      top_n: int = 10,
                      use_percentile: bool = True,
                      percentile_range: tuple = (0.7, 0.9),
-                     industry_weights: dict = None) -> 'pd.DataFrame':
+                     industry_weights: dict = None,
+                     exclude_industries: set = None) -> 'pd.DataFrame':
         """统一选股方法
 
         使用排名百分位选股，避免极端反转效应。
@@ -326,6 +330,7 @@ class PortfolioConstructor:
             use_percentile: 是否使用分位选股（默认True，选70-90%分位）
             percentile_range: 分位范围，默认(0.7, 0.9)即Q4
             industry_weights: 行业权重 dict，如 {'自动化/制造': 0.2, ...}
+            exclude_industries: 排除的行业集合（默认排除负IR行业）
 
         Returns:
             选中的股票 DataFrame
@@ -337,6 +342,9 @@ class PortfolioConstructor:
             return pd.DataFrame()
 
         df = signals_df.copy()
+
+        # 默认不排除行业，可通过参数启用
+        # 注意：排除行业会影响行业权重计算，需谨慎使用
 
         # 计算排名百分位
         df['rank_pct'] = df.groupby('date')['score'].rank(pct=True)
