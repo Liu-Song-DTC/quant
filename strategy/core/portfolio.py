@@ -359,10 +359,10 @@ class PortfolioConstructor:
                 return pd.concat(selected, ignore_index=True)
             return pd.DataFrame()
         else:
-            # 行业加权选股
-            selected = []
+            # 行业加权选股 - 使用加权平均而非等权平均
+            results = []
             for date, group in df.groupby('date'):
-                weighted_stocks = []
+                weighted_return = 0
                 total_weight = 0
 
                 for industry, weight in industry_weights.items():
@@ -381,14 +381,23 @@ class PortfolioConstructor:
                         n_select = max(1, int(top_n * weight * 3))
                         top_ind = ind_group.nlargest(n_select, 'rank_pct')
 
-                    weighted_stocks.append(top_ind)
-                    total_weight += weight
+                    if len(top_ind) > 0:
+                        # 加权平均：行业收益 * 行业权重
+                        if 'return' in top_ind.columns:
+                            ind_ret = top_ind['return'].mean()
+                        elif 'future_ret' in top_ind.columns:
+                            ind_ret = top_ind['future_ret'].mean()
+                        else:
+                            ind_ret = 0
+                        weighted_return += ind_ret * weight
+                        total_weight += weight
 
-                if weighted_stocks:
-                    selected.append(pd.concat(weighted_stocks, ignore_index=True))
+                if total_weight > 0:
+                    weighted_return /= total_weight
+                    results.append({'date': date, 'return': weighted_return})
 
-            if selected:
-                return pd.concat(selected, ignore_index=True)
+            if results:
+                return pd.DataFrame(results)
             return pd.DataFrame()
 
     def build(
