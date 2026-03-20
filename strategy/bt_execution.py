@@ -30,27 +30,6 @@ DATA_PATH = config.get('paths.data', '../data/stock_data/backtrader_data/')
 FUNDAMENTAL_PATH = config.get('paths.fundamental', '../data/stock_data/fundamental_data/')
 
 
-def generate_signal_worker(args):
-    """单进程工作函数：生成单只股票的信号"""
-    code, data_dict, factor_data, industry_codes, use_dynamic = args
-    # 重新创建 SignalEngine
-    engine = SignalEngine()
-    store = SignalStore()
-
-    # 设置动态因子数据
-    if use_dynamic and factor_data is not None and industry_codes is not None:
-        engine.set_factor_data(factor_data)
-        engine.set_industry_mapping(industry_codes)
-
-    # 重建 DataFrame
-    data = pd.DataFrame(data_dict)
-
-    # 生成信号
-    engine.generate(code, data, store)
-
-    # 返回结果
-    return code, store._store
-
 def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     all_items = os.listdir(DATA_PATH)
     stock_codes = []  # 获取回测池中的股票列表

@@ -13,8 +13,6 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional, Tuple
 from scipy import stats
-from multiprocessing import Pool
-from tqdm import tqdm
 
 from .signal import Signal
 from .signal_store import SignalStore
@@ -207,10 +205,6 @@ class DynamicFactorSelector:
         self._factor_cache[val_date] = result
         return result
 
-    def clear_cache(self):
-        """清空缓存"""
-        self._factor_cache.clear()
-
 
 class SignalEngine:
     """信号生成引擎 - 使用行业验证后的高质量因子"""
@@ -302,44 +296,6 @@ class SignalEngine:
 
         last_sig = None
         for i in range(len(close)):
-            sig = self._generate_signal(indicators, i, last_sig, dates[i], code)
-            last_sig = sig
-            date = pd.to_datetime(dates[i]).date()
-            signal_store.set(code, date, sig)
-
-    def generate_at_indices(self, code: str, market_data: pd.DataFrame,
-                          indices: list, signal_store: SignalStore):
-        """在指定索引位置生成信号"""
-        dates = market_data["datetime"].values
-
-        if len(market_data) < 60:
-            return
-
-        # 使用因子库计算所有因子
-        eval_date = market_data.index[-1]
-        indicators = calc_all_factors_for_validation(
-            market_data['close'].values,
-            market_data['high'].values if 'high' in market_data.columns else market_data['close'].values,
-            market_data['low'].values if 'low' in market_data.columns else market_data['close'].values,
-            market_data['volume'].values if 'volume' in market_data.columns else np.ones(len(market_data)),
-            fundamental_data=getattr(self, 'fundamental_data', None),
-            code=code,
-            eval_date=eval_date
-        )
-
-        # 添加必要的基础数据
-        indicators['close'] = market_data['close'].values
-        indicators['high'] = market_data['high'].values if 'high' in market_data.columns else market_data['close'].values
-        indicators['low'] = market_data['low'].values if 'low' in market_data.columns else market_data['close'].values
-        indicators['volume'] = market_data['volume'].values if 'volume' in market_data.columns else np.ones(len(market_data))
-
-        last_sig = None
-        # 按时间顺序排序索引
-        sorted_indices = sorted(indices)
-
-        for i in sorted_indices:
-            if i < 60:
-                continue
             sig = self._generate_signal(indicators, i, last_sig, dates[i], code)
             last_sig = sig
             date = pd.to_datetime(dates[i]).date()
