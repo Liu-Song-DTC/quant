@@ -82,6 +82,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         main_engine = SignalEngine()
         main_engine.set_factor_data(factor_df)
         main_engine.set_industry_mapping(industry_codes)
+        main_engine.set_fundamental_data(fundamental_data)
         print(f"主引擎已设置动态因子数据")
 
     print("单进程生成信号...")
@@ -93,11 +94,11 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
     for item in tqdm(stock_items, desc="generating signals"):
         code, data_dict = item
-        # 复用主引擎或新建
+        # 复用主引擎或使用策略的引擎
         if main_engine:
             engine = main_engine
         else:
-            engine = SignalEngine()
+            engine = strategy.signal_engine  # 使用策略自带的引擎（有fundamental_data）
         store = SignalStore()
         data = pd.DataFrame(data_dict)
         engine.generate(code, data, store)
