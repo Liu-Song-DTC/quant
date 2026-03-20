@@ -61,14 +61,23 @@ def calc_ic(factor_values, returns):
 
 
 def generate_signal_with_factors(row, factor_list):
-    """使用给定因子列表生成综合信号"""
+    """使用给定因子列表生成综合信号
+
+    信号计算逻辑：
+    1. 对每个因子值进行标准化（限制到合理范围）
+    2. 计算因子均值作为综合信号
+    """
     if not factor_list:
         return np.nan
 
     scores = []
     for fn in factor_list:
         if fn in row and not np.isnan(row[fn]):
-            scores.append(row[fn])
+            val = row[fn]
+            # 标准化：将因子值限制到 [-3, 3] 范围
+            # 这与 SignalEngine 中的处理逻辑一致
+            val = np.clip(val, -3.0, 3.0)
+            scores.append(val)
 
     if not scores:
         return np.nan
@@ -393,27 +402,25 @@ class SignalValidator:
         return results
 
     def evaluate_portfolio_layer(self, top_n: int = 10) -> dict:
-        """组合层评估: 使用统一的PortfolioConstructor选股"""
+        """组合层评估: 使用与回测一致的Top-N选股"""
         if self.results_df is None or len(self.results_df) == 0:
             return {}
 
         df = self.results_df.copy()
         results = {}
 
-        # 1. 等权选股 - 使用统一方法
-        # 重命名列以匹配PortfolioConstructor.select_stocks
-        df_renamed = df.rename(columns={'signal': 'score', 'future_ret': 'return'})
+        # Top-N 等权选股（与回测一致）
+        portfolio_returns = []
+        for date, group in df.groupby('date'):
+            if len(group) < top_n:
+                continue
+            # 按信号分数选Top-N
+            top = group.nlargest(top_n, 'signal')
+            avg_ret = top['future_ret'].mean()
+            portfolio_returns.append({'date': date, 'return': avg_ret})
 
-        selected = PortfolioConstructor.select_stocks(
-            df_renamed,
-            top_n=top_n,
-            use_percentile=True,
-            percentile_range=(0.7, 0.9)
-        )
-
-        if len(selected) > 0:
-            portfolio_returns = selected.groupby('date')['return'].mean()
-            ret_df = portfolio_returns.to_frame()
+        if portfolio_returns:
+            ret_df = pd.DataFrame(portfolio_returns)
             results['top_n_equal_weight'] = {
                 'n': top_n,
                 'periods': len(ret_df),
@@ -422,28 +429,6 @@ class SignalValidator:
                 'win_rate': (ret_df['return'] > 0).mean(),
             }
 
-        # 2. 行业权重选股 - 使用统一方法
-        if ENABLE_INDUSTRY_WEIGHTING:
-            industry_weights = self._calc_industry_weights(df)
-            if industry_weights:
-                selected_ind = PortfolioConstructor.select_stocks(
-                    df_renamed,
-                    top_n=top_n,
-                    use_percentile=True,
-                    percentile_range=(0.7, 0.9),
-                    industry_weights=industry_weights
-                )
-                if len(selected_ind) > 0:
-                    port_ret_ind = selected_ind.groupby('date')['return'].mean()
-                    ret_df_ind = port_ret_ind.to_frame()
-                    results['top_n_industry_weighted'] = {
-                        'n': top_n,
-                        'periods': len(ret_df_ind),
-                        'avg_return': ret_df_ind['return'].mean(),
-                        'sharpe': ret_df_ind['return'].mean() / (ret_df_ind['return'].std() + 1e-10) * np.sqrt(12),
-                        'win_rate': (ret_df_ind['return'] > 0).mean(),
-                    }
-
         # 3. 五分位分组
         df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
         quintile_returns = {i: [] for i in range(1, 6)}
@@ -451,7 +436,11 @@ class SignalValidator:
             if len(group) < 25:
                 continue
             group = group.copy()
-            group['quintile'] = pd.qcut(group['rank_pct'], 5, labels=[1,2,3,4,5], duplicates='drop')
+            try:
+                group['quintile'] = pd.qcut(group['rank_pct'], 5, labels=[1,2,3,4,5], duplicates='drop')
+            except ValueError:
+                # 重复值太多导致分位数失败，跳过
+                continue
             for q in range(1, 6):
                 q_ret = group[group['quintile'] == q]['future_ret'].mean()
                 if not np.isnan(q_ret):

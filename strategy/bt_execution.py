@@ -149,12 +149,35 @@ class BacktraderExecution(bt.Strategy):
         real_strategy=None,
     )
 
+    # 数据质量过滤参数
+    MIN_PRICE = 2.0  # 最低价格限制（前复权后），避免低价股异常
+    MIN_VOLUME = 100  # 最低成交量，过滤停牌股
+
     def __init__(self):
         self.universe = [d._name for d in self.datas]
         self.count = 0
         self.orders_list = defaultdict(list)
         self.last_date = None
         self.cost = defaultdict(list)
+
+    def _is_tradable(self, d):
+        """检查股票是否可交易（非停牌、价格正常）"""
+        price = d.close[0]
+        volume = d.volume[0] if hasattr(d, 'volume') else 1
+
+        # 1. 价格必须为正
+        if price is None or math.isnan(price) or price <= 0:
+            return False
+
+        # 2. 价格不能太低（前复权后）- 避免低价股异常放大收益
+        if price < self.MIN_PRICE:
+            return False
+
+        # 3. 成交量必须大于0（非停牌）
+        if volume is None or math.isnan(volume) or volume < self.MIN_VOLUME:
+            return False
+
+        return True
 
     def next(self):
         if self.last_date is not None and self.last_date in self.orders_list:
@@ -166,11 +189,13 @@ class BacktraderExecution(bt.Strategy):
         self.last_date = date
 
         prices = {}
+        tradable_universe = []  # 可交易的股票池
         for d in self.datas:
-            price = d.close[0]
-            if price is None or math.isnan(price) or price <= 0:
+            if not self._is_tradable(d):
                 continue
+            price = d.close[0]
             prices[d._name] = price
+            tradable_universe.append(d._name)
 
         current_positions = {
             d._name: self.getposition(d).size * prices[d._name]
@@ -184,7 +209,7 @@ class BacktraderExecution(bt.Strategy):
             rebalance = True
         target = self.p.real_strategy.generate_positions(
             date=date,
-            universe=self.universe,
+            universe=tradable_universe,  # 只传递可交易的股票
             current_positions=current_positions,
             cash=self.broker.getcash(),
             prices=prices,
@@ -197,7 +222,14 @@ class BacktraderExecution(bt.Strategy):
             code = d._name
             if code not in active_codes:
                 continue
+
+            # 再次检查可交易性（买入时必须可交易，卖出可以放宽）
+            if not self._is_tradable(d) and code not in current_positions:
+                continue
+
             price = d.close[0]
+            if price is None or math.isnan(price) or price <= 0:
+                continue
 
             pos = self.getposition(d)
             current_value = pos.size * price

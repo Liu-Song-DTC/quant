@@ -74,9 +74,9 @@ class PortfolioConstructor:
         else:
             max_gross_exposure = 1.0
 
-        # 熊市仓位保护 - 降至30%
+        # 熊市仓位保护 - 降至60%（30%太激进会错过反弹）
         if market_regime == -1:
-            max_gross_exposure = min(max_gross_exposure, 0.30)
+            max_gross_exposure = min(max_gross_exposure, 0.60)
 
         # 极端波动状态额外降仓
         if risk_extreme_exists:
@@ -129,16 +129,9 @@ class PortfolioConstructor:
         if self.current_volatility > self.target_volatility:
             # 波动率越高，仓位越低 - 使用更温和的调整系数
             vol_ratio = self.target_volatility / self.current_volatility
-            # 限制调整幅度，使用更温和的系数 (0.5 instead of 0.3)
-            vol_ratio = max(0.5, min(1.0, vol_ratio))
-            adjusted_exposure = max_gross_exposure * (0.5 + 0.5 * vol_ratio)  # 更温和的调整
-            return adjusted_exposure
-
-        # 如果当前波动率低于目标，可适当提高仓位（但不高于基础上限）
-        elif self.current_volatility < self.target_volatility * 0.7:
-            vol_ratio = self.target_volatility / max(self.current_volatility, 0.01)
-            vol_ratio = min(1.1, vol_ratio)
-            adjusted_exposure = min(max_gross_exposure * vol_ratio, max_gross_exposure)
+            # 限制调整幅度：最低降到70%（0.7），避免过度减仓
+            vol_ratio = max(0.7, min(1.0, vol_ratio))
+            adjusted_exposure = max_gross_exposure * vol_ratio
             return adjusted_exposure
 
         return max_gross_exposure
@@ -216,9 +209,10 @@ class PortfolioConstructor:
     ):
         """构建目标持仓
 
-        与验证逻辑一致:
-        1. 使用分位选股 (Q4: 70-90%)
-        2. 可选行业加权
+        统一选股逻辑（与验证一致）:
+        1. 收集所有有信号的股票（不限制buy信号）
+        2. 按分数排序，选Top-N
+        3. 计算仓位权重
         """
         import pandas as pd
 
@@ -234,20 +228,17 @@ class PortfolioConstructor:
 
         drawdown = 1 - total_equity / self.peak_equity if self.peak_equity > 0 else 0.0
 
-        # 收集所有候选股票
+        # 收集所有候选股票（不限制buy信号，与验证一致）
         risk_extreme_exists = False
         candidates = []
-        industries = set()
 
         for code in universe:
             sig = signal_store.get(code, date)
-            if sig and sig.buy and sig.score > 0:
+            # 只要有信号且分数不是NaN就可以作为候选
+            if sig and sig.score is not None and not (isinstance(sig.score, float) and sig.score != sig.score):
                 # 检查极端状态
                 if sig.risk_extreme:
                     risk_extreme_exists = True
-
-                if sig.industry:
-                    industries.add(sig.industry)
 
                 candidates.append({
                     'code': code,
@@ -260,41 +251,30 @@ class PortfolioConstructor:
         if not candidates:
             return {}
 
-        # 计算排名百分位
+        # 按分数排序（与验证一致）
         candidates.sort(key=lambda x: x['score'], reverse=True)
-        n_candidates = len(candidates)
-        for i, c in enumerate(candidates):
-            c['rank_pct'] = 1.0 - i / max(n_candidates - 1, 1)
 
-        # 选出前N个（已按score排序，直接取前N）
+        # 直接选Top-N（简化逻辑，与验证一致）
         selected = candidates[:self.max_position]
 
         if not selected:
             return {}
 
-        # 检查是否有行业信息用于加权
-        use_industry_weighting = self.enable_industry_weighting and len(industries) > 0
-
-        # 计算仓位权重
+        # 计算仓位权重（简化：等权）
         total_position = 0
         for c in selected:
-            # 基础权重 = 排名百分位
-            base_weight = c['rank_pct'] ** 0.5
+            # 简化权重计算：等权 + 波动率调整
+            base_weight = 1.0
 
             # 波动率调整
             risk_vol = max(0.01, min(1.0, c['risk_vol']))
-            vol_factor = min(1.0 / risk_vol, 3.0)
+            vol_factor = min(1.0 / risk_vol, 2.0)  # 限制波动率影响
 
             # 极端状态降仓
-            extreme_factor = 0.7 if c['sig'].risk_extreme else 1.0
-
-            # 行业减配（弱势行业）
-            industry_factor = 1.0
-            if c['industry'] and c['industry'] in INDUSTRY_DISCOUNT:
-                industry_factor = INDUSTRY_DISCOUNT[c['industry']]
+            extreme_factor = 0.8 if c['sig'].risk_extreme else 1.0
 
             # 最终仓位权重
-            c['position'] = base_weight * vol_factor * extreme_factor * industry_factor
+            c['position'] = base_weight * vol_factor * extreme_factor
             total_position += c['position']
 
         # 计算总仓位上限

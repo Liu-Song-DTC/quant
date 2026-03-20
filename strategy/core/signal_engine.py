@@ -302,10 +302,16 @@ class DynamicFactorSelector:
         train_start_idx = max(0, val_idx - self.train_window)
         train_start_date = all_dates[train_start_idx]
 
-        # 训练数据（严格只用val_date之前的数据）
+        # 训练数据（严格只用val_date之前的数据，且避免边界泄露）
+        # 训练数据的 future_ret 是基于 forward_period 天后的价格计算的
+        # 为避免泄露，训练截止日期需要前移 forward_period 天
+        import pandas as pd
+        train_end_date = pd.to_datetime(val_date) - pd.Timedelta(days=self.forward_period)
+        train_end_date = train_end_date.strftime('%Y-%m-%d') if hasattr(train_end_date, 'strftime') else str(train_end_date)[:10]
+
         train_df = self.factor_df[
             (self.factor_df['date'] >= train_start_date) &
-            (self.factor_df['date'] < val_date)
+            (self.factor_df['date'] < train_end_date)
         ]
 
         if len(train_df) < self.min_train_samples:

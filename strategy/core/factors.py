@@ -102,10 +102,15 @@ def calc_base_indicators(close, high=None, low=None, volume=None):
         for p in [5, 10, 20]:
             vol_ma = pd.Series(volume).rolling(p).mean().values
             result[f'vol_ma_{p}'] = volume / (vol_ma + 1e-10)
-            result[f'vol_change_{p}'] = volume / (np.roll(volume, p) + 1e-10) - 1
+            # 成交量变化率 - 限制范围避免异常值
+            vol_prev = np.roll(volume, p)
+            vol_change = volume / (vol_prev + 1e-10) - 1
+            # 截断异常值到 [-1, 10] 范围
+            vol_change = np.clip(vol_change, -1.0, 10.0)
+            result[f'vol_change_{p}'] = vol_change
         # 保持兼容性
         volume_ma20 = result['vol_ma_20']
-        result['volume_ratio'] = volume / (volume_ma20 + 1e-10)
+        result['volume_ratio'] = np.clip(volume / (volume_ma20 + 1e-10), 0, 10)  # 限制范围
         result['volume_change'] = result['vol_change_5']
 
     # MACD

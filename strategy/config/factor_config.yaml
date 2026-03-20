@@ -209,9 +209,9 @@ regime_weights:
     rsi_average: 0.25
     volatility_10: 0.3
 signal_thresholds:
-  adjusted_buy: 0.05
-  buy: 0.15
-  sell: -0.1
+  adjusted_buy: 0.00
+  buy: 0.00
+  sell: -0.15
 technical_weights:
   bb_width: 0.2
   momentum: 0.3
@@ -221,22 +221,22 @@ technical_weights:
 # 组合仓位管理配置
 portfolio:
   max_position: 10
-  target_volatility: 0.15  # 降低目标波动率
+  target_volatility: 0.25  # A股合理波动率目标（0.15太低会频繁触发）
   entry_speed: 1.0
   exit_speed: 1.0
-  position_stop_loss: 0.08  # 降低到8%
-  portfolio_stop_loss: 0.05  # 降低到5%
+  position_stop_loss: 0.15  # 个股止损15%（8%太敏感）
+  portfolio_stop_loss: 0.12  # 组合止损12%（5%在A股太容易触发）
   enable_industry_weighting: true  # 行业权重优化选股
 
 # 组合止损配置
 portfolio_stop_loss:
   enabled: true  # 启用组合止损
-  emergency_exposure: 0.20  # 触发后降到20%
+  emergency_exposure: 0.50  # 触发后降到50%（20%太激进会错过反弹）
 
 volatility_control:
   enabled: true  # 启用波动率控制
   lookback_period: 20
-  target_volatility: 0.15  # 降低目标波动率
+  target_volatility: 0.25  # A股合理波动率目标
 
 # 行业因子配置（基于分行业验证结果）
 # 使用方法: 从 core/industry_factor_config.py 加载配置
@@ -252,8 +252,8 @@ dynamic_factor:
   train_window: 250       # 训练窗口天数
   forward_period: 20       # 前瞻期（与调仓周期一致）
   top_n_factors: 3        # 选择Top-N因子
-  min_train_samples: 50    # 最少训练样本数
-  min_ic_dates: 5         # 最少有效IC天数
+  min_train_samples: 100   # 最少训练样本数（提高稳定性）
+  min_ic_dates: 10         # 最少有效IC天数（提高稳定性）
 
 # 技术指标参数
 indicator_params:
