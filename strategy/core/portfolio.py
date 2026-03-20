@@ -57,13 +57,19 @@ class PortfolioConstructor:
         # 组合止损相关
         self.portfolio_stop_loss_triggered = False
 
+    def _get_risk_multiplier(self, regime, risk_extreme):
+        """计算风险乘数（合并regime和extreme状态）"""
+        if regime == -1:  # 熊市
+            return 0.6
+        elif risk_extreme:
+            return 0.7
+        return 1.0
+
     def _calculate_position_limit(self, drawdown, risk_extreme_exists, market_regime=0):
         """根据回撤和极端状态计算总仓位上限
 
         A股优化：收紧阈值，控制回撤
         - 5%/10%/15% → 0.50/0.70/0.90
-
-        熊市保护：market_regime=-1时降至30%
         """
         # 基础仓位上限（收紧阈值，降低回撤风险）
         if drawdown > 0.15:
@@ -75,13 +81,9 @@ class PortfolioConstructor:
         else:
             max_gross_exposure = 1.0
 
-        # 熊市仓位保护 - 降至60%（30%太激进会错过反弹）
-        if market_regime == -1:
-            max_gross_exposure = min(max_gross_exposure, 0.60)
-
-        # 极端波动状态额外降仓
-        if risk_extreme_exists:
-            max_gross_exposure = max_gross_exposure * 0.6
+        # 应用风险乘数
+        risk_multiplier = self._get_risk_multiplier(market_regime, risk_extreme_exists)
+        max_gross_exposure = max_gross_exposure * risk_multiplier
 
         # 组合止损触发后强制降仓
         if self.portfolio_stop_loss_triggered:
@@ -236,7 +238,7 @@ class PortfolioConstructor:
         for code in universe:
             sig = signal_store.get(code, date)
             # 只要有信号且分数不是NaN就可以作为候选
-            if sig and sig.score is not None and not (isinstance(sig.score, float) and sig.score != sig.score):
+            if sig and sig.score is not None and isinstance(sig.score, float) and not np.isnan(sig.score):
                 # 检查极端状态
                 if sig.risk_extreme:
                     risk_extreme_exists = True

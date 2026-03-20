@@ -36,17 +36,32 @@ RESULTS_DIR = os.path.join(strategy_dir, 'rolling_validation_results')
 FORWARD_PERIOD = config.config.get('dynamic_factor', {}).get('forward_period', 20)
 
 
+def normalize_code(code):
+    """统一代码格式为6位字符串"""
+    code_str = str(code)
+    if len(code_str) == 6:
+        return code_str
+    elif len(code_str) <= 6:
+        return code_str.zfill(6)
+    return code_str
+
+
 def load_stock_data():
     """加载股票价格数据"""
     all_items = os.listdir(DATA_PATH)
     stock_data = {}
     for item in tqdm(all_items, desc="加载股票数据"):
+        # 支持 _qfq.csv 和 _hfq.csv 两种格式
         if item.endswith('_qfq.csv') and item != 'sh000001_qfq.csv':
             code = item.replace('_qfq.csv', '')
-            df = pd.read_csv(os.path.join(DATA_PATH, item))
-            if 'datetime' in df.columns:
-                df = df.set_index('datetime')
-            stock_data[code] = df
+        elif item.endswith('_hfq.csv') and item != 'sh000001_hfq.csv':
+            code = item.replace('_hfq.csv', '')
+        else:
+            continue
+        df = pd.read_csv(os.path.join(DATA_PATH, item))
+        if 'datetime' in df.columns:
+            df = df.set_index('datetime')
+        stock_data[code] = df
     print(f"加载 {len(stock_data)} 只股票")
     return stock_data
 
@@ -57,7 +72,7 @@ def calculate_future_returns(signals_df, stock_data):
     results = []
 
     for idx, row in tqdm(signals_df.iterrows(), total=len(signals_df), desc="处理信号"):
-        code = str(row['code'])
+        code = normalize_code(row['code'])
         date_str = str(row['date'])[:10]
 
         if code not in stock_data:

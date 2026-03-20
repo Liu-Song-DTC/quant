@@ -47,50 +47,19 @@ class ConfigLoader:
 
         return value
 
-    def get_technical_weights(self) -> Dict[str, float]:
-        """获取技术面因子权重"""
-        return self.get('technical_weights', {
-            'volatility_10': 0.30,
-            'rsi_average': 0.25,
-            'bb_width': 0.15,
-            'momentum': 0.30,
-        })
-
-    def get_signal_thresholds(self) -> Dict[str, float]:
-        """获取交易信号阈值"""
-        return self.get('signal_thresholds', {
-            'buy': 0.15,
-            'adjusted_buy': 0.05,
-            'sell': -0.05,
-        })
-
     def get_portfolio_config(self) -> Dict[str, Any]:
         """获取组合配置"""
         return {
             'max_position': self.get('portfolio.max_position', 10),
-            'target_volatility': self.get('portfolio.target_volatility', 0.20),
+            'target_volatility': self.get('portfolio.target_volatility', 0.25),
             'entry_speed': self.get('portfolio.entry_speed', 1.0),
             'exit_speed': self.get('portfolio.exit_speed', 1.0),
-            'position_stop_loss': self.get('portfolio.position_stop_loss', 0.10),
-            'portfolio_stop_loss': self.get('portfolio.portfolio_stop_loss', 0.08),
+            'position_stop_loss': self.get('portfolio.position_stop_loss', 0.15),
+            'portfolio_stop_loss': self.get('portfolio.portfolio_stop_loss', 0.12),
             'volatility_control_enabled': self.get('volatility_control.enabled', False),
             'portfolio_stop_loss_enabled': self.get('portfolio_stop_loss.enabled', False),
-            'emergency_exposure': self.get('portfolio_stop_loss.emergency_exposure', 0.30),
+            'emergency_exposure': self.get('portfolio_stop_loss.emergency_exposure', 0.50),
         }
-
-    def get_industry_factor_weights(self) -> Dict[str, Dict[str, float]]:
-        """获取行业因子权重"""
-        return self.get('industry_factor_weights', {
-            '科技/成长': {'volatility_10': 0.25, 'rsi_average': 0.35, 'bb_width': 0.15, 'momentum': 0.25},
-            '周期/资源': {'volatility_10': 0.40, 'rsi_average': 0.30, 'bb_width': 0.10, 'momentum': 0.20},
-            '消费/稳定': {'volatility_10': 0.30, 'rsi_average': 0.20, 'bb_width': 0.30, 'momentum': 0.20},
-            '金融/大盘': {'volatility_10': 0.35, 'rsi_average': 0.20, 'bb_width': 0.15, 'momentum': 0.30},
-            'default': {'volatility_10': 0.25, 'rsi_average': 0.30, 'bb_width': 0.20, 'momentum': 0.25},
-        })
-
-    def get_industry_category(self) -> Dict[str, list]:
-        """获取行业分类映射"""
-        return self.get('industry_category', {})
 
     def get_industry_factor_config(self) -> Dict[str, Any]:
         """获取行业因子配置"""
@@ -123,7 +92,6 @@ class ConfigLoader:
 def load_config(config_path: str = None) -> ConfigLoader:
     """加载配置的便捷函数"""
     if config_path is None:
-        # 从strategy目录加载
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         config_path = os.path.join(base_dir, 'config', 'factor_config.yaml')
 

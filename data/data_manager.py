@@ -715,7 +715,7 @@ class StockDataManager:
 
         return issues
 
-    def create_universe_for_backtest(self, symbols, start_date, end_date, adj_type='qfq', min_days=100):
+    def create_universe_for_backtest(self, symbols, start_date, end_date, adj_type='hfq', min_days=100):
         """创建回测股票池"""
         # 获取股票列表
 
@@ -729,7 +729,7 @@ class StockDataManager:
                     universe.append(symbol)
                     continue
                 # 检查是否有足够的数据
-                raw_data_path = self.raw_data_dir / str(symbol).zfill(6) / "qfq.csv"
+                raw_data_path = self.raw_data_dir / str(symbol).zfill(6) / "hfq.csv"
                 if not raw_data_path.exists():
                     continue
 

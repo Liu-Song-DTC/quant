@@ -1,276 +1,104 @@
+# 策略配置文件 (精简版 ~100行)
+
 backtest:
   cash: 100000.0
   commission: 0.0015
-  max_position: 10
-  num_workers: 8
-  rebalance_days: 20
   slippage: 0.0015
-detailed_industries:
-  互联网/软件:
-  - 互联网
-  - 软件开发
-  - 软件服务
-  - 云服务
-  - 信息安全
-  - 云计算
-  - 大数据
-  - IT服务
-  交运:
-  - 航运
-  - 港口
-  - 航运港口
-  - 航空
-  - 航空装备
-  - 机场
-  - 物流
-  - 运输
-  - 交运
-  军工:
-  - 军工
-  - 航天
-  - 航空装备
-  - 航海装备
-  - 雷达
-  - 军工电子
-  化工:
-  - 化工
-  - 化学原料
-  - 化学制品
-  - 农化
-  - 农药
-  - 化纤
-  - 塑料
-  - 橡胶
-  - 化学纤维
-  半导体/光伏:
-  - 半导体
-  - 芯片
-  - 集成电路
-  - 传感器
-  - 光伏
-  - 光伏设备
-  基建/地产/石油石化:
-  - 基建
-  - 基础建设
-  - 专业工程
-  - 房屋建设
-  - 园林工程
-  - 工程咨询
-  - 轨交设备
-  - 房地产
-  - 房地产开发
-  - 铁路公路
-  - 石油
-  - 石化
-  - 炼化
-  - 油气
-  - 油服
-  新能源车/风电:
-  - 电池
-  - 锂电
-  - 储能
-  - 氢能
-  - 新能源
-  - 汽车
-  - 乘用车
-  - 商用车
-  - 汽车零部件
-  - 汽车服务
-  - 汽车电子
-  - 风电
-  - 风电设备
-  有色/钢铁/煤炭/建材:
-  - 有色金属
-  - 工业金属
-  - 小金属
-  - 贵金属
-  - 能源金属
-  - 稀土
-  - 金属新材料
-  - 钢铁
-  - 普钢
-  - 冶钢
-  - 焦炭
-  - 煤炭
-  - 煤炭开采
-  - 建材
-  - 水泥
-  - 玻璃
-  - 玻纤
-  - 造纸
-  - 非金属材料
-  - 装修建材
-  消费/传媒/农业/环保/医药:
-  - 食品
-  - 饮料
-  - 白酒
-  - 啤酒
-  - 调味品
-  - 食品加工
-  - 乳品
-  - 农产品加工
-  - 调味发酵
-  - 家电
-  - 家电零部件
-  - 白色家电
-  - 黑色家电
-  - 纺织
-  - 服装
-  - 美妆
-  - 个护
-  - 家纺
-  - 传媒
-  - 游戏
-  - 数字媒体
-  - 广告
-  - 影视
-  - 文教休闲
-  - 旅游
-  - 酒店
-  - 餐饮
-  - 农业
-  - 种植
-  - 养殖
-  - 渔业
-  - 林业
-  - 饲料
-  - 环保
-  - 环境治理
-  - 包装
-  - 印刷
-  - 包装印刷
-  - 综合
-  - 医药
-  - 医疗
-  - 中药
-  - 生物制品
-  - 医疗器械
-  - 医疗服务
-  - 化学制药
-  - 生物医药
-  - 燃气
-  - 水务
-  - 城市燃气
-  电力设备:
-  - 电力
-  - 其他电源设备
-  - 电网设备
-  - 电气设备
-  - 电力设备
-  电子:
-  - 电子
-  - 元件
-  - 消费电子
-  - 面板
-  - LED
-  - 光学光电子
-  - 电子化学品
-  自动化/制造:
-  - 自动化
-  - 自动化设备
-  - 通用设备
-  - 专用设备
-  - 工程机械
-  通信/计算机:
-  - 通信设备
-  - 通信服务
-  - 通信运营商
-  - 计算机应用
-  - 计算机设备
-  金融:
-  - 银行
-  - 银行Ⅱ
-  - 证券
-  - 保险
-  - 多元金融
-  - 信托
-  - 金融
-  - 租赁
-extreme_adjustments:
-  regime_weight: 0.85
-fundamental_weights:
-  enabled: true
-  technical_weight: 0.7
-  weight: 0.3
-regime_weights:
-  bear:
-    bb_width: 0.1
-    momentum: 0.2
-    rsi_average: 0.3
-    volatility_10: 0.4
-  bull:
-    bb_width: 0.1
-    momentum: 0.5
-    rsi_average: 0.2
-    volatility_10: 0.2
-  neutral:
-    bb_width: 0.15
-    momentum: 0.3
-    rsi_average: 0.25
-    volatility_10: 0.3
-signal_thresholds:
-  adjusted_buy: 0.00
-  buy: 0.00
-  sell: -0.15
-technical_weights:
-  bb_width: 0.2
-  momentum: 0.3
-  rsi_average: 0.3
-  volatility_10: 0.2
+  rebalance_days: 20
 
-# 组合仓位管理配置
 portfolio:
   max_position: 10
-  target_volatility: 0.25  # A股合理波动率目标（0.15太低会频繁触发）
+  target_volatility: 0.25
   entry_speed: 1.0
   exit_speed: 1.0
-  position_stop_loss: 0.15  # 个股止损15%（8%太敏感）
-  portfolio_stop_loss: 0.12  # 组合止损12%（5%在A股太容易触发）
-  enable_industry_weighting: true  # 行业权重优化选股
+  position_stop_loss: 0.15
+  portfolio_stop_loss: 0.12
 
 # 组合止损配置
 portfolio_stop_loss:
-  enabled: true  # 启用组合止损
-  emergency_exposure: 0.50  # 触发后降到50%（20%太激进会错过反弹）
+  enabled: true
+  emergency_exposure: 0.50
 
+# 波动率控制
 volatility_control:
-  enabled: true  # 启用波动率控制
+  enabled: true
   lookback_period: 20
-  target_volatility: 0.25  # A股合理波动率目标
+
+# 市场状态乘数
+regime_multiplier:
+  bull: 1.0
+  neutral: 0.85
+  bear: 0.6
+
+# 基本面因子权重
+fundamental_weight: 0.3
+
+# 因子模式: dynamic / fixed / both
+factor_mode: both
+
+# 行业因子开关
+industry_factor_enabled: true
+
+# 风格因子开关
+style_factor_enabled: true
 
 # 行业因子配置（基于分行业验证结果）
-# 使用方法: 从 core/industry_factor_config.py 加载配置
 industry_factor_config:
   enabled: true
-  lookback_days: 120  # 滚动验证回看期
-  forward_days: 20     # 滚动验证展望期（与调仓周期一致）
+  lookback_days: 120
+  forward_days: 20
 
-# 动态因子选择配置（Walk-Forward动态选择）
-# 启用后，每个验证时点基于训练窗口内的IC/IR选择Top-N因子
+# 动态因子选择配置
 dynamic_factor:
   enabled: true
-  train_window: 250       # 训练窗口天数
-  forward_period: 20       # 前瞻期（与调仓周期一致）
-  top_n_factors: 3        # 选择Top-N因子
-  min_train_samples: 100   # 最少训练样本数（提高稳定性）
-  min_ic_dates: 10         # 最少有效IC天数（提高稳定性）
+  mode: both
+  train_window: 250
+  forward_period: 20
+  top_n_factors: 3
+  min_train_samples: 100
+  min_ic_dates: 10
+  fallback_to_fixed: true
 
 # 技术指标参数
 indicator_params:
-  # EMA周期
   ema_periods: [5, 10, 20, 60]
-  # MA周期
   ma_periods: [5, 10, 20, 30, 60]
-  # RSI周期
   rsi_periods: [6, 8, 10, 14]
-  # 布林带参数
   bb_window: 20
   bb_std: 2
-  # 动量周期
   momentum_periods: [3, 5, 10, 20, 30]
-  # 波动率周期
   volatility_periods: [5, 10, 20]
-  # ATR周期
   atr_periods: [10, 14, 20]
-  # 成交量MA周期
   volume_ma_period: 20
+
+# 行业因子配置（基于真滚动验证结果）
+# 策略: Top3因子等权，减少过拟合
+industry_factors:
+  自动化/制造:
+    factors: [fund_revenue_growth, mom_x_lowvol_20_20, mom_x_lowvol_20_10]
+  电力设备:
+    factors: [fund_score, fund_profit_growth, mom_x_lowvol_20_20]
+  基建/地产/石油石化:
+    factors: [fund_profit_growth, fund_score, fund_roe]
+  金融:
+    factors: [fund_cf_to_profit, fund_score, fund_roe]
+  化工:
+    factors: [mom_x_lowvol_20_20, mom_x_lowvol_20_10, fund_gross_margin]
+  新能源车/风电:
+    factors: [fund_profit_growth, fund_revenue_growth, fund_score]
+  有色/钢铁/煤炭/建材:
+    factors: [fund_score, fund_revenue_growth, fund_profit_growth]
+  军工:
+    factors: [mom_x_lowvol_20_20, mom_x_lowvol_20_10, fund_profit_growth]
+  互联网/软件:
+    factors: [mom_x_lowvol_20_20, mom_x_lowvol_20_10, fund_roe]
+  电子:
+    factors: [mom_x_lowvol_20_20, fund_profit_growth, fund_revenue_growth]
+  消费/传媒/农业/环保/医药:
+    factors: [fund_revenue_growth, fund_profit_growth, mom_x_lowvol_20_20]
+  半导体/光伏:
+    factors: [mom_x_lowvol_20_20, fund_revenue_growth, fund_profit_growth]
+  交运:
+    factors: [fund_profit_growth, fund_gross_margin, mom_x_lowvol_20_20]
+  通信/计算机:
+    factors: [fund_profit_growth, fund_score, fund_revenue_growth]

@@ -19,161 +19,28 @@ from tqdm import tqdm
 from .signal import Signal
 from .signal_store import SignalStore
 from .config_loader import load_config
-from .industry_factor_config import INDUSTRY_FACTOR_CONFIG
+from .industry_mapping import INDUSTRY_KEYWORDS, get_industry_category
 from .factors import calc_all_factors_for_validation
+import yaml
+import os
 
 import warnings
 warnings.filterwarnings('ignore')
 
 
-# ============================================================
-# 公共函数：预计算因子数据（供评估和回测使用）
-# ============================================================
-
-def prepare_factor_data(stock_data: dict, fd,
-                       detailed_industries: dict,
-                       num_workers: int = 8) -> Tuple[pd.DataFrame, dict, list]:
-    """预计算所有股票的因子数据（用于动态因子选择）
-
-    这个函数在系统初始化时调用一次，之后 SignalEngine 生成信号时
-    直接使用缓存的因子数据进行动态因子选择。
-
-    实时系统扩展：
-    - 每天新数据来临时，调用此函数增量更新因子数据
-    - 或者直接更新因子DataFrame，SignalEngine会自动使用
-
-    Args:
-        stock_data: {code: DataFrame} 股票历史数据
-        fd: FundamentalData 实例
-        detailed_industries: 行业分类配置
-        num_workers: 并行进程数
-
-    Returns:
-        tuple: (factor_data, industry_codes, all_dates)
-            - factor_data: 所有股票在所有日期的因子值 DataFrame
-            - industry_codes: {category: [codes]} 行业映射
-            - all_dates: 所有交易日期列表
-    """
-    config_loader = load_config()
-    lookback = config_loader.get('industry_factor_config.lookback_days', 120)
-    forward_period = config_loader.get('dynamic_factor.forward_period', 20)
-
-    # 构建行业映射
-    industry_codes = {cat: [] for cat in detailed_industries.keys()}
-    unmatched_count = 0
-    all_dates = set()
-    for df in stock_data.values():
-        # 使用 'datetime' 列而不是 index
-        if 'datetime' in df.columns:
-            all_dates.update(df['datetime'].tolist())
-        else:
-            all_dates.update(df.index.tolist())
-    all_dates = sorted(all_dates)
-
-    for code in stock_data.keys():
-        matched = False
-        try:
-            sample_date = all_dates[100]  # 用较早的日期获取行业
-            ind = fd.get_industry(code, sample_date) if fd else None
-            for cat, keywords in detailed_industries.items():
-                if ind and any(kw in str(ind) for kw in keywords):
-                    industry_codes[cat].append(code)
-                    matched = True
-                    break
-        except:
-            pass
-        if not matched:
-            unmatched_count += 1
-
-    # 采样日期（每5天采样一次，减少计算量）
-    sample_dates = all_dates[lookback:-forward_period:5]
-    print(f"预计算因子数据: {len(sample_dates)} 个时间点, {len(stock_data)} 只股票")
-    print(f"行业映射: 未匹配 {unmatched_count}/{len(stock_data)} 只股票")
-    for cat, codes in industry_codes.items():
-        if codes:
-            print(f"  {cat}: {len(codes)} 只")
-
-    # 并行计算因子
-    args_list = [
-        (code, stock_data[code], sample_dates, lookback, forward_period)
-        for code in stock_data.keys()
-    ]
-
-    all_factor_data = []
-    with Pool(num_workers) as pool:
-        for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=10),
-                       total=len(args_list), desc="计算因子"):
-            all_factor_data.extend(res)
-
-    factor_data = pd.DataFrame(all_factor_data) if all_factor_data else pd.DataFrame()
-
-    # 数据清洗：过滤极端未来收益
-    if 'future_ret' in factor_data.columns:
-        original_len = len(factor_data)
-        factor_data = factor_data[
-            (factor_data['future_ret'] > -0.5) &
-            (factor_data['future_ret'] < 0.5)
-        ]
-        print(f"因子数据: {original_len} 条 -> {len(factor_data)} 条 (过滤极端值 {original_len - len(factor_data)} 条)")
-
-    return factor_data, industry_codes, all_dates
+# 行业因子配置（从YAML加载）
+def _load_industry_factors():
+    """加载行业因子配置"""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_path = os.path.join(base_dir, 'config', 'factor_config.yaml')
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+            return config.get('industry_factors', {})
+    return {}
 
 
-def _compute_stock_factors_worker(args):
-    """多进程 worker: 计算单只股票的因子数据"""
-    code, df, sample_dates, lookback, forward_period = args
-    # 使用 datetime 列而非 index
-    if 'datetime' in df.columns:
-        stock_dates = sorted(df['datetime'].tolist())
-    else:
-        stock_dates = sorted(df.index.tolist())
-
-    results = []
-    for sample_date in sample_dates:
-        valid_dates = [d for d in stock_dates if d <= sample_date]
-        if len(valid_dates) < lookback:
-            continue
-
-        eval_date = valid_dates[-1]
-        idx = stock_dates.index(eval_date)
-
-        if idx < lookback:
-            continue
-
-        history = df.iloc[:idx+1].iloc[-lookback:]
-        if len(history) < 60:
-            continue
-
-        # 计算因子
-        from .factors import calc_all_factors_for_validation
-        factors = calc_all_factors_for_validation(
-            history['close'].values,
-            history['high'].values if 'high' in history.columns else history['close'].values,
-            history['low'].values if 'low' in history.columns else history['close'].values,
-            history['volume'].values if 'volume' in history.columns else np.ones(len(history)),
-            fundamental_data=None,  # worker 中不传递 fd
-            code=code,
-            eval_date=eval_date
-        )
-
-        row = {'code': code, 'date': eval_date}
-        for fn, vals in factors.items():
-            if hasattr(vals, '__len__') and len(vals) > 0:
-                val = vals[-1]
-            else:
-                val = vals
-            if val is not None and not np.isnan(val):
-                row[fn] = float(val)
-
-        # 计算未来收益
-        if idx + forward_period < len(df):
-            future_price = df.iloc[idx + forward_period]['close']
-            current_price = df.iloc[idx]['close']
-            if current_price > 0:
-                row['future_ret'] = (future_price - current_price) / current_price
-                results.append(row)
-
-    return results
+INDUSTRY_FACTOR_CONFIG = _load_industry_factors()
 
 
 class DynamicFactorSelector:
@@ -363,42 +230,25 @@ class SignalEngine:
         """从配置文件加载参数"""
         config_loader = load_config()
 
-        # 技术面因子权重
-        tech_weights = config_loader.get_technical_weights()
-        self.vol_weight = tech_weights.get('volatility_10', 0.20)
-        self.rsi_weight = tech_weights.get('rsi_average', 0.30)
-        self.bb_weight = tech_weights.get('bb_width', 0.20)
-        self.mom_weight = tech_weights.get('momentum', 0.30)
-
         # 信号阈值
-        thresholds = config_loader.get_signal_thresholds()
-        self.buy_threshold = thresholds.get('buy', 0.15)
-        self.adjusted_buy_threshold = thresholds.get('adjusted_buy', 0.05)
-        self.sell_threshold = thresholds.get('sell', -0.05)
-
-        # 极端状态权重
-        self.extreme_weight = config_loader.get('extreme_adjustments.regime_weight', 0.85)
+        self.buy_threshold = 0.15
+        self.sell_threshold = -0.15
 
         # 基本面因子配置
-        fundamental_config = config_loader.get('fundamental_weights', {})
-        self.fundamental_enabled = fundamental_config.get('enabled', True)
-        self.fundamental_weight = fundamental_config.get('weight', 0.30)
-        self.technical_weight = fundamental_config.get('technical_weight', 0.70)
+        self.fundamental_enabled = True
+        self.fundamental_weight = config_loader.get('fundamental_weight', 0.3)
 
-        # 市场状态动态权重
-        self.regime_weights = config_loader.get('regime_weights', {})
+        # 市场状态乘数
+        self.regime_multiplier = config_loader.get('regime_multiplier', {
+            'bull': 1.0, 'neutral': 0.85, 'bear': 0.6
+        })
 
-        # 风格因子配置
-        style_config = config_loader.get('style_weights', {})
-        self.style_enabled = style_config.get('enabled', True)
-        self.style_weight = style_config.get('weight', 0.25)
+        # 风格因子开关
+        self.style_enabled = config_loader.get('style_factor_enabled', True)
 
-        # 行业因子配置
+        # 行业因子开关
         industry_config = config_loader.get_industry_factor_config()
         self.industry_factor_enabled = industry_config.get('enabled', True)
-
-        # 行业分类映射（原始行业名 -> 配置行业键）
-        self.detailed_industries = config_loader.get('detailed_industries', {})
 
         # 技术指标参数
         self.indicator_params = config_loader.get_indicator_params()
@@ -407,8 +257,9 @@ class SignalEngine:
         self.dynamic_factor_selector = DynamicFactorSelector()
         self.dynamic_factor_enabled = self.dynamic_factor_selector.enabled
 
-        # 动态因子数据（用于信号生成时选择因子）
-        self._dynamic_industry_factors = {}  # {industry: [factors]}
+        # 动态因子模式配置：dynamic(仅动态) / fixed(仅固定) / both(动态优先+固定兜底)
+        self.factor_mode = config_loader.get('factor_mode', 'both')
+        self.factor_fallback_to_fixed = config_loader.get('dynamic_factor.fallback_to_fixed', True)
 
     def set_factor_data(self, factor_df: pd.DataFrame):
         """设置因子数据（用于动态因子选择）
@@ -755,30 +606,42 @@ class SignalEngine:
                        code=None, current_date=None) -> tuple:
         """根据行业选择因子
 
+        mode配置:
+            - dynamic: 只用动态因子（不用固定因子）
+            - fixed: 只用固定因子（跳过动态选择）
+            - both: 动态优先，失败则用固定因子
+
         Returns:
             (factor_name, factor_value, risk_info, is_industry_factor)
         """
-        # 优先使用动态因子选择（如果启用）
-        if self.dynamic_factor_enabled and code and current_date:
-            result = self._select_factor_dynamic(ind, idx, regime, code, current_date)
-            if result:
-                return result
-
-        # 静态行业因子配置
-        if self.industry_factor_enabled and code and current_date:
-            specific_industry = self._get_specific_industry(code, current_date)
-            if specific_industry and specific_industry in INDUSTRY_FACTOR_CONFIG:
-                result = self._calculate_industry_factor_score(ind, idx, specific_industry,
-                                                               code=code, current_date=current_date)
+        # 动态因子优先
+        if self.factor_mode in ['dynamic', 'both']:
+            if self.dynamic_factor_enabled and code and current_date:
+                result = self._select_factor_dynamic(ind, idx, regime, code, current_date)
                 if result:
-                    factor_name, factor_value, risk_info = result
-                    if regime == -1:  # 熊市
-                        factor_value = factor_value * 0.7
-                        factor_name = factor_name + '_bear'
-                    factor_name = factor_name + f'_{specific_industry[:2]}'
-                    return factor_name, factor_value, risk_info, True
+                    return result
+                # 动态选择失败
+                if self.factor_mode == 'dynamic' and not self.factor_fallback_to_fixed:
+                    # mode=dynamic且不允许fallback，直接用默认因子
+                    factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
+                    return factor_name, factor_value, risk_info, False
 
-        # 默认因子组合
+        # 固定因子（行业特定或默认）
+        if self.factor_mode in ['fixed', 'both']:
+            if self.industry_factor_enabled and code and current_date:
+                specific_industry = self._get_specific_industry(code, current_date)
+                if specific_industry and specific_industry in INDUSTRY_FACTOR_CONFIG:
+                    result = self._calculate_industry_factor_score(ind, idx, specific_industry,
+                                                                   code=code, current_date=current_date)
+                    if result:
+                        factor_name, factor_value, risk_info = result
+                        if regime == -1:  # 熊市
+                            factor_value = factor_value * 0.7
+                            factor_name = factor_name + '_bear'
+                        factor_name = factor_name + f'_{specific_industry[:2]}'
+                        return factor_name, factor_value, risk_info, True
+
+        # 默认因子组合（固定因子的兜底）
         factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
         return factor_name, factor_value, risk_info, False
 
@@ -874,19 +737,23 @@ class SignalEngine:
                 return (raw - 50) / 100 if raw is not None else None
             elif factor_name == 'fund_profit_growth':
                 raw = self.fundamental_data.get_profit_growth(code, current_date)
-                return np.clip(raw, -1, 1) if raw is not None else None
+                # 使用 np.tanh 压缩替代 clip，保留极端增长信息
+                return np.tanh(raw) if raw is not None else None
             elif factor_name == 'fund_roe':
                 raw = self.fundamental_data.get_roe(code, current_date)
                 return (raw - 10) / 20 if raw is not None else None
             elif factor_name == 'fund_revenue_growth':
                 raw = self.fundamental_data.get_revenue_growth(code, current_date)
-                return np.clip(raw, -1, 1) if raw is not None else None
+                # 使用 np.tanh 压缩替代 clip，保留极端增长信息
+                return np.tanh(raw) if raw is not None else None
             elif factor_name == 'fund_eps':
                 raw = self.fundamental_data.get_eps(code, current_date)
-                return np.clip(raw / 2, -1, 1) if raw is not None else None
+                # 使用 np.tanh 压缩替代 clip
+                return np.tanh(raw / 2) if raw is not None else None
             elif factor_name == 'fund_cf_to_profit':
                 raw = self.fundamental_data.get_cf_to_profit(code, current_date)
-                return np.clip((raw - 1), -1, 1) if raw is not None else None
+                # 使用 np.tanh 压缩替代 clip，保留极端偏离信息
+                return np.tanh(raw - 1) if raw is not None else None
             elif factor_name == 'fund_debt_ratio':
                 raw = self.fundamental_data.get_debt_ratio(code, current_date)
                 return (50 - raw) / 50 if raw is not None else None
@@ -908,9 +775,10 @@ class SignalEngine:
         mom_20 = self._safe_get(ind, 'mom_20', idx, 0)
 
         # 动量×低波动因子（最稳定的技术面因子）
-        # 值域约在 [-0.1, 0.1] 之间
+        # 使用 np.tanh 压缩替代 clip，保留相对大小信息
+        # np.tanh(x) 将任意值平滑压缩到 (-1, 1)，比 clip 更好地保留极端值信息
         mom_lowvol = mom_20 * (1 - vol_10 * 10)  # 低波动加成
-        mom_lowvol = np.clip(mom_lowvol, -0.5, 0.5)  # 截断极端值
+        mom_lowvol = np.tanh(mom_lowvol / 0.5) * 0.5  # 平滑压缩到 [-0.5, 0.5]
 
         # 组合因子值
         factor_value = mom_lowvol
@@ -955,24 +823,24 @@ class SignalEngine:
                             factor_val = (raw - 50) / 100 if raw is not None else None
                         elif factor_name == 'fund_profit_growth':
                             raw = self.fundamental_data.get_profit_growth(code, current_date)
-                            # 利润增长率，截断到 -1 ~ 1
-                            factor_val = np.clip(raw, -1, 1) if raw is not None else None
+                            # 使用 np.tanh 压缩替代 clip，保留极端增长信息
+                            factor_val = np.tanh(raw) if raw is not None else None
                         elif factor_name == 'fund_roe':
                             raw = self.fundamental_data.get_roe(code, current_date)
                             # ROE 原始是百分比数值如 8.28，标准化
                             factor_val = (raw - 10) / 20 if raw is not None else None  # 10%为中位
                         elif factor_name == 'fund_revenue_growth':
                             raw = self.fundamental_data.get_revenue_growth(code, current_date)
-                            # 营收增长率，截断到 -1 ~ 1
-                            factor_val = np.clip(raw, -1, 1) if raw is not None else None
+                            # 使用 np.tanh 压缩替代 clip，保留极端增长信息
+                            factor_val = np.tanh(raw) if raw is not None else None
                         elif factor_name == 'fund_eps':
                             raw = self.fundamental_data.get_eps(code, current_date)
-                            # EPS 标准化
-                            factor_val = np.clip(raw / 2, -1, 1) if raw is not None else None
+                            # 使用 np.tanh 压缩替代 clip
+                            factor_val = np.tanh(raw / 2) if raw is not None else None
                         elif factor_name == 'fund_cf_to_profit':
                             raw = self.fundamental_data.get_cf_to_profit(code, current_date)
-                            # 现金流/利润比，1为正常，截断
-                            factor_val = np.clip((raw - 1), -1, 1) if raw is not None else None
+                            # 使用 np.tanh 压缩替代 clip，保留极端偏离信息
+                            factor_val = np.tanh(raw - 1) if raw is not None else None
                         elif factor_name == 'fund_debt_ratio':
                             raw = self.fundamental_data.get_debt_ratio(code, current_date)
                             # 负债率，反向（低负债好）
@@ -1030,10 +898,12 @@ class SignalEngine:
             return price_pos * 0.5 - 0.25
         elif style_regime == 'growth':
             mom_10 = self._safe_get(ind, 'mom_10', idx, 0)
-            return np.clip(mom_10 * 2, -0.3, 0.3)
+            # 使用 np.tanh 压缩替代 clip，保留相对大小
+            return np.tanh(mom_10 * 2) * 0.3
         elif style_regime == 'value':
             vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
-            return np.clip((0.02 - vol_10) * 5, -0.3, 0.3)
+            # 使用 np.tanh 压缩替代 clip，保留相对大小
+            return np.tanh((0.02 - vol_10) * 5) * 0.3
         return 0.0
 
     def _get_industry_category(self, code, current_date) -> str:
@@ -1050,7 +920,7 @@ class SignalEngine:
             return 'default'
 
     def _get_specific_industry(self, code, current_date) -> str:
-        """获取具体行业名（使用detailed_industries映射）"""
+        """获取具体行业名（使用INDUSTRY_KEYWORDS映射）"""
         # 动态因子模式下，允许没有 fundamental_data
         # 但如果没有 fundamental_data，尝试从 industry_codes 推断
         if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
@@ -1069,8 +939,8 @@ class SignalEngine:
             # 清理行业名（去除Ⅱ、Ⅲ等特殊字符）
             cleaned_industry = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
 
-            # 使用映射将原始行业名转换为配置行业键
-            for config_key, keywords in self.detailed_industries.items():
+            # 使用 INDUSTRY_KEYWORDS 将原始行业名转换为配置行业键
+            for config_key, keywords in INDUSTRY_KEYWORDS.items():
                 # 精确匹配或包含匹配
                 if raw_industry in keywords or cleaned_industry in keywords:
                     # 检查该行业键是否在 INDUSTRY_FACTOR_CONFIG 中
@@ -1132,9 +1002,10 @@ class SignalEngine:
         arr = ind.get(key)
         if arr is None:
             return default
-        if isinstance(arr, (int, float)):
-            return default
-        if hasattr(arr, '__len__'):
+        # 检查是否是真正的标量（不包括 numpy 标量）
+        if np.isscalar(arr) and not hasattr(arr, '__len__'):
+            return default if (isinstance(arr, (int, float)) and np.isnan(arr)) else arr
+        if hasattr(arr, '__len__') and not isinstance(arr, str):
             if len(arr) <= idx:
                 return default
             val = arr[idx]

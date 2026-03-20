@@ -8,9 +8,11 @@ from collections import defaultdict
 
 from core.strategy import Strategy
 from core.fundamental import FundamentalData
-from core.signal_engine import SignalEngine, prepare_factor_data
+from core.signal_engine import SignalEngine
+from core.factor_preparer import prepare_factor_data
 from core.signal_store import SignalStore
 from core.config_loader import load_config
+from core.industry_mapping import INDUSTRY_KEYWORDS
 
 # 加载配置
 config = load_config()
@@ -56,7 +58,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 只读取一次CSV数据
     stock_data_dict = {}
     for item in tqdm(all_items, desc="loading data"):
-        name = item[:-8]
+        # 根据后缀提取股票代码
+        if item.endswith('_qfq.csv'):
+            name = item[:-8]  # 去掉 '_qfq.csv'
+        elif item.endswith('_hfq.csv'):
+            name = item[:-8]  # 去掉 '_hfq.csv'
+        else:
+            continue
         data = pd.read_csv(DATA_PATH + item, parse_dates=['datetime'])
         stock_data_dict[name] = data
 
@@ -79,7 +87,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         factor_df, industry_codes, all_dates = prepare_factor_data(
             stock_data_dict,
             fundamental_data,
-            config.config.get('detailed_industries', {}),
+            INDUSTRY_KEYWORDS,
             NUM_WORKERS
         )
         strategy.set_factor_data(factor_df, industry_codes)
@@ -324,9 +332,13 @@ class BacktraderExecution(bt.Strategy):
                       f'Cost: {order.executed.value}, Comm {order.executed.comm}, Size: {order.executed.size}, Stock: {order.data._name}')
 
 if __name__ == "__main__":
-    # 加载基本面数据
-    stock_codes = [f.replace('_qfq.csv', '') for f in os.listdir(DATA_PATH)
-                   if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv']
+    # 加载基本面数据 (支持 _qfq.csv 和 _hfq.csv)
+    stock_codes = []
+    for f in os.listdir(DATA_PATH):
+        if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv':
+            stock_codes.append(f.replace('_qfq.csv', ''))
+        elif f.endswith('_hfq.csv') and f != 'sh000001_hfq.csv':
+            stock_codes.append(f.replace('_hfq.csv', ''))
     fundamental_data = FundamentalData(FUNDAMENTAL_PATH, stock_codes)
 
     cerebro = bt.Cerebro()

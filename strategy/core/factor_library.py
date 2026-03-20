@@ -96,6 +96,9 @@ def _shift(arr: np.ndarray, periods: int) -> np.ndarray:
     result = np.zeros_like(arr, dtype=float)
     result[periods:] = arr[:-periods]
     result[:periods] = np.nan
+    # 标记无效位移（价格为0或负数）
+    shifted_vals = arr[:-periods]
+    result[periods:][shifted_vals <= 0] = np.nan
     return result
 
 
@@ -103,20 +106,32 @@ def _shift(arr: np.ndarray, periods: int) -> np.ndarray:
 
 def calc_factor_volatility_10(close: np.ndarray) -> np.ndarray:
     """计算10日波动率因子"""
-    returns = np.diff(close, prepend=close[0]) / close
-    return _rolling_std(returns, 10)
+    close_safe = np.where(close <= 0, np.nan, close)
+    returns = np.diff(close_safe, prepend=close_safe[0])
+    returns = returns / np.where(close_safe == 0, np.nan, close_safe)
+    result = _rolling_std(returns, 10)
+    result[returns == 0] = 0  # 价格为0或不变时波动率为0
+    return result
 
 
 def calc_factor_volatility_5(close: np.ndarray) -> np.ndarray:
     """计算5日波动率因子"""
-    returns = np.diff(close, prepend=close[0]) / close
-    return _rolling_std(returns, 5)
+    close_safe = np.where(close <= 0, np.nan, close)
+    returns = np.diff(close_safe, prepend=close_safe[0])
+    returns = returns / np.where(close_safe == 0, np.nan, close_safe)
+    result = _rolling_std(returns, 5)
+    result[returns == 0] = 0
+    return result
 
 
 def calc_factor_volatility_20(close: np.ndarray) -> np.ndarray:
     """计算20日波动率因子"""
-    returns = np.diff(close, prepend=close[0]) / close
-    return _rolling_std(returns, 20)
+    close_safe = np.where(close <= 0, np.nan, close)
+    returns = np.diff(close_safe, prepend=close_safe[0])
+    returns = returns / np.where(close_safe == 0, np.nan, close_safe)
+    result = _rolling_std(returns, 20)
+    result[returns == 0] = 0
+    return result
 
 
 # ==================== RSI因子 ====================
