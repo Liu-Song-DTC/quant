@@ -106,7 +106,15 @@ def prepare_factor_data(stock_data: dict, fd,
             all_factor_data.extend(res)
 
     factor_data = pd.DataFrame(all_factor_data) if all_factor_data else pd.DataFrame()
-    print(f"因子数据: {len(factor_data)} 条")
+
+    # 数据清洗：过滤极端未来收益
+    if 'future_ret' in factor_data.columns:
+        original_len = len(factor_data)
+        factor_data = factor_data[
+            (factor_data['future_ret'] > -0.5) &
+            (factor_data['future_ret'] < 0.5)
+        ]
+        print(f"因子数据: {original_len} 条 -> {len(factor_data)} 条 (过滤极端值 {original_len - len(factor_data)} 条)")
 
     return factor_data, industry_codes, all_dates
 

@@ -53,6 +53,7 @@ coverage.xml
 cover/
 
 data/stock_data*
+strategy/rolling_validation_results/*.csv
 # Translations
 *.mo
 *.pot

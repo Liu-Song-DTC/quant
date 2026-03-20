@@ -48,6 +48,7 @@ class PortfolioConstructor:
 
         self.peak_equity = None
         self.position_cost = {}
+        self.last_selection = []  # 记录最近一次选股结果 (date, code, score, weight, industry)
         self.consecutive_losses = 0
         # 波动率控制相关
         self.equity_history = []  # 历史净值
@@ -292,6 +293,18 @@ class PortfolioConstructor:
             c: raw_weights[c] * total_equity
             for c in raw_weights
         }
+
+        # 记录选股结果供验证使用
+        self.last_selection = [
+            {
+                'date': date,
+                'code': c['code'],
+                'score': c['score'],
+                'weight': raw_weights.get(c['code'], 0),
+                'industry': c.get('industry', ''),
+            }
+            for c in selected
+        ]
 
         return desired_value
 

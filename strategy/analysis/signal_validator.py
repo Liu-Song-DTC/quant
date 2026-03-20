@@ -1,15 +1,16 @@
 # analysis/signal_validator.py
 """
-信号系统统一验证模块
+信号系统验证脚本 - 只做评估，不包含策略逻辑
 
-整合因子层、信号层、组合层评估:
-1. 因子层 - IC/IR、胜率（动态因子选择验证）
-2. 信号层 - 信号覆盖率、买卖信号准确率
-3. 组合层 - Top-N选股收益、五分位单调性、行业权重优化
+设计原则：
+1. 只做评估，不包含策略逻辑
+2. 读取回测输出的选股结果进行验证
+3. 计算信号对应的未来收益进行验证
 
-使用 walk-forward 验证方法:
-- 每个验证时点使用之前的数据选择因子
-- 使用 DynamicFactorSelector 动态选择因子
+三层评估：
+1. 因子层 - IC/IR分析
+2. 信号层 - 买卖信号分析
+3. 组合层 - 实际选股结果分析
 """
 
 import os
@@ -18,9 +19,6 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from tqdm import tqdm
-from multiprocessing import Pool
-import warnings
-warnings.filterwarnings('ignore')
 
 # 路径设置
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,719 +27,339 @@ project_root = os.path.dirname(strategy_dir)
 sys.path.insert(0, strategy_dir)
 
 from core.config_loader import load_config
-from core.factors import calc_all_factors_for_validation
-from core.fundamental import FundamentalData
-from core.signal_engine import DynamicFactorSelector, prepare_factor_data, SignalEngine
-from core.signal_store import SignalStore
-from core.portfolio import PortfolioConstructor
 
 config = load_config(os.path.join(project_root, 'strategy/config/factor_config.yaml'))
-detailed_industries = config.config.get('detailed_industries', {})
 
-# 配置参数
-dynamic_config = config.config.get('dynamic_factor', {})
-TRAIN_WINDOW = dynamic_config.get('train_window', 250)
-FORWARD_PERIOD = dynamic_config.get('forward_period', 20)
-LOOKBACK = config.config.get('industry_factor_config', {}).get('lookback_days', 120)
-MIN_TRAIN_SAMPLES = dynamic_config.get('min_train_samples', 50)
-TOP_N_FACTORS = dynamic_config.get('top_n_factors', 3)
-
-# 组合优化配置
-portfolio_config = config.config.get('portfolio', {})
-ENABLE_INDUSTRY_WEIGHTING = portfolio_config.get('enable_industry_weighting', True)
+# 配置
+DATA_PATH = os.path.join(project_root, 'data/stock_data/backtrader_data/')
+RESULTS_DIR = os.path.join(strategy_dir, 'rolling_validation_results')
+FORWARD_PERIOD = config.config.get('dynamic_factor', {}).get('forward_period', 20)
 
 
-def calc_ic(factor_values, returns):
-    """计算IC (Spearman秩相关)"""
-    valid_mask = ~(np.isnan(factor_values) | np.isnan(returns))
-    if valid_mask.sum() < 5:
-        return np.nan
-    ic, _ = stats.spearmanr(factor_values[valid_mask], returns[valid_mask])
-    return ic
+def load_stock_data():
+    """加载股票价格数据"""
+    all_items = os.listdir(DATA_PATH)
+    stock_data = {}
+    for item in tqdm(all_items, desc="加载股票数据"):
+        if item.endswith('_qfq.csv') and item != 'sh000001_qfq.csv':
+            code = item.replace('_qfq.csv', '')
+            df = pd.read_csv(os.path.join(DATA_PATH, item))
+            if 'datetime' in df.columns:
+                df = df.set_index('datetime')
+            stock_data[code] = df
+    print(f"加载 {len(stock_data)} 只股票")
+    return stock_data
 
 
-def generate_signal_with_factors(row, factor_list):
-    """使用给定因子列表生成综合信号
-
-    信号计算逻辑：
-    1. 对每个因子值进行标准化（限制到合理范围）
-    2. 计算因子均值作为综合信号
-    """
-    if not factor_list:
-        return np.nan
-
-    scores = []
-    for fn in factor_list:
-        if fn in row and not np.isnan(row[fn]):
-            val = row[fn]
-            # 标准化：将因子值限制到 [-3, 3] 范围
-            # 这与 SignalEngine 中的处理逻辑一致
-            val = np.clip(val, -3.0, 3.0)
-            scores.append(val)
-
-    if not scores:
-        return np.nan
-
-    return np.mean(scores)
-
-
-def generate_signals_for_stock_with_engine(args):
-    """为单只股票生成信号（使用已创建的 SignalEngine）"""
-    code, df, sample_dates, fd, signal_engine = args
-    stock_dates = sorted(df.index.tolist())
-
+def calculate_future_returns(signals_df, stock_data):
+    """计算信号对应的未来收益"""
+    print("\n计算未来收益...")
     results = []
-    date_to_idx = {d: i for i, d in enumerate(stock_dates)}
 
-    for sample_date in sample_dates:
-        valid_dates = [d for d in stock_dates if d <= sample_date]
-        if len(valid_dates) < LOOKBACK:
+    for idx, row in tqdm(signals_df.iterrows(), total=len(signals_df), desc="处理信号"):
+        code = str(row['code'])
+        date_str = str(row['date'])[:10]
+
+        if code not in stock_data:
             continue
 
-        eval_date = valid_dates[-1]
-        idx = date_to_idx.get(eval_date)
-        if idx is None or idx < LOOKBACK:
+        df = stock_data[code]
+
+        try:
+            if date_str not in df.index:
+                continue
+            idx_pos = df.index.get_loc(date_str)
+        except:
             continue
 
-        history = df.iloc[:idx+1].iloc[-LOOKBACK:]
-        if len(history) < 60:
+        if not isinstance(idx_pos, int):
+            continue
+        if idx_pos + FORWARD_PERIOD >= len(df):
             continue
 
-        history_copy = history.copy()
-        history_copy['datetime'] = history_copy.index
+        future_price = df.iloc[idx_pos + FORWARD_PERIOD]['close']
+        current_price = df.iloc[idx_pos]['close']
 
-        signal_store = SignalStore()
-        signal_engine.generate_at_indices(code, history_copy, [len(history_copy)-1], signal_store)
-
-        sig = signal_store.get(code, eval_date.date() if hasattr(eval_date, 'date') else eval_date)
-        if sig and idx + FORWARD_PERIOD < len(df):
-            future_price = df.iloc[idx + FORWARD_PERIOD]['close']
-            current_price = df.iloc[idx]['close']
-            if current_price > 0:
-                future_ret = (future_price - current_price) / current_price
+        if current_price > 0 and future_price > 0:
+            future_ret = (future_price - current_price) / current_price
+            if abs(future_ret) < 0.5:
                 results.append({
+                    'date': row['date'],
                     'code': code,
-                    'date': eval_date,
-                    'score': sig.score,
-                    'factor_value': sig.factor_value,
-                    'buy': sig.buy,
-                    'sell': sig.sell,
-                    'factor_name': sig.factor_name,
-                    'future_ret': future_ret,
+                    'score': row.get('score', 0),
+                    'factor_value': row.get('factor_value', 0),
+                    'buy': row.get('buy', False),
+                    'sell': row.get('sell', False),
+                    'industry': row.get('industry', ''),
+                    'factor_name': row.get('factor_name', ''),
+                    'weight': row.get('weight', 1.0),
+                    'future_ret': future_ret
                 })
 
-    return results
+    result_df = pd.DataFrame(results)
+    print(f"有效数据: {len(result_df)} 条")
+    return result_df
 
 
-class SignalValidator:
-    """统一信号验证器 - 因子层+信号层+组合层评估"""
+# ==================== 因子层评估 ====================
 
-    def __init__(self, stock_data: dict, fd: FundamentalData, num_workers: int = 8):
-        self.stock_data = stock_data
-        self.fd = fd
-        self.num_workers = num_workers
+def evaluate_factor_layer(results_df):
+    """因子层评估：分析不同因子的表现"""
+    print("\n" + "=" * 70)
+    print("【因子层评估】")
+    print("=" * 70)
 
-        # 动态因子数据
-        self.factor_df = None
-        self.industry_codes = {}
-        self.all_dates = []
+    # 检查是否有因子数据
+    has_factor_data = ('factor_name' in results_df.columns and not results_df['factor_name'].isna().all()) or \
+                      ('factor_value' in results_df.columns and not results_df['factor_value'].isna().all())
 
-        # 验证结果
-        self.results_df = None
-        self.factor_selection_log = []
+    if not has_factor_data:
+        print("因子名称/因子值数据不可用，跳过因子层分析")
+        return
 
-    def prepare_data(self):
-        """预计算因子数据"""
-        print("\n预计算因子数据...")
-        dynamic_config = config.config.get('dynamic_factor', {})
-        use_dynamic = dynamic_config.get('enabled', False)
+    # 还需要factor_value列
+    if 'factor_value' not in results_df.columns:
+        print("因子值数据不可用，跳过因子层分析")
+        return
 
-        if use_dynamic:
-            self.factor_df, self.industry_codes, self.all_dates = prepare_factor_data(
-                stock_data=self.stock_data,
-                fd=self.fd,
-                detailed_industries=detailed_industries,
-                num_workers=self.num_workers
-            )
-            print(f"动态因子模式: 预计算 {len(self.factor_df)} 条因子数据")
-        else:
-            # 构建行业映射
-            self.all_dates = sorted(set(d for df in self.stock_data.values() for d in df.index))
-            self.industry_codes = {cat: [] for cat in detailed_industries.keys()}
-            for code in self.stock_data.keys():
-                try:
-                    sample_date = self.all_dates[100]
-                    ind = self.fd.get_industry(code, sample_date)
-                    for cat, keywords in detailed_industries.items():
-                        if any(kw in str(ind) for kw in keywords):
-                            self.industry_codes[cat].append(code)
-                            break
-                except:
-                    pass
+    # 按因子分组分析
+    factor_stats = []
+    for factor_name, group in results_df.groupby('factor_name'):
+        if pd.isna(factor_name) or len(group) < 100:
+            continue
 
-        return self
+        # 过滤NaN
+        valid_data = group.dropna(subset=['factor_value', 'future_ret'])
+        if len(valid_data) < 100:
+            continue
 
-    def run_validation(self):
-        """执行滚动验证"""
-        print("=" * 60)
-        print("信号系统统一验证")
-        print(f"训练窗口: {TRAIN_WINDOW}天, 前瞻期: {FORWARD_PERIOD}天")
-        print(f"每个验证点动态选择Top-{TOP_N_FACTORS}因子")
-        print("=" * 60)
+        ic, p_value = stats.spearmanr(valid_data['factor_value'], valid_data['future_ret'])
+        if not np.isnan(ic):
+            factor_stats.append({
+                'factor': factor_name,
+                'ic': ic,
+                'p_value': p_value,
+                'n': len(group),
+                'avg_ret': group['future_ret'].mean() * 100,
+                'win_rate': (group['future_ret'] > 0).mean() * 100
+            })
 
-        if self.factor_df is None or len(self.factor_df) == 0:
-            print("没有因子数据!")
-            return self
+    if not factor_stats:
+        print("没有足够的因子数据进行分析")
+        return
 
-        # 验证时间点
-        start_idx = LOOKBACK + TRAIN_WINDOW
-        validation_dates = self.all_dates[start_idx:-FORWARD_PERIOD:FORWARD_PERIOD]
+    factor_df = pd.DataFrame(factor_stats)
+    factor_df = factor_df.sort_values('ic', ascending=False)
 
-        print(f"\n验证时间点: {len(validation_dates)} 个")
-        print(f"验证区间: {validation_dates[0]} ~ {validation_dates[-1]}")
+    print(f"\n因子数量: {len(factor_df)}")
+    print("\n有效因子 (IC > 0, p < 0.1):")
+    valid = factor_df[(factor_df['ic'] > 0) & (factor_df['p_value'] < 0.1)]
+    if len(valid) > 0:
+        for _, row in valid.head(10).iterrows():
+            print(f"  {row['factor']}: IC={row['ic']:.4f}, p={row['p_value']:.3f}, 胜率={row['win_rate']:.1f}%")
+    else:
+        print("  无")
 
-        # 因子列表
-        exclude_cols = ['code', 'date', 'future_ret']
-        factor_names = [c for c in self.factor_df.columns if c not in exclude_cols]
-        print(f"因子数量: {len(factor_names)}")
+    print("\n负IC因子 (可能需要排除):")
+    invalid = factor_df[factor_df['ic'] < 0].head(5)
+    for _, row in invalid.iterrows():
+        print(f"  {row['factor']}: IC={row['ic']:.4f}, p={row['p_value']:.3f}")
 
-        # 创建动态因子选择器
-        factor_selector = DynamicFactorSelector()
-        factor_selector.set_factor_data(self.factor_df)
-        factor_selector.set_industry_mapping(self.industry_codes)
 
-        # 滚动验证
-        print("\n滚动验证...")
-        validation_results = []
+# ==================== 信号层评估 ====================
 
-        for val_date in tqdm(validation_dates, desc="验证"):
-            # 使用 DynamicFactorSelector 选择因子
-            industry_factors = factor_selector.select_factors_for_date(val_date, self.all_dates)
+def evaluate_signal_layer(results_df):
+    """信号层评估：分析买卖信号的表现"""
+    print("\n" + "=" * 70)
+    print("【信号层评估】")
+    print("=" * 70)
 
-            # 如果动态选择失败，使用默认因子
-            if not industry_factors:
-                industry_factors = {cat: factor_names[:TOP_N_FACTORS]
-                                  for cat in detailed_industries.keys()}
+    total = len(results_df)
+    buy_signals = results_df[results_df['buy'] == True]
+    sell_signals = results_df[results_df['sell'] == True]
+    no_signal = results_df[(results_df['buy'] == False) & (results_df['sell'] == False)]
 
-            # 记录因子选择
-            for cat, factors in industry_factors.items():
-                self.factor_selection_log.append({
-                    'date': val_date,
-                    'industry': cat,
-                    'factors': ','.join(factors)
-                })
+    print(f"\n信号分布:")
+    print(f"  总观测: {total:,}")
+    print(f"  买入信号: {len(buy_signals):,} ({len(buy_signals)/total*100:.1f}%)")
+    print(f"  卖出信号: {len(sell_signals):,} ({len(sell_signals)/total*100:.1f}%)")
+    print(f"  无信号: {len(no_signal):,} ({len(no_signal)/total*100:.1f}%)")
 
-            # 验证数据
-            val_df = self.factor_df[self.factor_df['date'] == val_date].copy()
-            if len(val_df) < 10:
-                continue
+    # 买入信号分析
+    print(f"\n买入信号质量:")
+    if len(buy_signals) > 0:
+        accuracy = (buy_signals['future_ret'] > 0).mean()
+        avg_ret = buy_signals['future_ret'].mean()
+        print(f"  数量: {len(buy_signals):,}")
+        print(f"  准确率: {accuracy*100:.1f}%")
+        print(f"  平均收益: {avg_ret*100:.2f}%")
+        print(f"  中位数收益: {buy_signals['future_ret'].median()*100:.2f}%")
 
-            # 生成信号
-            for idx, row in val_df.iterrows():
-                code = row['code']
+    # 卖出信号分析
+    print(f"\n卖出信号质量:")
+    if len(sell_signals) > 0:
+        accuracy = (sell_signals['future_ret'] < 0).mean()
+        avg_ret = sell_signals['future_ret'].mean()
+        print(f"  数量: {len(sell_signals):,}")
+        print(f"  准确率: {accuracy*100:.1f}%")
+        print(f"  平均收益: {avg_ret*100:.2f}%")
 
-                stock_industry = None
-                for cat, codes in self.industry_codes.items():
-                    if code in codes:
-                        stock_industry = cat
-                        break
+    # 信号IC分析
+    print(f"\n信号IC分析:")
+    valid = results_df.dropna(subset=['score', 'future_ret'])
+    if len(valid) > 100:
+        ic, p_value = stats.spearmanr(valid['score'], valid['future_ret'])
+        print(f"  整体IC: {ic:.4f} (p={p_value:.4f})")
 
-                if stock_industry and stock_industry in industry_factors:
-                    signal = generate_signal_with_factors(row, industry_factors[stock_industry])
-                else:
-                    signal = generate_signal_with_factors(row, factor_names[:TOP_N_FACTORS])
-
-                if not np.isnan(signal):
-                    validation_results.append({
-                        'date': val_date,
-                        'code': code,
-                        'industry': stock_industry,
-                        'signal': signal,
-                        'future_ret': row['future_ret']
-                    })
-
-        self.results_df = pd.DataFrame(validation_results)
-        print(f"\n验证结果: {len(self.results_df)} 条")
-
-        return self
-
-    def run_signal_evaluation(self):
-        """运行信号层评估（使用SignalEngine生成真实信号）"""
-        print("\n生成信号...")
-
-        # 采样日期
-        sample_dates = self.all_dates[LOOKBACK:-FORWARD_PERIOD:FORWARD_PERIOD]
-        print(f"采样日期: {len(sample_dates)} 个")
-
-        # 创建 SignalEngine（带动态因子数据）
-        main_engine = SignalEngine()
-        main_engine.set_fundamental_data(self.fd)
-        if self.factor_df is not None and len(self.factor_df) > 0:
-            main_engine.set_factor_data(self.factor_df)
-            main_engine.set_industry_mapping(self.industry_codes)
-
-        # 生成信号
-        args_list = [(code, self.stock_data[code], sample_dates, self.fd, main_engine)
-                     for code in self.stock_data.keys()]
-
-        all_signals = []
-        with Pool(self.num_workers) as pool:
-            for res in tqdm(pool.imap(generate_signals_for_stock_with_engine, args_list, chunksize=10),
-                           total=len(args_list), desc="生成信号"):
-                all_signals.extend(res)
-
-        self.signals_df = pd.DataFrame(all_signals)
-        print(f"信号数据: {len(self.signals_df)} 条")
-
-        return self
-
-    def evaluate_factor_layer(self) -> dict:
-        """因子层评估: IC/IR、胜率"""
-        if self.results_df is None or len(self.results_df) == 0:
-            return {}
-
-        results = {}
-
-        # 整体IC
-        overall_ic_list = []
-        for date, group in self.results_df.groupby('date'):
+        # 按日期汇总IC
+        ic_by_date = []
+        for date, group in valid.groupby('date'):
             if len(group) >= 10:
-                ic = calc_ic(group['signal'].values, group['future_ret'].values)
-                if not np.isnan(ic):
-                    overall_ic_list.append(ic)
+                ic_d, _ = stats.spearmanr(group['score'], group['future_ret'])
+                if not np.isnan(ic_d):
+                    ic_by_date.append(ic_d)
 
-        if overall_ic_list:
-            results['overall'] = {
-                'ic_mean': np.mean(overall_ic_list),
-                'ir': np.mean(overall_ic_list) / (np.std(overall_ic_list) + 1e-10),
-                'win_rate': np.mean([1 if i > 0 else 0 for i in overall_ic_list])
-            }
+        if ic_by_date:
+            mean_ic = np.mean(ic_by_date)
+            std_ic = np.std(ic_by_date)
+            ir = mean_ic / (std_ic + 1e-10)
+            print(f"  日度IC均值: {mean_ic:.4f}")
+            print(f"  日度IC标准差: {std_ic:.4f}")
+            print(f"  IR: {ir:.4f}")
+            print(f"  胜率: {np.mean([1 if x > 0 else 0 for x in ic_by_date])*100:.1f}%")
 
-        # 分行业IC
-        industry_results = {}
-        for cat in detailed_industries.keys():
-            cat_df = self.results_df[self.results_df['industry'] == cat]
-            if len(cat_df) < 20:
-                continue
 
-            ic_list = []
-            for date, group in cat_df.groupby('date'):
-                if len(group) >= 3:
-                    ic = calc_ic(group['signal'].values, group['future_ret'].values)
-                    if not np.isnan(ic):
-                        ic_list.append(ic)
+# ==================== 组合层评估 ====================
 
-            if len(ic_list) >= 5:
-                industry_results[cat] = {
-                    'ic_mean': np.mean(ic_list),
-                    'ir': np.mean(ic_list) / (np.std(ic_list) + 1e-10),
-                    'win_rate': np.mean([1 if i > 0 else 0 for i in ic_list])
-                }
+def evaluate_portfolio_layer(results_df):
+    """组合层评估：分析实际选股策略的表现"""
+    print("\n" + "=" * 70)
+    print("【组合层评估】")
+    print("=" * 70)
 
-        results['industry'] = industry_results
-        return results
+    # 检查是否有实际选股数据
+    has_weight = 'weight' in results_df.columns and results_df['weight'].notna().any()
 
-    def evaluate_signal_layer(self) -> dict:
-        """信号层评估: 覆盖率、买卖信号准确率"""
-        if not hasattr(self, 'signals_df') or len(self.signals_df) == 0:
-            return {}
+    if not has_weight:
+        print("没有实际选股数据，跳过组合层分析")
+        return
 
-        df = self.signals_df
-        results = {}
+    # 按日期计算组合收益
+    print(f"\n实际选股结果分析:")
+    portfolio_rets = []
+    for date, group in results_df.groupby('date'):
+        if len(group) == 0:
+            continue
+        # 加权收益
+        weights = group['weight'].values
+        weights = weights / weights.sum()  # 归一化
+        ret = (group['future_ret'].values * weights).sum()
+        portfolio_rets.append({
+            'date': date,
+            'ret': ret,
+            'n_stocks': len(group)
+        })
 
-        # 1. 信号覆盖率
-        total = len(df)
-        buy_signals = df['buy'].sum()
-        sell_signals = df['sell'].sum()
+    if not portfolio_rets:
+        print("没有有效的组合收益数据")
+        return
 
-        results['coverage'] = {
-            'total_observations': total,
-            'buy_signals': int(buy_signals),
-            'sell_signals': int(sell_signals),
-            'buy_rate': buy_signals / total if total > 0 else 0,
-            'sell_rate': sell_signals / total if total > 0 else 0,
-        }
+    portfolio_df = pd.DataFrame(portfolio_rets)
 
-        # 2. 信号强度分布
-        scores = df['score'].dropna()
-        results['score_distribution'] = {
-            'mean': scores.mean(),
-            'std': scores.std(),
-            'median': scores.median(),
-            'positive_rate': (scores > 0).mean(),
-        }
+    # 统计指标
+    avg_ret = portfolio_df['ret'].mean()
+    std_ret = portfolio_df['ret'].std()
+    sharpe = avg_ret / (std_ret + 1e-10) * np.sqrt(12) if std_ret > 0 else 0
+    win_rate = (portfolio_df['ret'] > 0).mean()
+    avg_n = portfolio_df['n_stocks'].mean()
 
-        # 3. 买入信号准确率
-        buy_df = df[df['buy'] == True]
-        if len(buy_df) > 0:
-            buy_accuracy = (buy_df['future_ret'] > 0).mean()
-            buy_avg_ret = buy_df['future_ret'].mean()
-            results['buy_signal_quality'] = {
-                'count': len(buy_df),
-                'accuracy': buy_accuracy,
-                'avg_return': buy_avg_ret,
-            }
+    print(f"  调仓次数: {len(portfolio_df)}")
+    print(f"  平均持仓: {avg_n:.1f} 只")
+    print(f"  月均收益: {avg_ret*100:.2f}%")
+    print(f"  月收益标准差: {std_ret*100:.2f}%")
+    print(f"  夏普比率: {sharpe:.2f}")
+    print(f"  胜率: {win_rate*100:.1f}%")
 
-        # 4. 卖出信号准确率
-        sell_df = df[df['sell'] == True]
-        if len(sell_df) > 0:
-            sell_accuracy = (sell_df['future_ret'] < 0).mean()
-            sell_avg_ret = sell_df['future_ret'].mean()
-            results['sell_signal_quality'] = {
-                'count': len(sell_df),
-                'accuracy': sell_accuracy,
-                'avg_return': sell_avg_ret,
-            }
+    # 累计收益
+    cumulative = (1 + portfolio_df['ret']).cumprod()
+    total_ret = cumulative.iloc[-1] - 1 if len(cumulative) > 0 else 0
+    print(f"  累计收益: {total_ret*100:.2f}%")
 
-        # 5. 分数与未来收益的相关性
-        valid = df.dropna(subset=['score', 'future_ret'])
-        if len(valid) > 10:
-            ic, _ = stats.spearmanr(valid['score'], valid['future_ret'])
-            results['score_ic'] = ic
+    # 行业分布分析
+    if 'industry' in results_df.columns:
+        print(f"\n行业分布:")
+        industry_counts = results_df['industry'].value_counts()
+        for ind, count in industry_counts.head(10).items():
+            pct = count / len(results_df) * 100
+            print(f"  {ind}: {count} ({pct:.1f}%)")
 
-        return results
 
-    def evaluate_portfolio_layer(self, top_n: int = 10) -> dict:
-        """组合层评估: 使用与回测一致的Top-N选股"""
-        if self.results_df is None or len(self.results_df) == 0:
-            return {}
+def main():
+    print("=" * 70)
+    print("信号系统验证报告")
+    print("=" * 70)
 
-        df = self.results_df.copy()
-        results = {}
+    # 加载股票数据
+    stock_data = load_stock_data()
 
-        # Top-N 等权选股（与回测一致）
-        portfolio_returns = []
-        for date, group in df.groupby('date'):
-            if len(group) < top_n:
-                continue
-            # 按信号分数选Top-N
-            top = group.nlargest(top_n, 'signal')
-            avg_ret = top['future_ret'].mean()
-            portfolio_returns.append({'date': date, 'return': avg_ret})
+    # 1. 加载选股结果（组合层评估用）
+    selections_file = os.path.join(RESULTS_DIR, 'portfolio_selections.csv')
+    signals_file = os.path.join(RESULTS_DIR, 'backtest_signals.csv')
 
-        if portfolio_returns:
-            ret_df = pd.DataFrame(portfolio_returns)
-            results['top_n_equal_weight'] = {
-                'n': top_n,
-                'periods': len(ret_df),
-                'avg_return': ret_df['return'].mean(),
-                'sharpe': ret_df['return'].mean() / (ret_df['return'].std() + 1e-10) * np.sqrt(12),
-                'win_rate': (ret_df['return'] > 0).mean(),
-            }
+    # 加载信号数据（因子层和信号层评估用）
+    if os.path.exists(signals_file):
+        print(f"\n加载信号数据...")
+        signals_df = pd.read_csv(signals_file, parse_dates=['date'], low_memory=False)
+        print(f"信号数据: {len(signals_df)} 条")
+        # 计算未来收益
+        signals_results = calculate_future_returns(signals_df, stock_data)
+    else:
+        signals_results = pd.DataFrame()
 
-        # 3. 五分位分组
-        df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
-        quintile_returns = {i: [] for i in range(1, 6)}
-        for date, group in df.groupby('date'):
-            if len(group) < 25:
-                continue
-            group = group.copy()
-            try:
-                group['quintile'] = pd.qcut(group['rank_pct'], 5, labels=[1,2,3,4,5], duplicates='drop')
-            except ValueError:
-                # 重复值太多导致分位数失败，跳过
-                continue
-            for q in range(1, 6):
-                q_ret = group[group['quintile'] == q]['future_ret'].mean()
-                if not np.isnan(q_ret):
-                    quintile_returns[q].append(q_ret)
+    # 加载选股结果（组合层评估用）
+    if os.path.exists(selections_file):
+        print(f"\n加载选股结果...")
+        selections_df = pd.read_csv(selections_file, parse_dates=['date'])
+        print(f"选股结果: {len(selections_df)} 条")
+        # 计算未来收益
+        portfolio_results = calculate_future_returns(selections_df, stock_data)
+    else:
+        portfolio_results = pd.DataFrame()
 
-        results['quintile_returns'] = {
-            f'Q{q}': np.mean(quintile_returns[q]) if quintile_returns[q] else np.nan
-            for q in range(1, 6)
-        }
+    if len(signals_results) == 0 and len(portfolio_results) == 0:
+        print("没有有效数据")
+        return
 
-        q1_avg = np.mean(quintile_returns[1]) if quintile_returns[1] else 0
-        q5_avg = np.mean(quintile_returns[5]) if quintile_returns[5] else 0
-        results['monotonicity'] = {
-            'q5_minus_q1': q5_avg - q1_avg,
-            'is_monotonic': q5_avg > q1_avg,
-        }
-
-        # 4. 分行业评估
-        industry_eval = self._evaluate_by_industry(df)
-        results['industry_performance'] = industry_eval
-
-        return results
-
-    def _calc_industry_weights(self, df: pd.DataFrame) -> dict:
-        """计算行业权重（基于IR）
-
-        使用rank_pct计算，因为组合层选股也是基于rank_pct
-        """
-        # 计算排名百分位
-        if 'rank_pct' not in df.columns:
-            df = df.copy()
-            df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
-
-        industry_ir = {}
-        for cat in detailed_industries.keys():
-            cat_df = df[df['industry'] == cat]
-            if len(cat_df) < 20:
-                continue
-            ic_list = []
-            for date, group in cat_df.groupby('date'):
-                if len(group) >= 3:
-                    # 使用rank_pct计算IC，与组合层选股逻辑一致
-                    ic = calc_ic(group['rank_pct'].values, group['future_ret'].values)
-                    if not np.isnan(ic):
-                        ic_list.append(ic)
-            if len(ic_list) >= 3:
-                industry_ir[cat] = np.mean(ic_list) / (np.std(ic_list) + 1e-10)
-
-        if not industry_ir:
-            return None
-
-        # softmax归一化
-        ir_values = np.array([max(v, 0) for v in industry_ir.values()])
-        weights = np.exp(ir_values * 10) / np.sum(np.exp(ir_values * 10))
-        return {k: v for k, v in zip(industry_ir.keys(), weights)}
-
-    def _evaluate_industry_weighted_portfolio(self, df: pd.DataFrame, top_n: int) -> dict:
-        """行业权重优化选股
-
-        策略:
-        1. 计算各行业的历史IR作为权重
-        2. 在每个行业内按排名选Top-N
-        3. 按行业权重合并
-        """
-        # df 已有 rank_pct 列
-        if 'rank_pct' not in df.columns:
-            df = df.copy()
-            df['rank_pct'] = df.groupby('date')['signal'].rank(pct=True)
-
-        # 计算各行业IR
-        industry_ir = {}
-        for cat in detailed_industries.keys():
-            cat_df = df[df['industry'] == cat]
-            if len(cat_df) < 20:
-                continue
-
-            ic_list = []
-            for date, group in cat_df.groupby('date'):
-                if len(group) >= 3:
-                    ic = calc_ic(group['rank_pct'].values, group['future_ret'].values)
-                    if not np.isnan(ic):
-                        ic_list.append(ic)
-
-            if len(ic_list) >= 3:
-                industry_ir[cat] = np.mean(ic_list) / (np.std(ic_list) + 1e-10)
-
-        if not industry_ir:
-            return None
-
-        # 归一化权重（softmax风格）
-        ir_values = np.array(list(industry_ir.values()))
-        ir_values = np.maximum(ir_values, 0)  # 只保留正IR
-        weights = np.exp(ir_values * 10) / np.sum(np.exp(ir_values * 10))
-        industry_weights = {k: v for k, v in zip(industry_ir.keys(), weights)}
-
-        # 选股 - 使用排名排序
-        portfolio_returns = []
-        for date, group in df.groupby('date'):
-            if len(group) < top_n * 2:
-                continue
-
-            weighted_return = 0
-            total_weight = 0
-
-            for cat, weight in industry_weights.items():
-                cat_group = group[group['industry'] == cat]
-                if len(cat_group) == 0:
-                    continue
-
-                # 行业内按排名选Top
-                # 选70-90%分位(Q4)，避免选最高分
-                # 使用全局排名而非组内排名
-                top_cat = cat_group[(cat_group['rank_pct'] > 0.7) & (cat_group['rank_pct'] < 0.9)]
-                if len(top_cat) < 2:
-                    n_select = max(1, int(top_n * weight * 3))
-                    top_cat = cat_group.nlargest(n_select, 'rank_pct')
-                cat_ret = top_cat['future_ret'].mean()
-
-                weighted_return += cat_ret * weight
-                total_weight += weight
-
-            if total_weight > 0:
-                portfolio_returns.append(weighted_return / total_weight)
-
-        if portfolio_returns:
-            ret_arr = np.array(portfolio_returns)
-            return {
-                'periods': len(portfolio_returns),
-                'avg_return': np.mean(ret_arr),
-                'sharpe': np.mean(ret_arr) / (np.std(ret_arr) + 1e-10) * np.sqrt(12),
-                'win_rate': np.mean(ret_arr > 0),
-            }
-
-        return None
-
-    def _evaluate_by_industry(self, df: pd.DataFrame) -> dict:
-        """分行业评估"""
-        results = {}
-        for cat in detailed_industries.keys():
-            cat_df = df[df['industry'] == cat]
-            if len(cat_df) < 20:
-                continue
-
-            ic_list = []
-            for date, group in cat_df.groupby('date'):
-                if len(group) >= 3:
-                    ic = calc_ic(group['signal'].values, group['future_ret'].values)
-                    if not np.isnan(ic):
-                        ic_list.append(ic)
-
-            if len(ic_list) >= 3:
-                results[cat] = {
-                    'ic_mean': np.mean(ic_list),
-                    'ir': np.mean(ic_list) / (np.std(ic_list) + 1e-10),
-                    'win_rate': np.mean([1 if i > 0 else 0 for i in ic_list]),
-                    'n_samples': len(cat_df),
-                }
-
-        return results
-
-    def print_report(self):
-        """打印完整评估报告"""
+    # 4. 三层评估
+    # 因子层：使用信号数据
+    if len(signals_results) > 0:
+        evaluate_factor_layer(signals_results)
+        evaluate_signal_layer(signals_results)
+    else:
         print("\n" + "=" * 70)
-        print("信号系统统一验证报告")
+        print("【因子层评估】")
         print("=" * 70)
+        print("无信号数据，跳过")
+        print("\n" + "=" * 70)
+        print("【信号层评估】")
+        print("=" * 70)
+        print("无信号数据，跳过")
 
-        # 因子层
-        print("\n【因子层评估】")
-        print("-" * 50)
-        factor_results = self.evaluate_factor_layer()
+    # 组合层：使用选股结果
+    if len(portfolio_results) > 0:
+        evaluate_portfolio_layer(portfolio_results)
+    else:
+        print("\n" + "=" * 70)
+        print("【组合层评估】")
+        print("=" * 70)
+        print("无选股结果，跳过")
 
-        if 'overall' in factor_results:
-            ov = factor_results['overall']
-            print(f"整体表现:")
-            print(f"  IC均值: {ov['ic_mean']:.4f}")
-            print(f"  IR: {ov['ir']:.4f}")
-            print(f"  胜率: {ov['win_rate']:.1%}")
-
-        if 'industry' in factor_results:
-            print(f"\n分行业表现:")
-            for cat, res in sorted(factor_results['industry'].items(), key=lambda x: -x[1]['ir']):
-                print(f"  {cat}: IC={res['ic_mean']:.4f}, IR={res['ir']:.4f}, 胜率={res['win_rate']:.1%}")
-
-        # 信号层
-        if hasattr(self, 'signals_df') and len(self.signals_df) > 0:
-            print("\n【信号层评估】")
-            print("-" * 50)
-            signal_results = self.evaluate_signal_layer()
-
-            cov = signal_results.get('coverage', {})
-            print(f"总观测数: {cov.get('total_observations', 0)}")
-            print(f"买入信号: {cov.get('buy_signals', 0)} ({cov.get('buy_rate', 0):.1%})")
-            print(f"卖出信号: {cov.get('sell_signals', 0)} ({cov.get('sell_rate', 0):.1%})")
-
-            buy_q = signal_results.get('buy_signal_quality', {})
-            if buy_q:
-                print(f"\n买入信号质量:")
-                print(f"  数量: {buy_q.get('count', 0)}, 准确率: {buy_q.get('accuracy', 0):.1%}")
-                print(f"  平均收益: {buy_q.get('avg_return', 0)*100:.2f}%")
-
-            print(f"\n信号IC: {signal_results.get('score_ic', 0):.4f}")
-
-        # 组合层
-        print("\n【组合层评估】")
-        print("-" * 50)
-        portfolio_results = self.evaluate_portfolio_layer(top_n=10)
-
-        if 'top_n_equal_weight' in portfolio_results:
-            top = portfolio_results['top_n_equal_weight']
-            print(f"Top-{top['n']} 等权组合:")
-            print(f"  期数: {top['periods']}")
-            print(f"  平均收益: {top['avg_return']*100:.2f}%")
-            print(f"  夏普比率: {top['sharpe']:.2f}")
-            print(f"  胜率: {top['win_rate']:.1%}")
-
-        if 'top_n_industry_weighted' in portfolio_results:
-            ind_w = portfolio_results['top_n_industry_weighted']
-            print(f"\nTop-{10} 行业加权组合:")
-            print(f"  期数: {ind_w['periods']}")
-            print(f"  平均收益: {ind_w['avg_return']*100:.2f}%")
-            print(f"  夏普比率: {ind_w['sharpe']:.2f}")
-            print(f"  胜率: {ind_w['win_rate']:.1%}")
-
-        if 'quintile_returns' in portfolio_results:
-            print(f"\n五分位收益（从低分到高分）:")
-            for q, ret in portfolio_results['quintile_returns'].items():
-                if not np.isnan(ret):
-                    marker = "★" if q == 'Q5' else ""
-                    print(f"  {q}: {ret*100:.2f}% {marker}")
-
-            mono = portfolio_results['monotonicity']
-            status = '✓ 通过' if mono['is_monotonic'] else '✗ 未通过'
-            print(f"\n单调性检验: Q5-Q1 = {mono['q5_minus_q1']*100:.2f}% ({status})")
-
-        # 有效行业
-        if 'industry_performance' in portfolio_results:
-            ind_perf = portfolio_results['industry_performance']
-            good = [(k, v) for k, v in ind_perf.items() if v['ir'] >= 0.15]
-            weak = [(k, v) for k, v in ind_perf.items() if v['ir'] < 0.15]
-
-            if good:
-                print("\n有效行业（IR >= 0.15）:")
-                for ind, stats in sorted(good, key=lambda x: -x[1]['ir']):
-                    print(f"  {ind}: IC={stats['ic_mean']:.4f}, IR={stats['ir']:.4f}")
-
-            if weak:
-                print("\n弱势行业（IR < 0.15）:")
-                for ind, stats in sorted(weak, key=lambda x: -x[1]['ir']):
-                    print(f"  {ind}: IC={stats['ic_mean']:.4f}, IR={stats['ir']:.4f}")
-
-    def save_results(self):
-        """保存结果"""
-        results_dir = os.path.join(project_root, 'strategy/rolling_validation_results')
-        os.makedirs(results_dir, exist_ok=True)
-
-        if self.results_df is not None:
-            self.results_df.to_csv(os.path.join(results_dir, 'rolling_signals.csv'), index=False)
-
-        if hasattr(self, 'signals_df') and len(self.signals_df) > 0:
-            self.signals_df.to_csv(os.path.join(results_dir, 'signal_evaluation_data.csv'), index=False)
-
-        if self.factor_selection_log:
-            pd.DataFrame(self.factor_selection_log).to_csv(
-                os.path.join(results_dir, 'factor_selection_log.csv'), index=False
-            )
-
-        print(f"\n结果已保存到 {results_dir}/")
-
-
-def run_validation(stock_data: dict, fd: FundamentalData, num_workers: int = 8):
-    """运行统一验证"""
-    validator = SignalValidator(stock_data, fd, num_workers)
-    validator.prepare_data()
-    validator.run_validation()
-    validator.run_signal_evaluation()
-    validator.print_report()
-    validator.save_results()
-
-    return validator
+    # 5. 保存结果
+    if len(signals_results) > 0:
+        output_file = os.path.join(RESULTS_DIR, 'validation_results.csv')
+        signals_results.to_csv(output_file, index=False)
+        print(f"\n结果已保存: {output_file}")
 
 
 if __name__ == '__main__':
-    DATA_PATH = os.path.join(project_root, 'data/stock_data/backtrader_data/')
-    FUND_PATH = os.path.join(project_root, 'data/stock_data/fundamental_data/')
-
-    # 加载数据
-    print("加载数据...")
-    files = [f for f in os.listdir(DATA_PATH)
-             if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv']
-
-    stock_data = {}
-    for f in files:
-        code = f.replace('_qfq.csv', '')
-        df = pd.read_csv(os.path.join(DATA_PATH, f), parse_dates=['datetime']).set_index('datetime').sort_index()
-        if len(df) >= 300:
-            stock_data[code] = df
-
-    print(f"加载 {len(stock_data)} 只股票")
-
-    # 加载基本面数据
-    fd = FundamentalData(FUND_PATH, list(stock_data.keys()))
-
-    # 运行验证
-    run_validation(stock_data, fd, num_workers=8)
+    main()

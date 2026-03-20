@@ -101,6 +101,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     results = []
     stock_items = [(name, data.to_dict()) for name, data in stock_data_dict.items() if name != "sh000001"]
 
+    # 保存信号数据用于验证
+    all_signals = []
+
     for item in tqdm(stock_items, desc="generating signals"):
         code, data_dict = item
         # 复用主引擎或新建
@@ -112,6 +115,29 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         data = pd.DataFrame(data_dict)
         engine.generate(code, data, store)
         results.append((code, store._store))
+
+        # 收集信号数据用于保存
+        for (c, date), sig in store._store.items():
+            if hasattr(date, 'date'):
+                date = date.date()
+            all_signals.append({
+                'code': c,
+                'date': date,
+                'buy': sig.buy,
+                'sell': sig.sell,
+                'score': sig.score,
+                'factor_value': sig.factor_value,
+                'factor_name': sig.factor_name,
+                'industry': sig.industry,
+            })
+
+    # 保存信号数据到文件（供验证脚本使用）
+    strategy_dir = os.path.dirname(os.path.abspath(__file__))
+    signals_output_path = os.path.join(strategy_dir, 'rolling_validation_results', 'backtest_signals.csv')
+    os.makedirs(os.path.dirname(signals_output_path), exist_ok=True)
+    signals_df = pd.DataFrame(all_signals)
+    signals_df.to_csv(signals_output_path, index=False)
+    print(f"信号数据已保存: {len(signals_df)} 条 -> {signals_output_path}")
 
     # 将结果写入 signal_store
     # _store 的键是 (code, datetime.date) -> signal
@@ -159,6 +185,7 @@ class BacktraderExecution(bt.Strategy):
         self.orders_list = defaultdict(list)
         self.last_date = None
         self.cost = defaultdict(list)
+        self.portfolio_selections = []  # 记录每期选股结果
 
     def _is_tradable(self, d):
         """检查股票是否可交易（非停牌、价格正常）"""
@@ -216,6 +243,18 @@ class BacktraderExecution(bt.Strategy):
             cost=self.cost,
             rebalance=rebalance,
         )
+
+        # 记录选股结果
+        if rebalance:
+            selection = self.p.real_strategy.portfolio.last_selection
+            for s in selection:
+                self.portfolio_selections.append({
+                    'date': date,
+                    'code': s['code'],
+                    'score': s['score'],
+                    'weight': s['weight'],
+                    'industry': s.get('industry', ''),
+                })
 
         active_codes = set(target.keys()) | set(current_positions.keys())
         for d in self.datas:
@@ -324,3 +363,12 @@ if __name__ == "__main__":
     print(strat.analyzers._SharpeRatio.get_analysis())
     print("--------------- DrawDown -----------------")
     print(strat.analyzers._DrawDown.get_analysis())
+
+    # 保存选股结果供验证使用
+    if strat.portfolio_selections:
+        selections_df = pd.DataFrame(strat.portfolio_selections)
+        strategy_dir = os.path.dirname(os.path.abspath(__file__))
+        selections_path = os.path.join(strategy_dir, 'rolling_validation_results', 'portfolio_selections.csv')
+        os.makedirs(os.path.dirname(selections_path), exist_ok=True)
+        selections_df.to_csv(selections_path, index=False)
+        print(f"\n选股结果已保存: {len(selections_df)} 条 -> {selections_path}")
