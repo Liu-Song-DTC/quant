@@ -3,12 +3,18 @@ import numpy as np
 from copy import deepcopy
 from .config_loader import load_config
 
-# 弱势行业减配系数（基于滚动验证IR结果）
-# IR < 0.1: 减配50%
-# IR < 0.15: 减配25%
+# 弱势行业减配/排除系数（基于滚动验证IR结果）
+# IR < 0: 权重=0（排除）
+# IR < 0.1: 权重=0.5（减配50%）
+# IR < 0.15: 权重=0.75（减配25%）
+# IR >= 0.15: 权重=1.0（正常）
+NEGATIVE_IR_INDUSTRIES = [
+    '交运',      # IR=0.05，但为正只是偏低，暂时保留减配
+    '通信/计算机', # IR=-0.04，负IC，必须排除
+]
 INDUSTRY_DISCOUNT = {
-    '交运': 0.5,           # IR=0.05
-    '通信/计算机': 0.5,    # IR=-0.04
+    '交运': 0.5,           # IR=0.05，但行业整体偏弱，减配50%
+    '通信/计算机': 0.0,    # IR=-0.04，负IC，排除
     '半导体/光伏': 0.75,   # IR=0.12
 }
 
@@ -239,6 +245,11 @@ class PortfolioConstructor:
             sig = signal_store.get(code, date)
             # 只要有信号且分数不是NaN就可以作为候选
             if sig and sig.score is not None and isinstance(sig.score, float) and not np.isnan(sig.score):
+                # 排除负IC行业（权重=0的行业不参与选股）
+                industry = sig.industry or ''
+                if industry in INDUSTRY_DISCOUNT and INDUSTRY_DISCOUNT[industry] == 0.0:
+                    continue
+
                 # 检查极端状态
                 if sig.risk_extreme:
                     risk_extreme_exists = True
@@ -247,7 +258,7 @@ class PortfolioConstructor:
                     'code': code,
                     'score': sig.score,
                     'risk_vol': sig.risk_vol,
-                    'industry': sig.industry or '',
+                    'industry': industry,
                     'sig': sig,
                 })
 
