@@ -1047,7 +1047,14 @@ class SignalEngine:
 
     def _bollinger(self, close, window, num_std):
         middle = self._sma(close, window)
-        std = np.array([np.std(close[i-window:i]) if i >= window else 0 for i in range(len(close))])
+        n = len(close)
+        if n < window:
+            std = np.zeros(n)
+        else:
+            from numpy.lib.stride_tricks import sliding_window_view
+            sw = sliding_window_view(close, window)
+            std = np.zeros(n)
+            std[window:] = sw.std(axis=1)[:n-window]
         return middle + num_std * std, middle, middle - num_std * std
 
     def _atr(self, high, low, close, window):
@@ -1060,20 +1067,26 @@ class SignalEngine:
 
     def _rolling_max(self, arr, window):
         """滚动最大值 - 不包含当天，避免数据泄露"""
-        result = np.zeros_like(arr, dtype=float)
-        result[:] = np.nan
-        for i in range(window, len(arr)):
-            # 使用 arr[i-window:i]，不包含当天 arr[i]
-            result[i] = np.max(arr[i-window:i])
+        n = len(arr)
+        if n < window:
+            return np.full(n, np.nan)
+        from numpy.lib.stride_tricks import sliding_window_view
+        sw = sliding_window_view(arr, window)
+        # sliding_window_view creates (n - window + 1, window) windows
+        # But we need (n - window) results for indices [window, n-1]
+        result = np.full(n, np.nan)
+        result[window:] = sw.max(axis=1)[:n-window]
         return result
 
     def _rolling_min(self, arr, window):
         """滚动最小值 - 不包含当天，避免数据泄露"""
-        result = np.zeros_like(arr, dtype=float)
-        result[:] = np.nan
-        for i in range(window, len(arr)):
-            # 使用 arr[i-window:i]，不包含当天 arr[i]
-            result[i] = np.min(arr[i-window:i])
+        n = len(arr)
+        if n < window:
+            return np.full(n, np.nan)
+        from numpy.lib.stride_tricks import sliding_window_view
+        sw = sliding_window_view(arr, window)
+        result = np.full(n, np.nan)
+        result[window:] = sw.min(axis=1)[:n-window]
         return result
 
     def _shift(self, arr, periods):
@@ -1083,10 +1096,14 @@ class SignalEngine:
         return result
 
     def _rolling_std(self, arr, window):
-        result = np.zeros_like(arr, dtype=float)
-        result[:] = np.nan
-        for i in range(window, len(arr)):
-            result[i] = np.std(arr[i-window:i])
+        """滚动标准差 - 不包含当天，避免数据泄露"""
+        n = len(arr)
+        if n < window:
+            return np.full(n, np.nan)
+        from numpy.lib.stride_tricks import sliding_window_view
+        sw = sliding_window_view(arr, window)
+        result = np.full(n, np.nan)
+        result[window:] = sw.std(axis=1)[:n-window]
         return result
 
     def _macd(self, close, fast=12, slow=26, signal=9):

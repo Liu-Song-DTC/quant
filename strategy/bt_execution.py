@@ -5,6 +5,8 @@ import os
 from tqdm import tqdm
 import math
 from collections import defaultdict
+from multiprocessing import Pool, Manager
+from functools import partial
 
 from core.strategy import Strategy
 from core.fundamental import FundamentalData
@@ -28,6 +30,53 @@ NUM_WORKERS = config.get('backtest.num_workers', 8)
 # 数据路径 - 从配置文件读取
 DATA_PATH = config.get('paths.data', '../data/stock_data/backtrader_data/')
 FUNDAMENTAL_PATH = config.get('paths.fundamental', '../data/stock_data/fundamental_data/')
+
+
+# 全局变量用于 worker 进程
+_worker_engine = None
+_worker_use_dynamic = False
+
+
+def _init_worker(fundamental_path, stock_codes, use_dynamic):
+    """Worker 进程初始化函数"""
+    global _worker_engine, _worker_use_dynamic
+    _worker_use_dynamic = use_dynamic
+
+    # 每个 worker 创建自己的 engine 和 fundamental_data
+    _worker_engine = SignalEngine()
+
+    if fundamental_path and os.path.exists(fundamental_path):
+        fd = FundamentalData(fundamental_path, stock_codes)
+        _worker_engine.set_fundamental_data(fd)
+
+
+def _generate_stock_signal_worker(args):
+    """Worker 函数：为一个股票生成信号"""
+    global _worker_engine, _worker_use_dynamic
+    code, data_dict, factor_df, industry_codes = args
+
+    engine = _worker_engine
+
+    if engine is None:
+        # Fallback: 创建新 engine
+        engine = SignalEngine()
+        if fundamental_path and os.path.exists(fundamental_path):
+            fd = FundamentalData(fundamental_path, [code])
+            engine.set_fundamental_data(fd)
+
+    if _worker_use_dynamic:
+        if factor_df is not None:
+            engine.set_factor_data(factor_df)
+        if industry_codes:
+            engine.set_industry_mapping(industry_codes)
+
+    store = SignalStore()
+    data = pd.DataFrame(data_dict)
+    engine.generate(code, data, store)
+    return (code, store._store)
+
+
+fundamental_path = FUNDAMENTAL_PATH  # 全局变量供 worker 使用
 
 
 def add_data_and_signal(cerebro, strategy, fundamental_data=None):
@@ -72,7 +121,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         strategy.set_factor_data(factor_df, industry_codes)
         print(f"动态因子模式已启用: {len(industry_codes)} 个行业")
 
-    # 生成信号（单进程，避免多进程大数据传递问题）
+    # 生成信号（多进程并行）
     use_dynamic = dynamic_config.get('enabled', False)
     stock_codes = [name for name in stock_data_dict.keys() if name != "sh000001"]
 
@@ -85,39 +134,81 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         main_engine.set_fundamental_data(fundamental_data)
         print(f"主引擎已设置动态因子数据")
 
-    print("单进程生成信号...")
-    results = []
-    stock_items = [(name, data.to_dict()) for name, data in stock_data_dict.items() if name != "sh000001"]
+    # 准备参数：每只股票的数据
+    # 传递 (code, data_dict, factor_df, industry_codes) 给每个 worker
+    stock_items = [
+        (name, data.to_dict(), factor_df if use_dynamic else None, industry_codes if use_dynamic else None)
+        for name, data in stock_data_dict.items() if name != "sh000001"
+    ]
 
     # 保存信号数据用于验证
     all_signals = []
 
-    for item in tqdm(stock_items, desc="generating signals"):
-        code, data_dict = item
-        # 复用主引擎或使用策略的引擎
-        if main_engine:
-            engine = main_engine
-        else:
-            engine = strategy.signal_engine  # 使用策略自带的引擎（有fundamental_data）
-        store = SignalStore()
-        data = pd.DataFrame(data_dict)
-        engine.generate(code, data, store)
-        results.append((code, store._store))
+    if NUM_WORKERS > 1 and len(stock_items) > 10:
+        # 多进程并行生成信号
+        print(f"多进程生成信号 ({NUM_WORKERS} workers)...")
 
-        # 收集信号数据用于保存
-        for (c, date), sig in store._store.items():
-            if hasattr(date, 'date'):
-                date = date.date()
-            all_signals.append({
-                'code': c,
-                'date': date,
-                'buy': sig.buy,
-                'sell': sig.sell,
-                'score': sig.score,
-                'factor_value': sig.factor_value,
-                'factor_name': sig.factor_name,
-                'industry': sig.industry,
-            })
+        # 使用 Pool + initializer 模式
+        # 注意：由于 FundamentalData 可能较大，每个 worker 创建自己的实例
+        with Pool(
+            processes=NUM_WORKERS,
+            initializer=_init_worker,
+            initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic)
+        ) as pool:
+            # imap_unordered 比 map 更快，且结果顺序不影响
+            results = []
+            for result in tqdm(
+                pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=10),
+                total=len(stock_items),
+                desc="generating signals"
+            ):
+                results.append(result)
+                # 收集信号数据用于保存（实时收集，避免最后遍历大列表）
+                code, store_data = result
+                for (c, date), sig in store_data.items():
+                    if hasattr(date, 'date'):
+                        date = date.date()
+                    all_signals.append({
+                        'code': c,
+                        'date': date,
+                        'buy': sig.buy,
+                        'sell': sig.sell,
+                        'score': sig.score,
+                        'factor_value': sig.factor_value,
+                        'factor_name': sig.factor_name,
+                        'industry': sig.industry,
+                    })
+    else:
+        # 单进程（数据量小或禁用多进程）
+        print("单进程生成信号...")
+        results = []
+
+        for item in tqdm(stock_items, desc="generating signals"):
+            code, data_dict, _, _ = item  # 忽略 factor_df 和 industry_codes（引擎已设置）
+            # 复用主引擎或使用策略的引擎
+            if main_engine:
+                engine = main_engine
+            else:
+                engine = strategy.signal_engine  # 使用策略自带的引擎（有fundamental_data）
+            store = SignalStore()
+            data = pd.DataFrame(data_dict)
+            engine.generate(code, data, store)
+            results.append((code, store._store))
+
+            # 收集信号数据用于保存
+            for (c, date), sig in store._store.items():
+                if hasattr(date, 'date'):
+                    date = date.date()
+                all_signals.append({
+                    'code': c,
+                    'date': date,
+                    'buy': sig.buy,
+                    'sell': sig.sell,
+                    'score': sig.score,
+                    'factor_value': sig.factor_value,
+                    'factor_name': sig.factor_name,
+                    'industry': sig.industry,
+                })
 
     # 保存信号数据到文件（供验证脚本使用）
     strategy_dir = os.path.dirname(os.path.abspath(__file__))
