@@ -118,8 +118,8 @@ def prepare_factor_data(stock_data: dict, fd,
         if not matched:
             unmatched_count += 1
 
-    # 采样日期（每5天采样一次，减少计算量）
-    sample_dates = all_dates[lookback:-forward_period:5]
+    # 采样日期（每20天采样一次，减少计算量）
+    sample_dates = all_dates[lookback:-forward_period:20]
     print(f"预计算因子数据: {len(sample_dates)} 个时间点, {len(stock_data)} 只股票")
     print(f"行业映射: 未匹配 {unmatched_count}/{len(stock_data)} 只股票")
     for cat, codes in industry_codes.items():

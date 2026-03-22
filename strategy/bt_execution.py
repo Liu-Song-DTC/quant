@@ -37,7 +37,7 @@ _worker_engine = None
 _worker_use_dynamic = False
 
 
-def _init_worker(fundamental_path, stock_codes, use_dynamic):
+def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry_codes):
     """Worker 进程初始化函数"""
     global _worker_engine, _worker_use_dynamic
     _worker_use_dynamic = use_dynamic
@@ -45,15 +45,27 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic):
     # 每个 worker 创建自己的 engine 和 fundamental_data
     _worker_engine = SignalEngine()
 
+    import sys
+    print(f"[Worker PID {os.getpid()}] fundamental_path: {fundamental_path}, exists: {os.path.exists(fundamental_path) if fundamental_path else False}", flush=True)
+
     if fundamental_path and os.path.exists(fundamental_path):
         fd = FundamentalData(fundamental_path, stock_codes)
         _worker_engine.set_fundamental_data(fd)
+        print(f"[Worker PID {os.getpid()}] fundamental_data set, stock_data count: {len(fd.stock_data)}", flush=True)
+    else:
+        print(f"[Worker PID {os.getpid()}] fundamental_path not found or invalid", flush=True)
+
+    # 设置动态因子数据（只设置一次，避免重复清除缓存）
+    if use_dynamic and factor_df is not None:
+        _worker_engine.set_factor_data(factor_df)
+        _worker_engine.set_industry_mapping(industry_codes)
+        print(f"[Worker PID {os.getpid()}] dynamic factor data set, factor_df shape: {factor_df.shape}", flush=True)
 
 
 def _generate_stock_signal_worker(args):
     """Worker 函数：为一个股票生成信号"""
     global _worker_engine, _worker_use_dynamic
-    code, data_dict, factor_df, industry_codes = args
+    code, data_dict = args
 
     engine = _worker_engine
 
@@ -63,12 +75,6 @@ def _generate_stock_signal_worker(args):
         if fundamental_path and os.path.exists(fundamental_path):
             fd = FundamentalData(fundamental_path, [code])
             engine.set_fundamental_data(fd)
-
-    if _worker_use_dynamic:
-        if factor_df is not None:
-            engine.set_factor_data(factor_df)
-        if industry_codes:
-            engine.set_industry_mapping(industry_codes)
 
     store = SignalStore()
     data = pd.DataFrame(data_dict)
@@ -137,66 +143,37 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 准备参数：每只股票的数据
     # 传递 (code, data_dict, factor_df, industry_codes) 给每个 worker
     stock_items = [
-        (name, data.to_dict(), factor_df if use_dynamic else None, industry_codes if use_dynamic else None)
+        (name, data.to_dict())
         for name, data in stock_data_dict.items() if name != "sh000001"
     ]
 
     # 保存信号数据用于验证
     all_signals = []
 
-    if NUM_WORKERS > 1 and len(stock_items) > 10:
-        # 多进程并行生成信号
-        print(f"多进程生成信号 ({NUM_WORKERS} workers)...")
+    # 多进程并行生成信号
+    print(f"多进程生成信号 ({NUM_WORKERS} workers)...")
 
-        # 使用 Pool + initializer 模式
-        # 注意：由于 FundamentalData 可能较大，每个 worker 创建自己的实例
-        with Pool(
-            processes=NUM_WORKERS,
-            initializer=_init_worker,
-            initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic)
-        ) as pool:
-            # imap_unordered 比 map 更快，且结果顺序不影响
-            results = []
-            for result in tqdm(
-                pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=10),
-                total=len(stock_items),
-                desc="generating signals"
-            ):
-                results.append(result)
-                # 收集信号数据用于保存（实时收集，避免最后遍历大列表）
-                code, store_data = result
-                for (c, date), sig in store_data.items():
-                    if hasattr(date, 'date'):
-                        date = date.date()
-                    all_signals.append({
-                        'code': c,
-                        'date': date,
-                        'buy': sig.buy,
-                        'sell': sig.sell,
-                        'score': sig.score,
-                        'factor_value': sig.factor_value,
-                        'factor_name': sig.factor_name,
-                        'industry': sig.industry,
-                    })
-    else:
-        # 单进程（数据量小或禁用多进程）
-        print("单进程生成信号...")
+    # 动态因子统计
+    dynamic_factor_stats = {'hit': 0, 'miss': 0, 'factor_names': {}}
+
+    # 使用 Pool + initializer 模式
+    # 注意：由于 FundamentalData 可能较大，每个 worker 创建自己的实例
+    with Pool(
+        processes=NUM_WORKERS,
+        initializer=_init_worker,
+        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, factor_df, industry_codes)
+    ) as pool:
+        # imap_unordered 比 map 更快，且结果顺序不影响
         results = []
-
-        for item in tqdm(stock_items, desc="generating signals"):
-            code, data_dict, _, _ = item  # 忽略 factor_df 和 industry_codes（引擎已设置）
-            # 复用主引擎或使用策略的引擎
-            if main_engine:
-                engine = main_engine
-            else:
-                engine = strategy.signal_engine  # 使用策略自带的引擎（有fundamental_data）
-            store = SignalStore()
-            data = pd.DataFrame(data_dict)
-            engine.generate(code, data, store)
-            results.append((code, store._store))
-
-            # 收集信号数据用于保存
-            for (c, date), sig in store._store.items():
+        for result in tqdm(
+            pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=10),
+            total=len(stock_items),
+            desc="generating signals"
+        ):
+            results.append(result)
+            # 收集信号数据用于保存（实时收集，避免最后遍历大列表）
+            code, store_data = result
+            for (c, date), sig in store_data.items():
                 if hasattr(date, 'date'):
                     date = date.date()
                 all_signals.append({
@@ -209,6 +186,29 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     'factor_name': sig.factor_name,
                     'industry': sig.industry,
                 })
+                # 统计动态因子命中情况
+                if sig.factor_name and sig.factor_name.startswith('DYN_'):
+                    dynamic_factor_stats['hit'] += 1
+                    fn = sig.factor_name.split('_')[1] if '_' in sig.factor_name else sig.factor_name
+                    dynamic_factor_stats['factor_names'][fn] = dynamic_factor_stats['factor_names'].get(fn, 0) + 1
+                else:
+                    dynamic_factor_stats['miss'] += 1
+
+                # 调试：每10000条打印一次进度
+                if (dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']) % 100000 == 0:
+                    print(f"  [DEBUG] Processed {dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']:,} signals, hit={dynamic_factor_stats['hit']:,}", flush=True)
+
+    # 打印动态因子统计
+    total = dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']
+    if total > 0:
+        hit_rate = dynamic_factor_stats['hit'] / total * 100
+        print(f"\n=== 动态因子统计 ===")
+        print(f"动态因子命中: {dynamic_factor_stats['hit']:,} / {total:,} ({hit_rate:.1f}%)")
+        print(f"非动态因子: {dynamic_factor_stats['miss']:,}")
+        if dynamic_factor_stats['factor_names']:
+            print("行业因子分布:")
+            for fn, cnt in sorted(dynamic_factor_stats['factor_names'].items(), key=lambda x: -x[1])[:10]:
+                print(f"  {fn}: {cnt:,}")
 
     # 保存信号数据到文件（供验证脚本使用）
     strategy_dir = os.path.dirname(os.path.abspath(__file__))

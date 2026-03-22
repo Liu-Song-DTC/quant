@@ -61,13 +61,17 @@ class DynamicFactorSelector:
         # 行业映射: {category: [codes]}
         self.industry_codes = {}
 
+        # 缓存: 已排序的唯一日期列表（避免每次都重新计算）
+        self._all_dates_cache = None
+
     def _load_config(self):
         """加载配置"""
         config_loader = load_config()
         dynamic_config = config_loader.get('dynamic_factor', {})
 
         self.enabled = dynamic_config.get('enabled', False)
-        self.train_window = dynamic_config.get('train_window', 250)
+        self.train_window_days = dynamic_config.get('train_window_days', 250)
+        self.sample_interval_days = dynamic_config.get('sample_interval_days', 5)
         self.forward_period = dynamic_config.get('forward_period', 20)
         self.top_n_factors = dynamic_config.get('top_n_factors', 3)
         self.min_train_samples = dynamic_config.get('min_train_samples', 50)
@@ -79,8 +83,15 @@ class DynamicFactorSelector:
         Args:
             factor_df: DataFrame with columns [code, date, factor1, factor2, ..., future_ret]
         """
-        self.factor_df = factor_df
-        self._factor_cache.clear()
+        # 只在factor_df实际改变时才清除缓存（避免每次调用都清除缓存）
+        if self.factor_df is not factor_df:
+            self.factor_df = factor_df
+            self._factor_cache.clear()
+            # 缓存已排序的唯一日期列表
+            if factor_df is not None and len(factor_df) > 0:
+                self._all_dates_cache = sorted(factor_df['date'].unique().tolist())
+            else:
+                self._all_dates_cache = []
 
     def set_industry_mapping(self, industry_codes: Dict[str, List[str]]):
         """设置行业映射
@@ -89,6 +100,32 @@ class DynamicFactorSelector:
             industry_codes: {category: [stock_codes]}
         """
         self.industry_codes = industry_codes
+
+    def precompute_all_factor_selections(self, progress_callback=None):
+        """预计算所有日期的因子选择（用于加速信号生成）
+
+        这个方法在信号生成之前调用，提前填充缓存
+
+        Args:
+            progress_callback: 进度回调函数，接受 (current, total) 参数
+        """
+        if self.factor_df is None or self.industry_codes is None:
+            return
+
+        all_dates = self._all_dates_cache
+        if not all_dates:
+            return
+
+        total = len(all_dates)
+        for i, val_date in enumerate(all_dates):
+            # select_factors_for_date 会自动缓存结果
+            self.select_factors_for_date(val_date, all_dates)
+
+            if progress_callback and (i + 1) % 10 == 0:
+                progress_callback(i + 1, total)
+
+        if progress_callback:
+            progress_callback(total, total)
 
     def _calc_ic(self, factor_values: np.ndarray, returns: np.ndarray) -> float:
         """计算IC (Spearman秩相关系数)"""
@@ -166,21 +203,31 @@ class DynamicFactorSelector:
         if self.factor_df is None or len(self.factor_df) == 0:
             return {}
 
-        # 确定训练窗口
-        try:
-            val_idx = all_dates.index(val_date)
-        except ValueError:
-            return {}
+        # 确定训练窗口 - 使用最接近的可用日期
+        import pandas as pd
+        val_date_ts = pd.to_datetime(val_date)
 
-        train_start_idx = max(0, val_idx - self.train_window)
+        try:
+            val_idx = all_dates.index(val_date_ts)
+        except ValueError:
+            # 如果日期不在采样日期中，找到最接近的之前的日期
+            val_idx = -1
+            for i, d in enumerate(all_dates):
+                if d >= val_date_ts:
+                    break
+                val_idx = i
+            if val_idx < 0:
+                return {}
+
+        # 将训练窗口天数转换为采样点数量
+        train_window_samples = self.train_window_days // self.sample_interval_days
+        train_start_idx = max(0, val_idx - train_window_samples)
         train_start_date = all_dates[train_start_idx]
 
         # 训练数据（严格只用val_date之前的数据，且避免边界泄露）
         # 训练数据的 future_ret 是基于 forward_period 天后的价格计算的
         # 为避免泄露，训练截止日期需要前移 forward_period 天
-        import pandas as pd
-        train_end_date = pd.to_datetime(val_date) - pd.Timedelta(days=self.forward_period)
-        train_end_date = train_end_date.strftime('%Y-%m-%d') if hasattr(train_end_date, 'strftime') else str(train_end_date)[:10]
+        train_end_date = val_date_ts - pd.Timedelta(days=self.forward_period)
 
         train_df = self.factor_df[
             (self.factor_df['date'] >= train_start_date) &
@@ -622,7 +669,6 @@ class SignalEngine:
         # 获取股票所属行业
         specific_industry = self._get_specific_industry(code, current_date)
         if not specific_industry:
-            # 没有行业信息的股票跳过动态因子
             return None
 
         # 检查行业是否在映射中
@@ -632,17 +678,21 @@ class SignalEngine:
         # 检查该股票是否在行业映射中
         codes_in_industry = self.industry_codes.get(specific_industry, [])
         if code not in codes_in_industry:
-            # 调试：打印未匹配股票数量
+            return None
+
+        # 检查因子数据是否存在
+        if self.dynamic_factor_selector.factor_df is None:
             return None
 
         # 获取动态选择的因子
-        # 检查缓存中是否有当前时点对应的因子
-        # 这里简化处理：每次调用都尝试更新行业因子
         try:
-            all_dates = sorted(self.dynamic_factor_selector.factor_df['date'].unique().tolist()) if self.dynamic_factor_selector.factor_df is not None else []
+            # 使用缓存的已排序日期列表（避免每次重新计算）
+            all_dates = self.dynamic_factor_selector._all_dates_cache
+            if not all_dates:
+                return None
             industry_factors = self.dynamic_factor_selector.select_factors_for_date(current_date_str, all_dates)
-        except:
-            industry_factors = {}
+        except Exception as e:
+            return None
 
         if not industry_factors or specific_industry not in industry_factors:
             return None
@@ -932,36 +982,39 @@ class SignalEngine:
         """获取具体行业名（使用INDUSTRY_KEYWORDS映射）"""
         # 动态因子模式下，允许没有 fundamental_data
         # 但如果没有 fundamental_data，尝试从 industry_codes 推断
-        if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
-            # 尝试从 industry_codes 映射中查找
-            if hasattr(self, 'industry_codes') and self.industry_codes:
-                for ind_name, codes in self.industry_codes.items():
-                    if code in codes:
-                        return ind_name
-            return None
-        try:
-            # 获取原始行业名（去除可能的特殊字符）
-            raw_industry = self.fundamental_data.get_industry(code, current_date)
-            if not raw_industry:
-                return None
+        has_fd = hasattr(self, 'fundamental_data') and self.fundamental_data
+        has_ic = hasattr(self, 'industry_codes') and self.industry_codes
 
-            # 清理行业名（去除Ⅱ、Ⅲ等特殊字符）
-            cleaned_industry = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
+        # 首先尝试从 industry_codes 查找（更可靠）
+        if has_ic:
+            for ind_name, codes in self.industry_codes.items():
+                if code in codes:
+                    return ind_name
 
-            # 使用 INDUSTRY_KEYWORDS 将原始行业名转换为配置行业键
-            for config_key, keywords in INDUSTRY_KEYWORDS.items():
-                # 精确匹配或包含匹配
-                if raw_industry in keywords or cleaned_industry in keywords:
-                    # 检查该行业键是否在 INDUSTRY_FACTOR_CONFIG 中
-                    if config_key in INDUSTRY_FACTOR_CONFIG:
-                        return config_key
-                # 额外检查：关键词是否包含在原始行业中
-                for kw in keywords:
-                    if kw in raw_industry or kw in cleaned_industry:
+        # 如果没找到，尝试从 fundamental_data 获取
+        if has_fd:
+            try:
+                raw_industry = self.fundamental_data.get_industry(code, current_date)
+                if not raw_industry:
+                    return None
+
+                # 清理行业名（去除Ⅱ、Ⅲ等特殊字符）
+                cleaned_industry = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
+
+                # 使用 INDUSTRY_KEYWORDS 将原始行业名转换为配置行业键
+                for config_key, keywords in INDUSTRY_KEYWORDS.items():
+                    # 精确匹配或包含匹配
+                    if raw_industry in keywords or cleaned_industry in keywords:
+                        # 检查该行业键是否在 INDUSTRY_FACTOR_CONFIG 中
                         if config_key in INDUSTRY_FACTOR_CONFIG:
                             return config_key
-        except:
-            pass
+                    # 额外检查：关键词是否包含在原始行业中
+                    for kw in keywords:
+                        if kw in raw_industry or kw in cleaned_industry:
+                            if config_key in INDUSTRY_FACTOR_CONFIG:
+                                return config_key
+            except:
+                pass
         return None
 
     def _get_fundamental_score(self, code, current_date) -> float:
