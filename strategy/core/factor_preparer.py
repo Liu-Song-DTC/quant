@@ -91,6 +91,7 @@ def prepare_factor_data(stock_data: dict, fd,
     config_loader = load_config()
     lookback = config_loader.get('industry_factor_config.lookback_days', 120)
     forward_period = config_loader.get('dynamic_factor.forward_period', 20)
+    sample_interval = config_loader.get('dynamic_factor.sample_interval_days', 5)
 
     # 构建行业映射
     industry_codes = {cat: [] for cat in detailed_industries.keys()}
@@ -118,8 +119,9 @@ def prepare_factor_data(stock_data: dict, fd,
         if not matched:
             unmatched_count += 1
 
-    # 采样日期（每20天采样一次，减少计算量）
-    sample_dates = all_dates[lookback:-forward_period:20]
+    # 采样日期（每天采样，确保动态因子覆盖所有交易日）
+    # sample_interval_days 只在计算IC时用于控制取点密度，不影响因子数据本身
+    sample_dates = all_dates[lookback:-forward_period]
     print(f"预计算因子数据: {len(sample_dates)} 个时间点, {len(stock_data)} 只股票")
     print(f"行业映射: 未匹配 {unmatched_count}/{len(stock_data)} 只股票")
     for cat, codes in industry_codes.items():

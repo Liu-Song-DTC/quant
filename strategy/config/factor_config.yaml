@@ -9,16 +9,16 @@
 # dynamic:  只用动态因子
 # fixed:    只用静态行业因子
 # both:     动态优先，失败fallback到静态
-factor_mode: fixed  # TODO: 动态因子修复后改回 both
+factor_mode: both   # dynamic优先，fallback到static
 
 # --- 1.1 动态因子 (第一层) ---
 dynamic_factor:
   enabled: true                    # 是否启用动态因子
-  train_window_days: 250           # IC训练窗口（天数）
-  sample_interval_days: 5          # 采样间隔（天数）
-  forward_period: 20               # 计算future_ret的周期
+  train_window_days: 90            # IC训练窗口（天数）- 约一季度
+  sample_interval_days: 3          # 训练窗口内采样间隔（天数）
+  forward_period: 20              # 计算future_ret的周期
   top_n_factors: 3                 # 每个行业选几个因子
-  min_train_samples: 100           # 最少训练样本数
+  min_train_samples: 50            # 最少训练样本数
   min_ic_dates: 10                 # 最少IC天数
   fallback_to_static: true         # 动态失败时fallback到静态
 

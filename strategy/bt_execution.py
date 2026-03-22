@@ -37,7 +37,7 @@ _worker_engine = None
 _worker_use_dynamic = False
 
 
-def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry_codes):
+def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry_codes, factor_cache, all_dates):
     """Worker 进程初始化函数"""
     global _worker_engine, _worker_use_dynamic
     _worker_use_dynamic = use_dynamic
@@ -59,7 +59,13 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry
     if use_dynamic and factor_df is not None:
         _worker_engine.set_factor_data(factor_df)
         _worker_engine.set_industry_mapping(industry_codes)
-        print(f"[Worker PID {os.getpid()}] dynamic factor data set, factor_df shape: {factor_df.shape}", flush=True)
+
+        # 设置预计算的因子选择缓存（避免worker重复计算）
+        if factor_cache is not None and all_dates is not None:
+            _worker_engine.dynamic_factor_selector.set_factor_cache(factor_cache, all_dates)
+            print(f"[Worker PID {os.getpid()}] factor cache set from precomputed, {len(factor_cache)} dates", flush=True)
+        else:
+            print(f"[Worker PID {os.getpid()}] no precomputed cache, will compute on demand", flush=True)
 
 
 def _generate_stock_signal_worker(args):
@@ -140,6 +146,20 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         main_engine.set_fundamental_data(fundamental_data)
         print(f"主引擎已设置动态因子数据")
 
+        # 预计算所有日期的因子选择（避免多进程中重复计算）
+        print("预计算因子选择...")
+        main_engine.dynamic_factor_selector.precompute_all_factor_selections(
+            progress_callback=lambda curr, total: print(f"\r因子选择进度: {curr}/{total}", end="", flush=True)
+        )
+        print(f"\n因子选择预计算完成，共 {len(main_engine.dynamic_factor_selector._factor_cache)} 个日期")
+
+        # 提取预计算的缓存传递给workers
+        precomputed_cache = main_engine.dynamic_factor_selector._factor_cache
+        precomputed_all_dates = main_engine.dynamic_factor_selector._all_dates_cache
+    else:
+        precomputed_cache = None
+        precomputed_all_dates = None
+
     # 准备参数：每只股票的数据
     # 传递 (code, data_dict, factor_df, industry_codes) 给每个 worker
     stock_items = [
@@ -161,7 +181,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     with Pool(
         processes=NUM_WORKERS,
         initializer=_init_worker,
-        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, factor_df, industry_codes)
+        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, factor_df, industry_codes, precomputed_cache, precomputed_all_dates)
     ) as pool:
         # imap_unordered 比 map 更快，且结果顺序不影响
         results = []

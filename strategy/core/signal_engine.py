@@ -41,6 +41,100 @@ def _load_industry_factors():
 INDUSTRY_FACTOR_CONFIG = _load_industry_factors()
 
 
+def _compute_date_chunk(args):
+    """多进程worker函数：计算一个日期chunk的因子选择
+
+    Args:
+        args: (date_chunk, all_dates, factor_df_dict, industry_codes, config)
+
+    Returns:
+        {date: {industry: [factors]}} 结果字典
+    """
+    import pandas as pd
+    from scipy import stats
+
+    date_chunk, all_dates, factor_df_dict, industry_codes, config = args
+
+    # 重建DataFrame
+    factor_df = pd.DataFrame(factor_df_dict['df'])
+    for col in factor_df_dict['columns']:
+        if col not in factor_df.columns:
+            factor_df[col] = None
+    factor_df = factor_df[factor_df_dict['columns']]
+
+    result = {}
+
+    for val_date in date_chunk:
+        val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
+
+        try:
+            val_idx = all_dates.index(val_date_ts)
+        except ValueError:
+            continue
+
+        # 计算训练窗口
+        train_window_samples = config['train_window_days'] // config['sample_interval_days']
+        train_start_idx = max(0, val_idx - train_window_samples)
+        train_start_date = all_dates[train_start_idx]
+
+        # 训练数据
+        train_end_date = val_date_ts - pd.Timedelta(days=config['forward_period'])
+        train_df = factor_df[
+            (factor_df['date'] >= train_start_date) &
+            (factor_df['date'] < train_end_date)
+        ]
+
+        if len(train_df) < config['min_train_samples']:
+            continue
+
+        # 因子列表
+        exclude_cols = ['code', 'date', 'future_ret']
+        factor_names = [c for c in factor_df.columns if c not in exclude_cols]
+
+        # 为每个行业选择因子
+        date_result = {}
+        for industry, codes in industry_codes.items():
+            if not codes:
+                continue
+
+            ind_df = train_df[train_df['code'].isin(codes)]
+            if len(ind_df) < config['min_train_samples']:
+                continue
+
+            # 计算每个因子的IC和IR
+            factor_metrics = []
+            for fn in factor_names:
+                if fn not in ind_df.columns:
+                    continue
+
+                ic_list = []
+                for date, group in ind_df.groupby('date'):
+                    if len(group) >= 3 and 'future_ret' in group.columns:
+                        valid_mask = ~(np.isnan(group[fn].values) | np.isnan(group['future_ret'].values))
+                        if valid_mask.sum() < 5:
+                            continue
+                        ic, _ = stats.spearmanr(group[fn].values[valid_mask], group['future_ret'].values[valid_mask])
+                        if not np.isnan(ic):
+                            ic_list.append(ic)
+
+                if len(ic_list) >= config['min_ic_dates']:
+                    ic_mean = np.mean(ic_list)
+                    ic_std = np.std(ic_list) + 1e-10
+                    factor_metrics.append({
+                        'factor': fn,
+                        'ir': ic_mean / ic_std,
+                    })
+
+            if factor_metrics:
+                factor_metrics.sort(key=lambda x: x['ir'], reverse=True)
+                date_result[industry] = [f['factor'] for f in factor_metrics[:config['top_n_factors']]]
+
+        if date_result:
+            result[val_date] = date_result
+
+    return result
+
+
 class DynamicFactorSelector:
     """动态因子选择器 - 基于Walk-Forward验证的动态因子选择
 
@@ -63,6 +157,16 @@ class DynamicFactorSelector:
 
         # 缓存: 已排序的唯一日期列表（避免每次都重新计算）
         self._all_dates_cache = None
+
+    def set_factor_cache(self, factor_cache: dict, all_dates: list):
+        """设置预计算的因子选择缓存（用于多进程共享）
+
+        Args:
+            factor_cache: {date: {industry: [factors]}}
+            all_dates: 已排序的日期列表
+        """
+        self._factor_cache = factor_cache
+        self._all_dates_cache = all_dates
 
     def _load_config(self):
         """加载配置"""
@@ -101,14 +205,19 @@ class DynamicFactorSelector:
         """
         self.industry_codes = industry_codes
 
-    def precompute_all_factor_selections(self, progress_callback=None):
-        """预计算所有日期的因子选择（用于加速信号生成）
+    def precompute_all_factor_selections(self, progress_callback=None, num_workers=4):
+        """预计算因子选择（多进程并行）
 
-        这个方法在信号生成之前调用，提前填充缓存
+        为减少计算量，只在IC日期（每sample_interval天）计算因子选择。
+        其他日期会使用最近的IC日期结果。
 
         Args:
             progress_callback: 进度回调函数，接受 (current, total) 参数
+            num_workers: 并行进程数
         """
+        from multiprocessing import Pool
+        import numpy as np
+
         if self.factor_df is None or self.industry_codes is None:
             return
 
@@ -116,13 +225,52 @@ class DynamicFactorSelector:
         if not all_dates:
             return
 
-        total = len(all_dates)
-        for i, val_date in enumerate(all_dates):
-            # select_factors_for_date 会自动缓存结果
-            self.select_factors_for_date(val_date, all_dates)
+        # 只在IC计算日期（每sample_interval天）预计算
+        ic_dates = all_dates[::self.sample_interval_days]
+        total = len(ic_dates)
 
-            if progress_callback and (i + 1) % 10 == 0:
-                progress_callback(i + 1, total)
+        if total == 0:
+            return
+
+        # 准备共享数据（转换为可序列化格式）
+        factor_df_dict = {
+            'df': self.factor_df.to_dict('records'),
+            'columns': self.factor_df.columns.tolist()
+        }
+        industry_codes = self.industry_codes
+        config = {
+            'train_window_days': self.train_window_days,
+            'sample_interval_days': self.sample_interval_days,
+            'forward_period': self.forward_period,
+            'top_n_factors': self.top_n_factors,
+            'min_train_samples': self.min_train_samples,
+            'min_ic_dates': self.min_ic_dates,
+        }
+
+        # 将日期分成多个chunk
+        n_chunks = min(num_workers, total)
+        chunk_size = total // n_chunks
+        date_chunks = [ic_dates[i*chunk_size:(i+1)*chunk_size] for i in range(n_chunks)]
+        # 最后一个chunk包含剩余日期
+        if total % n_chunks != 0:
+            date_chunks[-1] = ic_dates[(n_chunks-1)*chunk_size:]
+
+        # 准备每个chunk的参数
+        chunk_args = [
+            (chunk, all_dates, factor_df_dict, industry_codes, config)
+            for chunk in date_chunks
+        ]
+
+        # 并行计算
+        all_results = []
+        with Pool(n_chunks) as pool:
+            results = pool.map(_compute_date_chunk, chunk_args)
+            all_results.extend(results)
+
+        # 汇总结果
+        for result_dict in all_results:
+            for date, factors in result_dict.items():
+                self._factor_cache[date] = factors
 
         if progress_callback:
             progress_callback(total, total)
@@ -200,12 +348,31 @@ class DynamicFactorSelector:
         if val_date in self._factor_cache:
             return self._factor_cache[val_date]
 
+        # 如果缓存未命中，尝试找最近的之前日期的缓存结果
+        # （适用于非IC计算日期的情况）
+        val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
+        for i in range(len(all_dates) - 1, -1, -1):
+            if all_dates[i] < val_date_ts:
+                nearest_date = all_dates[i]
+                if nearest_date in self._factor_cache:
+                    return self._factor_cache[nearest_date]
+                break
+
+        # 缓存也未命中，执行计算
+        result = self._compute_factor_selection_for_date(val_date, all_dates)
+
+        # 缓存结果
+        if result:
+            self._factor_cache[val_date] = result
+        return result
+
+    def _compute_factor_selection_for_date(self, val_date: str, all_dates: List[str]) -> Dict[str, List[str]]:
+        """为指定日期计算因子选择（不走缓存）"""
         if self.factor_df is None or len(self.factor_df) == 0:
             return {}
 
-        # 确定训练窗口 - 使用最接近的可用日期
         import pandas as pd
-        val_date_ts = pd.to_datetime(val_date)
+        val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
 
         try:
             val_idx = all_dates.index(val_date_ts)
@@ -248,8 +415,6 @@ class DynamicFactorSelector:
             if factors:
                 result[industry] = factors
 
-        # 缓存结果
-        self._factor_cache[val_date] = result
         return result
 
 
