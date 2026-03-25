@@ -9,18 +9,42 @@
 # dynamic:  只用动态因子
 # fixed:    只用静态行业因子
 # both:     动态优先，失败fallback到静态
-factor_mode: both   # dynamic优先，fallback到static
+factor_mode: both   # 动态优先，失败fallback到静态
 
 # --- 1.1 动态因子 (第一层) ---
 dynamic_factor:
   enabled: true                    # 是否启用动态因子
-  train_window_days: 90            # IC训练窗口（天数）- 约一季度
-  sample_interval_days: 3          # 训练窗口内采样间隔（天数）
+  train_window_days: 120           # IC训练窗口（天数）- 约4个月
   forward_period: 20              # 计算future_ret的周期
   top_n_factors: 3                 # 每个行业选几个因子
   min_train_samples: 50            # 最少训练样本数
-  min_ic_dates: 10                 # 最少IC天数
+  min_ic_dates: 5                  # 最少IC天数
+  ic_decay_factor: 0.8           # IC时序衰减因子（1.0=不衰减，0.9/0.8=指数衰减）
   fallback_to_static: true         # 动态失败时fallback到静态
+
+# --- 回测因子配置 ---
+# 预计算和IC验证只使用这里定义的因子（统一配置）
+backtest_factors:
+  - trend_mom_v41      # 趋势动量（IC 8%+）
+  - trend_mom_v24
+  - trend_mom_v46
+  - mom_x_lowvol_20_20  # 动量×低波动
+  - mom_x_lowvol_20_10
+  - mom_x_lowvol_10_20
+  - mom_x_lowvol_10_10
+  - mom_diff_5_20      # 动量差异
+  - mom_diff_10_20
+  - rsi_factor         # RSI因子
+  - volatility         # 波动率
+  - volume_ratio       # 成交量
+  - fund_score         # 基本面
+  - fund_profit_growth
+  - fund_revenue_growth
+  - fund_roe
+  - fund_cf_to_profit
+  - fund_gross_margin
+  - V41_RSI_915        # 组合因子
+  - tech_fund_combo
 
 # --- 1.2 静态行业因子 (第二层) ---
 industry_factor_config:

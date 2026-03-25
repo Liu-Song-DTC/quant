@@ -149,7 +149,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         # 预计算所有日期的因子选择（避免多进程中重复计算）
         print("预计算因子选择...")
         main_engine.dynamic_factor_selector.precompute_all_factor_selections(
-            progress_callback=lambda curr, total: print(f"\r因子选择进度: {curr}/{total}", end="", flush=True)
+            progress_callback=lambda curr, total: print(f"\r因子选择进度: {curr}/{total}", end="", flush=True),
+            num_workers=NUM_WORKERS
         )
         print(f"\n因子选择预计算完成，共 {len(main_engine.dynamic_factor_selector._factor_cache)} 个日期")
 
@@ -475,3 +476,6 @@ if __name__ == "__main__":
         os.makedirs(os.path.dirname(selections_path), exist_ok=True)
         selections_df.to_csv(selections_path, index=False)
         print(f"\n选股结果已保存: {len(selections_df)} 条 -> {selections_path}")
+
+    # 打印因子选择统计
+    strategy.signal_engine.print_factor_stats()

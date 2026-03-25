@@ -18,7 +18,7 @@ from .signal import Signal
 from .signal_store import SignalStore
 from .config_loader import load_config
 from .industry_mapping import INDUSTRY_KEYWORDS, get_industry_category
-from .factors import calc_all_factors_for_validation
+from .factors import compute_factors
 import yaml
 import os
 
@@ -42,97 +42,151 @@ INDUSTRY_FACTOR_CONFIG = _load_industry_factors()
 
 
 def _compute_date_chunk(args):
-    """多进程worker函数：计算一个日期chunk的因子选择
+    """Compute IC and factor selection for a date chunk.
+
+    设计：chunk [start:end] 只计算 [start:end-forward_period] 的IC
+    即每个chunk的最后forward_period个日期无法计算IC，因为没有足够的未来收益数据
+    这些无法计算的日期会由下一个chunk覆盖
 
     Args:
-        args: (date_chunk, all_dates, factor_df_dict, industry_codes, config)
+        args: (date_chunk, factor_df, industry_codes, config)
 
     Returns:
-        {date: {industry: [factors]}} 结果字典
+        {date: {industry: [factors]}}
     """
     import pandas as pd
     from scipy import stats
+    from tqdm import tqdm
 
-    date_chunk, all_dates, factor_df_dict, industry_codes, config = args
+    date_chunk, factor_df, industry_codes, config = args
 
-    # 重建DataFrame
-    factor_df = pd.DataFrame(factor_df_dict['df'])
-    for col in factor_df_dict['columns']:
-        if col not in factor_df.columns:
-            factor_df[col] = None
-    factor_df = factor_df[factor_df_dict['columns']]
+    # Ensure date column is datetime
+    if factor_df['date'].dtype != 'datetime64[ns]':
+        factor_df = factor_df.copy()
+        factor_df['date'] = pd.to_datetime(factor_df['date'])
+
+    # Factor columns
+    exclude_cols = ['code', 'date', 'future_ret', 'industry']
+    factor_names = [c for c in factor_df.columns if c not in exclude_cols]
+
+    train_window_days = config['train_window_days']
+    forward_period = config['forward_period']
+    top_n = config['top_n_factors']
+    min_train_samples = config['min_train_samples']
+    min_ic_dates = config.get('min_ic_dates', 5)
+    ic_decay_factor = config.get('ic_decay_factor', 1.0)  # 1.0=不衰减
 
     result = {}
 
-    for val_date in date_chunk:
+    # Chunk [start:end] 只计算 [start:end-forward_period] 的IC
+    # 即跳过最后forward_period个日期，这些日期由下一个chunk覆盖
+    chunk_start = date_chunk[0]
+    chunk_end = date_chunk[-1]
+    valid_end = chunk_end - pd.Timedelta(days=forward_period)
+
+    # 计算实际需要处理的日期数量（用于进度条）
+    valid_dates = [d for d in date_chunk if d <= valid_end]
+    total = len(valid_dates)
+
+    for val_date in tqdm(valid_dates, desc=f"IC计算({len(date_chunk)}天)", leave=False):
         val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
 
-        try:
-            val_idx = all_dates.index(val_date_ts)
-        except ValueError:
+        # Training window: [val_date - train_window_days, val_date - forward_period]
+        train_start_date = val_date_ts - pd.Timedelta(days=train_window_days)
+        train_end_date = val_date_ts - pd.Timedelta(days=forward_period)
+
+        # Filter training data
+        train_mask = (factor_df['date'] >= train_start_date) & (factor_df['date'] < train_end_date)
+        train_df = factor_df[train_mask]
+
+        if len(train_df) < min_train_samples:
             continue
 
-        # 计算训练窗口
-        train_window_samples = config['train_window_days'] // config['sample_interval_days']
-        train_start_idx = max(0, val_idx - train_window_samples)
-        train_start_date = all_dates[train_start_idx]
-
-        # 训练数据
-        train_end_date = val_date_ts - pd.Timedelta(days=config['forward_period'])
-        train_df = factor_df[
-            (factor_df['date'] >= train_start_date) &
-            (factor_df['date'] < train_end_date)
-        ]
-
-        if len(train_df) < config['min_train_samples']:
-            continue
-
-        # 因子列表
-        exclude_cols = ['code', 'date', 'future_ret']
-        factor_names = [c for c in factor_df.columns if c not in exclude_cols]
-
-        # 为每个行业选择因子
+        # Compute IC for each industry
         date_result = {}
         for industry, codes in industry_codes.items():
             if not codes:
                 continue
 
             ind_df = train_df[train_df['code'].isin(codes)]
-            if len(ind_df) < config['min_train_samples']:
+            if len(ind_df) < min_train_samples:
                 continue
 
-            # 计算每个因子的IC和IR
+            # 一次性向量化计算所有日期的截面Spearman IC
+            # 使用 pivot + rank + corr 实现真正的向量化
             factor_metrics = []
             for fn in factor_names:
                 if fn not in ind_df.columns:
                     continue
 
-                ic_list = []
-                for date, group in ind_df.groupby('date'):
-                    if len(group) >= 3 and 'future_ret' in group.columns:
-                        valid_mask = ~(np.isnan(group[fn].values) | np.isnan(group['future_ret'].values))
-                        if valid_mask.sum() < 5:
-                            continue
-                        ic, _ = stats.spearmanr(group[fn].values[valid_mask], group['future_ret'].values[valid_mask])
-                        if not np.isnan(ic):
-                            ic_list.append(ic)
+                try:
+                    # pivot: dates x stocks
+                    fn_pivot = ind_df.pivot(index='date', columns='code', values=fn)
+                    ret_pivot = ind_df.pivot(index='date', columns='code', values='future_ret')
 
-                if len(ic_list) >= config['min_ic_dates']:
+                    # rank across stocks for each date (截面秩)
+                    fn_rank = fn_pivot.rank(axis=1, na_option='keep')
+                    ret_rank = ret_pivot.rank(axis=1, na_option='keep')
+
+                    # row-wise Pearson correlation of ranks = Spearman IC
+                    ic_series = fn_rank.corrwith(ret_rank, axis=1)
+                    ic_list = ic_series.dropna().tolist()
+                except:
+                    ic_list = []
+
+                if len(ic_list) < min_ic_dates:
+                    continue
+
+                n_dates = len(ic_list)
+                # 时序衰减加权平均IC
+                if ic_decay_factor < 1.0:
+                    weights = np.array([ic_decay_factor ** (n_dates - i - 1) for i in range(n_dates)])
+                    weights = weights / weights.sum()
+                    ic_mean = np.sum(np.array(ic_list) * weights)
+                else:
                     ic_mean = np.mean(ic_list)
-                    ic_std = np.std(ic_list) + 1e-10
-                    factor_metrics.append({
-                        'factor': fn,
-                        'ir': ic_mean / ic_std,
-                    })
 
-            if factor_metrics:
+                ic_std = np.std(ic_list) + 1e-10
+                ir = ic_mean / ic_std
+
+                factor_metrics.append({
+                    'factor': fn,
+                    'ic_mean': ic_mean,
+                    'ir': ir,
+                })
+
+            if len(factor_metrics) >= 1:
                 factor_metrics.sort(key=lambda x: x['ir'], reverse=True)
-                date_result[industry] = [f['factor'] for f in factor_metrics[:config['top_n_factors']]]
+                date_result[industry] = [f['factor'] for f in factor_metrics[:top_n]]
 
         if date_result:
             result[val_date] = date_result
 
     return result
+
+
+def _compute_date_chunks_worker(args):
+    """Worker function: compute IC for multiple overlapping chunks.
+
+    Args:
+        args: (chunks, factor_df, industry_codes, config)
+            - chunks: list of date lists (each chunk is a list of dates)
+            - factor_df: DataFrame with factor data
+            - industry_codes: {industry: [stock_codes]}
+            - config: computation config
+
+    Returns:
+        list of (date, factors) tuples for all dates in all chunks
+    """
+    chunks, factor_df, industry_codes, config = args
+
+    all_results = []
+    for chunk in chunks:
+        chunk_result = _compute_date_chunk((chunk, factor_df, industry_codes, config))
+        for date, factors in chunk_result.items():
+            all_results.append((date, factors))
+
+    return all_results
 
 
 class DynamicFactorSelector:
@@ -175,11 +229,11 @@ class DynamicFactorSelector:
 
         self.enabled = dynamic_config.get('enabled', False)
         self.train_window_days = dynamic_config.get('train_window_days', 250)
-        self.sample_interval_days = dynamic_config.get('sample_interval_days', 5)
         self.forward_period = dynamic_config.get('forward_period', 20)
         self.top_n_factors = dynamic_config.get('top_n_factors', 3)
         self.min_train_samples = dynamic_config.get('min_train_samples', 50)
         self.min_ic_dates = dynamic_config.get('min_ic_dates', 5)
+        self.ic_decay_factor = dynamic_config.get('ic_decay_factor', 1.0)  # 1.0=不衰减
 
     def set_factor_data(self, factor_df: pd.DataFrame):
         """设置因子数据
@@ -208,8 +262,10 @@ class DynamicFactorSelector:
     def precompute_all_factor_selections(self, progress_callback=None, num_workers=4):
         """预计算因子选择（多进程并行）
 
-        为减少计算量，只在IC日期（每sample_interval天）计算因子选择。
-        其他日期会使用最近的IC日期结果。
+        设计：使用重叠的日期chunk
+        - Chunk [start:start+90] 只计算 [start:start+90-forward_period] 的IC
+        - 相邻chunk重叠20天（forward_period），确保所有日期都被覆盖
+        - 例如：Chunk1 [0:90] -> 计算[0:70], Chunk2 [70:160] -> 计算[70:140]
 
         Args:
             progress_callback: 进度回调函数，接受 (current, total) 参数
@@ -225,52 +281,67 @@ class DynamicFactorSelector:
         if not all_dates:
             return
 
-        # 只在IC计算日期（每sample_interval天）预计算
-        ic_dates = all_dates[::self.sample_interval_days]
-        total = len(ic_dates)
+        # Ensure all_dates are Timestamp type
+        all_dates = [pd.to_datetime(d) if not isinstance(d, pd.Timestamp) else d for d in all_dates]
+
+        # 按进程数划分日期范围，每个进程处理一段，保证边界有重叠
+        total_dates = len(all_dates)
+        n_workers = min(num_workers, total_dates // 50)  # 至少保证每段有50天
+        if n_workers < 1:
+            n_workers = 1
+
+        # 每个worker处理一段日期，重叠窗口 = train_window_days
+        # chunk i: [i*stride : i*stride + chunk_size + overlap]
+        # 其中 stride = total_dates // n_workers
+        stride = total_dates // n_workers
+        overlap = self.train_window_days  # 重叠窗口保证边界IC计算完整
+
+        chunks = []
+        for i in range(n_workers):
+            start = i * stride
+            end = min((i + 1) * stride + overlap, total_dates)
+            chunk_dates = all_dates[start:end]
+            chunks.append(chunk_dates)
+
+        total = len(chunks)
+        print(f"预计算因子选择: {total} 个chunk (按进程数划分), 每段约 {stride} 天, 重叠 {overlap} 天")
 
         if total == 0:
             return
 
-        # 准备共享数据（转换为可序列化格式）
-        factor_df_dict = {
-            'df': self.factor_df.to_dict('records'),
-            'columns': self.factor_df.columns.tolist()
-        }
+        # Prepare data
+        factor_df = self.factor_df.copy()
+        if factor_df['date'].dtype != 'datetime64[ns]':
+            factor_df['date'] = pd.to_datetime(factor_df['date'])
         industry_codes = self.industry_codes
         config = {
             'train_window_days': self.train_window_days,
-            'sample_interval_days': self.sample_interval_days,
             'forward_period': self.forward_period,
             'top_n_factors': self.top_n_factors,
             'min_train_samples': self.min_train_samples,
             'min_ic_dates': self.min_ic_dates,
+            'ic_decay_factor': self.ic_decay_factor,
         }
 
-        # 将日期分成多个chunk
-        n_chunks = min(num_workers, total)
-        chunk_size = total // n_chunks
-        date_chunks = [ic_dates[i*chunk_size:(i+1)*chunk_size] for i in range(n_chunks)]
-        # 最后一个chunk包含剩余日期
-        if total % n_chunks != 0:
-            date_chunks[-1] = ic_dates[(n_chunks-1)*chunk_size:]
-
-        # 准备每个chunk的参数
-        chunk_args = [
-            (chunk, all_dates, factor_df_dict, industry_codes, config)
-            for chunk in date_chunks
+        # 每个worker处理一个chunk
+        worker_args = [
+            ([chunk], factor_df, industry_codes, config)
+            for chunk in chunks
         ]
 
         # 并行计算
+        print(f"开始并行计算 {total} 个chunk...")
         all_results = []
-        with Pool(n_chunks) as pool:
-            results = pool.map(_compute_date_chunk, chunk_args)
-            all_results.extend(results)
+        with Pool(total) as pool:
+            results = pool.map(_compute_date_chunks_worker, worker_args)
+            for r in results:
+                all_results.extend(r)
 
         # 汇总结果
-        for result_dict in all_results:
-            for date, factors in result_dict.items():
-                self._factor_cache[date] = factors
+        for date, factors in all_results:
+            self._factor_cache[date] = factors
+
+        print(f"因子选择预计算完成: {len(self._factor_cache)} 个日期")
 
         if progress_callback:
             progress_callback(total, total)
@@ -311,30 +382,76 @@ class DynamicFactorSelector:
                 continue
 
             ic_list = []
-            for date, group in ind_df.groupby('date'):
+            dates_sorted = sorted(ind_df['date'].unique())
+            for date in dates_sorted:
+                group = ind_df[ind_df['date'] == date]
                 if len(group) >= 3 and 'future_ret' in group.columns:
                     ic = self._calc_ic(group[fn].values, group['future_ret'].values)
                     if not np.isnan(ic):
                         ic_list.append(ic)
 
             if len(ic_list) >= self.min_ic_dates:
-                ic_mean = np.mean(ic_list)
+                # 时序衰减加权平均IC
+                n = len(ic_list)
+                if self.ic_decay_factor < 1.0:
+                    weights = np.array([self.ic_decay_factor ** (n - i - 1) for i in range(n)])
+                    weights = weights / weights.sum()
+                    ic_mean = np.sum(np.array(ic_list) * weights)
+                else:
+                    ic_mean = np.mean(ic_list)
+
                 ic_std = np.std(ic_list) + 1e-10
+                # 使用带方向的IR（保留符号）
+                ir = ic_mean / ic_std
+
+                # IC符号一致性（稳定性）：衡量因子方向是否稳定
+                # 1.0表示所有IC同号（完全稳定），0表示一半正一半负
+                ic_signs = np.sign(ic_list)
+                ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
+
+                # 计算 t 统计量（检验 IC 均值是否显著非零）
+                # t = ic_mean / (ic_std / sqrt(n))
+                # |t| > 1.5 表示约 90% 置信度，|t| > 2.0 表示约 95% 置信度
+                n_ic = len(ic_list)
+                t_statistic = ic_mean / (ic_std / np.sqrt(n_ic))
+
+                # 只有统计显著的因子才参与选择
+                min_t_stat = 1.0  # 降低门槛避免过度过滤
+                if abs(t_statistic) < min_t_stat:
+                    continue
+
+                # 综合评分 = IR * 稳定性（更强调方向一致性）
+                # 稳定性高(接近1)的因子权重不变，稳定性低的因子被惩罚
+                combined_ir = ir * ic_stability
+
                 factor_metrics.append({
                     'factor': fn,
                     'ic_mean': ic_mean,
-                    'ir': ic_mean / ic_std,
+                    'ir': ir,
+                    'ic_stability': ic_stability,
+                    'combined_ir': combined_ir,
+                    't_statistic': t_statistic,
                     'ic_list': ic_list
                 })
 
         if not factor_metrics:
             return []
 
-        # 按IR排序选Top-N
-        factor_metrics.sort(key=lambda x: x['ir'], reverse=True)
-        return [f['factor'] for f in factor_metrics[:self.top_n_factors]]
+        # 按综合IR排序选Top-N（考虑了稳定性）
+        factor_metrics.sort(key=lambda x: x['combined_ir'], reverse=True)
+        selected = factor_metrics[:self.top_n_factors]
 
-    def select_factors_for_date(self, val_date: str, all_dates: List[str]) -> Dict[str, List[str]]:
+        # DEBUG: 打印选中结果
+        if not hasattr(self, '_dyn_sel_debug_count'):
+            self._dyn_sel_debug_count = 0
+        if self._dyn_sel_debug_count < 5:
+            self._dyn_sel_debug_count += 1
+            print(f"[DYN SEL] industry={industry}, selected={len(selected)}, top metrics: {[(f['factor'], f['combined_ir']) for f in selected[:2]]}", flush=True)
+
+        # 返回因子列表和质量指标
+        return selected
+
+    def select_factors_for_date(self, val_date: str, all_dates: List[str]) -> Dict[str, Dict]:
         """为指定日期选择各行业的最优因子
 
         Args:
@@ -342,28 +459,43 @@ class DynamicFactorSelector:
             all_dates: 所有可用日期列表
 
         Returns:
-            {industry: [factors]} 各行业选中的因子
+            {industry: {'factors': [factors], 'quality': avg_quality}} 各行业选中的因子及质量分数
         """
-        # 检查缓存
-        if val_date in self._factor_cache:
-            return self._factor_cache[val_date]
+        # 统一转换为 Timestamp（确保与缓存键类型一致）
+        val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
+
+        # 检查缓存（使用 Timestamp 类型的键）
+        if val_date_ts in self._factor_cache:
+            # DEBUG: cache hit
+            if not hasattr(self, '_dyn_cache_hit_count'):
+                self._dyn_cache_hit_count = 0
+            if self._dyn_cache_hit_count < 3:
+                self._dyn_cache_hit_count += 1
+                print(f"[DYN CACHE HIT] date={val_date_ts}, cache_size={len(self._factor_cache)}", flush=True)
+            return self._factor_cache[val_date_ts]
+
+        # DEBUG: cache miss
+        if not hasattr(self, '_dyn_cache_miss_count'):
+            self._dyn_cache_miss_count = 0
+        if self._dyn_cache_miss_count < 3:
+            self._dyn_cache_miss_count += 1
+            print(f"[DYN CACHE MISS] date={val_date_ts}, cache_size={len(self._factor_cache)}, first_key={list(self._factor_cache.keys())[0] if self._factor_cache else None}", flush=True)
 
         # 如果缓存未命中，尝试找最近的之前日期的缓存结果
         # （适用于非IC计算日期的情况）
-        val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
         for i in range(len(all_dates) - 1, -1, -1):
             if all_dates[i] < val_date_ts:
                 nearest_date = all_dates[i]
                 if nearest_date in self._factor_cache:
                     return self._factor_cache[nearest_date]
-                break
+                # 如果这个日期不在缓存中，继续找更早的日期
 
         # 缓存也未命中，执行计算
-        result = self._compute_factor_selection_for_date(val_date, all_dates)
+        result = self._compute_factor_selection_for_date(val_date_ts, all_dates)
 
-        # 缓存结果
+        # 缓存结果（使用 Timestamp 键）
         if result:
-            self._factor_cache[val_date] = result
+            self._factor_cache[val_date_ts] = result
         return result
 
     def _compute_factor_selection_for_date(self, val_date: str, all_dates: List[str]) -> Dict[str, List[str]]:
@@ -386,8 +518,8 @@ class DynamicFactorSelector:
             if val_idx < 0:
                 return {}
 
-        # 将训练窗口天数转换为采样点数量
-        train_window_samples = self.train_window_days // self.sample_interval_days
+        # 训练窗口直接使用天数（因为数据是每日采样）
+        train_window_samples = self.train_window_days
         train_start_idx = max(0, val_idx - train_window_samples)
         train_start_date = all_dates[train_start_idx]
 
@@ -405,15 +537,37 @@ class DynamicFactorSelector:
             return {}
 
         # 因子列表
-        exclude_cols = ['code', 'date', 'future_ret']
+        exclude_cols = ['code', 'date', 'future_ret', 'industry']
         factor_names = [c for c in self.factor_df.columns if c not in exclude_cols]
 
         # 为每个行业选择因子
         result = {}
-        for industry in self.industry_codes.keys():
-            factors = self._select_factors_for_industry(train_df, industry, factor_names)
-            if factors:
-                result[industry] = factors
+        industries = list(self.industry_codes.keys())
+        if not industries:
+            # 调试：打印警告
+            import sys
+            print(f"[DYN SELECTOR WARNING] industry_codes is empty! factor_df rows: {len(self.factor_df) if self.factor_df is not None else 'None'}", flush=True)
+            return {}
+
+        for industry in industries:
+            selected_metrics = self._select_factors_for_industry(train_df, industry, factor_names)
+            if selected_metrics:
+                # 提取因子名称列表
+                factor_names_list = [f['factor'] for f in selected_metrics]
+                # 计算行业平均质量分数（使用combined_ir）
+                avg_quality = np.mean([f['combined_ir'] for f in selected_metrics])
+                result[industry] = {
+                    'factors': factor_names_list,
+                    'quality': avg_quality
+                }
+
+        # 调试：打印结果统计
+        if not result:
+            if not hasattr(self, '_dyn_result_warned'):
+                self._dyn_result_warned = set()
+            if len(self._dyn_result_warned) < 3:
+                self._dyn_result_warned.add(industry)
+                print(f"[DYN SELECTOR WARNING] result empty for date near {val_date_ts}. industries={len(industries)}, train_df={len(train_df)}, factor_names={len(factor_names)}, first_industry={industries[0] if industries else 'None'}", flush=True)
 
         return result
 
@@ -431,6 +585,16 @@ class SignalEngine:
         # 市场状态信息
         self.market_regime_data = None
         self.current_idx = 0
+
+        # 因子选择统计
+        self._stats = {
+            'dynamic_success': 0,
+            'dynamic_fallback_fixed': 0,
+            'dynamic_fallback_default': 0,
+            'fixed_industry': 0,
+            'fixed_default': 0,
+            'ic_values': [],
+        }
 
     def _load_config(self):
         """从配置文件加载参数"""
@@ -495,6 +659,24 @@ class SignalEngine:
             regime_df = regime_df.copy()
             regime_df['datetime'] = pd.to_datetime(regime_df['datetime'])
             self.market_regime_data = regime_df.set_index('datetime')
+
+    def print_factor_stats(self):
+        """打印因子选择统计"""
+        stats = self._stats
+        # 排除 ic_values 列表，只计算整数统计
+        total = sum(v for k, v in stats.items() if k != 'ic_values')
+        if total == 0:
+            print("\n因子选择统计: 无数据")
+            return
+
+        print("\n========== 因子选择统计 ==========")
+        print(f"动态因子成功:     {stats['dynamic_success']:6d} ({100*stats['dynamic_success']/total:.1f}%)")
+        print(f"动态->固定fallback: {stats['dynamic_fallback_fixed']:6d} ({100*stats['dynamic_fallback_fixed']/total:.1f}%)")
+        print(f"动态->默认fallback: {stats['dynamic_fallback_default']:6d} ({100*stats['dynamic_fallback_default']/total:.1f}%)")
+        print(f"固定行业因子:    {stats['fixed_industry']:6d} ({100*stats['fixed_industry']/total:.1f}%)")
+        print(f"固定默认因子:    {stats['fixed_default']:6d} ({100*stats['fixed_default']/total:.1f}%)")
+        print(f"总计:            {total}")
+        print("==================================\n")
 
     def generate(self, code: str, market_data: pd.DataFrame, signal_store: SignalStore):
         """生成信号"""
@@ -787,12 +969,16 @@ class SignalEngine:
             if self.dynamic_factor_enabled and code and current_date:
                 result = self._select_factor_dynamic(ind, idx, regime, code, current_date)
                 if result:
+                    self._stats['dynamic_success'] += 1
                     return result
                 # 动态选择失败
                 if self.factor_mode == 'dynamic' and not self.factor_fallback_to_fixed:
                     # mode=dynamic且不允许fallback，直接用默认因子
+                    self._stats['dynamic_fallback_default'] += 1
                     factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
                     return factor_name, factor_value, risk_info, False
+                else:
+                    self._stats['dynamic_fallback_fixed'] += 1
 
         # 固定因子（行业特定或默认）
         if self.factor_mode in ['fixed', 'both']:
@@ -802,6 +988,7 @@ class SignalEngine:
                     result = self._calculate_industry_factor_score(ind, idx, specific_industry,
                                                                    code=code, current_date=current_date)
                     if result:
+                        self._stats['fixed_industry'] += 1
                         factor_name, factor_value, risk_info = result
                         if regime == -1:  # 熊市
                             factor_value = factor_value * 0.7
@@ -810,6 +997,7 @@ class SignalEngine:
                         return factor_name, factor_value, risk_info, True
 
         # 默认因子组合（固定因子的兜底）
+        self._stats['fixed_default'] += 1
         factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
         return factor_name, factor_value, risk_info, False
 
@@ -825,6 +1013,14 @@ class SignalEngine:
         if not code or not current_date:
             return None
 
+        # DEBUG: 记录尝试
+        debug_key = f"{code}_{current_date}"
+        if not hasattr(self, '_dyn_debug_set'):
+            self._dyn_debug_set = set()
+        if len(self._dyn_debug_set) < 100:  # 只记录前100条
+            self._dyn_debug_set.add(debug_key)
+            print(f"[DYN DEBUG] code={code}, date={current_date}, has_ic={hasattr(self, 'industry_codes') and bool(self.industry_codes)}", flush=True)
+
         # 获取当前日期的字符串形式
         if hasattr(current_date, 'date'):
             current_date_str = str(current_date.date())
@@ -836,22 +1032,12 @@ class SignalEngine:
         if not specific_industry:
             return None
 
-        # 检查行业是否在映射中
-        if not hasattr(self, 'industry_codes') or not self.industry_codes:
-            return None
-
-        # 检查该股票是否在行业映射中
-        codes_in_industry = self.industry_codes.get(specific_industry, [])
-        if code not in codes_in_industry:
-            return None
-
         # 检查因子数据是否存在
         if self.dynamic_factor_selector.factor_df is None:
             return None
 
         # 获取动态选择的因子
         try:
-            # 使用缓存的已排序日期列表（避免每次重新计算）
             all_dates = self.dynamic_factor_selector._all_dates_cache
             if not all_dates:
                 return None
@@ -862,8 +1048,18 @@ class SignalEngine:
         if not industry_factors or specific_industry not in industry_factors:
             return None
 
-        selected_factors = industry_factors[specific_industry]
-        if not selected_factors:
+        # 提取因子列表和质量指标（新返回格式）
+        selected_info = industry_factors[specific_industry]
+        if not selected_info or 'factors' not in selected_info:
+            return None
+        selected_factors = selected_info['factors']
+        dyn_quality = selected_info.get('quality', 0)
+
+        # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
+        # 阈值0.03: combined_ir < 0.03认为动态因子质量不足
+        # 暂时设为0来测试
+        DYN_QUALITY_THRESHOLD = 0.0
+        if dyn_quality < DYN_QUALITY_THRESHOLD:
             return None
 
         # 计算动态因子得分
@@ -888,12 +1084,14 @@ class SignalEngine:
         # 等权平均
         factor_value = np.mean(factor_scores)
 
+
         # 熊市调整
         if regime == -1:
             factor_value = factor_value * 0.7
 
         factor_name = f'DYN_{specific_industry[:4]}_{len(valid_factors)}F'
-        risk_info = {'is_high_vol': False, 'dynamic_factor': True, 'n_factors': len(valid_factors)}
+        risk_info = {'is_high_vol': False, 'dynamic_factor': True, 'n_factors': len(valid_factors),
+                     'dyn_quality': dyn_quality}
 
         return factor_name, factor_value, risk_info, True
 

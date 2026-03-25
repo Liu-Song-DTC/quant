@@ -56,6 +56,8 @@ def calc_base_indicators(close, high=None, low=None, volume=None):
     for period in [3, 5, 10, 20, 60]:
         result[f'mom_{period}'] = close / np.roll(close, period) - 1
         result[f'mom_{period}'][np.isnan(result[f'mom_{period}'])] = 0
+        # 裁剪极端动量值，避免复权错误或极端行情导致的问题
+        result[f'mom_{period}'] = np.clip(result[f'mom_{period}'], -1.0, 1.0)
 
     # 均线
     for span in [5, 10, 12, 20, 26, 60]:
@@ -136,10 +138,8 @@ def calc_base_indicators(close, high=None, low=None, volume=None):
     return result
 
 
-def calc_all_factors_for_validation(close, high=None, low=None, volume=None, fundamental_data=None, code=None, eval_date=None):
-    """计算所有用于验证的因子（供验证脚本使用）
-
-    基于 calc_base_indicators 的结果，计算所有复合因子
+def compute_factors(close, high=None, low=None, volume=None, fundamental_data=None, code=None, eval_date=None):
+    """计算用于验证的因子（根据配置文件中的backtest_factors动态计算）
 
     Args:
         close: 收盘价数组
@@ -151,181 +151,122 @@ def calc_all_factors_for_validation(close, high=None, low=None, volume=None, fun
         eval_date: 评估日期（基本面数据用）
 
     Returns:
-        dict: 包含所有因子的字典
+        dict: 只包含 backtest_factors 配置中定义的因子
     """
-    # 先计算基础指标
-    base = calc_base_indicators(close, high, low, volume)
-    factors = base.copy()
+    from .config_loader import load_config
 
-    # 复合因子计算
-    # 动量差
-    if 'mom_3' in factors and 'mom_5' in factors:
-        factors['mom_diff_3_5'] = factors['mom_3'] - factors['mom_5']
-    if 'mom_5' in factors and 'mom_10' in factors:
-        factors['mom_diff_5_10'] = factors['mom_5'] - factors['mom_10']
-    if 'mom_5' in factors and 'mom_20' in factors:
-        factors['mom_diff_5_20'] = factors['mom_5'] - factors['mom_20']
-    if 'mom_10' in factors and 'mom_20' in factors:
-        factors['mom_diff_10_20'] = factors['mom_10'] - factors['mom_20']
+    # 从配置读取需要计算的因子列表
+    config = load_config()
+    backtest_factors = config.get('backtest_factors', [])
+    if not backtest_factors:
+        # 如果配置为空，fallback到空（不应发生）
+        return {}
+
+    factors = {}
+
+    # === 基础指标计算（统一计算所有可能需要的）===
+    # 动量
+    for period in [5, 10, 20]:
+        factors[f'mom_{period}'] = close / np.roll(close, period) - 1
+        factors[f'mom_{period}'][np.isnan(factors[f'mom_{period}'])] = 0
+        factors[f'mom_{period}'] = np.clip(factors[f'mom_{period}'], -1.0, 1.0)
+
+    # 波动率
+    returns = pd.Series(close).pct_change().values
+    for p in [10, 20]:
+        factors[f'volatility_{p}'] = pd.Series(returns).rolling(p).std().values
+
+    # RSI
+    delta = np.diff(close, prepend=close[0])
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(14).mean().values
+    avg_loss = pd.Series(loss).rolling(14).mean().values
+    rs = avg_gain / (avg_loss + 1e-10)
+    factors['rsi'] = 100 - (100 / (1 + rs))
+
+    # 成交量比率
+    vol_ma20 = pd.Series(volume).rolling(20).mean().values
+    factors['volume_ratio'] = np.clip(volume / (vol_ma20 + 1e-10), 0, 10)
+
+    # === 根据backtest_factors配置计算因子 ===
+    result = {}
+
+    # 趋势动量因子
+    if 'trend_mom_v41' in backtest_factors:
+        result['trend_mom_v41'] = np.where(factors['mom_10'] > 0, factors['mom_20'] * 2.1, 0)
+    if 'trend_mom_v24' in backtest_factors:
+        result['trend_mom_v24'] = np.where(factors['mom_10'] > 0, factors['mom_20'] * 2.1, factors['mom_20'] * 0.04)
+    if 'trend_mom_v46' in backtest_factors:
+        result['trend_mom_v46'] = np.where(factors['mom_10'] > 0, factors['mom_20'] * 2.05, 0)
 
     # 动量×低波动
-    if 'mom_10' in factors and 'volatility_10' in factors:
-        factors['mom_x_lowvol_10_10'] = factors['mom_10'] * (-factors['volatility_10'])
-    if 'mom_10' in factors and 'volatility_20' in factors:
-        factors['mom_x_lowvol_10_20'] = factors['mom_10'] * (-factors['volatility_20'])
-    if 'mom_20' in factors and 'volatility_10' in factors:
-        factors['mom_x_lowvol_20_10'] = factors['mom_20'] * (-factors['volatility_10'])
-    if 'mom_20' in factors and 'volatility_20' in factors:
-        factors['mom_x_lowvol_20_20'] = factors['mom_20'] * (-factors['volatility_20'])
+    if 'mom_x_lowvol_20_20' in backtest_factors:
+        result['mom_x_lowvol_20_20'] = factors['mom_20'] * (-factors['volatility_20'])
+    if 'mom_x_lowvol_20_10' in backtest_factors:
+        result['mom_x_lowvol_20_10'] = factors['mom_20'] * (-factors['volatility_10'])
+    if 'mom_x_lowvol_10_20' in backtest_factors:
+        result['mom_x_lowvol_10_20'] = factors['mom_10'] * (-factors['volatility_20'])
+    if 'mom_x_lowvol_10_10' in backtest_factors:
+        result['mom_x_lowvol_10_10'] = factors['mom_10'] * (-factors['volatility_10'])
 
-    # RSI + 动量
-    if 'rsi_10' in factors and 'mom_5' in factors:
-        factors['rsi_mom_10_5'] = (50 - factors['rsi_10']) / 100 + factors['mom_5']
-    if 'rsi_14' in factors and 'mom_5' in factors:
-        factors['rsi_mom_14_5'] = (50 - factors['rsi_14']) / 100 + factors['mom_5']
+    # 动量差异
+    if 'mom_diff_5_20' in backtest_factors:
+        result['mom_diff_5_20'] = factors['mom_5'] - factors['mom_20']
+    if 'mom_diff_10_20' in backtest_factors:
+        result['mom_diff_10_20'] = factors['mom_10'] - factors['mom_20']
 
-    # 低波动+高位置
-    if 'price_position_20' in factors and 'volatility_10' in factors:
-        factors['low_vol_high_pos'] = -factors['volatility_10'] + factors['price_position_20']
+    # RSI因子
+    if 'rsi_factor' in backtest_factors:
+        result['rsi_factor'] = (factors['rsi'] - 50) / 100
 
-    # 收益波动率比
-    if 'mom_10' in factors and 'volatility_10' in factors:
-        factors['ret_vol_ratio_10'] = factors['mom_10'] / (factors['volatility_10'] + 1e-10)
-    if 'mom_20' in factors and 'volatility_20' in factors:
-        factors['ret_vol_ratio_20'] = factors['mom_20'] / (factors['volatility_20'] + 1e-10)
+    # 波动率因子（负波动率）
+    if 'volatility' in backtest_factors:
+        result['volatility'] = -factors['volatility_20']
 
-    # MA交叉
-    if 'ma5' in factors and 'ma10' in factors and 'ma20' in factors:
-        factors['ma_cross_5_10'] = (factors['ma5'] - factors['ma10']) / (factors['ma10'] + 1e-10)
-        factors['ma_cross_10_20'] = (factors['ma10'] - factors['ma20']) / (factors['ma20'] + 1e-10)
-        if 'ma60' in factors:
-            factors['ma_golden_count'] = ((factors['ma5'] > factors['ma10']).astype(float) +
-                                       (factors['ma10'] > factors['ma20']).astype(float) +
-                                       (factors['ma20'] > factors['ma60']).astype(float))
+    # 成交量因子
+    if 'volume_ratio' in backtest_factors:
+        result['volume_ratio'] = factors['volume_ratio']
 
-    # ===== 新增组合因子 =====
-    # RSI + 波动率
-    if 'rsi_14' in factors and 'volatility_20' in factors:
-        factors['rsi_vol_combo'] = (50 - factors['rsi_14']) / 100 - factors['volatility_20'] * 0.5
-
-    # 布林带 + RSI
-    if 'bb_percent_b' in factors and 'rsi_14' in factors:
-        factors['bb_rsi_combo'] = (50 - factors['rsi_14']) / 100 - factors['bb_percent_b'] * 0.3
-
-    # 动量 + 成交量
-    if 'mom_20' in factors and 'volume_ratio' in factors:
-        vol_factor = np.clip(factors['volume_ratio'] - 1, -0.5, 1)
-        factors['price_mom_volume'] = factors['mom_20'] * (1 + vol_factor)
-
-    # 均线交叉 + 成交量
-    if 'ma_cross_5_10' in factors and 'volume_ratio' in factors:
-        vol_factor = np.clip(factors['volume_ratio'] - 1, -0.3, 0.5)
-        factors['ma_cross_volume'] = factors['ma_cross_5_10'] * (1 + vol_factor)
-
-    # 高动量 + 低波动
-    if 'mom_20' in factors and 'volatility_20' in factors:
-        factors['highmom_lowvol'] = factors['mom_20'] - factors['volatility_20'] * 0.5
-
-    # 趋势强度
-    if 'mom_5' in factors and 'mom_10' in factors and 'mom_20' in factors:
-        score = np.zeros_like(factors['mom_5'])
-        score = np.where(factors['mom_5'] > 0, score + 1, score)
-        score = np.where(factors['mom_10'] > 0, score + 1, score)
-        score = np.where(factors['mom_20'] > 0, score + 1, score)
-        factors['trend_strength'] = score / 3
-
-    # 动量反转
-    if 'mom_5' in factors and 'mom_20' in factors:
-        factors['momentum_reversal'] = factors['mom_5'] - factors['mom_20']
-
-    # ===== 基本面因子 =====
+    # 基本面因子
     if fundamental_data is not None and code is not None and eval_date is not None:
         try:
-            roe = fundamental_data.get_roe(code, eval_date)
-            if roe is not None:
-                factors['fund_roe'] = roe
+            if 'fund_roe' in backtest_factors:
+                result['fund_roe'] = fundamental_data.get_roe(code, eval_date)
+            if 'fund_profit_growth' in backtest_factors:
+                result['fund_profit_growth'] = fundamental_data.get_profit_growth(code, eval_date)
+            if 'fund_revenue_growth' in backtest_factors:
+                result['fund_revenue_growth'] = fundamental_data.get_revenue_growth(code, eval_date)
+            if 'fund_score' in backtest_factors:
+                result['fund_score'] = fundamental_data.get_fundamental_score(code, eval_date)
+            if 'fund_gross_margin' in backtest_factors:
+                result['fund_gross_margin'] = fundamental_data.get_gross_margin(code, eval_date)
 
-            profit_growth = fundamental_data.get_profit_growth(code, eval_date)
-            if profit_growth is not None:
-                factors['fund_profit_growth'] = profit_growth
-
-            revenue_growth = fundamental_data.get_revenue_growth(code, eval_date)
-            if revenue_growth is not None:
-                factors['fund_revenue_growth'] = revenue_growth
-
-            eps = fundamental_data.get_eps(code, eval_date)
-            if eps is not None:
-                factors['fund_eps'] = eps
-
-            debt_ratio = fundamental_data.get_debt_ratio(code, eval_date)
-            if debt_ratio is not None:
-                factors['fund_debt_ratio'] = debt_ratio
-
-            gross_margin = fundamental_data.get_gross_margin(code, eval_date)
-            if gross_margin is not None:
-                factors['fund_gross_margin'] = gross_margin
-
-            # 经营性现金流/净利润（质量因子）
-            operating_cf = fundamental_data.get_operating_cash_flow(code, eval_date)
-            profit = fundamental_data.get_profit(code, eval_date)
-            if operating_cf is not None and profit is not None and profit > 0:
-                factors['fund_cf_to_profit'] = operating_cf / profit
-
-            fund_score = fundamental_data.get_fundamental_score(code, eval_date)
-            if fund_score is not None:
-                factors['fund_score'] = fund_score
+            if 'fund_cf_to_profit' in backtest_factors:
+                operating_cf = fundamental_data.get_operating_cash_flow(code, eval_date)
+                profit = fundamental_data.get_profit(code, eval_date)
+                if operating_cf is not None and profit is not None and profit > 0:
+                    result['fund_cf_to_profit'] = operating_cf / profit
         except:
             pass
 
-    # ===== 量价背离因子 =====
-    # 价涨量缩（动量向上但成交量向下）
-    if 'mom_5' in factors and 'vol_change_5' in factors:
-        factors['price_volume_divergence_up'] = factors['mom_5'] - np.clip(factors['vol_change_5'], -0.5, 0.5)
+    # 组合因子
+    if 'V41_RSI_915' in backtest_factors:
+        trend_mom = result.get('trend_mom_v41', np.zeros_like(factors['mom_20']))
+        rsi_f = result.get('rsi_factor', np.zeros_like(factors['mom_20']))
+        result['V41_RSI_915'] = trend_mom * 0.915 + rsi_f * 0.085
 
-    # 价跌量增（动量向下但成交量向上）
-    if 'mom_5' in factors and 'vol_change_5' in factors:
-        factors['price_volume_divergence_down'] = -factors['mom_5'] + np.clip(factors['vol_change_5'], -0.5, 0.5)
+    if 'tech_fund_combo' in backtest_factors:
+        trend_mom = result.get('trend_mom_v41', np.zeros_like(factors['mom_20']))
+        rsi_f = result.get('rsi_factor', np.zeros_like(factors['mom_20']))
+        fund_score_val = result.get('fund_score', 0)
+        if isinstance(fund_score_val, (int, float)):
+            fund_score_val = np.full_like(trend_mom, fund_score_val)
+        else:
+            fund_score_val = np.zeros_like(trend_mom)
+        result['tech_fund_combo'] = trend_mom * 0.7 + rsi_f * 0.1 + fund_score_val * 0.2
 
-    # 综合背离信号
-    if 'price_volume_divergence_up' in factors and 'price_volume_divergence_down' in factors:
-        factors['divergence_signal'] = factors['price_volume_divergence_up'] - factors['price_volume_divergence_down']
-
-    # 收盘价 vs 成交量背离（20日）
-    if 'mom_20' in factors and 'vol_change_20' in factors:
-        factors['price_vol_divergence_20'] = factors['mom_20'] - np.clip(factors['vol_change_20'], -0.5, 0.5)
-
-    # ===== 新增组合因子 =====
-    # 动量 + 质量（基本面）
-    if 'mom_10' in factors and 'fund_score' in factors:
-        # 需要在有基本面数据时才能计算
-        pass
-
-    # 低波动 + 高RSI位置
-    if 'volatility_10' in factors and 'rsi_position' in factors:
-        factors['lowvol_high_rsi_pos'] = -factors['volatility_10'] + factors['rsi_position']
-
-    # 趋势强度 + 波动率
-    if 'trend_strength' in factors and 'volatility_10' in factors:
-        factors['trend_volatility_combo'] = factors['trend_strength'] - factors['volatility_10'] * 0.5
-
-    # 收益风险比（动量/波动率）
-    if 'mom_20' in factors and 'volatility_20' in factors:
-        factors['return_risk_ratio'] = factors['mom_20'] / (factors['volatility_20'] + 1e-10)
-
-    # 动量加速度
-    if 'mom_5' in factors and 'mom_20' in factors:
-        factors['momentum_acceleration'] = factors['mom_5'] - factors['mom_20']
-
-    # RSI超卖反弹
-    if 'rsi_14' in factors and 'mom_5' in factors:
-        factors['rsi_oversold_rebound'] = (30 - np.clip(factors['rsi_14'], 0, 30)) / 30 + np.clip(factors['mom_5'], -0.1, 0.2)
-
-    # 布林带突破 + 成交量确认
-    if 'bb_percent_b' in factors and 'volume_ratio' in factors:
-        bb_signal = np.where(factors['bb_percent_b'] > 0.8, 1, np.where(factors['bb_percent_b'] < 0.2, -1, 0))
-        factors['bb_volume_confirm'] = bb_signal * np.clip(factors['volume_ratio'], 0.5, 2)
-
-    return factors
+    return result
 
 
 # ====================== 单因子定义 ======================
@@ -1219,66 +1160,20 @@ def momentum_reversal(mom_5, mom_20):
 
 
 # ====================== 导出的因子列表 ======================
-SINGLE_FACTORS = [
-    # 趋势动量因子
-    'trend_mom_v41',
-    'trend_mom_v24',
-    'trend_mom_v46',
-    'trend_mom_v49',
-    # 技术因子
-    'rsi_factor',
-    'rsi_6',
-    'price_position',
-    'volatility',
-    'bb_width',
-    'volume_ratio',
-    # 基本面因子
-    'fundamental_score',
-    'roe_factor',
-    'profit_growth_factor',
-    'revenue_growth_factor',
-    'eps_factor',
-    'debt_ratio_factor',
-    'gross_margin_factor',
-    # 资金流向因子
-    'money_flow_5d',
-    'money_flow_20d',
-    'volume_price_trend',
-    # 筹码分布因子
-    'price_concentration',
-    'cost_basis',
-    'volume_distribution',
-    # 波动率因子
-    'volatility_ratio',
-    'return_skewness',
-    # 均线因子
-    'ma_momentum',
-    'ema_momentum',
-    # 复合因子
-    'mom_diff_3_5',
-    'mom_diff_5_10',
-    'mom_diff_5_20',
-    'mom_diff_10_20',
-    'mom_x_lowvol_10_10',
-    'mom_x_lowvol_10_20',
-    'mom_x_lowvol_20_10',
-    'mom_x_lowvol_20_20',
-    'rsi_mom_10_5',
-    'rsi_mom_14_5',
-    'low_vol_high_pos',
-    'ret_vol_ratio_10',
-    'ret_vol_ratio_20',
-    'ma_golden_count',
-    'ma_cross_5_10',
-    'ma_cross_10_20',
-]
+# 从配置文件中的 backtest_factors 统一获取
+def get_backtest_factors():
+    """从配置加载 backtest_factors"""
+    try:
+        from .config_loader import load_config
+        config = load_config()
+        factors = config.get('backtest_factors', [])
+        return factors if factors else []
+    except:
+        return []
 
-COMBO_FACTORS = [
-    'V41_RSI_915',
-    'V41_PricePos_915',
-    'V46_RSI_915',
-    'V49_RSI_915',
-    'tech_fund_combo',
-]
+# 保持兼容性
+SINGLE_FACTORS = get_backtest_factors()
+COMBO_FACTORS = [f for f in SINGLE_FACTORS if '_combo' in f.lower() or 'V41_' in f]
+ALL_FACTORS = SINGLE_FACTORS
 
 ALL_FACTORS = SINGLE_FACTORS + COMBO_FACTORS
