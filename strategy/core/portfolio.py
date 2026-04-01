@@ -9,17 +9,15 @@ from .config_loader import load_config
 # IR < 0.15: 权重=0.75（减配25%）
 # IR >= 0.15: 权重=1.0（正常）
 NEGATIVE_IR_INDUSTRIES = [
-    '交运',      # IR=0.05，但为正只是偏低，暂时保留减配
-    '通信/计算机', # IR=-0.04，负IC，必须排除
+    '交运',      # IC=0.001，接近零，减配
 ]
 INDUSTRY_DISCOUNT = {
-    '交运': 0.5,           # IR=0.05，但行业整体偏弱，减配50%
-    '通信/计算机': 0.0,    # IR=-0.04，负IC，排除
-    '半导体/光伏': 0.75,   # IR=0.12
+    '交运': 0.5,           # 减配：接近零IC
+    '半导体/光伏': 0.75,   # IC=0.08，适当减配
 }
 
 # 换仓门槛（降低换手率）
-REBALANCE_THRESHOLD = 0.15  # 持仓变化超过15%才调仓
+REBALANCE_THRESHOLD = 0.25  # 持仓变化超过25%才调仓（减少交易）
 
 
 class PortfolioConstructor:
@@ -66,10 +64,26 @@ class PortfolioConstructor:
     def _get_risk_multiplier(self, regime, risk_extreme):
         """计算风险乘数（合并regime和extreme状态）"""
         if regime == -1:  # 熊市
-            return 0.6
-        elif risk_extreme:
+            return 0.3
+        elif risk_extreme:  # 极端波动
             return 0.7
-        return 1.0
+        return 1.0  # 牛市或中性
+
+    def _get_position_count(self, market_regime, risk_extreme_exists):
+        """计算动态持仓数量
+
+        熊市减少持仓数量但更集中（IC更高，命中率更高）
+        """
+        base_count = self.max_position
+
+        if market_regime == -1:  # 熊市
+            # 熊市减少持仓数量，更集中
+            return max(3, int(base_count * 0.5))
+        elif risk_extreme_exists:  # 极端波动
+            # 极端波动也减少持仓
+            return max(4, int(base_count * 0.6))
+        else:
+            return base_count
 
     def _calculate_position_limit(self, drawdown, risk_extreme_exists, market_regime=0):
         """根据回撤和极端状态计算总仓位上限
@@ -268,8 +282,11 @@ class PortfolioConstructor:
         # 按分数排序（与验证一致）
         candidates.sort(key=lambda x: x['score'], reverse=True)
 
-        # 直接选Top-N（简化逻辑，与验证一致）
-        selected = candidates[:self.max_position]
+        # 动态持仓数量：熊市减少数量但更集中（IC更高）
+        # 检查是否有极端状态
+        risk_extreme_exists = any(c['sig'].risk_extreme for c in candidates)
+        n_positions = self._get_position_count(market_regime, risk_extreme_exists)
+        selected = candidates[:n_positions]
 
         if not selected:
             return {}

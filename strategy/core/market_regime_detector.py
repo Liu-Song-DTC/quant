@@ -50,12 +50,13 @@ class MarketRegimeDetector:
     def _init_params(self):
         """初始化参数"""
         # 熊市阈值（放宽，更敏感）
-        self.mom5_bear = -0.05    # 5日动量 < -5%
-        self.mom_bear = -0.08     # 20日动量 < -8%
+        self.mom5_bear = -0.02    # 5日动量 < -2%
+        self.mom_bear = -0.05     # 20日动量 < -5%
+        self.mom_bear_sustained = -0.03  # 持续熊市：20日动量 < -3%
 
         # 牛市阈值（放宽，更敏感）
-        self.mom_bull = 0.05      # 20日动量 > 5%
-        self.mom60_bull = 0.03    # 60日动量 > 3%
+        self.mom_bull = 0.03      # 20日动量 > 3%
+        self.mom60_bull = 0.02    # 60日动量 > 2%
 
         # 极端波动阈值
         self.vol_extreme_high = 0.30
@@ -167,14 +168,26 @@ class MarketRegimeDetector:
         regime = 0
         confidence = 0.0
 
-        # 熊市
+        # 均线空头排列检测（熊市辅助判断）
+        ema_bearish = not ema20_above_60 and not ema60_above_120
+
+        # 熊市判断：快速下跌 或 持续下跌+均线空头
         if mom_5 < self.mom5_bear or mom < self.mom_bear:
             regime = -1
             confidence = 1.0
-        # 牛市
+        elif mom < self.mom_bear_sustained and ema_bearish:
+            # 持续下跌 + 均线空头排列 = 熊市
+            regime = -1
+            confidence = 0.8
+
+        # 牛市判断：动量强劲 且 均线多头
         elif mom > self.mom_bull and mom_60 > self.mom60_bull:
             regime = 1
             confidence = 1.0
+        elif mom > self.mom_bull * 0.5 and ema20_above_60 and ema60_above_120:
+            # 动量较好 + 均线多头排列 = 牛市
+            regime = 1
+            confidence = 0.7
 
         # === 极端状态判断 ===
         is_extreme = vol > self.vol_extreme_high or vol < self.vol_extreme_low
