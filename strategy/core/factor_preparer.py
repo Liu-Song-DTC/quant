@@ -3,6 +3,8 @@
 因子数据预计算模块
 
 用于动态因子选择前的数据准备
+
+注意：当 factor_mode='fixed' 时，此模块不参与计算，可跳过以加速回测
 """
 
 import numpy as np
@@ -14,6 +16,7 @@ from tqdm import tqdm
 
 from .config_loader import load_config
 from .fundamental import FundamentalData
+from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params
 
 
 # 全局变量用于 worker 进程 - 每个 worker 创建一个 FundamentalData 实例供所有股票复用
@@ -30,7 +33,7 @@ def _init_factor_worker(fundamental_path, stock_codes):
 
 
 def _compute_stock_factors_worker(args):
-    """多进程 worker: 计算单只股票的因子数据（彻底向量化优化版）"""
+    """多进程 worker: 计算单只股票的因子数据（使用统一的factor_calculator）"""
     global _worker_fd
     code, df, factor_dates, lookback, forward_period = args
 
@@ -46,49 +49,13 @@ def _compute_stock_factors_worker(args):
 
     # 一次性提取价格数据
     close_arr = df['close'].values
+    high_arr = df['high'].values if 'high' in df.columns else close_arr
+    low_arr = df['low'].values if 'low' in df.columns else close_arr
     vol_arr = df['volume'].values if 'volume' in df.columns else np.ones(n)
 
-    # === 一次性向量化计算所有基础指标 ===
-    # 动量指标（完全向量化）
-    mom_5 = np.full(n, 0.0)
-    mom_10 = np.full(n, 0.0)
-    mom_20 = np.full(n, 0.0)
-    for i in range(5, n):
-        mom_5[i] = close_arr[i] / close_arr[i-5] - 1 if close_arr[i-5] > 0 else 0
-    for i in range(10, n):
-        mom_10[i] = close_arr[i] / close_arr[i-10] - 1 if close_arr[i-10] > 0 else 0
-    for i in range(20, n):
-        mom_20[i] = close_arr[i] / close_arr[i-20] - 1 if close_arr[i-20] > 0 else 0
-    mom_5 = np.clip(mom_5, -1, 1)
-    mom_10 = np.clip(mom_10, -1, 1)
-    mom_20 = np.clip(mom_20, -1, 1)
-
-    # 波动率指标（完全向量化）
-    returns = np.zeros(n)
-    returns[1:] = (close_arr[1:] - close_arr[:-1]) / (close_arr[:-1] + 1e-10)
-    volatility_10 = np.full(n, 0.0)
-    volatility_20 = np.full(n, 0.0)
-    for i in range(10, n):
-        volatility_10[i] = np.std(returns[i-10:i], ddof=0)
-    for i in range(20, n):
-        volatility_20[i] = np.std(returns[i-20:i], ddof=0)
-
-    # RSI（向量化）
-    delta = np.diff(close_arr, prepend=close_arr[0])
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = np.zeros(n)
-    avg_loss = np.zeros(n)
-    for i in range(14, n):
-        avg_gain[i] = np.mean(gain[i-14:i])
-        avg_loss[i] = np.mean(loss[i-14:i])
-    rsi = 100 - (100 / (1 + avg_gain / (avg_loss + 1e-10)))
-
-    # 成交量比率（向量化）
-    vol_ma20 = np.full(n, 1.0)
-    for i in range(20, n):
-        vol_ma20[i] = np.mean(vol_arr[i-20:i])
-    volume_ratio = np.clip(vol_arr / (vol_ma20 + 1e-10), 0, 10)
+    # === 使用统一的因子计算器计算所有基础指标 ===
+    params = get_default_params()
+    ind = calculate_indicators(close_arr, high_arr, low_arr, vol_arr, params)
 
     # === 构建日期到索引的映射（O(1) 查找）===
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}
@@ -130,43 +97,14 @@ def _compute_stock_factors_worker(args):
         if idx is None or idx < lookback:
             continue
 
-        # 使用预计算的技术指标（直接索引取值）
+        # 使用统一的因子计算器计算组合因子
         fund_data = fund_cache.get(sample_date, {})
 
+        # 使用 factor_calculator 计算所有组合因子
+        combo_factors = compute_composite_factors(ind, idx)
+
         row = {'code': code, 'date': sample_date, 'industry': stock_industry}
-
-        # 趋势动量因子
-        m10 = mom_10[idx]
-        m20 = mom_20[idx]
-        if m10 > 0:
-            row['trend_mom_v41'] = m20 * 2.1
-            row['trend_mom_v24'] = m20 * 2.1
-            row['trend_mom_v46'] = m20 * 2.05
-        else:
-            row['trend_mom_v41'] = 0.0
-            row['trend_mom_v24'] = m20 * 0.04
-            row['trend_mom_v46'] = 0.0
-
-        # 动量×低波动
-        v10 = volatility_10[idx]
-        v20 = volatility_20[idx]
-        row['mom_x_lowvol_20_20'] = m20 * (-v20)
-        row['mom_x_lowvol_20_10'] = m20 * (-v10)
-        row['mom_x_lowvol_10_20'] = m10 * (-v20)
-        row['mom_x_lowvol_10_10'] = m10 * (-v10)
-
-        # 动量差异
-        row['mom_diff_5_20'] = mom_5[idx] - m20
-        row['mom_diff_10_20'] = m10 - m20
-
-        # RSI因子
-        row['rsi_factor'] = (rsi[idx] - 50) / 100
-
-        # 波动率因子
-        row['volatility'] = -v20
-
-        # 成交量因子
-        row['volume_ratio'] = volume_ratio[idx]
+        row.update(combo_factors)
 
         # 基本面因子
         if fund_data:
@@ -177,12 +115,10 @@ def _compute_stock_factors_worker(args):
             row['fund_gross_margin'] = fund_data.get('gross_margin')
             row['fund_cf_to_profit'] = fund_data.get('cf_to_profit')
 
-        # 组合因子
-        trend_mom = row.get('trend_mom_v41', 0)
-        rsi_f = row.get('rsi_factor', 0)
-        fund_score_val = row.get('fund_score', 0) or 0
-        row['V41_RSI_915'] = trend_mom * 0.915 + rsi_f * 0.085
-        row['tech_fund_combo'] = trend_mom * 0.7 + rsi_f * 0.1 + fund_score_val * 0.2
+            # tech_fund_combo 需要基本面数据，单独计算
+            fund_score_val = fund_data.get('fund_score', 0) or 0
+            if isinstance(fund_score_val, (int, float)):
+                row['tech_fund_combo'] = row.get('trend_mom_v41', 0) * 0.7 + row.get('rsi_factor', 0) * 0.1 + fund_score_val * 0.2
 
         # 计算未来收益
         if idx + forward_period < n:

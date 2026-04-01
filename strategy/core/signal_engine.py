@@ -18,7 +18,7 @@ from .signal import Signal
 from .signal_store import SignalStore
 from .config_loader import load_config
 from .industry_mapping import INDUSTRY_KEYWORDS, get_industry_category
-from .factors import compute_factors
+from .factor_calculator import calculate_indicators as calc_indicators, compute_composite_factors
 import yaml
 import os
 
@@ -151,9 +151,19 @@ def _compute_date_chunk(args):
                 ic_signs = np.sign(ic_list)
                 ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
+
+                # 稳定性过滤：至少30%的IC同号即可通过
+                # stability > 0.3 表示至少30%的IC同号
+                # 降低要求以避免过度过滤（原始诊断显示stability普遍在0.1-0.5范围）
+                MIN_STABILITY = 0.3
+                if ic_stability < MIN_STABILITY:
+                    continue
+
+                # combined_ir = ir * (0.5 + 0.5 * stability)
+                # 稳定性越高权重越大，但不会完全惩罚低稳定性因子
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
 
-                # t_statistic过滤（与on-demand一致）
+                # t_statistic过滤（统计显著性）
                 if abs(t_statistic) < 1.0:
                     continue
 
@@ -241,7 +251,10 @@ class DynamicFactorSelector:
         config_loader = load_config()
         dynamic_config = config_loader.get('dynamic_factor', {})
 
-        self.enabled = dynamic_config.get('enabled', False)
+        # enabled 由 factor_mode 决定：'dynamic' 或 'both' 时启用
+        factor_mode = config_loader.get('factor_mode', 'both')
+        self.enabled = factor_mode in ['dynamic', 'both']
+
         self.train_window_days = dynamic_config.get('train_window_days', 250)
         self.forward_period = dynamic_config.get('forward_period', 20)
         self.top_n_factors = dynamic_config.get('top_n_factors', 3)
@@ -465,7 +478,6 @@ class SignalEngine:
 
         # 动态因子选择器
         self.dynamic_factor_selector = DynamicFactorSelector()
-        self.dynamic_factor_enabled = self.dynamic_factor_selector.enabled
 
         # 动态因子模式配置：dynamic(仅动态) / fixed(仅固定) / both(动态优先+固定兜底)
         self.factor_mode = config_loader.get('factor_mode', 'both')
@@ -536,146 +548,21 @@ class SignalEngine:
             signal_store.set(code, date, sig)
 
     def _calculate_indicators(self, data: pd.DataFrame) -> dict:
-        """计算技术指标"""
+        """计算技术指标（委托给factor_calculator）"""
         params = self.indicator_params
         close = data['close'].values
         high = data['high'].values
         low = data['low'].values
         volume = data['volume'].values
 
-        result = {
-            'close': close,
-            'high': high,
-            'low': low,
-            'volume': volume
-        }
-
-        # EMA
-        for span in params.get('ema_periods', [5, 10, 20, 60]):
-            result[f'ema{span}'] = self._ema(close, span)
-
-        # MA
-        for span in params.get('ma_periods', [5, 10, 20, 30, 60]):
-            result[f'ma{span}'] = self._sma(close, span)
-
-        # RSI
-        for period in params.get('rsi_periods', [6, 8, 10, 14]):
-            result[f'rsi_{period}'] = self._rsi(close, period)
-        result['rsi'] = result['rsi_14']
-
-        # 布林带
-        bb_window = params.get('bb_window', 20)
-        bb_std = params.get('bb_std', 2)
-        result['bb_upper'], result['bb_middle'], result['bb_lower'] = self._bollinger(close, bb_window, bb_std)
-
-        # 布林带宽度
-        bb_std_arr = np.zeros_like(close)
-        bb_std_arr[bb_window:] = np.array([np.std(close[max(0, i-bb_window):i]) for i in range(bb_window, len(close))])
-        result['bb_width_20'] = 4 * bb_std_arr / (result['bb_middle'] + 1e-10)
-
-        # 布林带位置
-        result['bb_pos_30'] = (close - result['bb_lower']) / (result['bb_upper'] - result['bb_lower'] + 1e-10)
-
-        # 成交量
-        vol_ma_period = params.get('volume_ma_period', 20)
-        result['volume_ma20'] = self._sma(volume, vol_ma_period)
-        result['volume_ratio'] = volume / (result['volume_ma20'] + 1e-10)
-
-        # ATR
-        for period in params.get('atr_periods', [10, 14, 20]):
-            result[f'atr_{period}'] = self._atr(high, low, close, period)
-        result['atr'] = result['atr_14']
-        result['atr_ratio'] = result['atr_14'] / close
-
-        # 动量
-        for period in params.get('momentum_periods', [3, 5, 10, 20, 30]):
-            result[f'mom_{period}'] = close / self._shift(close, period) - 1
-
-        # 价格位置
-        result['high_20'] = self._rolling_max(high, 20)
-        result['low_20'] = self._rolling_min(low, 20)
-        result['price_position_20'] = (close - result['low_20']) / (result['high_20'] - result['low_20'] + 1e-10)
-
-        # 波动率
-        returns = np.diff(close, prepend=close[0]) / close
-        result['ret'] = returns
-        for period in params.get('volatility_periods', [5, 10, 20]):
-            result[f'volatility_{period}'] = self._rolling_std(returns, period)
-
-        # 均线关系
-        result['ema5_above_20'] = result['ema5'] > result['ema20']
-        result['ema20_above_60'] = result['ema20'] > result['ema60']
-        result['full_golden'] = (result['ema5'] > result['ema20']) & (result['ema20'] > result['ema60'])
-        result['full_death'] = (result['ema5'] < result['ema20']) & (result['ema20'] < result['ema60'])
-
-        # 趋势强度
-        result['trend_strength'] = (result['ema20'] - result['ema60']) / (result['ema60'] + 1e-10)
-
-        # 斜率
-        result['ema20_slope'] = result['ema20'] / self._shift(result['ema20'], 10) - 1
-
-        # MACD
-        result['macd'], result['macd_signal'], result['macd_hist'] = self._macd(close)
-
-        # === 行业因子配置中需要的指标 ===
-        # 价格相对均线
-        result['price_ma_30'] = close / (result['ma30'] + 1e-10) - 1
-        result['price_ma_60'] = close / (result['ma60'] + 1e-10) - 1
-
-        # 均线交叉
-        ma10, ma20, ma60 = result['ma10'], result['ma20'], result['ma60']
-        result['ma_cross_10_60'] = ma10 / (ma60 + 1e-10) - 1
-        result['ma_cross_10_20'] = ma10 / (ma20 + 1e-10) - 1
-        result['ma_golden_20_60'] = (ma20 > ma60).astype(float)
-        result['ma_all'] = ((result['ma5'] > ma20) & (ma20 > ma60)).astype(float)
-
-        # 趋势因子
-        result['trend_30'] = (close - result['ma30']) / (result['ma30'] + 1e-10)
-
-        # 价格位置
-        result['price_pos_20'] = result['price_position_20']
+        # 使用统一的因子计算器
+        result = calc_indicators(close, high, low, volume, params)
 
         # 收益率
         result['ret_30'] = close / self._shift(close, 30) - 1
 
-        # 波动率
-        result['vol_20'] = self._rolling_std(returns, 20)
-        result['vol_30'] = self._rolling_std(returns, 30)
-
         # ATR比率
-        result['atr_ratio_20'] = result['atr_20'] / close
-
-        # === 复合因子（基于行业验证结果） ===
-        # 动量×低波动
-        if 'mom_10' in result and 'volatility_10' in result:
-            result['mom_x_lowvol_10_10'] = result['mom_10'] * (-result['volatility_10'])
-            result['mom_x_lowvol_10_20'] = result['mom_10'] * (-result['volatility_20'])
-        if 'mom_20' in result and 'volatility_10' in result:
-            result['mom_x_lowvol_20_10'] = result['mom_20'] * (-result['volatility_10'])
-        if 'mom_20' in result and 'volatility_20' in result:
-            result['mom_x_lowvol_20_20'] = result['mom_20'] * (-result['volatility_20'])
-
-        # RSI + 波动率组合
-        if 'rsi_14' in result and 'volatility_20' in result:
-            result['rsi_vol_combo'] = (50 - result['rsi_14']) / 100 - result['volatility_20'] * 0.5
-
-        # 布林带 + RSI组合
-        if 'bb_pos_30' in result and 'rsi_14' in result:
-            result['bb_rsi_combo'] = (50 - result['rsi_14']) / 100 - result['bb_pos_30'] * 0.3
-
-        # 收益波动率比
-        if 'mom_10' in result and 'volatility_10' in result:
-            result['ret_vol_ratio_10'] = result['mom_10'] / (result['volatility_10'] + 1e-10)
-        if 'mom_20' in result and 'volatility_20' in result:
-            result['ret_vol_ratio_20'] = result['mom_20'] / (result['volatility_20'] + 1e-10)
-
-        # 动量反转/加速度
-        result['momentum_reversal'] = -result.get('mom_20', 0)
-        if 'mom_10' in result and 'mom_20' in result:
-            result['momentum_acceleration'] = result['mom_10'] - result['mom_20']
-
-        # 收益风险比
-        result['return_risk_ratio'] = result.get('ret_vol_ratio_10', 0)
+        result['atr_ratio_20'] = result['atr_20'] / (close + 1e-10)
 
         return result
 
@@ -806,7 +693,7 @@ class SignalEngine:
         """
         # 动态因子优先
         if self.factor_mode in ['dynamic', 'both']:
-            if self.dynamic_factor_enabled and code and current_date:
+            if self.dynamic_factor_selector.enabled and code and current_date:
                 result = self._select_factor_dynamic(ind, idx, regime, code, current_date)
                 if result:
                     self._stats['dynamic_success'] += 1

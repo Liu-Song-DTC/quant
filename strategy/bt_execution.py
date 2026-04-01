@@ -119,9 +119,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         strategy.generate_market_regime(stock_data_dict["sh000001"])
 
     # 准备动态因子数据
-    dynamic_config = config.config.get('dynamic_factor', {})
-    if dynamic_config.get('enabled', False):
-        print("准备动态因子数据...")
+    factor_mode = config.config.get('factor_mode', 'both')
+    factor_df = None
+    industry_codes = {}
+    # 只有当 factor_mode 不是 'fixed' 时才需要IC计算
+    if factor_mode != 'fixed':
+        print(f"准备因子数据 (factor_mode={factor_mode})...")
         # 获取股票代码列表（排除指数）
         stock_codes = [name for name in stock_data_dict.keys() if name != "sh000001"]
         factor_df, industry_codes, all_dates = prepare_factor_data(
@@ -131,10 +134,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             NUM_WORKERS
         )
         strategy.set_factor_data(factor_df, industry_codes)
-        print(f"动态因子模式已启用: {len(industry_codes)} 个行业")
+        print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业")
+    else:
+        print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
 
     # 生成信号（多进程并行）
-    use_dynamic = dynamic_config.get('enabled', False)
+    # use_dynamic 表示是否使用动态因子选择器
+    use_dynamic = factor_mode != 'fixed'
     stock_codes = [name for name in stock_data_dict.keys() if name != "sh000001"]
 
     # 创建带动态因子的 SignalEngine（如果启用）

@@ -12,13 +12,13 @@
 factor_mode: both   # 动态优先，失败fallback到静态
 
 # --- 1.1 动态因子 (第一层) ---
+# 注意: 是否启用由 factor_mode 决定（dynamic/both启用，fixed禁用）
 dynamic_factor:
-  enabled: true                    # 是否启用动态因子
   train_window_days: 120           # IC训练窗口（天数）- 约4个月
   forward_period: 20              # 计算future_ret的周期
   top_n_factors: 3                 # 每个行业选几个因子
   min_train_samples: 50            # 最少训练样本数
-  min_ic_dates: 5                  # 最少IC天数
+  min_ic_dates: 10                 # 最少IC天数（增加以提高稳定性）
   ic_decay_factor: 0.8           # IC时序衰减因子（1.0=不衰减，0.9/0.8=指数衰减）
   fallback_to_static: true         # 动态失败时fallback到静态
 
@@ -37,6 +37,7 @@ backtest_factors:
   - rsi_factor         # RSI因子
   - volatility         # 波动率
   - volume_ratio       # 成交量
+  - bb_width_20        # 布林带宽度
   - fund_score         # 基本面
   - fund_profit_growth
   - fund_revenue_growth
@@ -45,6 +46,13 @@ backtest_factors:
   - fund_gross_margin
   - V41_RSI_915        # 组合因子
   - tech_fund_combo
+  # === 新增复合因子 ===
+  - rsi_vol_combo      # RSI+波动率组合
+  - bb_rsi_combo       # 布林带+RSI组合
+  - ret_vol_ratio_10   # 收益波动率比(10日)
+  - ret_vol_ratio_20   # 收益波动率比(20日)
+  - momentum_reversal  # 动量反转
+  - momentum_acceleration  # 动量加速度
 
 # --- 1.2 静态行业因子 (第二层) ---
 industry_factor_config:
@@ -62,7 +70,7 @@ industry_factors:
   金融:
     factors: [fund_cf_to_profit, fund_score, fund_roe]
   化工:
-    factors: [mom_x_lowvol_20_20, mom_x_lowvol_20_10, fund_gross_margin]
+    factors: [fund_profit_growth, fund_revenue_growth, fund_score]
   新能源车/风电:
     factors: [fund_profit_growth, fund_revenue_growth, fund_score]
   有色/钢铁/煤炭/建材:
@@ -70,7 +78,7 @@ industry_factors:
   军工:
     factors: [mom_x_lowvol_20_20, mom_x_lowvol_20_10, fund_profit_growth]
   互联网/软件:
-    factors: [mom_x_lowvol_20_20, mom_x_lowvol_20_10, fund_roe]
+    factors: [fund_profit_growth, fund_score, fund_revenue_growth]
   电子:
     factors: [mom_x_lowvol_20_20, fund_profit_growth, fund_revenue_growth]
   消费/传媒/农业/环保/医药:
@@ -107,23 +115,23 @@ signal:
 # 市场状态乘数
 regime_multiplier:
   bull: 1.0
-  neutral: 0.85
-  bear: 0.6
+  neutral: 0.7
+  bear: 0.3
 
 # ============================================
 # 3. 组合层 (Portfolio Layer)
 # ============================================
 portfolio:
-  max_position: 10
-  target_volatility: 0.25
+  max_position: 6
+  target_volatility: 0.20
   entry_speed: 1.0
   exit_speed: 1.0
   position_stop_loss: 0.15
-  portfolio_stop_loss: 0.12
+  portfolio_stop_loss: 0.08
 
 portfolio_stop_loss:
   enabled: true
-  emergency_exposure: 0.50
+  emergency_exposure: 0.30
 
 volatility_control:
   enabled: true
@@ -136,4 +144,5 @@ backtest:
   cash: 100000.0
   commission: 0.0015
   slippage: 0.0015
-  rebalance_days: 20
+  rebalance_days: 10
+  max_position: 10
