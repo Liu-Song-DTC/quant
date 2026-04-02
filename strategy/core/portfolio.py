@@ -379,7 +379,9 @@ class PortfolioConstructor:
                     stop_loss_sells[code] = 0.0
 
             sig = signal_store.get(code, date)
-            if sig and sig.sell and sig.score < -0.20:
+            # 使用 sig.sell 作为卖出条件（factor_value < -0.15）
+            # 不再叠加 score < -0.20，避免过于严格的卖出条件
+            if sig and sig.sell:
                 stop_loss_sells[code] = 0.0
 
         desired_value = {}
