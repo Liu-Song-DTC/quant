@@ -291,21 +291,29 @@ class PortfolioConstructor:
         if not selected:
             return {}
 
-        # 计算仓位权重（简化：等权）
+        # 计算仓位权重（分数加权 + 波动率调整）
+        # 核心思想：排名靠前的股票应该获得更高权重
         total_position = 0
-        for c in selected:
-            # 简化权重计算：等权 + 波动率调整
-            base_weight = 1.0
 
-            # 波动率调整
+        # 计算分数加权权重：使用指数衰减
+        # rank 1 (最高分) 获得最高权重，rank N 获得最低权重
+        # score_weight[i] = exp(-i * decay_rate)，然后归一化
+        n_selected = len(selected)
+        decay_rate = 0.15  # 衰减率，0.15 意味着 rank 1:rank 2:rank 3 ≈ 1:0.86:0.74
+
+        for i, c in enumerate(selected):
+            # 分数排名权重（指数衰减）
+            score_weight = np.exp(-i * decay_rate)
+
+            # 波动率调整：低波动给更高权重
             risk_vol = max(0.01, min(1.0, c['risk_vol']))
             vol_factor = min(1.0 / risk_vol, 2.0)  # 限制波动率影响
 
             # 极端状态降仓
             extreme_factor = 0.8 if c['sig'].risk_extreme else 1.0
 
-            # 最终仓位权重
-            c['position'] = base_weight * vol_factor * extreme_factor
+            # 最终仓位权重 = 分数权重 × 波动率因子 × 极端状态因子
+            c['position'] = score_weight * vol_factor * extreme_factor
             total_position += c['position']
 
         # 计算总仓位上限
