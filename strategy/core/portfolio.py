@@ -17,7 +17,7 @@ INDUSTRY_DISCOUNT = {
 }
 
 # 换仓门槛（降低换手率）
-REBALANCE_THRESHOLD = 0.25  # 持仓变化超过25%才调仓（减少交易）
+REBALANCE_THRESHOLD = 0.15  # 持仓变化超过15%才调仓（减少交易）
 
 
 class PortfolioConstructor:
