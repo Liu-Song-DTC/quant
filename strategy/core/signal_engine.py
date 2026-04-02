@@ -124,15 +124,23 @@ def _compute_date_chunk(args):
                     fn_pivot = ind_df.pivot(index='date', columns='code', values=fn)
                     ret_pivot = ind_df.pivot(index='date', columns='code', values='future_ret')
 
+                    # 最小样本数阈值（每个日期计算IC时的最小股票数）
+                    min_samples_per_date = 20
+                    valid_dates = fn_pivot.notna().sum(axis=1) >= min_samples_per_date
+
                     # rank across stocks for each date (截面秩)
                     fn_rank = fn_pivot.rank(axis=1, na_option='keep')
                     ret_rank = ret_pivot.rank(axis=1, na_option='keep')
 
                     # row-wise Pearson correlation of ranks = Spearman IC
                     ic_series = fn_rank.corrwith(ret_rank, axis=1)
-                    ic_list = ic_series.dropna().tolist()
+                    ic_list = ic_series[valid_dates].dropna().tolist()
+
+                    # 总样本数（用于过滤噪声因子）
+                    total_samples = fn_pivot.notna().sum().sum()
                 except:
                     ic_list = []
+                    total_samples = 0
 
                 if len(ic_list) < min_ic_dates:
                     continue
@@ -167,6 +175,12 @@ def _compute_date_chunk(args):
                 if abs(t_statistic) < 1.0:
                     continue
 
+                # 最小样本数过滤（过滤噪声因子）
+                # 注意: 暂时禁用，因为实验显示过滤后效果变差
+                # MIN_TOTAL_SAMPLES = 1500
+                # if total_samples < MIN_TOTAL_SAMPLES:
+                #     continue
+
                 factor_metrics.append({
                     'factor': fn,
                     'ic_mean': ic_mean,
@@ -178,11 +192,13 @@ def _compute_date_chunk(args):
             if len(factor_metrics) >= 1:
                 factor_metrics.sort(key=lambda x: x['combined_ir'], reverse=True)
                 top_factors = factor_metrics[:top_n]
-                # 返回因子列表及对应的IC权重（用于加权平均）
-                total_ir = sum(f['combined_ir'] for f in top_factors) + 1e-10
+
+                # 使用带符号的IC均值作为权重（保留方向信息）
+                # 正向因子权重为正，负向因子权重自动为负（会翻转信号）
+                total_abs_ir = sum(abs(f['ic_mean']) for f in top_factors) + 1e-10
                 date_result[industry] = {
                     'factors': [f['factor'] for f in top_factors],
-                    'weights': [f['combined_ir'] / total_ir for f in top_factors],  # IC加权权重
+                    'weights': [f['ic_mean'] / total_abs_ir for f in top_factors],  # 带符号的权重
                     'quality': np.mean([f['combined_ir'] for f in top_factors])
                 }
 
@@ -783,10 +799,11 @@ class SignalEngine:
         if not factor_scores:
             return None
 
-        # IC加权平均（代替简单平均）
-        if len(valid_weights) > 0 and sum(valid_weights) > 0:
+        # IC加权平均（使用带符号的权重，保留因子方向）
+        if len(valid_weights) > 0 and sum(abs(w) for w in valid_weights) > 0:
             weights_arr = np.array(valid_weights)
-            weights_arr = weights_arr / weights_arr.sum()  # 归一化
+            # 对于带符号的权重，用绝对值之和归一化（保留方向信息）
+            weights_arr = weights_arr / sum(abs(w) for w in valid_weights)
             factor_value = np.sum(np.array(factor_scores) * weights_arr)
         else:
             factor_value = np.mean(factor_scores)
