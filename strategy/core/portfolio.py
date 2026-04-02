@@ -384,6 +384,11 @@ class PortfolioConstructor:
             if sig and sig.sell:
                 stop_loss_sells[code] = 0.0
 
+            # 止盈/降级卖出：如果分数转为负值，卖出持仓
+            # 这确保了不再被看好的股票被及时卖出
+            if sig and sig.score < 0:
+                stop_loss_sells[code] = 0.0
+
         desired_value = {}
         if rebalance:
             desired_value = self._build_desired_value(
