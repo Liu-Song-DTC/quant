@@ -124,23 +124,15 @@ def _compute_date_chunk(args):
                     fn_pivot = ind_df.pivot(index='date', columns='code', values=fn)
                     ret_pivot = ind_df.pivot(index='date', columns='code', values='future_ret')
 
-                    # 最小样本数阈值（每个日期计算IC时的最小股票数）
-                    min_samples_per_date = 20
-                    valid_dates = fn_pivot.notna().sum(axis=1) >= min_samples_per_date
-
                     # rank across stocks for each date (截面秩)
                     fn_rank = fn_pivot.rank(axis=1, na_option='keep')
                     ret_rank = ret_pivot.rank(axis=1, na_option='keep')
 
                     # row-wise Pearson correlation of ranks = Spearman IC
                     ic_series = fn_rank.corrwith(ret_rank, axis=1)
-                    ic_list = ic_series[valid_dates].dropna().tolist()
-
-                    # 总样本数（用于过滤噪声因子）
-                    total_samples = fn_pivot.notna().sum().sum()
+                    ic_list = ic_series.dropna().tolist()
                 except:
                     ic_list = []
-                    total_samples = 0
 
                 if len(ic_list) < min_ic_dates:
                     continue
