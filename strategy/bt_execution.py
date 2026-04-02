@@ -45,15 +45,9 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry
     # 每个 worker 创建自己的 engine 和 fundamental_data
     _worker_engine = SignalEngine()
 
-    import sys
-    print(f"[Worker PID {os.getpid()}] fundamental_path: {fundamental_path}, exists: {os.path.exists(fundamental_path) if fundamental_path else False}", flush=True)
-
     if fundamental_path and os.path.exists(fundamental_path):
         fd = FundamentalData(fundamental_path, stock_codes)
         _worker_engine.set_fundamental_data(fd)
-        print(f"[Worker PID {os.getpid()}] fundamental_data set, stock_data count: {len(fd.stock_data)}", flush=True)
-    else:
-        print(f"[Worker PID {os.getpid()}] fundamental_path not found or invalid", flush=True)
 
     # 设置动态因子数据（只设置一次，避免重复清除缓存）
     if use_dynamic and factor_df is not None:
@@ -63,9 +57,6 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry
         # 设置预计算的因子选择缓存（避免worker重复计算）
         if factor_cache is not None and all_dates is not None:
             _worker_engine.dynamic_factor_selector.set_factor_cache(factor_cache, all_dates)
-            print(f"[Worker PID {os.getpid()}] factor cache set from precomputed, {len(factor_cache)} dates", flush=True)
-        else:
-            print(f"[Worker PID {os.getpid()}] no precomputed cache, will compute on demand", flush=True)
 
 
 def _generate_stock_signal_worker(args):
@@ -212,6 +203,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     'factor_value': sig.factor_value,
                     'factor_name': sig.factor_name,
                     'industry': sig.industry,
+                    'factor_quality': getattr(sig, 'factor_quality', 0.0),
                 })
                 # 统计动态因子命中情况
                 if sig.factor_name and sig.factor_name.startswith('DYN_'):
@@ -223,7 +215,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
                 # 调试：每10000条打印一次进度
                 if (dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']) % 100000 == 0:
-                    print(f"  [DEBUG] Processed {dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']:,} signals, hit={dynamic_factor_stats['hit']:,}", flush=True)
+                    pass  # 已禁用调试输出
 
     # 打印动态因子统计
     total = dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']

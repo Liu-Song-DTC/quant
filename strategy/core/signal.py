@@ -27,6 +27,9 @@ class Signal:
     # === 风险调整分数 ===
     adjusted_score: float = 0.0   # 风险调整后的分数
 
+    # === 因子质量（用于动态阈值）===
+    factor_quality: float = 0.0   # 动态因子质量分数
+
     def to_dict(self) -> dict:
         """转换为字典"""
         return {
@@ -41,6 +44,7 @@ class Signal:
             'risk_confidence': self.risk_confidence,
             'risk_extreme': self.risk_extreme,
             'adjusted_score': self.adjusted_score,
+            'factor_quality': self.factor_quality,
         }
 
     def get_risk_level(self) -> str:

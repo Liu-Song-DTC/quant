@@ -178,8 +178,11 @@ def _compute_date_chunk(args):
             if len(factor_metrics) >= 1:
                 factor_metrics.sort(key=lambda x: x['combined_ir'], reverse=True)
                 top_factors = factor_metrics[:top_n]
+                # 返回因子列表及对应的IC权重（用于加权平均）
+                total_ir = sum(f['combined_ir'] for f in top_factors) + 1e-10
                 date_result[industry] = {
                     'factors': [f['factor'] for f in top_factors],
+                    'weights': [f['combined_ir'] / total_ir for f in top_factors],  # IC加权权重
                     'quality': np.mean([f['combined_ir'] for f in top_factors])
                 }
 
@@ -388,40 +391,16 @@ class DynamicFactorSelector:
 
         # 检查缓存（使用 Timestamp 类型的键）
         if val_date_ts in self._factor_cache:
-            # DEBUG: cache hit
-            if not hasattr(self, '_dyn_cache_hit_count'):
-                self._dyn_cache_hit_count = 0
-            if self._dyn_cache_hit_count < 3:
-                self._dyn_cache_hit_count += 1
-                print(f"[DYN CACHE HIT] date={val_date_ts}, cache_size={len(self._factor_cache)}", flush=True)
             return self._factor_cache[val_date_ts]
 
-        # DEBUG: cache miss
-        if not hasattr(self, '_dyn_cache_miss_count'):
-            self._dyn_cache_miss_count = 0
-        if self._dyn_cache_miss_count < 3:
-            self._dyn_cache_miss_count += 1
-            print(f"[DYN CACHE MISS] date={val_date_ts}, cache_size={len(self._factor_cache)}, first_key={list(self._factor_cache.keys())[0] if self._factor_cache else None}", flush=True)
-
         # 如果缓存未命中，尝试找最近的之前日期的缓存结果
-        # （适用于非IC计算日期的情况）
         for i in range(len(all_dates) - 1, -1, -1):
             if all_dates[i] < val_date_ts:
                 nearest_date = all_dates[i]
                 if nearest_date in self._factor_cache:
-                    if not hasattr(self, '_dyn_nearest_fallback_count'):
-                        self._dyn_nearest_fallback_count = 0
-                    if self._dyn_nearest_fallback_count < 3:
-                        self._dyn_nearest_fallback_count += 1
-                        print(f"[DYN FALLBACK] date={val_date_ts} -> nearest={nearest_date}", flush=True)
                     return self._factor_cache[nearest_date]
 
         # 缓存完全未命中
-        if not hasattr(self, '_dyn_miss_count'):
-            self._dyn_miss_count = 0
-        if self._dyn_miss_count < 3:
-            self._dyn_miss_count += 1
-            print(f"[DYN MISS] date={val_date_ts}, cache_keys={len(self._factor_cache)}", flush=True)
         return {}
 
 
@@ -654,10 +633,8 @@ class SignalEngine:
         adjusted_score = score * regime_weight
 
         # 6. 交易信号
-        # 买入: 因子值 > 0.1（提高阈值减少噪音）
-        # 卖出: 因子值 < -0.1
         buy = score > self.buy_threshold
-        sell = factor_value < -0.1
+        sell = factor_value < self.sell_threshold
 
         # 添加标签
         factor_tags = []
@@ -741,13 +718,6 @@ class SignalEngine:
             return None
 
         # DEBUG: 记录尝试
-        debug_key = f"{code}_{current_date}"
-        if not hasattr(self, '_dyn_debug_set'):
-            self._dyn_debug_set = set()
-        if len(self._dyn_debug_set) < 100:  # 只记录前100条
-            self._dyn_debug_set.add(debug_key)
-            print(f"[DYN DEBUG] code={code}, date={current_date}, has_ic={hasattr(self, 'industry_codes') and bool(self.industry_codes)}", flush=True)
-
         # 获取当前日期的字符串形式
         if hasattr(current_date, 'date'):
             current_date_str = str(current_date.date())
@@ -780,6 +750,7 @@ class SignalEngine:
         if not selected_info or 'factors' not in selected_info:
             return None
         selected_factors = selected_info['factors']
+        factor_weights = selected_info.get('weights', None)  # IC权重列表
         dyn_quality = selected_info.get('quality', 0)
 
         # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
@@ -792,9 +763,10 @@ class SignalEngine:
 
         # 计算动态因子得分
         factor_scores = []
+        valid_weights = []
         valid_factors = []
 
-        for factor_name in selected_factors:
+        for i, factor_name in enumerate(selected_factors):
             # 基本面因子
             if factor_name.startswith('fund_'):
                 factor_val = self._get_fundamental_factor_value(code, current_date, factor_name)
@@ -804,13 +776,20 @@ class SignalEngine:
 
             if factor_val is not None and not np.isnan(factor_val):
                 factor_scores.append(factor_val)
+                w = factor_weights[i] if factor_weights and i < len(factor_weights) else 1.0
+                valid_weights.append(w)
                 valid_factors.append(factor_name)
 
         if not factor_scores:
             return None
 
-        # 等权平均
-        factor_value = np.mean(factor_scores)
+        # IC加权平均（代替简单平均）
+        if len(valid_weights) > 0 and sum(valid_weights) > 0:
+            weights_arr = np.array(valid_weights)
+            weights_arr = weights_arr / weights_arr.sum()  # 归一化
+            factor_value = np.sum(np.array(factor_scores) * weights_arr)
+        else:
+            factor_value = np.mean(factor_scores)
 
 
         # 熊市调整
