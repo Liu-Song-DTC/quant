@@ -173,6 +173,17 @@ def _compute_date_chunk(args):
                 # if total_samples < MIN_TOTAL_SAMPLES:
                 #     continue
 
+                # 因子方向过滤：只考虑正向因子（ic_mean > 0）
+                # 负向因子会翻转信号，不应该与正向因子混合
+                if ic_mean <= 0:
+                    continue
+
+                # 最小质量阈值：过滤噪声因子
+                # combined_ir < 0.03 表示因子质量不足（年化IC不足3%）
+                MIN_COMBINED_IR = 0.03
+                if combined_ir < MIN_COMBINED_IR:
+                    continue
+
                 factor_metrics.append({
                     'factor': fn,
                     'ic_mean': ic_mean,
@@ -182,15 +193,16 @@ def _compute_date_chunk(args):
                 })
 
             if len(factor_metrics) >= 1:
+                # 按质量排序，取所有通过阈值的因子（动态N）
                 factor_metrics.sort(key=lambda x: x['combined_ir'], reverse=True)
+                # 最多取top_n，但如果有超过top_n个因子通过质量阈值，也只取top_n
                 top_factors = factor_metrics[:top_n]
 
-                # 使用带符号的IC均值作为权重（保留方向信息）
-                # 正向因子权重为正，负向因子权重自动为负（会翻转信号）
-                total_abs_ir = sum(abs(f['ic_mean']) for f in top_factors) + 1e-10
+                # 质量加权：combined_ir 反映因子质量，用于权重分配
+                total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10
                 date_result[industry] = {
                     'factors': [f['factor'] for f in top_factors],
-                    'weights': [f['ic_mean'] / total_abs_ir for f in top_factors],  # 带符号的权重
+                    'weights': [f['combined_ir'] / total_quality for f in top_factors],  # 质量加权
                     'quality': np.mean([f['combined_ir'] for f in top_factors])
                 }
 
