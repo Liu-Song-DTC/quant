@@ -6,23 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A quantitative trading system for A-shares (Chinese stock market) built with Python. The system implements signal-based trading strategies with backtesting capabilities using the Backtrader framework.
 
+**Goal: Sharpe Ratio > 1.0**
+
 ## Commands
 
-### Run Backtest
+### Run Full Pipeline
 ```bash
+# 1. Run backtest (generates backtest_signals.csv, portfolio_selections.csv)
 cd strategy && python bt_execution.py
-# or use the shell script
-cd strategy && ./run_bt.sh
-```
 
-### Run Factor Validation
-```bash
-cd strategy && python analysis/factor_validator.py
-```
-
-### Run Signal Validation (Unified)
-```bash
+# 2. Prepare validation data (calculates future_ret)
 cd strategy && python analysis/signal_validator.py
+
+# 3. Run analysis (produces IC metrics, signal quality, recommendations)
+cd strategy && python analysis/analysis_framework.py
 ```
 
 ### Download/Update Stock Data
@@ -32,88 +29,91 @@ cd data && python data_manager.py
 
 ### Configuration
 All parameters are defined in `strategy/config/factor_config.yaml`:
-- `backtest` - 回测参数 (cash, commission, slippage, max_position, rebalance_days, num_workers)
-- `portfolio` - 组合参数 (max_position, target_volatility, entry_speed, exit_speed, stop losses)
-- `detailed_industries` - 行业分类定义
-- `signal_thresholds` - 买入/卖出阈值
-- `technical_weights` - 技术面因子权重
-- `regime_weights` - 市场状态动态权重
-- `fundamental_weights` - 基本面因子配置
+- `factor_mode` - dynamic/fixed/both (controls dynamic factor selection)
+- `dynamic_factor` - train_window_days, forward_period, top_n_factors, min_ic_dates, ic_decay_factor
+- `backtest` - cash, commission, slippage, max_position, rebalance_days, num_workers
+- `portfolio` - max_position, target_volatility, entry_speed, exit_speed, stop losses
+- `signal` - buy_threshold, sell_threshold
 
 ## Architecture
 
-### Core Flow
+### Data Flow
 ```
-StockDataManager (data fetch) → Strategy (signal generation) → BacktraderExecution (backtest)
+factor_preparer.py → factor_df (all stocks × all dates)
+                          ↓
+              DynamicFactorSelector → IC validation → select top factors
+                          ↓
+              signal_engine.py → signals
+                          ↓
+              portfolio.py → selections
+                          ↓
+              bt_execution.py → backtest results
 ```
 
 ### Key Components
 
-**strategy/core/strategy.py** - `Strategy` class orchestrates the entire pipeline:
-- Generates market regime indicators from index data (sh000001)
-- Delegates signal generation to `SignalEngine`
-- Delegates position sizing to `PortfolioConstructor`
+**strategy/core/factor_calculator.py** - Unified factor calculation:
+- Single source of truth for all factor calculations
+- Used by both signal_engine and factor_preparer
+- Functions: `calculate_indicators()`, `compute_composite_factors()`
 
-**strategy/core/signal_engine.py** - `SignalEngine` generates trading signals using multiple sub-strategies:
-- Trend following (MA crossovers)
-- Mean reversion (RSI, Bollinger Bands)
-- Momentum
-- Volume-price analysis
-- Volatility-based signals
-- Signals are combined with regime-aware weighting and smoothing
-- Integrates style factors (small-cap/large-cap, value/growth rotation)
-- Supports industry-specific factor selection via `industry_factor_config.py`
+**strategy/core/factor_preparer.py** - Factor data precomputation:
+- Prepares factor_df for dynamic factor selection
+- Uses multiprocessing for parallel computation
+- Only runs when `factor_mode != 'fixed'`
+
+**strategy/core/signal_engine.py** - `SignalEngine` + `DynamicFactorSelector`:
+- `SignalEngine`: generates trading signals using selected factors
+- `DynamicFactorSelector`: walk-forward IC validation to select best factors per industry
+- Industry mapping via `industry_mapping.py`
 
 **strategy/core/portfolio.py** - `PortfolioConstructor` converts signals to positions:
 - Risk budget allocation based on signal score and volatility
 - Target volatility control
-- Gross exposure limits based on market regime (1.0/0.6/0.3 for up/neutral/down)
-- Drawdown-based defensive mode
-- Gradual position entry/exit (entry_speed, exit_speed parameters)
+- Market regime-aware exposure (1.0/0.6/0.3 for bull/neutral/bear)
 
-**strategy/core/market_regime_detector.py** - `MarketRegimeDetector` identifies market states:
-- Detects bull, bear, and neutral regimes
-- Uses index technical indicators for regime classification
+**strategy/core/market_regime_detector.py** - `MarketRegimeDetector`:
+- Detects bull, bear, neutral regimes from index data (sh000001)
 - Provides regime-aware factor weighting
 
-**strategy/core/industry_factor_config.py** - Industry-specific factor configuration:
-- Based on factor validation results
-- Each industry has optimized factor selection (top1 or weighted method)
-- Supports 14 industry categories
+**strategy/bt_execution.py** - Backtrader integration:
+- `BacktraderExecution` wraps strategy for Backtrader
+- Handles A-share 100-share lot sizing, order management
 
-**strategy/core/signal_store.py** - `SignalStore` caches signals by (code, date) tuple
+### Analysis Framework
 
-**strategy/core/factor_library.py** - Factor calculation library:
-- Unified factor calculation interface
-- Used by both signal engine and validation scripts
-- Consistent 120-day lookback, 20-day forward period
+**strategy/analysis/signal_validator.py** - Data preparation:
+- Calculates future_ret for backtest signals
+- Outputs: `validation_results.csv`
 
-**strategy/analysis/factor_validator.py** - Factor validation:
-- Validates individual factor IC/IR/win rate
-- Per-industry factor ranking
-- Results saved to `factor_validation_results/`
+**strategy/analysis/analysis_framework.py** - Unified analysis:
+- Module 1: Data quality check
+- Module 2: Factor layer (dynamic factor usage, IC by factor count/industry)
+- Module 3: Signal layer (buy/sell accuracy, signal IC)
+- Module 4: Portfolio layer (industry distribution, concentration)
+- Module 5: Temporal stability (yearly IC, IR)
+- Module 6: Optimization recommendations
 
-**strategy/analysis/rolling_signal_validator.py** - Signal validation:
-- Uses SignalEngine to generate real signals
-- Validates signal quality (IC, IR, win rate)
-- Per-industry and overall market validation
+### Key Metrics
 
-**strategy/bt_execution.py** - Backtrader integration layer:
-- `BacktraderExecution` wraps the strategy for Backtrader
-- Handles order management, A-share 100-share lot sizing
-- Configurable parameters: CASH, COMMISSION, MAX_POSITION, REBALANCE_DAYS
-
-**data/data_manager.py** - `StockDataManager` handles data acquisition:
-- Uses akshare for A-share data (with proxy support)
-- Downloads raw, qfq (forward-adjusted), hfq (backward-adjusted) price data
-- Creates Backtrader-compatible CSV files
-- Includes data quality validation and filtering (ST exclusion, market cap, etc.)
+| Metric | Target | Description |
+|--------|--------|-------------|
+| IC | >5% | Spearman correlation between factor rank and future return |
+| IR | >0.5 | IC mean / IC std |
+| Buy Accuracy | >55% | % of buy signals with positive future return |
+| Sharpe | >1.0 | Strategy Sharpe ratio |
 
 ### Data Paths
 - Raw data: `data/stock_data/raw_data/{symbol}/`
 - Backtrader data: `data/stock_data/backtrader_data/{symbol}_qfq.csv`
 - Fundamental data: `data/stock_data/fundamental_data/`
-- Index: sh000001 (Shanghai Composite)
+- Validation results: `strategy/rolling_validation_results/`
 
 ### Signal Data Structure
-`Signal` dataclass: `buy`, `sell`, `score`, `factor_value`, `risk_vol`, `risk_extreme`
+`Signal` dataclass: `buy`, `sell`, `score`, `factor_value`, `factor_name`, `industry`
+
+### Factor Naming Convention
+- `DYN_{industry}_{n}F_F` - Dynamic factor (walk-forward selected, n factors with fundamentals)
+- `IND_{industry}_{type}` - Static industry factor
+- `V41` - Fallback factor (used when data insufficient, idx < 60)
+- `_T` suffix - Technical-only factor (no fundamental data)
