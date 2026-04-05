@@ -75,6 +75,9 @@ def _compute_date_chunk(args):
     min_train_samples = config['min_train_samples']
     min_ic_dates = config.get('min_ic_dates', 5)
     ic_decay_factor = config.get('ic_decay_factor', 1.0)  # 1.0=不衰减
+    # === 阶段1优化参数 ===
+    min_factor_count = config.get('min_factor_count', 2)  # 最少因子数量
+    min_ic_1f = config.get('min_ic_1f', 0.05)  # 1因子最低IC门槛
 
     result = {}
 
@@ -198,12 +201,23 @@ def _compute_date_chunk(args):
                 # 最多取top_n，但如果有超过top_n个因子通过质量阈值，也只取top_n
                 top_factors = factor_metrics[:top_n]
 
+                # === 阶段1优化：1F因子需要更高IC门槛 ===
+                # 1F因子IC仅0.64%（接近随机），而3F因子IC=7.25%
+                n_selected = len(top_factors)
+                avg_quality = np.mean([f['combined_ir'] for f in top_factors])
+
+                # 如果只有1个因子，检查是否达到1F专用门槛
+                if n_selected < min_factor_count:
+                    if n_selected == 1 and avg_quality < min_ic_1f:
+                        # 1F质量不足，不记录（让调用方fallback到静态因子）
+                        continue
+
                 # 质量加权：combined_ir 反映因子质量，用于权重分配
                 total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10
                 date_result[industry] = {
                     'factors': [f['factor'] for f in top_factors],
                     'weights': [f['combined_ir'] / total_quality for f in top_factors],  # 质量加权
-                    'quality': np.mean([f['combined_ir'] for f in top_factors])
+                    'quality': avg_quality
                 }
 
         if date_result:
@@ -284,6 +298,9 @@ class DynamicFactorSelector:
         self.min_train_samples = dynamic_config.get('min_train_samples', 50)
         self.min_ic_dates = dynamic_config.get('min_ic_dates', 5)
         self.ic_decay_factor = dynamic_config.get('ic_decay_factor', 1.0)  # 1.0=不衰减
+        # === 阶段1优化参数 ===
+        self.min_factor_count = dynamic_config.get('min_factor_count', 2)  # 最少因子数量
+        self.min_ic_1f = dynamic_config.get('min_ic_1f', 0.05)  # 1因子最低IC门槛
 
     def set_factor_data(self, factor_df: pd.DataFrame):
         """设置因子数据
@@ -371,6 +388,9 @@ class DynamicFactorSelector:
             'min_train_samples': self.min_train_samples,
             'min_ic_dates': self.min_ic_dates,
             'ic_decay_factor': self.ic_decay_factor,
+            # === 阶段1优化参数 ===
+            'min_factor_count': self.min_factor_count,
+            'min_ic_1f': self.min_ic_1f,
         }
 
         # 每个worker处理一个chunk
@@ -452,9 +472,10 @@ class SignalEngine:
         """从配置文件加载参数"""
         config_loader = load_config()
 
-        # 信号阈值
-        self.buy_threshold = 0.15
-        self.sell_threshold = -0.15
+        # 信号阈值（从配置文件加载）
+        signal_config = config_loader.get('signal', {})
+        self.buy_threshold = signal_config.get('buy_threshold', 0.18)  # 阶段2优化：默认0.18
+        self.sell_threshold = signal_config.get('sell_threshold', -0.15)
 
         # 基本面因子配置
         self.fundamental_enabled = True
@@ -652,17 +673,19 @@ class SignalEngine:
         regime_weight = 0.9 if risk_extreme else 1.0
         adjusted_score = score * regime_weight
 
-        # 6. 交易信号
-        buy = score > self.buy_threshold
-        sell = factor_value < self.sell_threshold
-
-        # 添加标签
+        # 添加标签（先生成标签再决定buy信号）
         factor_tags = []
         if has_fundamental:
             factor_tags.append('F')
         if style_confidence > 0.3:
             factor_tags.append(style_regime[:2].upper())
         factor_name = factor_name + ('_' + ''.join(factor_tags) if factor_tags else '_T')
+
+        # 6. 交易信号
+        # 优化：排除极端高分股票（表现差）
+        # 分析显示分数在0.5-2.0之间表现最好，极端高分(P99+)胜率仅24%
+        buy = score > self.buy_threshold and score < 5.0  # 设置分数上限，避免追高
+        sell = factor_value < self.sell_threshold
 
         # 获取具体行业用于组合层减配
         specific_industry = self._get_specific_industry(code, current_date) if code else ''
@@ -708,17 +731,21 @@ class SignalEngine:
         if self.factor_mode in ['fixed', 'both']:
             if self.industry_factor_enabled and code and current_date:
                 specific_industry = self._get_specific_industry(code, current_date)
+                # === 阶段1优化：禁用负IC静态因子 ===
+                # 金融行业的静态因子IC=-3.53%（负向），应跳过使用默认因子
+                SKIP_STATIC_INDUSTRIES = ['金融']  # 这些行业跳过静态因子，使用默认因子
                 if specific_industry and specific_industry in INDUSTRY_FACTOR_CONFIG:
-                    result = self._calculate_industry_factor_score(ind, idx, specific_industry,
-                                                                   code=code, current_date=current_date)
-                    if result:
-                        self._stats['fixed_industry'] += 1
-                        factor_name, factor_value, risk_info = result
-                        if regime == -1:  # 熊市
-                            factor_value = factor_value * 0.7
-                            factor_name = factor_name + '_bear'
-                        factor_name = factor_name + f'_{specific_industry[:2]}'
-                        return factor_name, factor_value, risk_info, True
+                    if specific_industry not in SKIP_STATIC_INDUSTRIES:
+                        result = self._calculate_industry_factor_score(ind, idx, specific_industry,
+                                                                       code=code, current_date=current_date)
+                        if result:
+                            self._stats['fixed_industry'] += 1
+                            factor_name, factor_value, risk_info = result
+                            if regime == -1:  # 熊市
+                                factor_value = factor_value * 0.7
+                                factor_name = factor_name + '_bear'
+                            factor_name = factor_name + f'_{specific_industry[:2]}'
+                            return factor_name, factor_value, risk_info, True
 
         # 默认因子组合（固定因子的兜底）
         self._stats['fixed_default'] += 1
@@ -781,6 +808,18 @@ class SignalEngine:
         if dyn_quality < DYN_QUALITY_THRESHOLD:
             return None
 
+        # === 阶段1优化：检查因子数量，1F fallback到静态 ===
+        # 1F因子IC仅0.64%（接近随机），而3F因子IC=7.25%
+        # 当只有1个因子时，需要更严格的质量门槛
+        n_factors = len(selected_factors)
+        min_factor_count = self.dynamic_factor_selector.min_factor_count
+        min_ic_1f = self.dynamic_factor_selector.min_ic_1f
+
+        if n_factors < min_factor_count:
+            # 1F因子需要达到更高IC门槛才使用
+            if n_factors == 1 and dyn_quality < min_ic_1f:
+                return None  # 1F质量不足，fallback到静态因子
+
         # 计算动态因子得分
         factor_scores = []
         valid_weights = []
@@ -811,7 +850,6 @@ class SignalEngine:
             factor_value = np.sum(np.array(factor_scores) * weights_arr)
         else:
             factor_value = np.mean(factor_scores)
-
 
         # 熊市调整
         if regime == -1:

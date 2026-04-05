@@ -21,6 +21,9 @@ dynamic_factor:
   min_ic_dates: 10                 # 最少IC天数（增加以提高稳定性）
   ic_decay_factor: 0.8           # IC时序衰减因子（1.0=不衰减，0.9/0.8=指数衰减）
   fallback_to_static: true         # 动态失败时fallback到静态
+  # === 阶段1优化：消除1F负IC问题 ===
+  min_factor_count: 2              # 最少因子数量，1F fallback到静态
+  min_ic_1f: 0.05                  # 1因子最低IC门槛（5%），低于此则fallback
 
 # --- 回测因子配置 ---
 # 预计算和IC验证只使用这里定义的因子（统一配置）
@@ -109,7 +112,7 @@ indicator_params:
 # 2. 信号层 (Signal Layer)
 # ============================================
 signal:
-  buy_threshold: 0.15
+  buy_threshold: 0.18    # 从0.15提高到0.18，提高买入准确率
   sell_threshold: -0.15
 
 # 市场状态乘数

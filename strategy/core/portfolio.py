@@ -3,21 +3,39 @@ import numpy as np
 from copy import deepcopy
 from .config_loader import load_config
 
-# 弱势行业减配/排除系数（基于滚动验证IR结果）
-# IR < 0: 权重=0（排除）
-# IR < 0.1: 权重=0.5（减配50%）
-# IR < 0.15: 权重=0.75（减配25%）
-# IR >= 0.15: 权重=1.0（正常）
-NEGATIVE_IR_INDUSTRIES = [
-    '交运',      # IC=0.001，接近零，减配
-]
+# === 阶段3优化：基于买入准确率的行业权重调整 ===
+# 数据来源：validation_results.csv 的买入信号准确率分析
+# 准确率>52%: 增配（权重1.2）
+# 准确率50-52%: 正常（权重1.0）
+# 准确率<50%: 减配（权重0.5-0.75）
 INDUSTRY_DISCOUNT = {
-    '交运': 0.5,           # 减配：接近零IC
-    '半导体/光伏': 0.75,   # IC=0.08，适当减配
+    # 高准确率行业 - 增配
+    '通信/计算机': 1.2,     # 准确率54.55%，增配20%
+    '化工': 1.1,           # 准确率52.03%，增配10%
+    # 中等准确率 - 正常
+    '电子': 1.0,           # 准确率51.00%
+    '电力设备': 1.0,       # 准确率50.94%
+    # 低准确率行业 - 减配
+    '互联网/软件': 0.6,    # 准确率47.83%，减配40%
+    '金融': 0.65,          # 准确率48.85%，减配35%
+    '基建/地产/石油石化': 0.6,  # 准确率48.09%，减配40%
+    '交运': 0.6,           # 准确率48.32%，减配40%
+    '半导体/光伏': 0.8,    # 准确率49.57%，减配20%
 }
 
-# 换仓门槛（降低换手率）
-REBALANCE_THRESHOLD = 0.15  # 持仓变化超过15%才调仓（减少交易）
+# === 模块1优化: 降低换手率 ===
+# 核心思路:
+# 1. 提高换仓门槛，减少小幅波动导致的频繁交易
+# 2. 引入"保留区域"概念，排名下降不多时不立即卖出
+# 3. 渐进调整仓位而非一次性全部调整
+
+# 换仓门槛（提高以降低换手率）
+# 实际阈值 = total_equity * REBALANCE_THRESHOLD * 0.1
+# 0.25 → 2.5% of equity 变化才触发调仓
+REBALANCE_THRESHOLD = 0.25  # 持仓变化超过25%才调仓（从15%提高）
+
+# 保留区域参数
+KEEP_RANK_BUFFER = 3  # 排名在此范围内下降仍保留（如: 原来第3，现在第6仍保留）
 
 
 class PortfolioConstructor:
@@ -60,11 +78,14 @@ class PortfolioConstructor:
         self.current_volatility = 0.0
         # 组合止损相关
         self.portfolio_stop_loss_triggered = False
+        # === 模块1优化: 智能换仓 ===
+        self.current_ranking = {}  # code -> rank (0-indexed) for smart rebalancing
+        self.current_n_positions = 0  # current max positions for keep zone calculation
 
     def _get_risk_multiplier(self, regime, risk_extreme):
         """计算风险乘数（合并regime和extreme状态）"""
         if regime == -1:  # 熊市
-            return 0.3
+            return 0.0  # 熊市空仓（保护资金）
         elif risk_extreme:  # 极端波动
             return 0.7
         return 1.0  # 牛市或中性
@@ -255,10 +276,19 @@ class PortfolioConstructor:
         risk_extreme_exists = False
         candidates = []
 
+        # === 优化：排除极端高分股票（表现差）===
+        # 分析显示分数>5.0的股票胜率仅24%，平均收益-0.73%
+        # 分数在0.5-2.0区间表现最好，设置上限5.0过滤极端值
+        SCORE_UPPER_LIMIT = 5.0
+
         for code in universe:
             sig = signal_store.get(code, date)
             # 只要有信号且分数不是NaN就可以作为候选
             if sig and sig.score is not None and isinstance(sig.score, float) and not np.isnan(sig.score):
+                # 排除分数过高的股票（动量顶点，容易反转）
+                if sig.score > SCORE_UPPER_LIMIT:
+                    continue
+
                 # 排除负IC行业（权重=0的行业不参与选股）
                 industry = sig.industry or ''
                 if industry in INDUSTRY_DISCOUNT and INDUSTRY_DISCOUNT[industry] == 0.0:
@@ -291,6 +321,13 @@ class PortfolioConstructor:
         if not selected:
             return {}
 
+        # === 模块1优化: 智能换仓 ===
+        # 在返回desired_value时，同时记录完整排名信息
+        # 用于在build()中实现"渐进换仓"而非"完全替换"
+        self.current_ranking = {}  # code -> rank (0-indexed)
+        for i, c in enumerate(candidates):
+            self.current_ranking[c['code']] = i
+
         # 计算仓位权重（分数加权 + 波动率调整）
         # 核心思想：排名靠前的股票应该获得更高权重
         total_position = 0
@@ -312,8 +349,12 @@ class PortfolioConstructor:
             # 极端状态降仓
             extreme_factor = 0.8 if c['sig'].risk_extreme else 1.0
 
-            # 最终仓位权重 = 分数权重 × 波动率因子 × 极端状态因子
-            c['position'] = score_weight * vol_factor * extreme_factor
+            # 行业权重调整（基于买入准确率）
+            industry = c.get('industry', '')
+            industry_factor = INDUSTRY_DISCOUNT.get(industry, 1.0)
+
+            # 最终仓位权重 = 分数权重 × 波动率因子 × 极端状态因子 × 行业因子
+            c['position'] = score_weight * vol_factor * extreme_factor * industry_factor
             total_position += c['position']
 
         # 计算总仓位上限
@@ -332,7 +373,7 @@ class PortfolioConstructor:
             for c in raw_weights
         }
 
-        # 记录选股结果供验证使用
+        # 记录选股结果供验证使用（只记录Top-N）
         self.last_selection = [
             {
                 'date': date,
@@ -343,6 +384,9 @@ class PortfolioConstructor:
             }
             for c in selected
         ]
+
+        # 记录最大持仓数量，供build()中智能换仓使用
+        self.current_n_positions = n_positions
 
         return desired_value
 
@@ -433,9 +477,36 @@ class PortfolioConstructor:
 
             adjusted[code] = current + move
 
-        # 调仓日清仓不在候选列表中的持仓
-        for code, current in current_positions.items():
-            if rebalance and code not in desired_value:
-                adjusted[code] = 0.0
+        # === 模块1优化: 智能换仓 ===
+        # 不再简单地清仓不在Top-N的股票，而是:
+        # 1. 检查旧持仓是否仍在新排名的"保留区域"内
+        # 2. 如果在保留区域内，保留该持仓并渐进调整权重
+        # 3. 只有真正出局（排名>KEEP_RANK_BUFFER）的才卖出
+
+        if rebalance:
+            keep_zone = self.current_n_positions + KEEP_RANK_BUFFER  # 保留区域大小
+
+            for code, current in current_positions.items():
+                if code in adjusted:
+                    # 已经在上面的循环中被处理（要么在desired_value中，要么被止损卖出）
+                    continue
+
+                # 检查该持仓是否在保留区域内
+                if hasattr(self, 'current_ranking') and code in self.current_ranking:
+                    rank = self.current_ranking[code]
+                    if rank < keep_zone:
+                        # 在保留区域内，降低权重但不卖出
+                        # 权重逐渐降低到原来的一半
+                        kept_weight = current * 0.5
+                        if kept_weight > total_equity * REBALANCE_THRESHOLD * 0.05:
+                            adjusted[code] = kept_weight
+                        else:
+                            adjusted[code] = 0.0
+                    else:
+                        # 真正出局，卖出
+                        adjusted[code] = 0.0
+                else:
+                    # 不在候选列表中（没有信号或被排除），卖出
+                    adjusted[code] = 0.0
 
         return adjusted
