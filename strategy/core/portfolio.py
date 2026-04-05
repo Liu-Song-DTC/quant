@@ -278,10 +278,10 @@ class PortfolioConstructor:
 
         # === 优化：排除极端高分股票（表现差）===
         # 分析显示：
-        # - 分数>3.0的股票表现差（胜率48.8%，收益0.6%）
-        # - 分数3.0-5.0区间被选入82只，收益-3.88%
-        # - 最佳分数区间: 0.5-3.0
-        SCORE_UPPER_LIMIT = 3.0
+        # - 分数>2.5的股票表现差（胜率46.8%）
+        # - 分数2.5-3.0区间被选入82只，收益-3.88%
+        # - 最佳分数区间: 0.5-2.5
+        SCORE_UPPER_LIMIT = 2.5
 
         for code in universe:
             sig = signal_store.get(code, date)
