@@ -673,8 +673,8 @@ class SignalEngine:
         mom_5_norm = np.clip(mom_5 / 0.05, -2, 2)  # 标准化到-2到2
         mom_20_norm = np.clip(mom_20 / 0.10, -2, 2)
 
-        # 组合分数：因子值为主(80%)，动量辅助(20%)
-        score = base_score * 0.8 + mom_5_norm * 0.15 + mom_20_norm * 0.05
+        # 组合分数：因子值为主(70%)，动量为辅(30%)
+        score = base_score * 0.7 + mom_5_norm * 0.2 + mom_20_norm * 0.1
 
         # 4. 波动率风险指标
         risk_vol = self._safe_get(ind, 'volatility_10', idx, 0.02)
