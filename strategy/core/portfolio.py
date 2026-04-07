@@ -35,7 +35,7 @@ INDUSTRY_DISCOUNT = {
 REBALANCE_THRESHOLD = 0.25  # 持仓变化超过25%才调仓（从15%提高）
 
 # 保留区域参数
-KEEP_RANK_BUFFER = 3  # 排名在此范围内下降仍保留（如: 原来第3，现在第6仍保留）
+KEEP_RANK_BUFFER = 2  # 排名在此范围内下降仍保留
 
 
 class PortfolioConstructor:
@@ -281,7 +281,8 @@ class PortfolioConstructor:
         # - 分数>2.5的股票表现差（胜率46.8%）
         # - 分数2.5-3.0区间被选入82只，收益-3.88%
         # - 最佳分数区间: 0.5-2.5
-        SCORE_UPPER_LIMIT = 2.5
+        # 尝试更严格的分数上限: 2.0
+        SCORE_UPPER_LIMIT = 1.6
 
         for code in universe:
             sig = signal_store.get(code, date)
