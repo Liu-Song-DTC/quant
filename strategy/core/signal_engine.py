@@ -663,8 +663,18 @@ class SignalEngine:
         if not is_industry and fundamental_score > 0:
             base_score = base_score + fundamental_score * 0.1
 
-        # 3. 最终分数（用于排序，不做复杂变换）
-        score = base_score
+        # === 优化：加入动量确认 ===
+        # 获取短期动量（mom_5已经计算好在ind中）
+        mom_5 = self._safe_get(ind, 'mom_5', idx, 0.0)
+        mom_20 = self._safe_get(ind, 'mom_20', idx, 0.0)
+
+        # 动量标准化：将动量缩放到与factor_value可比的范围
+        # mom_5超过5%算强动量，10%算极强
+        mom_5_norm = np.clip(mom_5 / 0.05, -2, 2)  # 标准化到-2到2
+        mom_20_norm = np.clip(mom_20 / 0.10, -2, 2)
+
+        # 组合分数：因子值为主(80%)，动量辅助(20%)
+        score = base_score * 0.8 + mom_5_norm * 0.15 + mom_20_norm * 0.05
 
         # 4. 波动率风险指标
         risk_vol = self._safe_get(ind, 'volatility_10', idx, 0.02)

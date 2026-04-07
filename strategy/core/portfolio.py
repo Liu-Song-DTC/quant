@@ -350,7 +350,7 @@ class PortfolioConstructor:
             vol_factor = min(1.0 / risk_vol, 2.0)  # 限制波动率影响
 
             # 极端状态降仓
-            extreme_factor = 0.8 if c['sig'].risk_extreme else 1.0
+            extreme_factor = 0.7 if c['sig'].risk_extreme else 1.0  # 更激进的极端降仓
 
             # 行业权重调整（基于买入准确率）
             industry = c.get('industry', '')

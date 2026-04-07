@@ -23,7 +23,7 @@ dynamic_factor:
   fallback_to_static: true         # 动态失败时fallback到静态
   # === 阶段1优化：消除1F负IC问题 ===
   min_factor_count: 2              # 最少因子数量，1F fallback到静态
-  min_ic_1f: 0.05                  # 1因子最低IC门槛（5%），低于此则fallback
+  min_ic_1f: 0.10                  # 1因子最低IC门槛（10%）
 
 # --- 回测因子配置 ---
 # 预计算和IC验证只使用这里定义的因子（统一配置）
