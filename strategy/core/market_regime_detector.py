@@ -172,10 +172,11 @@ class MarketRegimeDetector:
         ema_bearish = not ema20_above_60 and not ema60_above_120
 
         # 熊市判断：快速下跌 或 持续下跌+均线空头
-        if mom_5 < self.mom5_bear or mom < self.mom_bear:
+        # 修改：要求60日动量也为负，才确认熊市（避免假熊市）
+        if (mom_5 < self.mom5_bear or mom < self.mom_bear) and mom_60 < 0:
             regime = -1
             confidence = 1.0
-        elif mom < self.mom_bear_sustained and ema_bearish:
+        elif mom < self.mom_bear_sustained and ema_bearish and mom_60 < 0:
             # 持续下跌 + 均线空头排列 = 熊市
             regime = -1
             confidence = 0.8

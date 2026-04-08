@@ -844,7 +844,15 @@ class SignalEngine:
                 # 技术因子
                 factor_val = self._safe_get(ind, factor_name, idx, None)
 
-            if factor_val is not None and not np.isnan(factor_val):
+            # 验证因子值的合理性
+            if factor_val is not None and not np.isnan(factor_val) and not np.isinf(factor_val):
+                # 检查是否在合理范围（技术因子通常在-10到10范围）
+                if abs(factor_val) > 1000:
+                    # 记录异常因子值用于调试
+                    import warnings
+                    warnings.warn(f'Extreme factor value: {factor_name}={factor_val:.2e} for {code} on {current_date}')
+                    # 将极端值裁剪到合理范围
+                    factor_val = np.sign(factor_val) * 1000
                 factor_scores.append(factor_val)
                 w = factor_weights[i] if factor_weights and i < len(factor_weights) else 1.0
                 valid_weights.append(w)
@@ -861,6 +869,13 @@ class SignalEngine:
             factor_value = np.sum(np.array(factor_scores) * weights_arr)
         else:
             factor_value = np.mean(factor_scores)
+
+        # 最终安全检查：确保factor_value在合理范围
+        # 技术因子通常在-10到10范围，IC加权平均后也应该在此范围
+        if abs(factor_value) > 100:
+            import warnings
+            warnings.warn(f'Extreme factor_value after weighted sum: {factor_value:.2e}, clipping to ±100')
+            factor_value = np.clip(factor_value, -100, 100)
 
         # 熊市调整
         if regime == -1:
@@ -1206,13 +1221,17 @@ class SignalEngine:
             return default
         # 检查是否是真正的标量（不包括 numpy 标量）
         if np.isscalar(arr) and not hasattr(arr, '__len__'):
-            return default if (isinstance(arr, (int, float)) and np.isnan(arr)) else arr
+            if isinstance(arr, (int, float)) and (np.isnan(arr) or np.isinf(arr)):
+                return default
+            return arr
         if hasattr(arr, '__len__') and not isinstance(arr, str):
             if len(arr) <= idx:
                 return default
             val = arr[idx]
-            if isinstance(val, (int, float)) and not np.isnan(val):
-                return val
+            # 检查 NaN 和 Inf
+            if isinstance(val, (int, float)) and (np.isnan(val) or np.isinf(val)):
+                return default
+            return val
         return default
 
     def _sma(self, arr, window):
