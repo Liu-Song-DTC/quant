@@ -281,7 +281,6 @@ class PortfolioConstructor:
         # - 分数>2.5的股票表现差（胜率46.8%）
         # - 分数2.5-3.0区间被选入82只，收益-3.88%
         # - 最佳分数区间: 0.5-2.5
-        # 尝试更严格的分数上限: 2.0
         SCORE_UPPER_LIMIT = 1.6
 
         for code in universe:

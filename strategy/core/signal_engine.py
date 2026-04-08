@@ -656,8 +656,9 @@ class SignalEngine:
         # === 信号系统 v3 (优化版) ===
         # 核心思想: 信号分数反映相对强弱，组合层用排名排序
 
-        # 1. 基础分数 = 因子值（已标准化到合理范围）
-        base_score = factor_value
+        # 1. 基础分数 = 因子值（已clip到合理范围）
+        # clip极端值：factor_value通常在-10到10范围
+        base_score = np.clip(factor_value, -10, 10)
 
         # 2. 基本面增强（仅对非行业因子生效）
         if not is_industry and fundamental_score > 0:
@@ -692,9 +693,9 @@ class SignalEngine:
         factor_name = factor_name + ('_' + ''.join(factor_tags) if factor_tags else '_T')
 
         # 6. 交易信号
-        # 优化：排除极端高分股票（表现差）
-        # 分析显示分数在0.5-2.0之间表现最好，极端高分(P99+)胜率仅24%
-        buy = score > self.buy_threshold and score < 5.0  # 设置分数上限，避免追高
+        # 优化：用factor_value判断买卖，score仅用于排序
+        # buy条件：factor_value > threshold，且score在合理范围（避免极端值）
+        buy = factor_value > self.buy_threshold and abs(score) < 5.0
         sell = factor_value < self.sell_threshold
 
         # 获取具体行业用于组合层减配
