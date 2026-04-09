@@ -59,10 +59,12 @@ class Strategy:
         rebalance,
     ):
         market_regime = 0
+        momentum_score = 0.0
         if self.index_data is not None:
             row = self.index_data[self.index_data["datetime"].dt.date == date]
             if not row.empty:
                 market_regime = int(row["regime"].values[0])
+                momentum_score = float(row["momentum_score"].values[0])
         return self.portfolio.build(
             date=date,
             universe=universe,
@@ -71,6 +73,7 @@ class Strategy:
             cash=cash,
             prices=prices,
             market_regime=market_regime,
+            momentum_score=momentum_score,
             cost=cost,
             rebalance=rebalance
         )

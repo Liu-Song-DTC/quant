@@ -156,33 +156,22 @@ def _compute_date_chunk(args):
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
 
                 # 稳定性过滤：至少30%的IC同号即可通过
-                # stability > 0.3 表示至少30%的IC同号
-                # 降低要求以避免过度过滤（原始诊断显示stability普遍在0.1-0.5范围）
                 MIN_STABILITY = 0.3
                 if ic_stability < MIN_STABILITY:
                     continue
 
                 # combined_ir = ir * (0.5 + 0.5 * stability)
-                # 稳定性越高权重越大，但不会完全惩罚低稳定性因子
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
 
                 # t_statistic过滤（统计显著性）
                 if abs(t_statistic) < 1.0:
                     continue
 
-                # 最小样本数过滤（过滤噪声因子）
-                # 注意: 暂时禁用，因为实验显示过滤后效果变差
-                # MIN_TOTAL_SAMPLES = 1500
-                # if total_samples < MIN_TOTAL_SAMPLES:
-                #     continue
-
                 # 因子方向过滤：只考虑正向因子（ic_mean > 0）
-                # 负向因子会翻转信号，不应该与正向因子混合
                 if ic_mean <= 0:
                     continue
 
                 # 最小质量阈值：过滤噪声因子
-                # combined_ir < 0.03 表示因子质量不足（年化IC不足3%）
                 MIN_COMBINED_IR = 0.03
                 if combined_ir < MIN_COMBINED_IR:
                     continue
@@ -693,9 +682,32 @@ class SignalEngine:
         factor_name = factor_name + ('_' + ''.join(factor_tags) if factor_tags else '_T')
 
         # 6. 交易信号
-        # 优化：用factor_value判断买卖，score仅用于排序
-        # buy条件：factor_value > threshold，且score在合理范围（避免极端值）
-        buy = factor_value > self.buy_threshold and abs(score) < 5.0
+        # 买入条件：factor_value在合理范围内
+        # === 核心优化：排除极端factor_value ===
+        # 分析发现：factor_value > 1.5 的准确率只有44.84%（均值回归风险）
+        # 方案：设置factor_value上限，过滤动量过热的股票
+        FACTOR_VALUE_UPPER_LIMIT = 1.2  # factor_value上限（避免动量过热）
+
+        # 下限阈值：市场择时调整
+        market_momentum = market_info.get('momentum_score', 0.0)
+        if market_momentum < -0.5:
+            adjusted_buy_threshold = self.buy_threshold * 2.0
+        elif market_momentum < -0.2:
+            adjusted_buy_threshold = self.buy_threshold * 1.5
+        elif market_momentum < 0:
+            adjusted_buy_threshold = self.buy_threshold * 1.2
+        else:
+            adjusted_buy_threshold = self.buy_threshold
+
+        # 买入条件：下限 < factor_value < 上限
+        # === 优化2：过滤_T因子（负IC） ===
+        # _T因子IC=-0.59%，买入准确率46.62%，拖累整体表现
+        is_t_factor = factor_name.endswith('_T')
+
+        buy = (factor_value > adjusted_buy_threshold and
+               factor_value < FACTOR_VALUE_UPPER_LIMIT and
+               abs(score) < 5.0 and
+               not is_t_factor)  # 排除_T因子
         sell = factor_value < self.sell_threshold
 
         # 获取具体行业用于组合层减配

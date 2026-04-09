@@ -82,13 +82,14 @@ class PortfolioConstructor:
         self.current_ranking = {}  # code -> rank (0-indexed) for smart rebalancing
         self.current_n_positions = 0  # current max positions for keep zone calculation
 
-    def _get_risk_multiplier(self, regime, risk_extreme):
-        """计算风险乘数（合并regime和extreme状态）"""
-        if regime == -1:  # 熊市
-            return 0.0  # 熊市空仓（保护资金）
-        elif risk_extreme:  # 极端波动
+    def _get_risk_multiplier(self, regime, risk_extreme, momentum_score=0.0):
+        """计算风险乘数
+
+        注意：momentum_score是滞后指标，不应过度依赖
+        """
+        if risk_extreme:  # 极端波动
             return 0.7
-        return 1.0  # 牛市或中性
+        return 1.0  # 正常仓位
 
     def _get_position_count(self, market_regime, risk_extreme_exists):
         """计算动态持仓数量
@@ -106,7 +107,7 @@ class PortfolioConstructor:
         else:
             return base_count
 
-    def _calculate_position_limit(self, drawdown, risk_extreme_exists, market_regime=0):
+    def _calculate_position_limit(self, drawdown, risk_extreme_exists, market_regime=0, momentum_score=0.0):
         """根据回撤和极端状态计算总仓位上限
 
         A股优化：收紧阈值，控制回撤
@@ -123,7 +124,7 @@ class PortfolioConstructor:
             max_gross_exposure = 1.0
 
         # 应用风险乘数
-        risk_multiplier = self._get_risk_multiplier(market_regime, risk_extreme_exists)
+        risk_multiplier = self._get_risk_multiplier(market_regime, risk_extreme_exists, momentum_score)
         max_gross_exposure = max_gross_exposure * risk_multiplier
 
         # 组合止损触发后强制降仓
@@ -250,6 +251,7 @@ class PortfolioConstructor:
         cash,
         prices,
         market_regime=0,
+        momentum_score=0.0,
     ):
         """构建目标持仓
 
@@ -276,11 +278,7 @@ class PortfolioConstructor:
         risk_extreme_exists = False
         candidates = []
 
-        # === 优化：排除极端高分股票（表现差）===
-        # 分析显示：
-        # - 分数>2.5的股票表现差（胜率46.8%）
-        # - 分数2.5-3.0区间被选入82只，收益-3.88%
-        # - 最佳分数区间: 0.5-2.5
+        # 分数上限：排除极端高分股票（动量顶点）
         SCORE_UPPER_LIMIT = 1.6
 
         for code in universe:
@@ -360,7 +358,7 @@ class PortfolioConstructor:
             total_position += c['position']
 
         # 计算总仓位上限
-        max_gross_exposure = self._calculate_position_limit(drawdown, risk_extreme_exists, market_regime)
+        max_gross_exposure = self._calculate_position_limit(drawdown, risk_extreme_exists, market_regime, momentum_score)
         max_gross_exposure = self._apply_volatility_control(max_gross_exposure)
 
         # 归一化并应用仓位上限
@@ -401,8 +399,9 @@ class PortfolioConstructor:
         cash,
         prices,
         market_regime,  # 市场状态用于熊市保护
-        cost,
-        rebalance,
+        momentum_score=0.0,  # 市场动量分数，用于动态仓位调整
+        cost=None,
+        rebalance=False,
     ):
         """构建目标持仓（外部接口）"""
         stop_loss_sells = {}
@@ -445,6 +444,7 @@ class PortfolioConstructor:
                 cash=cash,
                 prices=prices,
                 market_regime=market_regime,
+                momentum_score=momentum_score,
             )
 
         # 强制卖出
