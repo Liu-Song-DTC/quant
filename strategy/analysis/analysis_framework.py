@@ -28,7 +28,6 @@ import os
 import sys
 import pandas as pd
 import numpy as np
-from scipy import stats
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
@@ -38,6 +37,8 @@ STRATEGY_DIR = os.path.dirname(SCRIPT_DIR)
 PROJECT_ROOT = os.path.dirname(STRATEGY_DIR)
 sys.path.insert(0, STRATEGY_DIR)
 
+from utils.utils import safe_spearmanr
+
 
 # ==================== 配置 ====================
 
@@ -45,16 +46,6 @@ sys.path.insert(0, STRATEGY_DIR)
 IC_TARGET = 0.05       # 5% - 整体IC目标
 IR_TARGET = 0.5       # 0.5 - IR目标
 ACCURACY_TARGET = 0.55  # 55% - 买卖信号准确率目标
-
-
-# ==================== 工具函数 ====================
-
-def safe_spearmanr(x: pd.Series, y: pd.Series) -> tuple:
-    """安全计算Spearman相关系数"""
-    mask = ~(x.isna() | y.isna() | np.isinf(x) | np.isinf(y))
-    if mask.sum() < 10:
-        return np.nan, np.nan
-    return stats.spearmanr(x[mask], y[mask])
 
 
 # ==================== 主分析框架类 ====================

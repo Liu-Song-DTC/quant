@@ -1,6 +1,82 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from scipy.stats import spearmanr
+
+
+def compute_rolling_ic(df_subset, date_col='date', factor_col='factor_value',
+                      ret_col='future_ret', min_periods=100, window='year'):
+    """计算滚动IC (按年或按月)
+
+    Args:
+        df_subset: DataFrame with date, factor_value, future_ret columns
+        date_col: name of date column
+        factor_col: name of factor value column
+        ret_col: name of return column
+        min_periods: minimum samples required
+        window: 'year' or 'month'
+
+    Returns:
+        list of dicts with {period, ic, n}, or empty list if insufficient data
+    """
+    if len(df_subset) < min_periods:
+        return []
+
+    df_subset = df_subset.copy()
+    if window == 'year':
+        df_subset['period'] = pd.to_datetime(df_subset[date_col]).dt.year
+    else:
+        df_subset['period'] = pd.to_datetime(df_subset[date_col]).dt.to_period('M')
+
+    results = []
+    for period in sorted(df_subset['period'].unique()):
+        period_data = df_subset[df_subset['period'] == period]
+        valid = period_data[[factor_col, ret_col]].dropna()
+        if len(valid) >= min_periods // 4:
+            try:
+                ic, _ = spearmanr(valid[factor_col], valid[ret_col])
+                if not np.isnan(ic):
+                    results.append({'period': str(period), 'ic': ic, 'n': len(valid)})
+            except:
+                pass
+    return results
+
+
+def compute_ic_stats(rolling_ics):
+    """从滚动IC列表计算IC统计指标
+
+    Args:
+        rolling_ics: list of dicts with 'ic' key from compute_rolling_ic
+
+    Returns:
+        dict with mean_ic, std_ic, ir, n_periods
+    """
+    if not rolling_ics or len(rolling_ics) < 3:
+        return None
+
+    ic_values = [r['ic'] for r in rolling_ics]
+    return {
+        'mean_ic': np.mean(ic_values),
+        'std_ic': np.std(ic_values),
+        'ir': np.mean(ic_values) / (np.std(ic_values) + 1e-10),
+        'n_periods': len(rolling_ics),
+        'yearly': rolling_ics
+    }
+
+
+def safe_spearmanr(x, y):
+    """安全计算Spearman相关系数
+
+    Args:
+        x, y: array-like
+
+    Returns:
+        (correlation, p_value) or (nan, nan) if insufficient data
+    """
+    mask = ~(pd.isna(x) | pd.isna(y) | np.isinf(x) | np.isinf(y))
+    if mask.sum() < 10:
+        return np.nan, np.nan
+    return spearmanr(x[mask], y[mask])
 
 def plot_signal_diagnosis(
     code,
