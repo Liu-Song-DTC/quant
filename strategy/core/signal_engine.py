@@ -1006,77 +1006,9 @@ class SignalEngine:
         for i, factor_name in enumerate(factors):
             factor_val = None
 
-            # 基本面因子：从 fundamental_data 获取，并标准化到合理范围
+            # 基本面因子：复用 _get_fundamental_factor_value 获取压缩后的值
             if factor_name.startswith('fund_'):
-                if hasattr(self, 'fundamental_data') and self.fundamental_data and code and current_date:
-                    try:
-                        if factor_name == 'fund_score':
-                            raw = self.fundamental_data.get_fundamental_score(code, current_date)
-                            # fund_score 可能异常（负值或极大值），用tanh压缩到[-1,1]
-                            # 先做合理范围clip，再tanh
-                            if raw is not None and not np.isnan(raw):
-                                raw_clipped = max(-100, min(100, raw))  # 先clip到合理范围
-                                factor_val = np.tanh((raw_clipped - 50) / 50)  # 中心化后压缩
-                            else:
-                                factor_val = None
-                        elif factor_name == 'fund_profit_growth':
-                            raw = self.fundamental_data.get_profit_growth(code, current_date)
-                            # 利润增长率可能极端，用tanh压缩到[-1,1]
-                            if raw is not None and not np.isnan(raw):
-                                raw_clipped = max(-100, min(100, raw))  # clip极端值
-                                factor_val = np.tanh(raw_clipped)
-                            else:
-                                factor_val = None
-                        elif factor_name == 'fund_roe':
-                            raw = self.fundamental_data.get_roe(code, current_date)
-                            # ROE 可能为负，用tanh压缩
-                            if raw is not None and not np.isnan(raw):
-                                raw_clipped = max(-50, min(50, raw))
-                                factor_val = np.tanh((raw_clipped - 10) / 20)  # 中心化后压缩
-                            else:
-                                factor_val = None
-                        elif factor_name == 'fund_revenue_growth':
-                            raw = self.fundamental_data.get_revenue_growth(code, current_date)
-                            # 营收增长率，用tanh压缩
-                            if raw is not None and not np.isnan(raw):
-                                raw_clipped = max(-100, min(100, raw))
-                                factor_val = np.tanh(raw_clipped)
-                            else:
-                                factor_val = None
-                        elif factor_name == 'fund_eps':
-                            raw = self.fundamental_data.get_eps(code, current_date)
-                            # EPS 可能为负或极大，用tanh压缩
-                            if raw is not None and not np.isnan(raw):
-                                raw_clipped = max(-10, min(10, raw))
-                                factor_val = np.tanh(raw_clipped)
-                            else:
-                                factor_val = None
-                        elif factor_name == 'fund_cf_to_profit':
-                            raw = self.fundamental_data.get_cf_to_profit(code, current_date)
-                            # 现金流/利润比可能极端，用tanh压缩
-                            if raw is not None and not np.isnan(raw):
-                                raw_clipped = max(-5, min(5, raw))
-                                factor_val = np.tanh(raw_clipped - 1)
-                            else:
-                                factor_val = None
-                        elif factor_name == 'fund_debt_ratio':
-                            raw = self.fundamental_data.get_debt_ratio(code, current_date)
-                            # 负债率，反向（低负债好），用tanh压缩
-                            if raw is not None and not np.isnan(raw):
-                                raw_clipped = max(0, min(100, raw))
-                                factor_val = np.tanh((50 - raw_clipped) / 50)
-                            else:
-                                factor_val = None
-                        elif factor_name == 'fund_gross_margin':
-                            raw = self.fundamental_data.get_gross_margin(code, current_date)
-                            # 毛利率，用tanh压缩
-                            if raw is not None and not np.isnan(raw):
-                                raw_clipped = max(-20, min(80, raw))
-                                factor_val = np.tanh((raw_clipped - 30) / 30)
-                            else:
-                                factor_val = None
-                    except:
-                        factor_val = None
+                factor_val = self._get_fundamental_factor_value(code, current_date, factor_name)
             else:
                 # 技术因子：从 ind 字典获取
                 factor_val = self._safe_get(ind, factor_name, idx, None)
