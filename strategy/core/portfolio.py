@@ -357,7 +357,14 @@ class PortfolioConstructor:
             # 极端状态降仓
             extreme_factor = 0.7 if c['sig'].risk_extreme else 1.0
 
-            c['position'] = score_weight * vol_factor * extreme_factor
+            # === 因子质量加权 ===
+            # 高质量因子给的股票更高权重
+            factor_quality = getattr(c['sig'], 'factor_quality', 0.0)
+            # 质量因子：质量越高权重越大，范围[0.5, 1.5]
+            quality_factor = 0.5 + factor_quality * 10  # 假设quality在0-0.1范围
+            quality_factor = max(0.5, min(1.5, quality_factor))
+
+            c['position'] = score_weight * vol_factor * extreme_factor * quality_factor
             total_position += c['position']
 
         # 总仓位上限

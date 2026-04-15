@@ -755,13 +755,17 @@ class SignalEngine:
         # 获取具体行业用于组合层减配
         specific_industry = self._get_specific_industry(code, current_date) if code else ''
 
+        # 提取因子质量（用于组合层权重调整）
+        factor_quality = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
+
         return Signal(
             buy=buy, sell=sell, score=score, factor_value=factor_value,
             factor_name=factor_name, industry=specific_industry or '',
             risk_vol=risk_vol, risk_regime=risk_regime,
             risk_confidence=market_info.get('confidence', 0.0),
             risk_extreme=risk_extreme or risk_info.get('is_high_vol', False),
-            adjusted_score=adjusted_score
+            adjusted_score=adjusted_score,
+            factor_quality=factor_quality
         )
 
     def _select_factor(self, ind: dict, idx: int, regime: int, industry_category: str = 'default',
