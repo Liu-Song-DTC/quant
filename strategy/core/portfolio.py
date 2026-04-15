@@ -60,6 +60,7 @@ class PortfolioConstructor:
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 1.0)
         self.position_stop_loss = position_stop_loss if position_stop_loss is not None else portfolio_config.get('position_stop_loss', 0.10)
         self.portfolio_stop_loss = portfolio_stop_loss if portfolio_stop_loss is not None else portfolio_config.get('portfolio_stop_loss', 0.08)
+        self.max_single_weight = portfolio_config.get('max_single_weight', 0.15)  # 单只股票最大权重
 
         # 波动率控制和组合止损默认关闭
         self.volatility_control_enabled = config.get('volatility_control.enabled', False)
@@ -253,12 +254,12 @@ class PortfolioConstructor:
         market_regime=0,
         momentum_score=0.0,
     ):
-        """构建目标持仓
+        """构建目标持仓 - 基于因子排名选股
 
-        统一选股逻辑（与验证一致）:
-        1. 收集所有有信号的股票（不限制buy信号）
-        2. 按分数排序，选Top-N
-        3. 计算仓位权重
+        核心改进：
+        1. 使用 factor_value 进行排名（而非 score）
+        2. 截面标准化（排名百分位）
+        3. 直接利用 IC 的排序能力
         """
         import pandas as pd
 
@@ -274,106 +275,115 @@ class PortfolioConstructor:
 
         drawdown = 1 - total_equity / self.peak_equity if self.peak_equity > 0 else 0.0
 
-        # 收集所有候选股票（不限制buy信号，与验证一致）
+        # === 排名选股：收集所有股票的因子值 ===
         risk_extreme_exists = False
         candidates = []
 
-        # 分数上限：排除极端高分股票（动量顶点）
-        SCORE_UPPER_LIMIT = 1.6
-
         for code in universe:
             sig = signal_store.get(code, date)
-            # 只要有信号且分数不是NaN就可以作为候选
-            if sig and sig.score is not None and isinstance(sig.score, float) and not np.isnan(sig.score):
-                # 排除分数过高的股票（动量顶点，容易反转）
-                if sig.score > SCORE_UPPER_LIMIT:
-                    continue
+            if sig is None:
+                continue
 
-                # 排除负IC行业（权重=0的行业不参与选股）
-                industry = sig.industry or ''
-                if industry in INDUSTRY_DISCOUNT and INDUSTRY_DISCOUNT[industry] == 0.0:
-                    continue
+            # 使用 factor_value 作为排名依据（核心改变）
+            factor_value = getattr(sig, 'factor_value', None)
+            if factor_value is None or (isinstance(factor_value, float) and np.isnan(factor_value)):
+                continue
 
-                # 检查极端状态
-                if sig.risk_extreme:
-                    risk_extreme_exists = True
+            # 检查极端状态
+            if getattr(sig, 'risk_extreme', False):
+                risk_extreme_exists = True
 
-                candidates.append({
-                    'code': code,
-                    'score': sig.score,
-                    'risk_vol': sig.risk_vol,
-                    'industry': industry,
-                    'sig': sig,
-                })
+            candidates.append({
+                'code': code,
+                'factor_value': factor_value,
+                'score': getattr(sig, 'score', 0),
+                'risk_vol': getattr(sig, 'risk_vol', 0.03),
+                'industry': getattr(sig, 'industry', '') or 'default',
+                'sig': sig,
+            })
 
         if not candidates:
             return {}
 
-        # 按分数排序（与验证一致）
-        candidates.sort(key=lambda x: x['score'], reverse=True)
+        # === 截面标准化：使用排名百分位 ===
+        factor_values = np.array([c['factor_value'] for c in candidates])
+        rank_pct = pd.Series(factor_values).rank(pct=True)  # 0-1 之间的排名
 
-        # 动态持仓数量：熊市减少数量但更集中（IC更高）
-        # 检查是否有极端状态
-        risk_extreme_exists = any(c['sig'].risk_extreme for c in candidates)
-        n_positions = self._get_position_count(market_regime, risk_extreme_exists)
-        selected = candidates[:n_positions]
+        for i, c in enumerate(candidates):
+            c['rank_pct'] = rank_pct.iloc[i]
+
+        # === 按排名选择股票 ===
+        # 行业分散限制
+        industry_count = {}
+        industry_cap = 2  # 单个行业最多选2只
+
+        # 按排名百分位排序
+        candidates.sort(key=lambda x: x['rank_pct'], reverse=True)
+
+        selected = []
+        for c in candidates:
+            ind = c['industry']
+            if industry_count.get(ind, 0) >= industry_cap:
+                continue
+
+            # 排除排名太低的股票（后50%）
+            if c['rank_pct'] < 0.5:
+                continue
+
+            selected.append(c)
+            industry_count[ind] = industry_count.get(ind, 0) + 1
+
+            # 动态持仓数量
+            n_positions = self._get_position_count(market_regime, risk_extreme_exists)
+            if len(selected) >= n_positions:
+                break
 
         if not selected:
             return {}
 
-        # === 模块1优化: 智能换仓 ===
-        # 在返回desired_value时，同时记录完整排名信息
-        # 用于在build()中实现"渐进换仓"而非"完全替换"
-        self.current_ranking = {}  # code -> rank (0-indexed)
-        for i, c in enumerate(candidates):
-            self.current_ranking[c['code']] = i
+        # 记录排名信息
+        self.current_ranking = {c['code']: i for i, c in enumerate(candidates)}
 
-        # 计算仓位权重（分数加权 + 波动率调整）
-        # 核心思想：排名靠前的股票应该获得更高权重
+        # === 计算权重 ===
         total_position = 0
-
-        # 计算分数加权权重：使用指数衰减
-        # rank 1 (最高分) 获得最高权重，rank N 获得最低权重
-        # score_weight[i] = exp(-i * decay_rate)，然后归一化
-        n_selected = len(selected)
-        decay_rate = 0.15  # 衰减率，0.15 意味着 rank 1:rank 2:rank 3 ≈ 1:0.86:0.74
-
         for i, c in enumerate(selected):
-            # 分数排名权重（指数衰减）
-            score_weight = np.exp(-i * decay_rate)
+            # 指数衰减权重
+            score_weight = np.exp(-0.15 * i)
 
-            # 波动率调整：低波动给更高权重
+            # 波动率调整
             risk_vol = max(0.01, min(1.0, c['risk_vol']))
-            vol_factor = min(1.0 / risk_vol, 2.0)  # 限制波动率影响
+            vol_factor = min(1.0 / risk_vol, 2.0)
 
             # 极端状态降仓
-            extreme_factor = 0.7 if c['sig'].risk_extreme else 1.0  # 更激进的极端降仓
+            extreme_factor = 0.7 if c['sig'].risk_extreme else 1.0
 
-            # 行业权重调整（基于买入准确率）
-            industry = c.get('industry', '')
-            industry_factor = INDUSTRY_DISCOUNT.get(industry, 1.0)
-
-            # 最终仓位权重 = 分数权重 × 波动率因子 × 极端状态因子 × 行业因子
-            c['position'] = score_weight * vol_factor * extreme_factor * industry_factor
+            c['position'] = score_weight * vol_factor * extreme_factor
             total_position += c['position']
 
-        # 计算总仓位上限
+        # 总仓位上限
         max_gross_exposure = self._calculate_position_limit(drawdown, risk_extreme_exists, market_regime, momentum_score)
         max_gross_exposure = self._apply_volatility_control(max_gross_exposure)
 
-        # 归一化并应用仓位上限
+        # 归一化
         raw_weights = {}
         for c in selected:
-            normalized_position = (c['position'] / total_position) * max_gross_exposure if total_position > 0 else 0
-            raw_weights[c['code']] = normalized_position
+            raw_weights[c['code']] = (c['position'] / total_position) * max_gross_exposure if total_position > 0 else 0
+
+        # === 风险控制：限制单只股票权重 ===
+        # 防止过度集中，提高组合分散度
+        for code in raw_weights:
+            if raw_weights[code] > self.max_single_weight:
+                raw_weights[code] = self.max_single_weight
+
+        # 重新归一化（权重被限制后需要重新调整）
+        total_weight = sum(raw_weights.values())
+        if total_weight > 0:
+            raw_weights = {c: w / total_weight * max_gross_exposure for c, w in raw_weights.items()}
 
         # 构建目标市值
-        desired_value = {
-            c: raw_weights[c] * total_equity
-            for c in raw_weights
-        }
+        desired_value = {c: raw_weights[c] * total_equity for c in raw_weights}
 
-        # 记录选股结果供验证使用（只记录Top-N）
+        # 记录选股结果
         self.last_selection = [
             {
                 'date': date,
@@ -381,12 +391,12 @@ class PortfolioConstructor:
                 'score': c['score'],
                 'weight': raw_weights.get(c['code'], 0),
                 'industry': c.get('industry', ''),
+                'rank_pct': c.get('rank_pct', 0),
             }
             for c in selected
         ]
 
-        # 记录最大持仓数量，供build()中智能换仓使用
-        self.current_n_positions = n_positions
+        self.current_n_positions = len(selected)
 
         return desired_value
 

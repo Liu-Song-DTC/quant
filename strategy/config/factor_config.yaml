@@ -9,21 +9,22 @@
 # dynamic:  只用动态因子
 # fixed:    只用静态行业因子
 # both:     动态优先，失败fallback到静态
-factor_mode: both   # 动态优先，失败fallback到静态
+factor_mode: dynamic   # 只用动态因子（静态因子IC为负）
 
 # --- 1.1 动态因子 (第一层) ---
 # 注意: 是否启用由 factor_mode 决定（dynamic/both启用，fixed禁用）
+# === 过拟合优化：收紧阈值，优先稳定性 ===
 dynamic_factor:
-  train_window_days: 120           # IC训练窗口（天数）- 约4个月
+  train_window_days: 180           # IC训练窗口（天数）- 约6个月（增加以提高稳定性）
   forward_period: 20              # 计算future_ret的周期
-  top_n_factors: 3                 # 每个行业选几个因子
-  min_train_samples: 50            # 最少训练样本数
-  min_ic_dates: 10                 # 最少IC天数（增加以提高稳定性）
-  ic_decay_factor: 0.8           # IC时序衰减因子（1.0=不衰减，0.9/0.8=指数衰减）
-  fallback_to_static: true         # 动态失败时fallback到静态
+  top_n_factors: 3                 # 每个行业选几个因子（3因子IC最高：7.38%）
+  min_train_samples: 80            # 最少训练样本数（提高以增强稳定性）
+  min_ic_dates: 15                 # 最少IC天数（从10提高到15）
+  ic_decay_factor: 0.9           # IC时序衰减因子（从0.8提高到0.9，减少对近期IC的依赖）
+  fallback_to_static: false        # 动态失败时不用静态因子（静态因子IC为负）
   # === 阶段1优化：消除1F负IC问题 ===
   min_factor_count: 2              # 最少因子数量，1F fallback到静态
-  min_ic_1f: 0.10                  # 1因子最低IC门槛（10%）
+  min_ic_1f: 0.15                  # 1因子最低IC门槛（从10%提高到15%）
 
 # --- 回测因子配置 ---
 # 预计算和IC验证只使用这里定义的因子（统一配置）
@@ -62,36 +63,38 @@ industry_factor_config:
   lookback_days: 120               # 离线标定时的回看窗口
   forward_period: 20               # 离线标定时的forward窗口
 
-# 静态行业因子列表（离线标定结果）
+# 静态行业因子列表（离线标定结果 - 2024-04-13）
+# 使用优化版标定脚本，基于110万条因子数据，测试单因子+2/3因子组合
+# IC为截面标准化后的均值，IR=IC均值/IC标准差
 industry_factors:
-  自动化/制造:
-    factors: [fund_revenue_growth, mom_x_lowvol_20_20, mom_x_lowvol_20_10]
-  电力设备:
-    factors: [fund_score, fund_profit_growth, mom_x_lowvol_20_20]
-  基建/地产/石油石化:
-    factors: [fund_profit_growth, fund_score, fund_roe]
-  金融:
-    factors: [fund_cf_to_profit, fund_score, fund_roe]
-  化工:
-    factors: [fund_profit_growth, fund_revenue_growth, fund_score]
-  新能源车/风电:
-    factors: [fund_profit_growth, fund_revenue_growth, fund_score]
-  有色/钢铁/煤炭/建材:
-    factors: [fund_score, fund_revenue_growth, fund_profit_growth]
-  军工:
-    factors: [mom_x_lowvol_20_20, mom_x_lowvol_20_10, fund_profit_growth]
   互联网/软件:
-    factors: [fund_profit_growth, fund_score, fund_revenue_growth]
-  电子:
-    factors: [mom_x_lowvol_20_20, fund_profit_growth, fund_revenue_growth]
-  消费/传媒/农业/环保/医药:
-    factors: [fund_revenue_growth, fund_profit_growth, mom_x_lowvol_20_20]
-  半导体/光伏:
-    factors: [mom_x_lowvol_20_20, fund_revenue_growth, fund_profit_growth]
+    factors: [mom_x_lowvol_10_20, bb_rsi_combo, rsi_vol_combo]  # IC=0.0828, IR=0.28
   交运:
-    factors: [fund_profit_growth, fund_gross_margin, mom_x_lowvol_20_20]
+    factors: [bb_rsi_combo, bb_width_20, mom_x_lowvol_10_20]  # IC=0.0593, IR=0.15
+  军工:
+    factors: [fund_profit_growth, mom_x_lowvol_20_10, bb_rsi_combo]  # IC=0.1053, IR=0.30
+  化工:
+    factors: [mom_x_lowvol_10_10, momentum_reversal, fund_score]  # IC=0.0667, IR=0.29
+  半导体/光伏:
+    factors: [fund_score, fund_gross_margin, momentum_reversal]  # IC=0.0634, IR=0.24
+  基建/地产/石油石化:
+    factors: [fund_score, momentum_reversal]  # IC=0.0870, IR=0.34
+  新能源车/风电:
+    factors: [fund_profit_growth, fund_score, momentum_reversal]  # IC=0.0849, IR=0.41
+  有色/钢铁/煤炭/建材:
+    factors: [mom_x_lowvol_10_10, fund_score, momentum_reversal]  # IC=0.0797, IR=0.37
+  消费/传媒/农业/环保/医药:
+    factors: [fund_score, bb_width_20, bb_rsi_combo]  # IC=0.0589, IR=0.20
+  电力设备:
+    factors: [fund_score, mom_x_lowvol_10_20, mom_x_lowvol_10_10]  # IC=0.0850, IR=0.42
+  电子:
+    factors: [fund_score, fund_revenue_growth, momentum_reversal]  # IC=0.0653, IR=0.32
+  自动化/制造:
+    factors: [fund_score, mom_x_lowvol_20_20, mom_x_lowvol_10_10]  # IC=0.0830, IR=0.29
   通信/计算机:
-    factors: [fund_profit_growth, fund_score, fund_revenue_growth]
+    factors: [fund_score, mom_x_lowvol_10_10, mom_x_lowvol_20_20]  # IC=0.0671, IR=0.25
+  金融:
+    factors: [fund_score, rsi_factor, momentum_reversal]  # IC=0.1021, IR=0.29
 
 # --- 1.3 基础因子 (第三层/fallback) ---
 # 自动使用 mom_lowvol 复合因子，无需配置
@@ -112,7 +115,7 @@ indicator_params:
 # 2. 信号层 (Signal Layer)
 # ============================================
 signal:
-  buy_threshold: 0.18    # 从0.15提高到0.18，提高买入准确率
+  buy_threshold: 0.50    # 提高到0.5以过滤弱信号（理论分析：提高胜率）
   sell_threshold: -0.15
 
 # 市场状态乘数
@@ -125,12 +128,13 @@ regime_multiplier:
 # 3. 组合层 (Portfolio Layer)
 # ============================================
 portfolio:
-  max_position: 6
+  max_position: 10          # 增加持仓数量
   target_volatility: 0.20
   entry_speed: 1.0
   exit_speed: 1.0
   position_stop_loss: 0.15
   portfolio_stop_loss: 0.08
+  max_single_weight: 0.15   # 单只股票最大权重15%
 
 portfolio_stop_loss:
   enabled: true
