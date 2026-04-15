@@ -1,11 +1,8 @@
 #!/usr/bin/env python
 """
-静态因子离线标定 - 优化版本
+静态因子离线标定 - 基于因子预计算数据
 
-优化策略：
-1. 先分析单因子IC
-2. 只对Top 10因子测试组合
-3. 使用factor_preparer预计算数据
+使用factor_preparer预计算的因子数据进行IC分析
 """
 import os
 import sys
@@ -16,6 +13,7 @@ from itertools import combinations
 import warnings
 warnings.filterwarnings('ignore')
 from tqdm import tqdm
+from multiprocessing import Pool
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STRATEGY_DIR = os.path.dirname(SCRIPT_DIR)
@@ -97,8 +95,8 @@ def standardize_factor(df, factor_col):
     return df
 
 
-def analyze_industry_fast(industry_name, factor_df, stocks, factor_list, top_n=10):
-    """快速分析单个行业的最优因子组合"""
+def analyze_industry(industry_name, factor_df, stocks, factor_list):
+    """分析单个行业的最优因子组合"""
     if len(stocks) < 10:
         return None
 
@@ -115,69 +113,57 @@ def analyze_industry_fast(industry_name, factor_df, stocks, factor_list, top_n=1
     results = []
 
     # 单因子分析
-    single_factor_results = []
     for factor_name in available:
         # 截面标准化
         test_df = standardize_factor(ind_df, factor_name)
         ic_result = calc_ic_for_factor(test_df, factor_name)
 
-        if ic_result and abs(ic_result['mean_ic']) > 0.005:
-            single_factor_results.append({
+        if ic_result and abs(ic_result['mean_ic']) > 0.01:
+            results.append({
                 'factors': [factor_name],
                 'n_factors': 1,
                 **ic_result
             })
 
-    if not single_factor_results:
-        return None
+    # 2因子组合
+    for combo in combinations(available, 2):
+        f1, f2 = combo
+        combo_name = f'{f1}+{f2}'
 
-    # 按IC排序
-    single_factor_results.sort(key=lambda x: -x['mean_ic'])
-    results.extend(single_factor_results)
+        # 等权组合
+        test_df = ind_df[[f1, f2, 'future_ret', 'date', 'code']].dropna()
+        if len(test_df) < 500:
+            continue
 
-    # 只取Top N因子进行组合测试
-    top_factors = [r['factors'][0] for r in single_factor_results[:top_n]]
+        test_df['combo'] = (test_df[f1] + test_df[f2]) / 2
+        test_df = standardize_factor(test_df, 'combo')
 
-    # 2因子组合（只测试Top N因子）
-    if len(top_factors) >= 2:
-        for combo in combinations(top_factors, 2):
-            f1, f2 = combo
+        ic_result = calc_ic_for_factor(test_df, 'combo')
+        if ic_result and abs(ic_result['mean_ic']) > 0.01:
+            results.append({
+                'factors': [f1, f2],
+                'n_factors': 2,
+                **ic_result
+            })
 
-            # 等权组合
-            test_df = ind_df[[f1, f2, 'future_ret', 'date', 'code']].dropna()
-            if len(test_df) < 500:
-                continue
+    # 3因子组合
+    for combo in combinations(available, 3):
+        f1, f2, f3 = combo
 
-            test_df['combo'] = (test_df[f1] + test_df[f2]) / 2
-            test_df = standardize_factor(test_df, 'combo')
+        test_df = ind_df[[f1, f2, f3, 'future_ret', 'date', 'code']].dropna()
+        if len(test_df) < 500:
+            continue
 
-            ic_result = calc_ic_for_factor(test_df, 'combo')
-            if ic_result and abs(ic_result['mean_ic']) > 0.005:
-                results.append({
-                    'factors': [f1, f2],
-                    'n_factors': 2,
-                    **ic_result
-                })
+        test_df['combo'] = (test_df[f1] + test_df[f2] + test_df[f3]) / 3
+        test_df = standardize_factor(test_df, 'combo')
 
-    # 3因子组合（只测试Top N因子）
-    if len(top_factors) >= 3:
-        for combo in combinations(top_factors, 3):
-            f1, f2, f3 = combo
-
-            test_df = ind_df[[f1, f2, f3, 'future_ret', 'date', 'code']].dropna()
-            if len(test_df) < 500:
-                continue
-
-            test_df['combo'] = (test_df[f1] + test_df[f2] + test_df[f3]) / 3
-            test_df = standardize_factor(test_df, 'combo')
-
-            ic_result = calc_ic_for_factor(test_df, 'combo')
-            if ic_result and abs(ic_result['mean_ic']) > 0.005:
-                results.append({
-                    'factors': [f1, f2, f3],
-                    'n_factors': 3,
-                    **ic_result
-                })
+        ic_result = calc_ic_for_factor(test_df, 'combo')
+        if ic_result and abs(ic_result['mean_ic']) > 0.01:
+            results.append({
+                'factors': [f1, f2, f3],
+                'n_factors': 3,
+                **ic_result
+            })
 
     if not results:
         return None
@@ -189,7 +175,7 @@ def analyze_industry_fast(industry_name, factor_df, stocks, factor_list, top_n=1
 
 def main():
     print("=" * 80)
-    print("静态因子离线标定 - 优化版本")
+    print("静态因子离线标定 - 基于因子预计算数据")
     print("=" * 80)
 
     # 加载因子数据
@@ -220,7 +206,7 @@ def main():
         if len(stocks) < 10:
             continue
 
-        results = analyze_industry_fast(industry, factor_df, stocks, factor_list, top_n=10)
+        results = analyze_industry(industry, factor_df, stocks, factor_list)
         if results:
             all_results[industry] = results
 

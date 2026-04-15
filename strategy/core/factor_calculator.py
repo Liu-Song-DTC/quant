@@ -83,7 +83,10 @@ def calculate_indicators(
     # === 成交量 ===
     vol_ma_period = params.get('volume_ma_period', 20)
     result['volume_ma20'] = _sma(vol_arr, vol_ma_period)
-    result['volume_ratio'] = vol_arr / (result['volume_ma20'] + 1e-10)
+    # 成交量比 - 使用arctan压缩防止极端值
+    # 根因：停牌后复牌或异常交易会导致成交量比极大
+    raw_vol_ratio = vol_arr / (result['volume_ma20'] + 1e-6)
+    result['volume_ratio'] = np.arctan(raw_vol_ratio - 1) / (np.pi / 2)  # 相对于1的偏离，压缩到(-1, 1)
 
     # === ATR ===
     for period in params.get('atr_periods', [10, 14, 20]):
@@ -136,20 +139,35 @@ def calculate_indicators(
     result['price_pos_20'] = result['price_position_20']
 
     # === 复合因子（与backtest_factors配置一致）===
-    result['mom_x_lowvol_10_10'] = result['mom_10'] * (-result['volatility_10'])
-    result['mom_x_lowvol_10_20'] = result['mom_10'] * (-result['volatility_20'])
-    result['mom_x_lowvol_20_10'] = result['mom_20'] * (-result['volatility_10'])
-    result['mom_x_lowvol_20_20'] = result['mom_20'] * (-result['volatility_20'])
+    # 动量×低波动 - 使用tanh压缩
+    # 值域分析：mom约[-0.5, 0.5], vol约[0.01, 0.05]，乘积约[-0.025, 0.025]
+    # 为了统一量纲，放大后压缩
+    raw_mlv_10_10 = result['mom_10'] * (-result['volatility_10'])
+    raw_mlv_10_20 = result['mom_10'] * (-result['volatility_20'])
+    raw_mlv_20_10 = result['mom_20'] * (-result['volatility_10'])
+    raw_mlv_20_20 = result['mom_20'] * (-result['volatility_20'])
+    result['mom_x_lowvol_10_10'] = np.tanh(raw_mlv_10_10 * 20)  # 放大后压缩
+    result['mom_x_lowvol_10_20'] = np.tanh(raw_mlv_10_20 * 20)
+    result['mom_x_lowvol_20_10'] = np.tanh(raw_mlv_20_10 * 20)
+    result['mom_x_lowvol_20_20'] = np.tanh(raw_mlv_20_20 * 20)
 
-    result['rsi_vol_combo'] = (50 - result['rsi_14']) / 100 - result['volatility_20'] * 0.5
-    result['bb_rsi_combo'] = (50 - result['rsi_14']) / 100 - result['bb_pos_30'] * 0.3
+    # RSI+波动率组合 - tanh压缩
+    result['rsi_vol_combo'] = np.tanh((50 - result['rsi_14']) / 100 - result['volatility_20'] * 0.5)
+    # 布林带+RSI组合 - tanh压缩
+    result['bb_rsi_combo'] = np.tanh((50 - result['rsi_14']) / 100 - result['bb_pos_30'] * 0.3)
 
-    result['ret_vol_ratio_10'] = result['mom_10'] / (result['volatility_10'] + 1e-10)
-    result['ret_vol_ratio_20'] = result['mom_20'] / (result['volatility_20'] + 1e-10)
+    # 收益波动率比 - 使用arctan压缩防止极端值
+    # 根因：当volatility很小时，简单的除法会产生极大值
+    # 解决：使用np.arctan将任意值压缩到(-π/2, π/2)，然后缩放到(-1, 1)
+    raw_ratio_10 = result['mom_10'] / (result['volatility_10'] + 1e-6)  # 增大保护值
+    raw_ratio_20 = result['mom_20'] / (result['volatility_20'] + 1e-6)
+    result['ret_vol_ratio_10'] = np.arctan(raw_ratio_10) / (np.pi / 2)  # 压缩到(-1, 1)
+    result['ret_vol_ratio_20'] = np.arctan(raw_ratio_20) / (np.pi / 2)
 
-    result['momentum_reversal'] = -result.get('mom_20', np.zeros(n))
+    # 动量反转 - tanh压缩
+    result['momentum_reversal'] = np.tanh(-result.get('mom_20', np.zeros(n)) * 3)
     if 'mom_10' in result and 'mom_20' in result:
-        result['momentum_acceleration'] = result['mom_10'] - result['mom_20']
+        result['momentum_acceleration'] = np.tanh((result['mom_10'] - result['mom_20']) * 5)
 
     result['return_risk_ratio'] = result.get('ret_vol_ratio_10', np.zeros(n))
 
@@ -333,38 +351,41 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int) -> Dict[str,
     v20 = ind['volatility_20'][idx] if not np.isnan(ind['volatility_20'][idx]) else 0
     rsi = ind['rsi_14'][idx] if not np.isnan(ind['rsi_14'][idx]) else 50
 
-    # 趋势动量
+    # 趋势动量 - 使用arctan压缩防止极端值
+    # 根因：m20可能很大（如50%涨幅），乘以2.1后更大
+    # 解决：使用arctan压缩，保留单调性同时限制值域
     if m10 > 0:
-        result['trend_mom_v41'] = m20 * 2.1
-        result['trend_mom_v24'] = m20 * 2.1
-        result['trend_mom_v46'] = m20 * 2.05
+        result['trend_mom_v41'] = np.tanh(m20 * 3)  # 压缩到(-1, 1)
+        result['trend_mom_v24'] = np.tanh(m20 * 3)
+        result['trend_mom_v46'] = np.tanh(m20 * 2.5)
     else:
         result['trend_mom_v41'] = 0.0
-        result['trend_mom_v24'] = m20 * 0.04
+        result['trend_mom_v24'] = np.tanh(m20 * 0.5)  # 下跌时轻微负值
         result['trend_mom_v46'] = 0.0
 
-    # 动量×低波动
-    result['mom_x_lowvol_20_20'] = m20 * (-v20)
-    result['mom_x_lowvol_20_10'] = m20 * (-v10)
-    result['mom_x_lowvol_10_20'] = m10 * (-v20)
-    result['mom_x_lowvol_10_10'] = m10 * (-v10)
+    # 动量×低波动 - tanh压缩
+    result['mom_x_lowvol_20_20'] = np.tanh(m20 * (-v20) * 20)
+    result['mom_x_lowvol_20_10'] = np.tanh(m20 * (-v10) * 20)
+    result['mom_x_lowvol_10_20'] = np.tanh(m10 * (-v20) * 20)
+    result['mom_x_lowvol_10_10'] = np.tanh(m10 * (-v10) * 20)
 
-    # 动量差异
+    # 动量差异 - tanh压缩
     mom_5 = ind['mom_5'][idx] if not np.isnan(ind['mom_5'][idx]) else 0
-    result['mom_diff_5_20'] = mom_5 - m20
-    result['mom_diff_10_20'] = m10 - m20
+    result['mom_diff_5_20'] = np.tanh((mom_5 - m20) * 5)
+    result['mom_diff_10_20'] = np.tanh((m10 - m20) * 5)
 
-    # RSI因子
+    # RSI因子 - 已经在[-0.5, 0.5]范围，无需压缩
     result['rsi_factor'] = (rsi - 50) / 100
 
-    # 波动率因子
-    result['volatility'] = -v20
+    # 波动率因子 - 使用tanh压缩
+    result['volatility'] = np.tanh(-v20 * 20)
 
-    # 成交量因子
-    result['volume_ratio'] = ind['volume_ratio'][idx] if not np.isnan(ind['volume_ratio'][idx]) else 1.0
+    # 成交量因子 - 从ind获取（已在calculate_indicators中压缩）
+    result['volume_ratio'] = ind['volume_ratio'][idx] if not np.isnan(ind['volume_ratio'][idx]) else 0.0
 
-    # 布林带宽度
-    result['bb_width_20'] = ind['bb_width_20'][idx] if not np.isnan(ind['bb_width_20'][idx]) else 0
+    # 布林带宽度 - 使用tanh压缩
+    bb_w = ind['bb_width_20'][idx] if not np.isnan(ind['bb_width_20'][idx]) else 0
+    result['bb_width_20'] = np.tanh(bb_w * 2)
 
     # 复合因子
     trend_mom = result.get('trend_mom_v41', 0)
