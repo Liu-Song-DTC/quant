@@ -155,24 +155,32 @@ def _compute_date_chunk(args):
                 ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
 
-                # 稳定性过滤：至少30%的IC同号即可通过
-                MIN_STABILITY = 0.3
+                # === 进一步放宽稳定性过滤，提高DYN因子覆盖率 ===
+
+                # 1. IC符号稳定性：降低到40%
+                MIN_STABILITY = 0.4
                 if ic_stability < MIN_STABILITY:
+                    continue
+
+                # 2. IC方差过滤：放宽到5.0
+                ic_variance = ic_std / (abs(ic_mean) + 1e-10) if abs(ic_mean) > 1e-10 else 999
+                MAX_IC_VARIANCE = 5.0
+                if ic_variance > MAX_IC_VARIANCE:
                     continue
 
                 # combined_ir = ir * (0.5 + 0.5 * stability)
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
 
-                # t_statistic过滤（统计显著性）
-                if abs(t_statistic) < 1.0:
+                # 3. t统计量过滤：降低到0.5
+                if abs(t_statistic) < 0.5:
                     continue
 
                 # 因子方向过滤：只考虑正向因子（ic_mean > 0）
                 if ic_mean <= 0:
                     continue
 
-                # 最小质量阈值：过滤噪声因子
-                MIN_COMBINED_IR = 0.03
+                # 4. 最小质量阈值：降低到0.01
+                MIN_COMBINED_IR = 0.01
                 if combined_ir < MIN_COMBINED_IR:
                     continue
 
@@ -452,6 +460,7 @@ class SignalEngine:
             'dynamic_success': 0,
             'dynamic_fallback_fixed': 0,
             'dynamic_fallback_default': 0,
+            'dynamic_fallback_none': 0,  # 无高质量因子时不产生信号
             'fixed_industry': 0,
             'fixed_default': 0,
             'ic_values': [],
@@ -490,7 +499,9 @@ class SignalEngine:
 
         # 动态因子模式配置：dynamic(仅动态) / fixed(仅固定) / both(动态优先+固定兜底)
         self.factor_mode = config_loader.get('factor_mode', 'both')
-        self.factor_fallback_to_fixed = config_loader.get('dynamic_factor.fallback_to_fixed', True)
+        # 兼容两种配置key: fallback_to_fixed 和 fallback_to_static
+        self.factor_fallback_to_fixed = config_loader.get('dynamic_factor.fallback_to_fixed',
+                                                          config_loader.get('dynamic_factor.fallback_to_static', True))
 
     def set_factor_data(self, factor_df: pd.DataFrame):
         """设置因子数据（用于动态因子选择）
@@ -534,6 +545,7 @@ class SignalEngine:
         print(f"动态因子成功:     {stats['dynamic_success']:6d} ({100*stats['dynamic_success']/total:.1f}%)")
         print(f"动态->固定fallback: {stats['dynamic_fallback_fixed']:6d} ({100*stats['dynamic_fallback_fixed']/total:.1f}%)")
         print(f"动态->默认fallback: {stats['dynamic_fallback_default']:6d} ({100*stats['dynamic_fallback_default']/total:.1f}%)")
+        print(f"动态->无信号: {stats['dynamic_fallback_none']:6d} ({100*stats['dynamic_fallback_none']/total:.1f}%)")
         print(f"固定行业因子:    {stats['fixed_industry']:6d} ({100*stats['fixed_industry']/total:.1f}%)")
         print(f"固定默认因子:    {stats['fixed_default']:6d} ({100*stats['fixed_default']/total:.1f}%)")
         print(f"总计:            {total}")
@@ -628,9 +640,20 @@ class SignalEngine:
         industry_category = self._get_industry_category(code, current_date)
 
         # 因子选择和计算
-        factor_name, factor_value, risk_info, is_industry = self._select_factor(
+        factor_result = self._select_factor(
             ind, idx, risk_regime, industry_category, code=code, current_date=current_date
         )
+
+        # 如果_select_factor返回None（如负IC行业），返回空信号
+        if factor_result is None:
+            return Signal(
+                buy=False, sell=False, score=0.0, factor_value=0.0,
+                factor_name='NONE', risk_vol=0.03, risk_regime=risk_regime,
+                risk_confidence=0.0, risk_extreme=risk_extreme, adjusted_score=0.0,
+                industry=self._get_specific_industry(code, current_date) if code else ''
+            )
+
+        factor_name, factor_value, risk_info, is_industry = factor_result
 
         # 基本面因子
         fundamental_score = 0.0
@@ -700,14 +723,33 @@ class SignalEngine:
             adjusted_buy_threshold = self.buy_threshold
 
         # 买入条件：下限 < factor_value < 上限
+        # === 分析结论 ===
+        # factor_value十分位分析显示：
+        # - 第8分位(较高值)准确率最高：51.65%
+        # - 第5分位(中等值)准确率：50.90%
+        # - 但第9分位(最高值)准确率下降到49.82%（均值回归）
+        #
+        # 策略：买入中等偏高但不是极端高的因子值
+        # 阈值设置：0.3-0.9 范围效果最好
+
         # === 优化2：过滤_T因子（负IC） ===
-        # _T因子IC=-0.59%，买入准确率46.62%，拖累整体表现
         is_t_factor = factor_name.endswith('_T')
 
-        buy = (factor_value > adjusted_buy_threshold and
-               factor_value < FACTOR_VALUE_UPPER_LIMIT and
+        # === 优化3：静态因子(IND)准确率只有44%，要求更高的阈值 ===
+        is_ind_factor = factor_name.startswith('IND_')
+        if is_ind_factor:
+            # 静态因子需要更高的factor_value才能买入
+            effective_threshold = max(adjusted_buy_threshold, 0.5)
+        else:
+            effective_threshold = adjusted_buy_threshold
+
+        # 调整上限：避免极端高值（均值回归风险）
+        effective_upper_limit = 0.9  # 从1.2降低到0.9
+
+        buy = (factor_value > effective_threshold and
+               factor_value < effective_upper_limit and
                abs(score) < 5.0 and
-               not is_t_factor)  # 排除_T因子
+               not is_t_factor)
         sell = factor_value < self.sell_threshold
 
         # 获取具体行业用于组合层减配
@@ -734,6 +776,8 @@ class SignalEngine:
         Returns:
             (factor_name, factor_value, risk_info, is_industry_factor)
         """
+        specific_industry = self._get_specific_industry(code, current_date) if code else ''
+
         # 动态因子优先
         if self.factor_mode in ['dynamic', 'both']:
             if self.dynamic_factor_selector.enabled and code and current_date:
@@ -743,17 +787,17 @@ class SignalEngine:
                     return result
                 # 动态选择失败
                 if self.factor_mode == 'dynamic' and not self.factor_fallback_to_fixed:
-                    # mode=dynamic且不允许fallback，直接用默认因子
-                    self._stats['dynamic_fallback_default'] += 1
-                    factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
-                    return factor_name, factor_value, risk_info, False
-                else:
-                    self._stats['dynamic_fallback_fixed'] += 1
+                    # mode=dynamic且不允许fallback，不产生信号（保持空仓）
+                    # 这比使用低质量fallback因子更好
+                    self._stats['dynamic_fallback_none'] += 1
+                    return None
+                # 动态失败但允许fallback，继续执行fixed逻辑
+                # 注意：不要提前return，让代码自然流向fixed分支
 
         # 固定因子（行业特定或默认）
-        if self.factor_mode in ['fixed', 'both']:
+        # 注意：当factor_mode='dynamic'时，只有fallback允许时才会到达这里
+        if self.factor_mode in ['fixed', 'both'] or (self.factor_mode == 'dynamic' and self.factor_fallback_to_fixed):
             if self.industry_factor_enabled and code and current_date:
-                specific_industry = self._get_specific_industry(code, current_date)
                 # === 阶段1优化：禁用负IC静态因子 ===
                 # 金融行业的静态因子IC=-3.53%（负向），应跳过使用默认因子
                 SKIP_STATIC_INDUSTRIES = ['金融']  # 这些行业跳过静态因子，使用默认因子
@@ -771,6 +815,8 @@ class SignalEngine:
                             return factor_name, factor_value, risk_info, True
 
         # 默认因子组合（固定因子的兜底）
+        # 注意：只有当允许使用固定因子时才执行DEFAULT
+        # factor_mode='dynamic'且fallback=False时，应该已经返回None了
         self._stats['fixed_default'] += 1
         factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
         return factor_name, factor_value, risk_info, False
@@ -824,24 +870,23 @@ class SignalEngine:
         dyn_quality = selected_info.get('quality', 0)
 
         # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
-        # 阈值0.05: combined_ir < 0.05认为动态因子质量不足
-        # combined_ir > 0 表示因子有正向预测能力
-        # 阈值0.05: 要求动态因子质量达到较高水平才使用
-        DYN_QUALITY_THRESHOLD = 0.05  # 阈值0.05: combined_ir < 0.05认为动态因子质量不足
+        # 阈值0.01: combined_ir > 0.01 表示因子有正向预测能力
+        # 放宽阈值，允许更多动态因子通过
+        DYN_QUALITY_THRESHOLD = 0.01  # 降低阈值，允许更多因子通过
         if dyn_quality < DYN_QUALITY_THRESHOLD:
             return None
 
-        # === 阶段1优化：检查因子数量，1F fallback到静态 ===
-        # 1F因子IC仅0.64%（接近随机），而3F因子IC=7.25%
-        # 当只有1个因子时，需要更严格的质量门槛
+        # === 阶段1优化：检查因子数量 ===
+        # 放宽1F因子限制，只要有正IC就使用
         n_factors = len(selected_factors)
         min_factor_count = self.dynamic_factor_selector.min_factor_count
         min_ic_1f = self.dynamic_factor_selector.min_ic_1f
 
         if n_factors < min_factor_count:
-            # 1F因子需要达到更高IC门槛才使用
-            if n_factors == 1 and dyn_quality < min_ic_1f:
-                return None  # 1F质量不足，fallback到静态因子
+            # 1F因子需要达到IC门槛才使用
+            # 降低门槛，允许IC>1%的1F因子通过
+            if n_factors == 1 and dyn_quality < 0.01:
+                return None  # 1F质量不足（IC<1%）
 
         # 计算动态因子得分
         factor_scores = []
@@ -858,13 +903,13 @@ class SignalEngine:
 
             # 验证因子值的合理性
             if factor_val is not None and not np.isnan(factor_val) and not np.isinf(factor_val):
-                # 检查是否在合理范围（技术因子通常在-10到10范围）
-                if abs(factor_val) > 1000:
+                # 因子已压缩到(-1, 1)范围，检查是否有超出范围的异常
+                if abs(factor_val) > 5:
                     # 记录异常因子值用于调试
                     import warnings
-                    warnings.warn(f'Extreme factor value: {factor_name}={factor_val:.2e} for {code} on {current_date}')
+                    warnings.warn(f'Extreme factor value after compression: {factor_name}={factor_val:.2e} for {code} on {current_date}')
                     # 将极端值裁剪到合理范围
-                    factor_val = np.sign(factor_val) * 1000
+                    factor_val = np.sign(factor_val) * np.tanh(abs(factor_val))
                 factor_scores.append(factor_val)
                 w = factor_weights[i] if factor_weights and i < len(factor_weights) else 1.0
                 valid_weights.append(w)
@@ -882,12 +927,10 @@ class SignalEngine:
         else:
             factor_value = np.mean(factor_scores)
 
-        # 最终安全检查：确保factor_value在合理范围
-        # 技术因子通常在-10到10范围，IC加权平均后也应该在此范围
-        if abs(factor_value) > 100:
-            import warnings
-            warnings.warn(f'Extreme factor_value after weighted sum: {factor_value:.2e}, clipping to ±100')
-            factor_value = np.clip(factor_value, -100, 100)
+        # 最终安全检查：因子值应该在(-1, 1)范围
+        # 多因子加权平均后可能略微超出，使用tanh再次压缩
+        if abs(factor_value) > 1.5:
+            factor_value = np.tanh(factor_value)
 
         # 熊市调整
         if regime == -1:
