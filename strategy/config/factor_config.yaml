@@ -21,7 +21,7 @@ dynamic_factor:
   min_train_samples: 80            # 最少训练样本数
   min_ic_dates: 20                 # 最少IC天数（适度提高）
   ic_decay_factor: 0.92            # 减少对近期IC的依赖
-  fallback_to_static: false        # 动态失败时不用静态因子（静态因子IC为负）
+  fallback_to_static: true         # 动态失败时fallback到静态因子（静态因子对某些行业IC为正）
   # === 阶段1优化：消除1F负IC问题 ===
   min_factor_count: 2              # 最少因子数量
   min_ic_1f: 0.15                  # 1因子最低IC门槛
