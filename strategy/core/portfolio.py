@@ -4,24 +4,28 @@ from copy import deepcopy
 from .config_loader import load_config
 
 # === 阶段3优化：基于买入准确率的行业权重调整 ===
-# 数据来源：validation_results.csv 的买入信号准确率分析
-# 准确率>52%: 增配（权重1.2）
-# 准确率50-52%: 正常（权重1.0）
-# 准确率<50%: 减配（权重0.5-0.75）
+# 数据来源：validation_results.csv 的买入信号准确率分析 (2026-04-15更新)
+# 准确率>55%: 增配（权重1.2）
+# 准确率50-55%: 正常（权重1.0）
+# 准确率<50%: 减配（权重0.3-0.8）
 INDUSTRY_DISCOUNT = {
-    # 高准确率行业 - 增配
-    '通信/计算机': 1.2,     # 准确率54.55%，增配20%
-    # 中等准确率 - 正常
-    '电子': 1.0,           # 准确率51.00%
-    '电力设备': 1.0,       # 准确率50.94%
-    '化工': 0.9,           # 准确率52.03%，IC略负，轻微减配
-    # 低准确率行业 - 减配
-    '互联网/软件': 0.6,    # 准确率47.83%，减配40%
-    '金融': 0.65,          # 准确率48.85%，减配35%
-    '基建/地产/石油石化': 0.6,  # 准确率48.09%，减配40%
-    '交运': 0.6,           # 准确率48.32%，减配40%
-    '半导体/光伏': 0.8,    # 准确率49.57%，减配20%
-    '自动化/制造': 0.7,    # 准确率未知，IC略负，轻微减配
+    # 高准确率行业 (>55%) - 增配
+    '通信/计算机': 1.2,     # 准确率58.71%，增配20%
+    '新能源车/风电': 1.2,  # 准确率57.35%，增配20%
+    # 中等准确率 (50-55%) - 正常
+    '电子': 1.0,           # 准确率53.85%
+    '自动化/制造': 1.0,    # 准确率52.80%
+    '消费/传媒/农业/环保/医药': 1.0,  # 准确率52.60%
+    '有色/钢铁/煤炭/建材': 1.0,  # 准确率52.16%
+    '金融': 1.1,           # 准确率54.24%，轻微增配
+    '交运': 1.0,           # 准确率50.94%
+    # 低准确率行业 (<50%) - 减配
+    '半导体/光伏': 0.7,    # 准确率47.21%，减配30%
+    '电力设备': 0.7,       # 准确率46.93%，减配30%
+    '化工': 0.6,           # 准确率45.97%，减配40%
+    '军工': 0.5,           # 准确率43.56%，减配50%
+    '互联网/软件': 0.4,    # 准确率41.78%，减配60%
+    '基建/地产/石油石化': 0.3,  # 准确率39.20%，减配70%
 }
 
 # === 模块1优化: 降低换手率 ===
@@ -84,23 +88,30 @@ class PortfolioConstructor:
         self.current_ranking = {}  # code -> rank (0-indexed) for smart rebalancing
         self.current_n_positions = 0  # current max positions for keep zone calculation
 
-    def _get_risk_multiplier(self, regime, risk_extreme, momentum_score=0.0):
+    def _get_risk_multiplier(self, regime, risk_extreme, momentum_score=0.0, bear_risk=False):
         """计算风险乘数
 
         注意：momentum_score是滞后指标，不应过度依赖
+        bear_risk: 真正的熊市风险（深度回撤 + 长期下跌趋势）
         """
+        if bear_risk:
+            # 熊市风险期：大幅降仓
+            return 0.3
         if risk_extreme:  # 极端波动
             return 0.7
         return 1.0  # 正常仓位
 
-    def _get_position_count(self, market_regime, risk_extreme_exists):
+    def _get_position_count(self, market_regime, risk_extreme_exists, bear_risk=False):
         """计算动态持仓数量
 
         熊市减少持仓数量但更集中（IC更高，命中率更高）
         """
         base_count = self.max_position
 
-        if market_regime == -1:  # 熊市
+        if bear_risk:
+            # 熊市风险期：极低仓位
+            return max(2, int(base_count * 0.3))
+        if market_regime == -1:  # 熊市（短期下跌）
             # 熊市减少持仓数量，更集中
             return max(3, int(base_count * 0.5))
         elif risk_extreme_exists:  # 极端波动
@@ -109,7 +120,7 @@ class PortfolioConstructor:
         else:
             return base_count
 
-    def _calculate_position_limit(self, drawdown, risk_extreme_exists, market_regime=0, momentum_score=0.0):
+    def _calculate_position_limit(self, drawdown, risk_extreme_exists, market_regime=0, momentum_score=0.0, bear_risk=False):
         """根据回撤和极端状态计算总仓位上限
 
         A股优化：收紧阈值，控制回撤
@@ -126,7 +137,7 @@ class PortfolioConstructor:
             max_gross_exposure = 1.0
 
         # 应用风险乘数
-        risk_multiplier = self._get_risk_multiplier(market_regime, risk_extreme_exists, momentum_score)
+        risk_multiplier = self._get_risk_multiplier(market_regime, risk_extreme_exists, momentum_score, bear_risk)
         max_gross_exposure = max_gross_exposure * risk_multiplier
 
         # 组合止损触发后强制降仓
@@ -254,6 +265,7 @@ class PortfolioConstructor:
         prices,
         market_regime=0,
         momentum_score=0.0,
+        bear_risk=False,
     ):
         """构建目标持仓 - 基于因子排名选股
 
@@ -324,6 +336,7 @@ class PortfolioConstructor:
         selected = []
         for c in candidates:
             ind = c['industry']
+
             if industry_count.get(ind, 0) >= industry_cap:
                 continue
 
@@ -335,7 +348,7 @@ class PortfolioConstructor:
             industry_count[ind] = industry_count.get(ind, 0) + 1
 
             # 动态持仓数量
-            n_positions = self._get_position_count(market_regime, risk_extreme_exists)
+            n_positions = self._get_position_count(market_regime, risk_extreme_exists, bear_risk)
             if len(selected) >= n_positions:
                 break
 
@@ -369,7 +382,7 @@ class PortfolioConstructor:
             total_position += c['position']
 
         # 总仓位上限
-        max_gross_exposure = self._calculate_position_limit(drawdown, risk_extreme_exists, market_regime, momentum_score)
+        max_gross_exposure = self._calculate_position_limit(drawdown, risk_extreme_exists, market_regime, momentum_score, bear_risk)
         max_gross_exposure = self._apply_volatility_control(max_gross_exposure)
 
         # 归一化
@@ -418,6 +431,7 @@ class PortfolioConstructor:
         prices,
         market_regime,  # 市场状态用于熊市保护
         momentum_score=0.0,  # 市场动量分数，用于动态仓位调整
+        bear_risk=False,  # 熊市风险信号
         cost=None,
         rebalance=False,
     ):
@@ -463,6 +477,7 @@ class PortfolioConstructor:
                 prices=prices,
                 market_regime=market_regime,
                 momentum_score=momentum_score,
+                bear_risk=bear_risk,
             )
 
         # 强制卖出

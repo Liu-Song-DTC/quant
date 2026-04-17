@@ -458,6 +458,7 @@ class SignalEngine:
         # 因子选择统计
         self._stats = {
             'dynamic_success': 0,
+            'dynamic_skip_low_ic': 0,  # 低IC行业跳过动态因子
             'dynamic_fallback_fixed': 0,
             'dynamic_fallback_default': 0,
             'dynamic_fallback_none': 0,  # 无高质量因子时不产生信号
@@ -543,6 +544,7 @@ class SignalEngine:
 
         print("\n========== 因子选择统计 ==========")
         print(f"动态因子成功:     {stats['dynamic_success']:6d} ({100*stats['dynamic_success']/total:.1f}%)")
+        print(f"动态跳过(低IC):   {stats['dynamic_skip_low_ic']:6d} ({100*stats['dynamic_skip_low_ic']/total:.1f}%)")
         print(f"动态->固定fallback: {stats['dynamic_fallback_fixed']:6d} ({100*stats['dynamic_fallback_fixed']/total:.1f}%)")
         print(f"动态->默认fallback: {stats['dynamic_fallback_default']:6d} ({100*stats['dynamic_fallback_default']/total:.1f}%)")
         print(f"动态->无信号: {stats['dynamic_fallback_none']:6d} ({100*stats['dynamic_fallback_none']/total:.1f}%)")
@@ -595,6 +597,7 @@ class SignalEngine:
                 'trend_score': 0.0, 'volatility': 0.15, 'is_extreme': False,
                 'style_regime': 'balanced', 'style_score': 0.0,
                 'size_score': 0.0, 'style_confidence': 0.0,
+                'bear_risk': False,
             }
 
         dt = pd.to_datetime(date)
@@ -611,12 +614,14 @@ class SignalEngine:
                 'style_score': float(row.get('style_score', 0.0)),
                 'size_score': float(row.get('size_score', 0.0)),
                 'style_confidence': float(row.get('style_confidence', 0.0)),
+                'bear_risk': bool(row.get('bear_risk', False)),
             }
         return {
             'regime': 0, 'confidence': 0.0, 'momentum_score': 0.0,
             'trend_score': 0.0, 'volatility': 0.15, 'is_extreme': False,
             'style_regime': 'balanced', 'style_score': 0.0,
             'size_score': 0.0, 'style_confidence': 0.0,
+            'bear_risk': False,
         }
 
     def _generate_signal(self, ind: dict, idx: int, last_sig, current_date=None, code=None) -> Signal:
@@ -711,15 +716,18 @@ class SignalEngine:
         # 方案：设置factor_value上限，过滤动量过热的股票
         FACTOR_VALUE_UPPER_LIMIT = 1.2  # factor_value上限（避免动量过热）
 
-        # 下限阈值：市场择时调整
-        market_momentum = market_info.get('momentum_score', 0.0)
-        if market_momentum < -0.5:
-            adjusted_buy_threshold = self.buy_threshold * 2.0
-        elif market_momentum < -0.2:
-            adjusted_buy_threshold = self.buy_threshold * 1.5
-        elif market_momentum < 0:
-            adjusted_buy_threshold = self.buy_threshold * 1.2
-        else:
+        # === 阶段3优化：基于市场状态调整买入阈值 ===
+        # 分析发现：最优因子值范围随市场状态变化
+        # - 牛市(regime=1): [0.7, 0.9)准确率54%, [0.5, 0.7)准确率44%（有毒！）
+        # - 熊市(regime=-1): [0.6, 0.7)准确率54%, 整体表现更稳
+        # - 震荡(regime=0): [0.5, 0.7)准确率50%, [0.8, 0.9)准确率44%（有毒！）
+        market_regime = market_info.get('regime', 0)
+
+        if market_regime == 1:  # 牛市：要求更高的因子值
+            adjusted_buy_threshold = 0.70  # 提高下限，过滤低质量信号
+        elif market_regime == -1:  # 熊市：适度降低要求（捕捉反弹机会）
+            adjusted_buy_threshold = 0.55  # 熊市低因子值表现更好
+        else:  # 震荡市
             adjusted_buy_threshold = self.buy_threshold
 
         # 买入条件：下限 < factor_value < 上限
@@ -732,7 +740,8 @@ class SignalEngine:
         # 策略：买入中等偏高但不是极端高的因子值
         # 阈值设置：0.3-0.9 范围效果最好
 
-        # === 优化2：过滤_T因子（负IC） ===
+        # === 优化2：Technical因子(_T) IC更高(3.49% vs 3.08%)，不再过滤 ===
+        # 2026-04-15: 数据分析显示Technical因子IC高于Fundamental，应允许买入
         is_t_factor = factor_name.endswith('_T')
 
         # === 优化3：静态因子(IND)准确率只有44%，要求更高的阈值 ===
@@ -743,13 +752,23 @@ class SignalEngine:
         else:
             effective_threshold = adjusted_buy_threshold
 
-        # 调整上限：避免极端高值（均值回归风险）
-        effective_upper_limit = 0.9  # 从1.2降低到0.9
+        # === 阶段3优化：市场状态相关的上限调整 ===
+        # 分析发现：
+        # - 牛市: [0.7, 0.9)准确率54%, 但没有>0.9数据，保守设置
+        # - 熊市: [0.8, 0.9)准确率下降到51%, 可降低上限
+        # - 震荡: [0.8, 0.9)准确率44%(有毒！), 应降低上限
+        if market_regime == 1:  # 牛市
+            effective_upper_limit = 0.95  # 允许更高的因子值
+        elif market_regime == 0:  # 震荡市
+            effective_upper_limit = 0.85  # 降低上限，避免高因子值风险
+        else:  # 熊市
+            effective_upper_limit = 0.90
 
+        # 分析发现: factor_value在[0.7, 0.9)区间准确率最高(52.10%)
+        # 但排名选股系统已使用rank_pct筛选，这里仅作为安全边界
         buy = (factor_value > effective_threshold and
                factor_value < effective_upper_limit and
-               abs(score) < 5.0 and
-               not is_t_factor)
+               abs(score) < 5.0)
         sell = factor_value < self.sell_threshold
 
         # 获取具体行业用于组合层减配

@@ -21,6 +21,8 @@ class MarketRegimeInfo:
     style_score: float    # 风格分数: -1(大盘/价值) 到 1(小盘/成长)
     size_score: float     # 大小盘分数: -1(大盘) 到 1(小盘)
     style_confidence: float  # 风格置信度: 0-1
+    # 熊市风险信号 (新增)
+    bear_risk: bool       # 熊市风险（用于风险管理）
 
     def to_dict(self) -> dict:
         return {
@@ -34,6 +36,7 @@ class MarketRegimeInfo:
             'style_score': self.style_score,
             'size_score': self.size_score,
             'style_confidence': self.style_confidence,
+            'bear_risk': self.bear_risk,
         }
 
 
@@ -73,6 +76,12 @@ class MarketRegimeDetector:
         self.size_lookback_long = 60  # 长期动量比较
         self.size_threshold = 0.03  # 3%阈值判断大小盘
 
+        # === 新增：熊市风险检测参数 ===
+        # 用于风险管理的熊市检测（不同于短期超跌检测）
+        self.bear_risk_ma_period = 120  # 均线周期
+        self.bear_risk_drawdown = 0.15  # 回撤阈值 15%
+        self.bear_risk_momentum = -0.10  # 120日动量阈值 -10%
+
     def generate(self, index_df: pd.DataFrame):
         """
         生成市场状态序列
@@ -98,6 +107,8 @@ class MarketRegimeDetector:
         self.index_data['style_score'] = [r.style_score for r in regime_info_list]
         self.index_data['size_score'] = [r.size_score for r in regime_info_list]
         self.index_data['style_confidence'] = [r.style_confidence for r in regime_info_list]
+        # 熊市风险信号
+        self.index_data['bear_risk'] = [r.bear_risk for r in regime_info_list]
 
         return self.index_data
 
@@ -117,6 +128,7 @@ class MarketRegimeDetector:
         self.momentum_60 = close / close.shift(60) - 1
         self.momentum_10 = close / close.shift(10) - 1
         self.momentum_5 = close / close.shift(5) - 1
+        self.momentum_120 = close / close.shift(120) - 1  # 新增120日动量
 
         # 波动率
         returns = close.pct_change()
@@ -127,6 +139,11 @@ class MarketRegimeDetector:
         self.size_momentum = self.momentum_10  # 个股相对于指数的动量
         self.size_momentum_long = self.momentum  # 长期动量
 
+        # === 新增：熊市风险指标 ===
+        # 计算回撤
+        self.rolling_max = close.rolling(window=120, min_periods=1).max()
+        self.drawdown = (close - self.rolling_max) / self.rolling_max
+
     def _detect_detailed(self, i: int) -> MarketRegimeInfo:
         """
         详细检测 - 输出多种信号
@@ -135,7 +152,8 @@ class MarketRegimeDetector:
             return MarketRegimeInfo(
                 regime=0, confidence=0.0, momentum_score=0.0,
                 trend_score=0.0, volatility=0.0, is_extreme=False,
-                style_regime='balanced', style_score=0.0, size_score=0.0, style_confidence=0.0
+                style_regime='balanced', style_score=0.0, size_score=0.0, style_confidence=0.0,
+                bear_risk=False
             )
 
         # 获取各指标
@@ -193,6 +211,15 @@ class MarketRegimeDetector:
         # === 极端状态判断 ===
         is_extreme = vol > self.vol_extreme_high or vol < self.vol_extreme_low
 
+        # === 熊市风险检测（用于风险管理）===
+        # 条件：深度回撤 + 长期动量为负
+        # 不同于短期下跌检测，这是真正的系统性风险
+        drawdown = self._safe_get(self.drawdown, i, 0)
+        mom_120 = self._safe_get(self.momentum_120, i, 0)
+        bear_risk = (drawdown < -self.bear_risk_drawdown and
+                     mom_120 < self.bear_risk_momentum and
+                     ema_bearish)
+
         # === 风格状态检测 (新增) ===
         style_regime, style_score, size_score, style_confidence = self._detect_style_regime(i)
 
@@ -206,7 +233,8 @@ class MarketRegimeDetector:
             style_regime=style_regime,
             style_score=style_score,
             size_score=size_score,
-            style_confidence=style_confidence
+            style_confidence=style_confidence,
+            bear_risk=bear_risk
         )
 
     def _detect_style_regime(self, i: int):
@@ -298,6 +326,7 @@ class MarketRegimeDetector:
             style_score=float(self.index_data.loc[idx, 'style_score']),
             size_score=float(self.index_data.loc[idx, 'size_score']),
             style_confidence=float(self.index_data.loc[idx, 'style_confidence']),
+            bear_risk=bool(self.index_data.loc[idx, 'bear_risk']),
         )
 
     def get_regime(self, date) -> int:
