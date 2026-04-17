@@ -28,6 +28,25 @@ INDUSTRY_DISCOUNT = {
     '基建/地产/石油石化': 0.3,  # 准确率39.20%，减配70%
 }
 
+# === 阶段4优化：牛市特定行业权重 ===
+# 牛市中某些行业表现差，需要额外减配
+# 来源：bull_market_deep_analysis.py 分析结果
+BULL_BONUS_INDUSTRIES = {
+    # 牛市表现好的行业（准确率50%+）
+    '半导体/光伏': 1.3,      # 牛市准确率61.3%，增配
+    '电子': 1.2,             # 牛市准确率53.1%，增配
+    '通信/计算机': 1.2,      # 牛市准确率51.1%，增配
+    '有色/钢铁/煤炭/建材': 1.2,  # 牛市准确率57.5%，增配
+}
+
+BULL_PENALTY_INDUSTRIES = {
+    # 牛市表现差的行业（准确率<50%）
+    '自动化/制造': 0.5,      # 牛市准确率42.1%，减配50%
+    '化工': 0.5,             # 牛市准确率43.4%，减配50%
+    '新能源车/风电': 0.6,   # 牛市准确率45.3%，减配40%
+    '电力设备': 0.6,         # 牛市准确率45.1%，减配40%
+}
+
 # === 模块1优化: 降低换手率 ===
 # 核心思路:
 # 1. 提高换仓门槛，减少小幅波动导致的频繁交易
@@ -378,7 +397,17 @@ class PortfolioConstructor:
             quality_factor = 0.5 + factor_quality * 10  # 假设quality在0-0.1范围
             quality_factor = max(0.5, min(1.5, quality_factor))
 
-            c['position'] = score_weight * vol_factor * extreme_factor * quality_factor
+            # === 阶段4优化：牛市行业权重调整 ===
+            # 牛市中对特定行业增配或减配
+            bull_industry_factor = 1.0
+            if market_regime == 1:  # 牛市
+                ind = c.get('industry', '')
+                if ind in BULL_BONUS_INDUSTRIES:
+                    bull_industry_factor = BULL_BONUS_INDUSTRIES[ind]
+                elif ind in BULL_PENALTY_INDUSTRIES:
+                    bull_industry_factor = BULL_PENALTY_INDUSTRIES[ind]
+
+            c['position'] = score_weight * vol_factor * extreme_factor * quality_factor * bull_industry_factor
             total_position += c['position']
 
         # 总仓位上限

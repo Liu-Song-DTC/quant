@@ -717,18 +717,17 @@ class SignalEngine:
         FACTOR_VALUE_UPPER_LIMIT = 1.2  # factor_value上限（避免动量过热）
 
         # === 阶段3优化：基于市场状态调整买入阈值 ===
-        # 分析发现：最优因子值范围随市场状态变化
-        # - 牛市(regime=1): [0.7, 0.9)准确率54%, [0.5, 0.7)准确率44%（有毒！）
-        # - 熊市(regime=-1): [0.6, 0.7)准确率54%, 整体表现更稳
-        # - 震荡(regime=0): [0.5, 0.7)准确率50%, [0.8, 0.9)准确率44%（有毒！）
+        # 问题发现：牛市准确率仅35%（信号太少=31条），需要适度降低阈值
+        # 但阈值过低会导致大量低质量信号（准确率49.95%）
+        # 策略：适度降低牛市阈值，保持信号质量
         market_regime = market_info.get('regime', 0)
 
-        if market_regime == 1:  # 牛市：要求更高的因子值
-            adjusted_buy_threshold = 0.70  # 提高下限，过滤低质量信号
+        if market_regime == 1:  # 牛市：适度降低阈值
+            adjusted_buy_threshold = 0.55  # 从0.70降低到0.55
         elif market_regime == -1:  # 熊市：适度降低要求（捕捉反弹机会）
-            adjusted_buy_threshold = 0.55  # 熊市低因子值表现更好
+            adjusted_buy_threshold = 0.50  # 从0.55降低到0.50
         else:  # 震荡市
-            adjusted_buy_threshold = self.buy_threshold
+            adjusted_buy_threshold = self.buy_threshold  # 0.50
 
         # 买入条件：下限 < factor_value < 上限
         # === 分析结论 ===
@@ -752,17 +751,17 @@ class SignalEngine:
         else:
             effective_threshold = adjusted_buy_threshold
 
-        # === 阶段3优化：市场状态相关的上限调整 ===
-        # 分析发现：
-        # - 牛市: [0.7, 0.9)准确率54%, 但没有>0.9数据，保守设置
-        # - 熊市: [0.8, 0.9)准确率下降到51%, 可降低上限
-        # - 震荡: [0.8, 0.9)准确率44%(有毒！), 应降低上限
+        # === 上限调整 ===
+        # 避免极端高值（均值回归风险），但也不能太低
         if market_regime == 1:  # 牛市
-            effective_upper_limit = 0.95  # 允许更高的因子值
+            effective_upper_limit = 1.0  # 允许更高因子值
         elif market_regime == 0:  # 震荡市
-            effective_upper_limit = 0.85  # 降低上限，避免高因子值风险
+            effective_upper_limit = 0.90  # 保守设置
         else:  # 熊市
-            effective_upper_limit = 0.90
+            effective_upper_limit = 0.95
+
+        # 获取具体行业用于组合层减配
+        specific_industry = self._get_specific_industry(code, current_date) if code else ''
 
         # 分析发现: factor_value在[0.7, 0.9)区间准确率最高(52.10%)
         # 但排名选股系统已使用rank_pct筛选，这里仅作为安全边界
@@ -770,9 +769,6 @@ class SignalEngine:
                factor_value < effective_upper_limit and
                abs(score) < 5.0)
         sell = factor_value < self.sell_threshold
-
-        # 获取具体行业用于组合层减配
-        specific_industry = self._get_specific_industry(code, current_date) if code else ''
 
         # 提取因子质量（用于组合层权重调整）
         factor_quality = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0

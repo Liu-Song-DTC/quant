@@ -9,7 +9,7 @@
 # dynamic:  只用动态因子
 # fixed:    只用静态行业因子
 # both:     动态优先，失败fallback到静态
-factor_mode: fixed   # 用静态因子（快速测试regime-aware阈值）
+factor_mode: fixed   # 先优化信号层，稳定后再启用动态因子
 
 # --- 1.1 动态因子 (第一层) ---
 # 注意: 是否启用由 factor_mode 决定（dynamic/both启用，fixed禁用）
