@@ -15,6 +15,7 @@ from core.factor_preparer import prepare_factor_data
 from core.signal_store import SignalStore
 from core.config_loader import load_config
 from core.industry_mapping import INDUSTRY_KEYWORDS
+from core.market_regime_detector import MarketRegimeDetector
 
 # 加载配置
 config = load_config()
@@ -37,7 +38,7 @@ _worker_engine = None
 _worker_use_dynamic = False
 
 
-def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry_codes, factor_cache, all_dates):
+def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry_codes, factor_cache, all_dates, regime_df):
     """Worker 进程初始化函数"""
     global _worker_engine, _worker_use_dynamic
     _worker_use_dynamic = use_dynamic
@@ -48,6 +49,10 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry
     if fundamental_path and os.path.exists(fundamental_path):
         fd = FundamentalData(fundamental_path, stock_codes)
         _worker_engine.set_fundamental_data(fd)
+
+    # 设置市场状态数据（关键：用于牛市优化）
+    if regime_df is not None:
+        _worker_engine.set_market_regime(regime_df)
 
     # 设置动态因子数据（只设置一次，避免重复清除缓存）
     if use_dynamic and factor_df is not None:
@@ -105,9 +110,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         dates.update(data['datetime'])
     calendar_index = pd.DatetimeIndex(sorted(dates))
 
-    # 处理指数数据
+    # 处理指数数据 - 生成市场状态
+    regime_df = None
     if "sh000001" in stock_data_dict:
         strategy.generate_market_regime(stock_data_dict["sh000001"])
+        # 获取regime_df用于传递给worker进程
+        regime_df = strategy.index_data
+        print(f"市场状态数据已生成，共 {len(regime_df)} 条记录")
 
     # 准备动态因子数据
     factor_mode = config.config.get('factor_mode', 'both')
@@ -179,7 +188,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     with Pool(
         processes=NUM_WORKERS,
         initializer=_init_worker,
-        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, factor_df, industry_codes, precomputed_cache, precomputed_all_dates)
+        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, factor_df, industry_codes, precomputed_cache, precomputed_all_dates, regime_df)
     ) as pool:
         # imap_unordered 比 map 更快，且结果顺序不影响
         results = []

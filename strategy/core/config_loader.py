@@ -56,6 +56,8 @@ class ConfigLoader:
             'exit_speed': self.get('portfolio.exit_speed', 1.0),
             'position_stop_loss': self.get('portfolio.position_stop_loss', 0.15),
             'portfolio_stop_loss': self.get('portfolio.portfolio_stop_loss', 0.12),
+            'max_single_weight': self.get('portfolio.max_single_weight', 0.15),
+            'enable_industry_weighting': self.get('portfolio.enable_industry_weighting', True),
             'volatility_control_enabled': self.get('volatility_control.enabled', False),
             'portfolio_stop_loss_enabled': self.get('portfolio_stop_loss.enabled', False),
             'emergency_exposure': self.get('portfolio_stop_loss.emergency_exposure', 0.50),

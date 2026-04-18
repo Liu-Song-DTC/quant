@@ -128,13 +128,13 @@ regime_multiplier:
 # 3. 组合层 (Portfolio Layer)
 # ============================================
 portfolio:
-  max_position: 10          # 增加持仓数量
-  target_volatility: 0.20
+  max_position: 15          # 增加持仓数量以分散风险
+  target_volatility: 0.15   # 降低目标波动率以提升Sharpe
   entry_speed: 1.0
   exit_speed: 1.0
-  position_stop_loss: 0.15
+  position_stop_loss: 0.12  # 收紧止损
   portfolio_stop_loss: 0.08
-  max_single_weight: 0.15   # 单只股票最大权重15%
+  max_single_weight: 0.10   # 降低单只股票最大权重
 
 portfolio_stop_loss:
   enabled: true

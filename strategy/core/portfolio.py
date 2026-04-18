@@ -325,6 +325,9 @@ class PortfolioConstructor:
             if getattr(sig, 'risk_extreme', False):
                 risk_extreme_exists = True
 
+            # 获取买入信号
+            buy_signal = getattr(sig, 'buy', False)
+
             candidates.append({
                 'code': code,
                 'factor_value': factor_value,
@@ -332,6 +335,7 @@ class PortfolioConstructor:
                 'risk_vol': getattr(sig, 'risk_vol', 0.03),
                 'industry': getattr(sig, 'industry', '') or 'default',
                 'sig': sig,
+                'buy_signal': buy_signal,  # 保存买入信号
             })
 
         if not candidates:
@@ -349,8 +353,9 @@ class PortfolioConstructor:
         industry_count = {}
         industry_cap = 2  # 单个行业最多选2只
 
-        # 按排名百分位排序
-        candidates.sort(key=lambda x: x['rank_pct'], reverse=True)
+        # 按排名百分位排序，但有buy_signal的股票优先
+        # 排序规则：buy_signal=True的排前面，然后按rank_pct排序
+        candidates.sort(key=lambda x: (not x['buy_signal'], -x['rank_pct']))
 
         selected = []
         for c in candidates:
@@ -359,9 +364,19 @@ class PortfolioConstructor:
             if industry_count.get(ind, 0) >= industry_cap:
                 continue
 
-            # 排除排名太低的股票（后50%）
-            if c['rank_pct'] < 0.5:
-                continue
+            # === 阶段4优化：在牛市中，buy_signal=True的股票可以不受rank_pct限制 ===
+            # 牛市中静态因子factor_value普遍为负，导致rank_pct偏低
+            # 但buy_signal=True说明信号层判断该股票值得买入
+            if market_regime == 1:  # 牛市
+                # 牛市：buy_signal=True的股票优先选择，不受rank_pct限制
+                if c['buy_signal']:
+                    pass  # 允许选择
+                elif c['rank_pct'] < 0.5:
+                    continue  # 非buy_signal的股票需要rank_pct >= 0.5
+            else:
+                # 非牛市：排除排名太低的股票（后50%）
+                if c['rank_pct'] < 0.5:
+                    continue
 
             selected.append(c)
             industry_count[ind] = industry_count.get(ind, 0) + 1
