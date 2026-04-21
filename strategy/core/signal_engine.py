@@ -834,21 +834,19 @@ class SignalEngine:
         # 注意：当factor_mode='dynamic'时，只有fallback允许时才会到达这里
         if self.factor_mode in ['fixed', 'both'] or (self.factor_mode == 'dynamic' and self.factor_fallback_to_fixed):
             if self.industry_factor_enabled and code and current_date:
-                # === 阶段1优化：禁用负IC静态因子 ===
-                # 金融行业的静态因子IC=-3.53%（负向），应跳过使用默认因子
-                SKIP_STATIC_INDUSTRIES = ['金融']  # 这些行业跳过静态因子，使用默认因子
+                # 使用行业特定因子（已按市场状态优化）
                 if specific_industry and specific_industry in INDUSTRY_FACTOR_CONFIG:
-                    if specific_industry not in SKIP_STATIC_INDUSTRIES:
-                        result = self._calculate_industry_factor_score(ind, idx, specific_industry,
-                                                                       code=code, current_date=current_date)
-                        if result:
-                            self._stats['fixed_industry'] += 1
-                            factor_name, factor_value, risk_info = result
-                            if regime == -1:  # 熊市
-                                factor_value = factor_value * 0.7
-                                factor_name = factor_name + '_bear'
-                            factor_name = factor_name + f'_{specific_industry[:2]}'
-                            return factor_name, factor_value, risk_info, True
+                    result = self._calculate_industry_factor_score(ind, idx, specific_industry,
+                                                                   code=code, current_date=current_date,
+                                                                   regime=regime)
+                    if result:
+                        self._stats['fixed_industry'] += 1
+                        factor_name, factor_value, risk_info = result
+                        if regime == -1:  # 熊市
+                            factor_value = factor_value * 0.7
+                            factor_name = factor_name + '_bear'
+                        factor_name = factor_name + f'_{specific_industry[:2]}'
+                        return factor_name, factor_value, risk_info, True
 
         # 默认因子组合（固定因子的兜底）
         # 注意：只有当允许使用固定因子时才执行DEFAULT
@@ -1067,16 +1065,28 @@ class SignalEngine:
         return factor_name, factor_value, risk_info
 
     def _calculate_industry_factor_score(self, ind: dict, idx: int, industry: str,
-                                           code=None, current_date=None) -> tuple:
+                                           code=None, current_date=None, regime=0) -> tuple:
         """计算行业特定因子得分
 
         直接使用原始因子值（与因子验证一致），然后等权平均合成
+        支持按市场状态选择不同的因子组合
         """
         config = INDUSTRY_FACTOR_CONFIG.get(industry)
         if not config:
             return None
 
-        factors = config.get('factors', [])
+        # 根据市场状态选择因子
+        # regime: 1=bull, 0=neutral, -1=bear
+        if regime == 1:
+            factors = config.get('bull_factors', config.get('factors', []))
+        elif regime == -1:
+            factors = config.get('bear_factors', config.get('factors', []))
+        else:
+            factors = config.get('factors', [])
+
+        if not factors:
+            return None
+
         direction = config.get('direction', {}) if 'direction' in config else {}
 
         factor_scores = []
@@ -1117,7 +1127,9 @@ class SignalEngine:
             # Top1（保留兼容性，但不推荐）
             factor_value = factor_scores[0]
 
-        return f'IND_{industry[:4]}', factor_value, {'is_high_vol': False, 'industry_factor': True, 'n_factors': len(factor_scores)}
+        # 添加市场状态标记到因子名称
+        regime_suffix = {1: '_B', -1: '_E', 0: ''}.get(regime, '')
+        return f'IND_{industry[:4]}{regime_suffix}', factor_value, {'is_high_vol': False, 'industry_factor': True, 'n_factors': len(factor_scores)}
 
     def _get_style_score(self, ind: dict, idx: int, market_info: dict) -> float:
         """获取风格因子分数"""

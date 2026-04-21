@@ -94,9 +94,11 @@ def calculate_indicators(
     result['atr'] = result['atr_14']
     result['atr_ratio'] = result['atr_14'] / (close_arr + 1e-10)
 
-    # === 动量 ===
+    # === 动量（收益率）===
     for period in params.get('momentum_periods', [3, 5, 10, 20, 30]):
-        result[f'mom_{period}'] = _shift(close_arr, period, safe=True)
+        # 动量 = 过去period天的收益率
+        shifted_close = _shift(close_arr, period, safe=True)
+        result[f'mom_{period}'] = (close_arr - shifted_close) / (shifted_close + 1e-10)
 
     # === 价格位置 ===
     result['high_20'] = _rolling_max(high_arr, 20)
@@ -170,6 +172,9 @@ def calculate_indicators(
         result['momentum_acceleration'] = np.tanh((result['mom_10'] - result['mom_20']) * 5)
 
     result['return_risk_ratio'] = result.get('ret_vol_ratio_10', np.zeros(n))
+
+    # 波动率因子 - 使用tanh压缩（与compute_composite_factors一致）
+    result['volatility'] = np.tanh(-result['volatility_20'] * 20)
 
     return result
 

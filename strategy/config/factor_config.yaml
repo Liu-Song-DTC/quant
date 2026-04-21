@@ -63,38 +63,67 @@ industry_factor_config:
   lookback_days: 120               # 离线标定时的回看窗口
   forward_period: 20               # 离线标定时的forward窗口
 
-# 静态行业因子列表（离线标定结果 - 2024-04-13）
-# 使用优化版标定脚本，基于110万条因子数据，测试单因子+2/3因子组合
-# IC为截面标准化后的均值，IR=IC均值/IC标准差
+# 静态行业因子列表（离线标定结果 - 2026-04-21）
+# 使用优化版标定脚本，基于110万条因子数据
+# 按行业+市场状态分类标定最优因子组合
+# IC为每日截面IC的平均值
 industry_factors:
   互联网/软件:
-    factors: [mom_x_lowvol_10_20, bb_rsi_combo, rsi_vol_combo]  # IC=0.0828, IR=0.28
+    factors: [volatility]
+    bull_factors: [volatility, mom_x_lowvol_10_20, mom_x_lowvol_10_10]  # IC=12.93%
+    bear_factors: [fund_roe]  # IC=9.92%
   交运:
-    factors: [bb_rsi_combo, bb_width_20, mom_x_lowvol_10_20]  # IC=0.0593, IR=0.15
+    factors: [tech_fund_combo]  # IC=4.77% (neutral)
+    bull_factors: [volatility]  # IC=7.32%
+    bear_factors: [bb_rsi_combo, bb_width_20]  # IC=11.54%
   军工:
-    factors: [fund_profit_growth, mom_x_lowvol_20_10, bb_rsi_combo]  # IC=0.1053, IR=0.30
+    factors: [fund_profit_growth, fund_roe]  # IC=8.55% (neutral)
+    bull_factors: [mom_x_lowvol_10_20]  # IC=12.96%
+    bear_factors: [rsi_vol_combo]  # IC=8.24%
   化工:
-    factors: [mom_x_lowvol_10_10, momentum_reversal, fund_score]  # IC=0.0667, IR=0.29
+    factors: [mom_x_lowvol_10_10, mom_x_lowvol_20_10]  # IC=5.86% (neutral)
+    bull_factors: [fund_profit_growth]  # IC=5.05%
+    bear_factors: [fund_profit_growth, bb_rsi_combo]  # IC=6.10%
   半导体/光伏:
-    factors: [fund_score, fund_gross_margin, momentum_reversal]  # IC=0.0634, IR=0.24
+    factors: [fund_gross_margin, fund_score]  # IC=5.49% (neutral)
+    bull_factors: [volatility]  # IC=7.84%
+    bear_factors: [bb_rsi_combo, rsi_vol_combo, bb_width_20]  # IC=11.27%
   基建/地产/石油石化:
-    factors: [fund_score, momentum_reversal]  # IC=0.0870, IR=0.34
+    factors: [fund_roe, fund_score]  # IC=9.03% (neutral)
+    bull_factors: [fund_profit_growth, mom_x_lowvol_20_20, mom_x_lowvol_10_20]  # IC=9.18%
+    bear_factors: [fund_roe, bb_width_20, bb_rsi_combo]  # IC=6.79%
   新能源车/风电:
-    factors: [fund_profit_growth, fund_score, momentum_reversal]  # IC=0.0849, IR=0.41
+    factors: [fund_profit_growth, tech_fund_combo]  # IC=9.04% (neutral)
+    bull_factors: [volatility, mom_x_lowvol_20_20, mom_x_lowvol_10_20]  # IC=8.78%
+    bear_factors: [fund_profit_growth]  # IC=8.22%
   有色/钢铁/煤炭/建材:
-    factors: [mom_x_lowvol_10_10, fund_score, momentum_reversal]  # IC=0.0797, IR=0.37
+    factors: [mom_x_lowvol_10_20]  # IC=6.33% (neutral)
+    bull_factors: [volatility, mom_x_lowvol_10_10]  # IC=11.56%
+    bear_factors: [fund_profit_growth, fund_roe, tech_fund_combo]  # IC=5.21%
   消费/传媒/农业/环保/医药:
-    factors: [fund_score, bb_width_20, bb_rsi_combo]  # IC=0.0589, IR=0.20
+    factors: [tech_fund_combo]  # IC=6.72% (neutral)
+    bull_factors: [tech_fund_combo, mom_x_lowvol_10_10]  # IC=3.40%
+    bear_factors: [bb_width_20]  # IC=7.21%
   电力设备:
-    factors: [fund_score, mom_x_lowvol_10_20, mom_x_lowvol_10_10]  # IC=0.0850, IR=0.42
+    factors: [tech_fund_combo]  # IC=8.11% (neutral)
+    bull_factors: [tech_fund_combo]  # IC=7.92%
+    bear_factors: [bb_rsi_combo]  # IC=8.23%
   电子:
-    factors: [fund_score, fund_revenue_growth, momentum_reversal]  # IC=0.0653, IR=0.32
+    factors: [fund_score, fund_roe]  # IC=4.64% (neutral)
+    bull_factors: [fund_revenue_growth, tech_fund_combo]  # IC=7.01%
+    bear_factors: [fund_profit_growth]  # IC=7.34%
   自动化/制造:
-    factors: [fund_score, mom_x_lowvol_20_20, mom_x_lowvol_10_10]  # IC=0.0830, IR=0.29
+    factors: [fund_profit_growth, tech_fund_combo, fund_score]  # IC=8.75% (neutral)
+    bull_factors: [fund_score]  # IC=8.55%
+    bear_factors: [bb_rsi_combo, rsi_vol_combo]  # IC=8.06%
   通信/计算机:
-    factors: [fund_score, mom_x_lowvol_10_10, mom_x_lowvol_20_20]  # IC=0.0671, IR=0.25
+    factors: [fund_score, tech_fund_combo, fund_roe]  # IC=7.83% (neutral)
+    bull_factors: [mom_x_lowvol_10_20]  # IC=8.45%
+    bear_factors: [bb_rsi_combo]  # IC=8.09%
   金融:
-    factors: [fund_score, rsi_factor, momentum_reversal]  # IC=0.1021, IR=0.29
+    factors: [fund_roe]  # IC=8.62% (neutral)
+    bull_factors: [mom_x_lowvol_20_20]  # IC=12.34%
+    bear_factors: [fund_profit_growth]  # IC=7.77%
 
 # --- 1.3 基础因子 (第三层/fallback) ---
 # 自动使用 mom_lowvol 复合因子，无需配置
@@ -151,5 +180,5 @@ backtest:
   cash: 100000.0
   commission: 0.0015
   slippage: 0.0015
-  rebalance_days: 10
+  rebalance_days: 20   # 与forward_period对齐
   max_position: 10
