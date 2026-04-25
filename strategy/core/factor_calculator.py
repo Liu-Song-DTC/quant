@@ -15,6 +15,39 @@ import numpy as np
 from typing import Dict, Optional
 
 
+# ==================== 基本面因子压缩（单点真源） ====================
+
+def compress_fundamental_factor(raw_value: float, factor_name: str) -> float:
+    """统一的基本面因子压缩 - 单点真源
+
+    所有模块（signal_engine, factor_preparer, offline_calibration）
+    都调用此函数，确保压缩逻辑一致。
+
+    Args:
+        raw_value: 基本面因子原始值
+        factor_name: 因子名（如 'fund_score', 'fund_roe' 等）
+
+    Returns:
+        压缩后的值，通常在 (-1, 1) 范围
+    """
+    if raw_value is None or (isinstance(raw_value, float) and np.isnan(raw_value)):
+        return 0.0
+    compressors = {
+        'fund_score': lambda v: np.tanh((np.clip(v, -100, 100) - 50) / 50),
+        'fund_profit_growth': lambda v: np.tanh(np.clip(v, -100, 100)),
+        'fund_revenue_growth': lambda v: np.tanh(np.clip(v, -100, 100)),
+        'fund_roe': lambda v: np.tanh((np.clip(v, -50, 50) - 10) / 20),
+        'fund_cf_to_profit': lambda v: np.tanh(np.clip(v, -5, 5) - 1),
+        'fund_gross_margin': lambda v: np.tanh((np.clip(v, -20, 80) - 30) / 30),
+        'fund_eps': lambda v: np.tanh(np.clip(v, -10, 10)),
+        'fund_debt_ratio': lambda v: np.tanh((50 - np.clip(v, 0, 100)) / 50),
+    }
+    compressor = compressors.get(factor_name)
+    if compressor:
+        return float(compressor(raw_value))
+    return float(np.tanh(raw_value))  # fallback
+
+
 # ==================== 基础指标计算 ====================
 
 def calculate_indicators(
@@ -332,13 +365,14 @@ def _macd(close: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9) ->
 
 # ==================== 组合因子计算 ====================
 
-def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int) -> Dict[str, float]:
+def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: float = 0.0) -> Dict[str, float]:
     """
     计算组合因子（用于单个时间点）
 
     Args:
         ind: calculate_indicators返回的指标字典
         idx: 时间点索引
+        fund_score: 基本面评分（压缩后值，来自compress_fundamental_factor）
 
     Returns:
         组合因子字典
@@ -410,5 +444,8 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int) -> Dict[str,
         result['momentum_reversal'] = ind['momentum_reversal'][idx]
     if 'momentum_acceleration' in ind:
         result['momentum_acceleration'] = ind['momentum_acceleration'][idx]
+
+    # tech_fund_combo: 技术+基本面组合
+    result['tech_fund_combo'] = result.get('trend_mom_v41', 0) * 0.7 + result.get('rsi_factor', 0) * 0.1 + fund_score * 0.2
 
     return result

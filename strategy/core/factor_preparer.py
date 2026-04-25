@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from .config_loader import load_config
 from .fundamental import FundamentalData
-from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params
+from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor
 
 
 # 全局变量用于 worker 进程 - 每个 worker 创建一个 FundamentalData 实例供所有股票复用
@@ -100,25 +100,40 @@ def _compute_stock_factors_worker(args):
         # 使用统一的因子计算器计算组合因子
         fund_data = fund_cache.get(sample_date, {})
 
-        # 使用 factor_calculator 计算所有组合因子
-        combo_factors = compute_composite_factors(ind, idx)
+        # 先获取压缩后的基本面评分，传给 compute_composite_factors
+        compressed_fund_score = 0.0
+        if fund_data:
+            raw_fund_score = fund_data.get('fund_score', 0) or 0
+            if isinstance(raw_fund_score, (int, float)):
+                compressed_fund_score = compress_fundamental_factor(raw_fund_score, 'fund_score')
+
+        # 使用 factor_calculator 计算所有组合因子（含 tech_fund_combo）
+        combo_factors = compute_composite_factors(ind, idx, fund_score=compressed_fund_score)
 
         row = {'code': code, 'date': sample_date, 'industry': stock_industry}
         row.update(combo_factors)
 
-        # 基本面因子
+        # 基本面因子 - 使用统一压缩函数（与signal_engine一致）
         if fund_data:
-            row['fund_roe'] = fund_data.get('roe')
-            row['fund_profit_growth'] = fund_data.get('profit_growth')
-            row['fund_revenue_growth'] = fund_data.get('revenue_growth')
-            row['fund_score'] = fund_data.get('fund_score')
-            row['fund_gross_margin'] = fund_data.get('gross_margin')
-            row['fund_cf_to_profit'] = fund_data.get('cf_to_profit')
+            raw_roe = fund_data.get('roe')
+            raw_profit_growth = fund_data.get('profit_growth')
+            raw_revenue_growth = fund_data.get('revenue_growth')
+            raw_fund_score = fund_data.get('fund_score')
+            raw_gross_margin = fund_data.get('gross_margin')
+            raw_cf_to_profit = fund_data.get('cf_to_profit')
 
-            # tech_fund_combo 需要基本面数据，单独计算
-            fund_score_val = fund_data.get('fund_score', 0) or 0
-            if isinstance(fund_score_val, (int, float)):
-                row['tech_fund_combo'] = row.get('trend_mom_v41', 0) * 0.7 + row.get('rsi_factor', 0) * 0.1 + fund_score_val * 0.2
+            if raw_roe is not None and isinstance(raw_roe, (int, float)):
+                row['fund_roe'] = compress_fundamental_factor(raw_roe, 'fund_roe')
+            if raw_profit_growth is not None and isinstance(raw_profit_growth, (int, float)):
+                row['fund_profit_growth'] = compress_fundamental_factor(raw_profit_growth, 'fund_profit_growth')
+            if raw_revenue_growth is not None and isinstance(raw_revenue_growth, (int, float)):
+                row['fund_revenue_growth'] = compress_fundamental_factor(raw_revenue_growth, 'fund_revenue_growth')
+            if raw_fund_score is not None and isinstance(raw_fund_score, (int, float)):
+                row['fund_score'] = compress_fundamental_factor(raw_fund_score, 'fund_score')
+            if raw_gross_margin is not None and isinstance(raw_gross_margin, (int, float)):
+                row['fund_gross_margin'] = compress_fundamental_factor(raw_gross_margin, 'fund_gross_margin')
+            if raw_cf_to_profit is not None and isinstance(raw_cf_to_profit, (int, float)):
+                row['fund_cf_to_profit'] = compress_fundamental_factor(raw_cf_to_profit, 'fund_cf_to_profit')
 
         # 计算未来收益
         if idx + forward_period < n:

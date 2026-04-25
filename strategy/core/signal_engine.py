@@ -18,7 +18,7 @@ from .signal import Signal
 from .signal_store import SignalStore
 from .config_loader import load_config
 from .industry_mapping import INDUSTRY_KEYWORDS, get_industry_category
-from .factor_calculator import calculate_indicators as calc_indicators, compute_composite_factors
+from .factor_calculator import calculate_indicators as calc_indicators, compute_composite_factors, compress_fundamental_factor
 import yaml
 import os
 
@@ -710,82 +710,27 @@ class SignalEngine:
         factor_name = factor_name + ('_' + ''.join(factor_tags) if factor_tags else '_T')
 
         # 6. 交易信号
-        # 买入条件：factor_value在合理范围内
-        # === 核心优化：排除极端factor_value ===
-        # 分析发现：factor_value > 1.5 的准确率只有44.84%（均值回归风险）
-        # 方案：设置factor_value上限，过滤动量过热的股票
-        FACTOR_VALUE_UPPER_LIMIT = 1.2  # factor_value上限（避免动量过热）
-
-        # === 阶段3优化：基于市场状态调整买入阈值 ===
-        # 问题发现：牛市准确率仅35%（信号太少=31条），需要适度降低阈值
-        # 但阈值过低会导致大量低质量信号（准确率49.95%）
-        # 策略：适度降低牛市阈值，保持信号质量
-        market_regime = market_info.get('regime', 0)
-
-        if market_regime == 1:  # 牛市：适度降低阈值
-            adjusted_buy_threshold = 0.55  # 从0.70降低到0.55
-        elif market_regime == -1:  # 熊市：适度降低要求（捕捉反弹机会）
-            adjusted_buy_threshold = 0.50  # 从0.55降低到0.50
-        else:  # 震荡市
-            adjusted_buy_threshold = self.buy_threshold  # 0.50
-
-        # 买入条件：下限 < factor_value < 上限
-        # === 分析结论 ===
-        # factor_value十分位分析显示：
-        # - 第8分位(较高值)准确率最高：51.65%
-        # - 第5分位(中等值)准确率：50.90%
-        # - 但第9分位(最高值)准确率下降到49.82%（均值回归）
+        # === 核心改动：信号层只产出factor_value，buy/sell由组合层通过rank_pct决定 ===
+        # 离线验证结论：
+        # - rank_pct>0.5 top10行业均衡: Sharpe=0.77（vs 绝对阈值buy_signal: 0.60）
+        # - 绝对阈值导致52.7%信号为NONE，其中79.6%的factor_value>0
+        # - rank_pct选股准确率50.9% vs buy_signal 47.9%
         #
-        # 策略：买入中等偏高但不是极端高的因子值
-        # 阈值设置：0.3-0.9 范围效果最好
+        # 简化逻辑：只要factor_value有效就标记buy=True
+        # 组合层通过截面rank_pct排序选股，不再依赖信号层的buy过滤
 
-        # === 优化2：Technical因子(_T) IC更高(3.49% vs 3.08%)，不再过滤 ===
-        # 2026-04-15: 数据分析显示Technical因子IC高于Fundamental，应允许买入
-        is_t_factor = factor_name.endswith('_T')
+        # 安全过滤：极端值和无效值不产生信号
+        buy = (factor_value is not None and
+               not np.isnan(factor_value) and
+               abs(score) < 5.0)
 
-        # === 优化3：静态因子(IND)准确率只有44%，要求更高的阈值 ===
-        is_ind_factor = factor_name.startswith('IND_')
-        if is_ind_factor:
-            # 静态因子需要更高的factor_value才能买入
-            effective_threshold = max(adjusted_buy_threshold, 0.5)
-        else:
-            effective_threshold = adjusted_buy_threshold
+        # sell信号：仅在factor_value明确为负时标记
+        sell = (factor_value is not None and
+                not np.isnan(factor_value) and
+                factor_value < self.sell_threshold)
 
-        # === 上限调整 ===
-        # 避免极端高值（均值回归风险），但也不能太低
-        if market_regime == 1:  # 牛市
-            effective_upper_limit = 1.0  # 允许更高因子值
-        elif market_regime == 0:  # 震荡市
-            effective_upper_limit = 0.90  # 保守设置
-        else:  # 熊市
-            effective_upper_limit = 0.95
-
-        # 获取具体行业用于组合层减配
+        # 获取具体行业用于组合层行业均衡
         specific_industry = self._get_specific_industry(code, current_date) if code else ''
-
-        # === 阶段4优化：牛市使用市场动量确认信号 ===
-        # 分析发现：牛市中静态因子factor_value普遍为负（均值-0.39）
-        # 关键发现（2026-04-18数据分析）：
-        # 1. momentum>0.6: 准确率59.4%（高质量信号）
-        # 2. 低factor_value有反转效应
-        # 策略：根据市场动量调整factor_value范围，但保持足够信号量
-        market_momentum = market_info.get('momentum_score', 0.0)  # 市场级别动量
-
-        if market_regime == 1:  # 牛市
-            # 牛市：利用反转效应 + 动量确认
-            if market_momentum > 0.5:
-                # 高市场动量：优先低factor_value（反转效应）
-                buy = (factor_value > -0.5 and factor_value < 0.5 and abs(score) < 5.0)
-            else:
-                # 低市场动量：适度收紧，避免极端值
-                buy = (factor_value > -0.3 and factor_value < 0.5 and abs(score) < 5.0)
-        else:
-            # 非牛市：使用传统factor_value阈值
-            buy = (factor_value > effective_threshold and
-                   factor_value < effective_upper_limit and
-                   abs(score) < 5.0)
-
-        sell = factor_value < self.sell_threshold
 
         # 提取因子质量（用于组合层权重调整）
         factor_quality = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
@@ -842,9 +787,7 @@ class SignalEngine:
                     if result:
                         self._stats['fixed_industry'] += 1
                         factor_name, factor_value, risk_info = result
-                        if regime == -1:  # 熊市
-                            factor_value = factor_value * 0.7
-                            factor_name = factor_name + '_bear'
+                        # 不做熊市折扣：组合层用截面rank_pct排序，均匀缩放不改变排名
                         factor_name = factor_name + f'_{specific_industry[:2]}'
                         return factor_name, factor_value, risk_info, True
 
@@ -966,9 +909,7 @@ class SignalEngine:
         if abs(factor_value) > 1.5:
             factor_value = np.tanh(factor_value)
 
-        # 熊市调整
-        if regime == -1:
-            factor_value = factor_value * 0.7
+        # 不做熊市折扣：组合层用截面rank_pct排序，均匀缩放不改变排名
 
         factor_name = f'DYN_{specific_industry[:4]}_{len(valid_factors)}F'
         risk_info = {'is_high_vol': False, 'dynamic_factor': True, 'n_factors': len(valid_factors),
@@ -977,59 +918,37 @@ class SignalEngine:
         return factor_name, factor_value, risk_info, True
 
     def _get_fundamental_factor_value(self, code, current_date, factor_name: str) -> Optional[float]:
-        """获取基本面因子值 - 使用clip+tanh压缩极端值"""
+        """获取基本面因子值 - 使用统一压缩函数"""
+        if not hasattr(self, 'fundamental_data') or not self.fundamental_data:
+            return None
+
+        raw_value = self._get_raw_fundamental_value(code, current_date, factor_name)
+        if raw_value is None or (isinstance(raw_value, float) and np.isnan(raw_value)):
+            return None
+        return compress_fundamental_factor(raw_value, factor_name)
+
+    def _get_raw_fundamental_value(self, code, current_date, factor_name: str) -> Optional[float]:
+        """获取基本面因子原始值"""
         if not hasattr(self, 'fundamental_data') or not self.fundamental_data:
             return None
 
         try:
             if factor_name == 'fund_score':
-                raw = self.fundamental_data.get_fundamental_score(code, current_date)
-                if raw is not None and not np.isnan(raw):
-                    raw_clipped = max(-100, min(100, raw))  # clip到合理范围
-                    return np.tanh((raw_clipped - 50) / 50)  # 中心化后压缩
-                return None
+                return self.fundamental_data.get_fundamental_score(code, current_date)
             elif factor_name == 'fund_profit_growth':
-                raw = self.fundamental_data.get_profit_growth(code, current_date)
-                if raw is not None and not np.isnan(raw):
-                    raw_clipped = max(-100, min(100, raw))  # clip极端值
-                    return np.tanh(raw_clipped)
-                return None
+                return self.fundamental_data.get_profit_growth(code, current_date)
             elif factor_name == 'fund_roe':
-                raw = self.fundamental_data.get_roe(code, current_date)
-                if raw is not None and not np.isnan(raw):
-                    raw_clipped = max(-50, min(50, raw))  # clip极端值
-                    return np.tanh((raw_clipped - 10) / 20)  # 中心化后压缩
-                return None
+                return self.fundamental_data.get_roe(code, current_date)
             elif factor_name == 'fund_revenue_growth':
-                raw = self.fundamental_data.get_revenue_growth(code, current_date)
-                if raw is not None and not np.isnan(raw):
-                    raw_clipped = max(-100, min(100, raw))  # clip极端值
-                    return np.tanh(raw_clipped)
-                return None
+                return self.fundamental_data.get_revenue_growth(code, current_date)
             elif factor_name == 'fund_eps':
-                raw = self.fundamental_data.get_eps(code, current_date)
-                if raw is not None and not np.isnan(raw):
-                    raw_clipped = max(-10, min(10, raw))  # clip极端值
-                    return np.tanh(raw_clipped)
-                return None
+                return self.fundamental_data.get_eps(code, current_date)
             elif factor_name == 'fund_cf_to_profit':
-                raw = self.fundamental_data.get_cf_to_profit(code, current_date)
-                if raw is not None and not np.isnan(raw):
-                    raw_clipped = max(-5, min(5, raw))  # clip极端值
-                    return np.tanh(raw_clipped - 1)  # 偏移后压缩
-                return None
+                return self.fundamental_data.get_cf_to_profit(code, current_date)
             elif factor_name == 'fund_debt_ratio':
-                raw = self.fundamental_data.get_debt_ratio(code, current_date)
-                if raw is not None and not np.isnan(raw):
-                    raw_clipped = max(0, min(100, raw))  # clip到[0,100]
-                    return np.tanh((50 - raw_clipped) / 50)  # 反向+压缩
-                return None
+                return self.fundamental_data.get_debt_ratio(code, current_date)
             elif factor_name == 'fund_gross_margin':
-                raw = self.fundamental_data.get_gross_margin(code, current_date)
-                if raw is not None and not np.isnan(raw):
-                    raw_clipped = max(-20, min(80, raw))  # clip极端值
-                    return np.tanh((raw_clipped - 30) / 30)  # 中心化后压缩
-                return None
+                return self.fundamental_data.get_gross_margin(code, current_date)
         except:
             pass
         return None
@@ -1053,13 +972,9 @@ class SignalEngine:
         # 组合因子值
         factor_value = mom_lowvol
 
-        # 熊市折扣
-        if regime == -1:
-            factor_value = factor_value * 0.7
+        # 不做熊市折扣：组合层用截面rank_pct排序，均匀缩放不改变排名
 
         factor_name = 'DEFAULT_MomLowVol'
-        if regime == -1:
-            factor_name = factor_name + '_bear'
 
         risk_info = {'is_high_vol': vol_10 > 0.04}
         return factor_name, factor_value, risk_info
@@ -1068,64 +983,77 @@ class SignalEngine:
                                            code=None, current_date=None, regime=0) -> tuple:
         """计算行业特定因子得分
 
-        直接使用原始因子值（与因子验证一致），然后等权平均合成
-        支持按市场状态选择不同的因子组合
+        支持按市场状态选择不同的因子组合，使用IC权重加权
+        支持tech_fund_combo等复合因子
         """
         config = INDUSTRY_FACTOR_CONFIG.get(industry)
         if not config:
             return None
 
-        # 根据市场状态选择因子
+        # 根据市场状态选择因子和权重
         # regime: 1=bull, 0=neutral, -1=bear
         if regime == 1:
             factors = config.get('bull_factors', config.get('factors', []))
+            weights = config.get('bull_weights', None)
         elif regime == -1:
             factors = config.get('bear_factors', config.get('factors', []))
+            weights = config.get('bear_weights', None)
         else:
             factors = config.get('factors', [])
+            weights = config.get('weights', None)
 
         if not factors:
             return None
+
+        # 获取基本面压缩评分（用于tech_fund_combo等复合因子）
+        compressed_fund_score = 0.0
+        if code and current_date and hasattr(self, 'fundamental_data') and self.fundamental_data:
+            raw_fund_score = self._get_raw_fundamental_value(code, current_date, 'fund_score')
+            if raw_fund_score is not None and isinstance(raw_fund_score, (int, float)):
+                compressed_fund_score = compress_fundamental_factor(raw_fund_score, 'fund_score')
 
         direction = config.get('direction', {}) if 'direction' in config else {}
 
         factor_scores = []
         valid_factors = []
+        valid_weights = []
 
         for i, factor_name in enumerate(factors):
             factor_val = None
 
-            # 基本面因子：复用 _get_fundamental_factor_value 获取压缩后的值
-            if factor_name.startswith('fund_'):
+            if factor_name == 'tech_fund_combo':
+                # tech_fund_combo 需要基本面数据，通过 compute_composite_factors 计算
+                combo = compute_composite_factors(ind, idx, fund_score=compressed_fund_score)
+                factor_val = combo.get('tech_fund_combo')
+            elif factor_name.startswith('fund_'):
+                # 基本面因子：使用统一压缩函数
                 factor_val = self._get_fundamental_factor_value(code, current_date, factor_name)
             else:
                 # 技术因子：从 ind 字典获取
                 factor_val = self._safe_get(ind, factor_name, idx, None)
 
-            # 直接使用原始因子值
+            # 直接使用因子值
             if factor_val is not None and not np.isnan(factor_val):
                 factor_dir = direction.get(factor_name, 1)
                 factor_scores.append(factor_val * factor_dir)
                 valid_factors.append(factor_name)
+                # 获取IC权重
+                if weights and i < len(weights):
+                    valid_weights.append(weights[i])
 
         if not factor_scores:
             return None
 
-        # 根据method选择合并方式 (2026-03-18优化: 默认使用equal)
-        method = config.get('method', 'equal')
-        weights = config.get('weights', None)
-
-        if method == 'weighted' and weights and len(weights) >= len(factor_scores):
-            # 使用指定权重
-            w = weights[:len(factor_scores)]
-            total_w = sum(w)
-            factor_value = sum(s * w_i for s, w_i in zip(factor_scores, w)) / total_w
-        elif method == 'equal':
-            # 等权平均（推荐，更稳健）
-            factor_value = np.mean(factor_scores)
+        # 使用IC权重加权平均（标定产出的权重）
+        if valid_weights and len(valid_weights) == len(factor_scores):
+            total_w = sum(abs(w) for w in valid_weights)
+            if total_w > 0:
+                factor_value = sum(s * abs(w) for s, w in zip(factor_scores, valid_weights)) / total_w
+            else:
+                factor_value = np.mean(factor_scores)
         else:
-            # Top1（保留兼容性，但不推荐）
-            factor_value = factor_scores[0]
+            # 无权重时等权平均
+            factor_value = np.mean(factor_scores)
 
         # 添加市场状态标记到因子名称
         regime_suffix = {1: '_B', -1: '_E', 0: ''}.get(regime, '')
