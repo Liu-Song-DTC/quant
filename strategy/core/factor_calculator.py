@@ -55,7 +55,9 @@ def calculate_indicators(
     high: Optional[np.ndarray] = None,
     low: Optional[np.ndarray] = None,
     volume: Optional[np.ndarray] = None,
-    params: Optional[Dict] = None
+    params: Optional[Dict] = None,
+    turnover_rate: Optional[np.ndarray] = None,
+    amplitude: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """
     计算所有技术指标（与signal_engine._calculate_indicators逻辑一致）
@@ -224,6 +226,21 @@ def calculate_indicators(
             vp_corr[i] = np.corrcoef(r, v)[0, 1]
     mom20 = result.get('mom_20', np.zeros(n))
     result['vol_confirm'] = np.tanh(vp_corr * mom20 * 10)
+
+    # === 换手率因子 ===
+    if turnover_rate is not None:
+        tr_ma20 = _sma(turnover_rate, 20)
+        # 低换手率溢价: 1/turnover → 高值=低换手=未来正收益
+        raw_inv_turnover = 1.0 / (turnover_rate + 0.1)
+        raw_inv_turnover_ma = 1.0 / (tr_ma20 + 0.1)
+        result['inv_turnover'] = np.tanh((raw_inv_turnover_ma - 5) / 5)  # 压缩
+        # 换手率变化: 当前/MA20-1, 缩量=正信号
+        tr_ratio = turnover_rate / (tr_ma20 + 1e-6)
+        result['turnover_shrink'] = np.tanh(-(tr_ratio - 1) * 3)  # 缩量为正
+    else:
+        n_pts = len(close)
+        result['inv_turnover'] = np.zeros(n_pts)
+        result['turnover_shrink'] = np.zeros(n_pts)
 
     return result
 
@@ -469,5 +486,11 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['trend_lowvol'] = ind['trend_lowvol'][idx]
     if 'vol_confirm' in ind:
         result['vol_confirm'] = ind['vol_confirm'][idx]
+
+    # 换手率因子
+    if 'inv_turnover' in ind:
+        result['inv_turnover'] = ind['inv_turnover'][idx]
+    if 'turnover_shrink' in ind:
+        result['turnover_shrink'] = ind['turnover_shrink'][idx]
 
     return result

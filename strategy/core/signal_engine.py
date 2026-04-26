@@ -577,9 +577,10 @@ class SignalEngine:
         high = data['high'].values
         low = data['low'].values
         volume = data['volume'].values
+        turnover_rate = data['turnover_rate'].values if 'turnover_rate' in data.columns else None
 
         # 使用统一的因子计算器
-        result = calc_indicators(close, high, low, volume, params)
+        result = calc_indicators(close, high, low, volume, params, turnover_rate=turnover_rate)
 
         # 收益率
         result['ret_30'] = close / self._shift(close, 30) - 1

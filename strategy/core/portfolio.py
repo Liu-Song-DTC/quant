@@ -131,10 +131,10 @@ class PortfolioConstructor:
         # fv_mean滞后择时: 三状态 满仓(1.0) → 半仓(0.6) → 低仓(0.3)
         fv_mean = float(np.mean(factor_values))
         if self.current_exposure == 1.0:
-            if fv_mean < -0.01:
-                self.current_exposure = 0.6
-            elif fv_mean < -0.03:
+            if fv_mean < -0.03:
                 self.current_exposure = 0.3
+            elif fv_mean < -0.01:
+                self.current_exposure = 0.6
         elif self.current_exposure == 0.6:
             if fv_mean > 0.02:
                 self.current_exposure = 1.0
@@ -150,7 +150,7 @@ class PortfolioConstructor:
         if not qualified:
             qualified = [c for c in candidates if c['rank_pct'] > 0.3]
 
-        # 换手控制：现有持仓的rank_pct仍>0.4时优先保留，避免不必要换手
+        # 换手控制：现有持仓的rank_pct仍>hold_threshold时优先保留
         current_codes = set(current_positions.keys())
         hold_threshold = 0.5  # 已持仓股票，rank_pct>0.5即可保留
 

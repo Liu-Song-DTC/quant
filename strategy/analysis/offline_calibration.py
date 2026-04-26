@@ -83,10 +83,11 @@ def _calibrate_stock_worker(args):
     high_arr = df['high'].values if 'high' in df.columns else close_arr
     low_arr = df['low'].values if 'low' in df.columns else close_arr
     vol_arr = df['volume'].values if 'volume' in df.columns else np.ones(n)
+    turnover_arr = df['turnover_rate'].values if 'turnover_rate' in df.columns else None
 
     # 使用统一的因子计算器
     params = get_default_params()
-    ind = calculate_indicators(close_arr, high_arr, low_arr, vol_arr, params)
+    ind = calculate_indicators(close_arr, high_arr, low_arr, vol_arr, params, turnover_rate=turnover_arr)
 
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}
 
