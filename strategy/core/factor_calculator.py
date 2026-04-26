@@ -147,6 +147,19 @@ def calculate_indicators(
     for period in params.get('volatility_periods', [5, 10, 20]):
         result[f'volatility_{period}'] = _rolling_std(returns, period)
 
+    # === 下行风险因子 (downside deviation) ===
+    # 仅计算负收益的标准差，与volatility不同
+    for period in [10, 20]:
+        down_dev = np.zeros(n)
+        for i in range(period, n):
+            r = returns[i-period:i]
+            neg_r = r[r < 0]
+            if len(neg_r) > 2:
+                down_dev[i] = np.std(neg_r)
+        result[f'downside_dev_{period}'] = down_dev
+    # 低下行风险因子: 值越大=下行风险越低=越好
+    result['low_downside'] = np.tanh(-result['downside_dev_20'] * 30)
+
     # === 均线关系 ===
     result['ema5_above_20'] = result['ema5'] > result['ema20']
     result['ema20_above_60'] = result['ema20'] > result['ema60']
@@ -492,5 +505,9 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['inv_turnover'] = ind['inv_turnover'][idx]
     if 'turnover_shrink' in ind:
         result['turnover_shrink'] = ind['turnover_shrink'][idx]
+
+    # 下行风险因子
+    if 'low_downside' in ind:
+        result['low_downside'] = ind['low_downside'][idx]
 
     return result
