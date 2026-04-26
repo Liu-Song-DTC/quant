@@ -11,6 +11,27 @@
 import numpy as np
 from copy import deepcopy
 from .config_loader import load_config
+import yaml
+import os
+
+
+def _load_industry_ic_weights():
+    """加载行业IC权重，用于因子值惩罚（包含分市场IC）"""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_path = os.path.join(base_dir, 'config', 'factor_config.yaml')
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+            industry_factors = config.get('industry_factors', {})
+            result = {}
+            for industry, cfg in industry_factors.items():
+                result[industry] = {
+                    'neutral': max(cfg.get('ic', 0.05), 0.01),
+                    'bull': max(cfg.get('bull_ic', cfg.get('combined_ic', cfg.get('ic', 0.05))), 0.01),
+                    'bear': max(cfg.get('bear_ic', cfg.get('bear_combined_ic', cfg.get('ic', 0.05))), 0.01),
+                }
+            return result
+    return {}
 
 
 class PortfolioConstructor:
@@ -34,10 +55,12 @@ class PortfolioConstructor:
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 1.0)
 
         self.peak_equity = None
+        self.industry_ic = _load_industry_ic_weights()
         self.position_cost = {}
         self.last_selection = []
         self.current_ranking = {}
         self.current_n_positions = 0
+        self.current_exposure = 1.0  # fv_mean滞后仓位状态
 
     def _build_desired_value(
         self,
@@ -50,11 +73,14 @@ class PortfolioConstructor:
         market_regime=0,
         momentum_score=0.0,
         bear_risk=False,
+        trend_score=0.0,
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
 
         total_equity = cash + sum(current_positions.values())
+
+        n_positions = self.max_position  # 提前定义，用于价格过滤
 
         # 计算峰值和回撤
         if self.peak_equity is None:
@@ -73,11 +99,21 @@ class PortfolioConstructor:
             if factor_value is None or (isinstance(factor_value, float) and np.isnan(factor_value)):
                 continue
 
+            # 价格约束：100股整手下，100*price必须接近理想单只仓位
+            # 否则该股在bt_execution中因floor(raw)=0而无法买入，成为死权重
+            # 允许2倍理想仓位（100股整手会导致超配，但至少能买入）
+            price = prices.get(code, 0)
+            ideal_per_stock = total_equity / n_positions
+            if price > 0 and price * 100 > ideal_per_stock * 2:
+                continue
+
             candidates.append({
                 'code': code,
                 'factor_value': factor_value,
                 'score': getattr(sig, 'score', 0),
                 'industry': getattr(sig, 'industry', '') or 'default',
+                'risk_vol': getattr(sig, 'risk_vol', 0.03),
+                'price': price,
                 'sig': sig,
             })
 
@@ -92,24 +128,46 @@ class PortfolioConstructor:
             c['rank_pct'] = rank_pct.iloc[i]
 
         # === 市场仓位调整 ===
-        # 全仓: 截面排名已经选出了最好的股票
-        # 仅极端回撤时降仓（尾部风险保护）
-        target_exposure = 1.0
-        if drawdown > 0.20:
-            target_exposure = 0.5
+        # fv_mean滞后择时: 三状态 满仓(1.0) → 半仓(0.6) → 低仓(0.3)
+        fv_mean = float(np.mean(factor_values))
+        if self.current_exposure == 1.0:
+            if fv_mean < -0.01:
+                self.current_exposure = 0.6
+            elif fv_mean < -0.03:
+                self.current_exposure = 0.3
+        elif self.current_exposure == 0.6:
+            if fv_mean > 0.02:
+                self.current_exposure = 1.0
+            elif fv_mean < -0.02:
+                self.current_exposure = 0.3
+        elif self.current_exposure == 0.3:
+            if fv_mean > 0.03:
+                self.current_exposure = 0.6
+        target_exposure = self.current_exposure
 
         # === 选股: rank_pct > 0.5 → top N → 行业均衡 ===
         qualified = [c for c in candidates if c['rank_pct'] > 0.5]
         if not qualified:
             qualified = [c for c in candidates if c['rank_pct'] > 0.3]
 
-        # 按factor_value降序
-        qualified.sort(key=lambda x: -x['factor_value'])
+        # 换手控制：现有持仓的rank_pct仍>0.4时优先保留，避免不必要换手
+        current_codes = set(current_positions.keys())
+        hold_threshold = 0.5  # 已持仓股票，rank_pct>0.5即可保留
+
+        # 按factor_value降序，但已持仓优先
+        for c in qualified:
+            c['is_held'] = c['code'] in current_codes
+            if c['is_held'] and c['rank_pct'] > hold_threshold:
+                pass  # 已持仓且仍合格，保留
+            elif c['is_held'] and c['rank_pct'] <= hold_threshold:
+                c['is_held'] = False  # 信号太弱，标记为替换
+
+        # 排序：已持仓优先（稳定持仓），再按factor_value排序
+        qualified.sort(key=lambda x: (-x['is_held'], -x['factor_value']))
 
         # 行业均衡选股
         industry_count = {}
         industry_cap = 5
-        n_positions = self.max_position
 
         selected = []
         for c in qualified:
@@ -128,13 +186,30 @@ class PortfolioConstructor:
         self.current_ranking = {c['code']: i for i, c in enumerate(candidates)}
         self.current_n_positions = len(selected)
 
-        # === 等权分配 ===
+        # === IC加权行业权重分配（分市场IC）===
         n = len(selected)
-        weight_per_stock = target_exposure / n
+        if self.industry_ic:
+            regime_key = {1: 'bull', -1: 'bear', 0: 'neutral'}.get(market_regime, 'neutral')
+            max_ic = 0.05
+            for c in selected:
+                ic_dict = self.industry_ic.get(c['industry'], {})
+                ic_val = ic_dict.get(regime_key, ic_dict.get('neutral', 0.05))
+                max_ic = max(max_ic, ic_val)
+
+            raw_weights = []
+            for c in selected:
+                ic_dict = self.industry_ic.get(c['industry'], {})
+                ic = ic_dict.get(regime_key, ic_dict.get('neutral', 0.05))
+                ic_w = np.sqrt(ic / max_ic)
+                raw_weights.append(ic_w)
+            total_w = sum(raw_weights)
+            weights = [w / total_w * target_exposure for w in raw_weights]
+        else:
+            weights = [target_exposure / n] * n
 
         desired_value = {}
-        for c in selected:
-            desired_value[c['code']] = weight_per_stock * total_equity
+        for c, w in zip(selected, weights):
+            desired_value[c['code']] = w * total_equity
 
         # 记录选股结果
         self.last_selection = [
@@ -142,11 +217,11 @@ class PortfolioConstructor:
                 'date': date,
                 'code': c['code'],
                 'score': c['score'],
-                'weight': weight_per_stock,
+                'weight': w,
                 'industry': c.get('industry', ''),
                 'rank_pct': c.get('rank_pct', 0),
             }
-            for c in selected
+            for c, w in zip(selected, weights)
         ]
 
         return desired_value
@@ -162,6 +237,7 @@ class PortfolioConstructor:
         market_regime,
         momentum_score=0.0,
         bear_risk=False,
+        trend_score=0.0,
         cost=None,
         rebalance=False,
     ):
@@ -200,6 +276,7 @@ class PortfolioConstructor:
                 market_regime=market_regime,
                 momentum_score=momentum_score,
                 bear_risk=bear_risk,
+                trend_score=trend_score,
             )
 
         # 强制卖出

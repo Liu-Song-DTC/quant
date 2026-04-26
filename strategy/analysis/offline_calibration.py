@@ -378,11 +378,79 @@ def calibrate_industry_regime(factor_df, candidate_factors):
     return calibration_results
 
 
-def select_best_factors(calibration_results, max_factors=3, min_combined_ir=0.02):
-    """选择最优因子组合
+def _compute_combined_factor_ic(regime_df, factor_names, weights):
+    """计算组合因子的截面IC（向量化实现）
+
+    Args:
+        regime_df: 行业×市场状态的因子DataFrame
+        factor_names: 因子名列表
+        weights: 因子权重列表（归一化后）
+
+    Returns:
+        dict: {ic_mean, ic_std, ir, ic_stability, n_dates} or None
+    """
+    available = [f for f in factor_names if f in regime_df.columns]
+    if not available:
+        return None
+
+    w_map = {f: w for f, w in zip(factor_names, weights) if f in available}
+    total_w = sum(abs(w) for w in w_map.values())
+    if total_w == 0:
+        return None
+
+    # 向量化计算组合因子值
+    combined = np.zeros(len(regime_df))
+    for f, w in w_map.items():
+        combined += regime_df[f].fillna(0).values * w
+    combined /= total_w
+
+    regime_df_copy = regime_df.copy()
+    regime_df_copy['_combined'] = combined
+
+    # 截面IC计算
+    try:
+        fn_pivot = regime_df_copy.pivot(index='date', columns='code', values='_combined')
+        ret_pivot = regime_df_copy.pivot(index='date', columns='code', values='future_ret')
+        fn_rank = fn_pivot.rank(axis=1, na_option='keep')
+        ret_rank = ret_pivot.rank(axis=1, na_option='keep')
+        ic_series = fn_rank.corrwith(ret_rank, axis=1)
+        ic_list = ic_series.dropna().tolist()
+    except:
+        return None
+
+    if len(ic_list) < 10:
+        return None
+
+    ic_mean = np.mean(ic_list)
+    if ic_mean <= 0:
+        return None
+
+    ic_std = np.std(ic_list) + 1e-10
+    ir = ic_mean / ic_std
+    ic_signs = np.sign(ic_list)
+    ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
+
+    return {
+        'ic_mean': float(ic_mean),
+        'ic_std': float(ic_std),
+        'ir': float(ir),
+        'ic_stability': float(ic_stability),
+        'n_dates': len(ic_list),
+    }
+
+
+def select_best_factors(calibration_results, factor_df, max_factors=3, min_combined_ir=0.02):
+    """贪心前向选择最优因子组合，验证组合IC
+
+    对每个行业×市场状态：
+    1. 按combined_ir排序候选因子
+    2. 贪心前向选择：逐步添加因子，选择使组合IC最高的因子
+    3. 验证最终组合因子的IC
+    4. 选择使组合IC最高的K值
 
     Args:
         calibration_results: calibrate_industry_regime的输出
+        factor_df: 因子数据DataFrame（用于计算组合IC）
         max_factors: 每个行业每个状态最多选几个因子
         min_combined_ir: 最低combined_ir阈值
 
@@ -390,9 +458,11 @@ def select_best_factors(calibration_results, max_factors=3, min_combined_ir=0.02
         dict: 适合写入factor_config.yaml的格式
     """
     industry_config = {}
+    regime_map = {'neutral': 0, 'bull': 1, 'bear': -1}
 
     for industry, regimes in calibration_results.items():
         config = {}
+        ind_df = factor_df[factor_df['industry'] == industry] if 'industry' in factor_df.columns else factor_df
 
         for regime_name in ['neutral', 'bull', 'bear']:
             if regime_name not in regimes:
@@ -406,34 +476,80 @@ def select_best_factors(calibration_results, max_factors=3, min_combined_ir=0.02
             )
 
             # 过滤低质量因子
-            selected = []
-            for factor_name, metrics in sorted_factors:
-                if metrics['combined_ir'] >= min_combined_ir:
-                    selected.append((factor_name, metrics))
-                if len(selected) >= max_factors:
-                    break
+            candidates = [
+                (fn, m) for fn, m in sorted_factors
+                if m['combined_ir'] >= min_combined_ir
+            ]
 
-            if not selected:
+            if not candidates:
                 continue
 
-            factors = [f[0] for f in selected]
-            # IC权重：combined_ir归一化
-            total_ir = sum(float(f[1]['combined_ir']) for f in selected)
-            weights = [float(f[1]['combined_ir']) / total_ir for f in selected]
-            avg_ic = float(np.mean([float(f[1]['ic_mean']) for f in selected]))
+            # 筛选该市场状态的因子数据
+            regime_val = regime_map[regime_name]
+            regime_df = ind_df[ind_df['regime'] == regime_val] if 'regime' in ind_df.columns else ind_df
+            if len(regime_df) < 50:
+                # 数据不足，退回简单选择
+                selected = candidates[:max_factors]
+                factors = [f[0] for f in selected]
+                total_ir = sum(f[1]['combined_ir'] for f in selected)
+                weights = [f[1]['combined_ir'] / total_ir for f in selected]
+                avg_ic = float(np.mean([f[1]['ic_mean'] for f in selected]))
+                combined_ic = avg_ic  # 无验证数据，用单因子均值IC估计
+            else:
+                # 贪心前向选择：top-k + 组合IC验证
+                best_result = None
+                best_combined_ic = 0
+
+                for k in range(1, min(max_factors + 1, len(candidates) + 1)):
+                    top_k = candidates[:k]
+                    factors_k = [f[0] for f in top_k]
+                    total_ir = sum(f[1]['combined_ir'] for f in top_k)
+                    weights_k = [f[1]['combined_ir'] / total_ir for f in top_k]
+
+                    combo_ic = _compute_combined_factor_ic(regime_df, factors_k, weights_k)
+
+                    if combo_ic and combo_ic['ic_mean'] > best_combined_ic:
+                        best_combined_ic = combo_ic['ic_mean']
+                        best_result = {
+                            'factors': factors_k,
+                            'weights': weights_k,
+                            'avg_ic': float(np.mean([f[1]['ic_mean'] for f in top_k])),
+                            'combined_ic': combo_ic['ic_mean'],
+                            'combined_ir': combo_ic['ir'],
+                            'combined_stability': combo_ic['ic_stability'],
+                        }
+
+                if best_result is None:
+                    top1 = candidates[:1]
+                    best_result = {
+                        'factors': [top1[0][0]],
+                        'weights': [1.0],
+                        'avg_ic': top1[0][1]['ic_mean'],
+                        'combined_ic': top1[0][1]['ic_mean'],
+                        'combined_ir': top1[0][1]['ir'],
+                        'combined_stability': top1[0][1]['ic_stability'],
+                    }
+
+                factors = best_result['factors']
+                weights = best_result['weights']
+                avg_ic = best_result['avg_ic']
+                combined_ic = best_result['combined_ic']
 
             if regime_name == 'neutral':
                 config['factors'] = factors
                 config['weights'] = [round(w, 4) for w in weights]
                 config['ic'] = round(avg_ic, 4)
+                config['combined_ic'] = round(combined_ic, 4)
             elif regime_name == 'bull':
                 config['bull_factors'] = factors
                 config['bull_weights'] = [round(w, 4) for w in weights]
                 config['bull_ic'] = round(avg_ic, 4)
+                config['bull_combined_ic'] = round(combined_ic, 4)
             elif regime_name == 'bear':
                 config['bear_factors'] = factors
                 config['bear_weights'] = [round(w, 4) for w in weights]
                 config['bear_ic'] = round(avg_ic, 4)
+                config['bear_combined_ic'] = round(combined_ic, 4)
 
         if config:
             industry_config[industry] = config
@@ -489,13 +605,16 @@ def generate_report(calibration_results, industry_config, output_path):
             if industry in industry_config:
                 cfg = industry_config[industry]
                 if 'factors' in cfg:
-                    f.write(f"- **Neutral**: {cfg['factors']} (IC={cfg.get('ic', 'N/A')})\n")
+                    c_ic = cfg.get('combined_ic', cfg.get('ic', 'N/A'))
+                    f.write(f"- **Neutral**: {cfg['factors']} (单因子IC={cfg.get('ic', 'N/A')}, 组合IC={c_ic})\n")
                     f.write(f"  - weights: {cfg.get('weights', [])}\n")
                 if 'bull_factors' in cfg:
-                    f.write(f"- **Bull**: {cfg['bull_factors']} (IC={cfg.get('bull_ic', 'N/A')})\n")
+                    c_ic = cfg.get('bull_combined_ic', cfg.get('bull_ic', 'N/A'))
+                    f.write(f"- **Bull**: {cfg['bull_factors']} (单因子IC={cfg.get('bull_ic', 'N/A')}, 组合IC={c_ic})\n")
                     f.write(f"  - bull_weights: {cfg.get('bull_weights', [])}\n")
                 if 'bear_factors' in cfg:
-                    f.write(f"- **Bear**: {cfg['bear_factors']} (IC={cfg.get('bear_ic', 'N/A')})\n")
+                    c_ic = cfg.get('bear_combined_ic', cfg.get('bear_ic', 'N/A'))
+                    f.write(f"- **Bear**: {cfg['bear_factors']} (单因子IC={cfg.get('bear_ic', 'N/A')}, 组合IC={c_ic})\n")
                     f.write(f"  - bear_weights: {cfg.get('bear_weights', [])}\n")
 
             # 所有候选因子IC
@@ -562,15 +681,18 @@ def main():
     print(f"标定结果: {n_industries} 个行业, "
           f"neutral={n_with_neutral}, bull={n_with_bull}, bear={n_with_bear}")
 
-    # Step 4: 选择最优因子
-    print("\n=== Step 4: 选择最优因子 ===")
-    industry_config = select_best_factors(calibration_results)
+    # Step 4: 贪心前向选择最优因子（验证组合IC）
+    print("\n=== Step 4: 贪心前向选择最优因子 ===")
+    industry_config = select_best_factors(calibration_results, factor_df)
     print(f"选中行业: {len(industry_config)} 个")
     for ind, cfg in industry_config.items():
         neutral = cfg.get('factors', [])
         bull = cfg.get('bull_factors', [])
         bear = cfg.get('bear_factors', [])
-        print(f"  {ind}: neutral={neutral}, bull={bull}, bear={bear}")
+        n_cic = cfg.get('combined_ic', 'N/A')
+        b_cic = cfg.get('bull_combined_ic', 'N/A')
+        e_cic = cfg.get('bear_combined_ic', 'N/A')
+        print(f"  {ind}: neutral={neutral}(组合IC={n_cic}), bull={bull}(组合IC={b_cic}), bear={bear}(组合IC={e_cic})")
 
     # Step 5: 更新配置
     print("\n=== Step 5: 更新配置 ===")

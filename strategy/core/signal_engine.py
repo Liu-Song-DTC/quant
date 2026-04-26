@@ -670,29 +670,18 @@ class SignalEngine:
         # 风格因子
         style_factor_score = self._get_style_score(ind, idx, market_info)
 
-        # === 信号系统 v3 (优化版) ===
-        # 核心思想: 信号分数反映相对强弱，组合层用排名排序
+        # === 信号系统 v4 ===
+        # 核心思想: score = factor_value，与标定验证的IC完全对齐
+        # 组合层通过截面rank_pct排序选股，不再依赖信号层的额外增强
 
-        # 1. 基础分数 = 因子值（已clip到合理范围）
-        # clip极端值：factor_value通常在-10到10范围
+        # 1. 基础分数 = 因子值
         base_score = np.clip(factor_value, -10, 10)
 
         # 2. 基本面增强（仅对非行业因子生效）
         if not is_industry and fundamental_score > 0:
             base_score = base_score + fundamental_score * 0.1
 
-        # === 优化：加入动量确认 ===
-        # 获取短期动量（mom_5已经计算好在ind中）
-        mom_5 = self._safe_get(ind, 'mom_5', idx, 0.0)
-        mom_20 = self._safe_get(ind, 'mom_20', idx, 0.0)
-
-        # 动量标准化：将动量缩放到与factor_value可比的范围
-        # mom_5超过5%算强动量，10%算极强
-        mom_5_norm = np.clip(mom_5 / 0.05, -2, 2)  # 标准化到-2到2
-        mom_20_norm = np.clip(mom_20 / 0.10, -2, 2)
-
-        # 组合分数：因子值为主(70%)，动量为辅(30%)
-        score = base_score * 0.7 + mom_5_norm * 0.2 + mom_20_norm * 0.1
+        score = base_score
 
         # 4. 波动率风险指标
         risk_vol = self._safe_get(ind, 'volatility_10', idx, 0.02)

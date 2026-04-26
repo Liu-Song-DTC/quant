@@ -209,6 +209,22 @@ def calculate_indicators(
     # 波动率因子 - 使用tanh压缩（与compute_composite_factors一致）
     result['volatility'] = np.tanh(-result['volatility_20'] * 20)
 
+    # 趋势低波动因子: 强趋势+低波动=稳定上涨
+    trend_str = result.get('trend_strength', np.zeros(n))
+    atr_ratio = result.get('atr_ratio', np.zeros(n))
+    result['trend_lowvol'] = np.tanh(trend_str * (-atr_ratio) * 50)
+
+    # 量价确认因子: 近20天量价正相关+动量方向一致
+    # 量价齐升>0, 量价齐跌<0
+    vp_corr = np.zeros(n)
+    for i in range(20, n):
+        r = result['ret'][i-20:i]
+        v = result['volume'][i-20:i]
+        if np.std(r) > 0 and np.std(v) > 0:
+            vp_corr[i] = np.corrcoef(r, v)[0, 1]
+    mom20 = result.get('mom_20', np.zeros(n))
+    result['vol_confirm'] = np.tanh(vp_corr * mom20 * 10)
+
     return result
 
 
@@ -447,5 +463,11 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
 
     # tech_fund_combo: 技术+基本面组合
     result['tech_fund_combo'] = result.get('trend_mom_v41', 0) * 0.7 + result.get('rsi_factor', 0) * 0.1 + fund_score * 0.2
+
+    # 新因子: trend_lowvol + vol_confirm
+    if 'trend_lowvol' in ind:
+        result['trend_lowvol'] = ind['trend_lowvol'][idx]
+    if 'vol_confirm' in ind:
+        result['vol_confirm'] = ind['vol_confirm'][idx]
 
     return result

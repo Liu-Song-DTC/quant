@@ -61,12 +61,14 @@ class Strategy:
         market_regime = 0
         momentum_score = 0.0
         bear_risk = False
+        trend_score = 0.0
         if self.index_data is not None:
             row = self.index_data[self.index_data["datetime"].dt.date == date]
             if not row.empty:
                 market_regime = int(row["regime"].values[0])
                 momentum_score = float(row["momentum_score"].values[0])
                 bear_risk = bool(row["bear_risk"].values[0]) if "bear_risk" in row.columns else False
+                trend_score = float(row["trend_score"].values[0]) if "trend_score" in row.columns else 0.0
         return self.portfolio.build(
             date=date,
             universe=universe,
@@ -77,6 +79,7 @@ class Strategy:
             market_regime=market_regime,
             momentum_score=momentum_score,
             bear_risk=bear_risk,
+            trend_score=trend_score,
             cost=cost,
             rebalance=rebalance
         )
