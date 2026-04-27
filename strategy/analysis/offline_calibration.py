@@ -116,6 +116,8 @@ def _calibrate_stock_worker(args):
                     'revenue_growth': _worker_fd.get_revenue_growth(code, eval_date),
                     'fund_score': _worker_fd.get_fundamental_score(code, eval_date),
                     'gross_margin': _worker_fd.get_gross_margin(code, eval_date),
+                    'pg_improve': _worker_fd.get_profit_growth_improve(code, eval_date),
+                    'rg_improve': _worker_fd.get_revenue_growth_improve(code, eval_date),
                     'cf_to_profit': None
                 }
                 operating_cf = _worker_fd.get_operating_cash_flow(code, eval_date)
@@ -154,6 +156,8 @@ def _calibrate_stock_worker(args):
             raw_fund_score = fund_data.get('fund_score')
             raw_gross_margin = fund_data.get('gross_margin')
             raw_cf_to_profit = fund_data.get('cf_to_profit')
+            raw_pg_improve = fund_data.get('pg_improve')
+            raw_rg_improve = fund_data.get('rg_improve')
 
             if raw_roe is not None and isinstance(raw_roe, (int, float)):
                 row['fund_roe'] = compress_fundamental_factor(raw_roe, 'fund_roe')
@@ -167,6 +171,10 @@ def _calibrate_stock_worker(args):
                 row['fund_gross_margin'] = compress_fundamental_factor(raw_gross_margin, 'fund_gross_margin')
             if raw_cf_to_profit is not None and isinstance(raw_cf_to_profit, (int, float)):
                 row['fund_cf_to_profit'] = compress_fundamental_factor(raw_cf_to_profit, 'fund_cf_to_profit')
+            if raw_pg_improve is not None and isinstance(raw_pg_improve, (int, float)):
+                row['fund_pg_improve'] = compress_fundamental_factor(raw_pg_improve, 'fund_pg_improve')
+            if raw_rg_improve is not None and isinstance(raw_rg_improve, (int, float)):
+                row['fund_rg_improve'] = compress_fundamental_factor(raw_rg_improve, 'fund_rg_improve')
 
         # 计算未来收益
         if idx + forward_period < n:

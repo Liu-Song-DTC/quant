@@ -41,6 +41,8 @@ def compress_fundamental_factor(raw_value: float, factor_name: str) -> float:
         'fund_gross_margin': lambda v: np.tanh((np.clip(v, -20, 80) - 30) / 30),
         'fund_eps': lambda v: np.tanh(np.clip(v, -10, 10)),
         'fund_debt_ratio': lambda v: np.tanh((50 - np.clip(v, 0, 100)) / 50),
+        'fund_pg_improve': lambda v: np.tanh(np.clip(v, -5, 5) * 2),
+        'fund_rg_improve': lambda v: np.tanh(np.clip(v, -5, 5) * 2),
     }
     compressor = compressors.get(factor_name)
     if compressor:

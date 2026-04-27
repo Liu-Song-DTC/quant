@@ -93,6 +93,13 @@ class FundamentalData:
             return None
         return df.iloc[0].to_dict()
 
+    def _get_nth_latest(self, code, current_date, n=0):
+        """获取第n+1新的基本面数据（n=0最新, n=1上一季度...）"""
+        df = self._get_available_data(code, current_date)
+        if len(df) <= n:
+            return None
+        return df.iloc[n].to_dict()
+
     def get_eps(self, code, current_date):
         """获取每股收益"""
         latest = self._get_latest(code, current_date)
@@ -295,3 +302,55 @@ class FundamentalData:
         if df.empty:
             return None
         return df.iloc[0].get('报告期', None)
+
+    def get_profit_growth_improve(self, code, current_date):
+        """盈利增长改善度 = 当前profit_growth - 上一季度profit_growth
+
+        正值表示盈利加速，负值表示盈利减速
+        """
+        latest = self._get_latest(code, current_date)
+        prev = self._get_nth_latest(code, current_date, n=1)
+        if latest is None or prev is None:
+            return None
+
+        def _parse_growth(val):
+            if val is None:
+                return None
+            try:
+                if isinstance(val, str):
+                    return float(val.strip('%')) / 100
+                return float(val)
+            except:
+                return None
+
+        cur_pg = _parse_growth(latest.get('净利润-同比增长'))
+        prev_pg = _parse_growth(prev.get('净利润-同比增长'))
+        if cur_pg is not None and prev_pg is not None:
+            return cur_pg - prev_pg
+        return None
+
+    def get_revenue_growth_improve(self, code, current_date):
+        """营收增长改善度 = 当前revenue_growth - 上一季度revenue_growth
+
+        正值表示营收加速，负值表示营收减速
+        """
+        latest = self._get_latest(code, current_date)
+        prev = self._get_nth_latest(code, current_date, n=1)
+        if latest is None or prev is None:
+            return None
+
+        def _parse_growth(val):
+            if val is None:
+                return None
+            try:
+                if isinstance(val, str):
+                    return float(val.strip('%')) / 100
+                return float(val)
+            except:
+                return None
+
+        cur_rg = _parse_growth(latest.get('营业总收入-同比增长'))
+        prev_rg = _parse_growth(prev.get('营业总收入-同比增长'))
+        if cur_rg is not None and prev_rg is not None:
+            return cur_rg - prev_rg
+        return None

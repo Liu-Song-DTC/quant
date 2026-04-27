@@ -939,6 +939,10 @@ class SignalEngine:
                 return self.fundamental_data.get_debt_ratio(code, current_date)
             elif factor_name == 'fund_gross_margin':
                 return self.fundamental_data.get_gross_margin(code, current_date)
+            elif factor_name == 'fund_pg_improve':
+                return self.fundamental_data.get_profit_growth_improve(code, current_date)
+            elif factor_name == 'fund_rg_improve':
+                return self.fundamental_data.get_revenue_growth_improve(code, current_date)
         except:
             pass
         return None
