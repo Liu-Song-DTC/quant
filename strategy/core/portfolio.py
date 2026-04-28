@@ -130,9 +130,11 @@ class PortfolioConstructor:
         # === 市场仓位调整 ===
         # fv_mean连续择时: 将fv_mean线性映射到[0.3, 1.0]
         # fv_mean=0.05 → 1.0, fv_mean=-0.03 → 0.3
+        # 熊市时floor降至0.2: market_regime是领先信号，fv_mean是滞后信号
         fv_mean = float(np.mean(factor_values))
-        raw_exposure = 0.3 + (fv_mean + 0.03) / (0.05 + 0.03) * 0.7
-        target_exposure = float(np.clip(raw_exposure, 0.3, 1.0))
+        floor = 0.2 if bear_risk else 0.3
+        raw_exposure = floor + (fv_mean + 0.03) / (0.05 + 0.03) * (1.0 - floor)
+        target_exposure = float(np.clip(raw_exposure, floor, 1.0))
         # 滞后平滑: 避免仓位突变
         self.current_exposure = 0.5 * self.current_exposure + 0.5 * target_exposure
 
