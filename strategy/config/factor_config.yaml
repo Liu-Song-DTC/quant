@@ -1,14 +1,16 @@
-factor_mode: fixed
+factor_mode: reweight
 dynamic_factor:
-  train_window_days: 240
+  train_window_days: 360
   forward_period: 20
-  top_n_factors: 2
+  top_n_factors: 3
   min_train_samples: 80
   min_ic_dates: 20
   ic_decay_factor: 0.92
   fallback_to_static: true
   min_factor_count: 2
-  min_ic_1f: 0.15
+  min_ic_1f: 0.03
+  use_static_candidates: true
+  reweight_blend: 0.5
 backtest_factors:
 - trend_mom_v41
 - trend_mom_v24

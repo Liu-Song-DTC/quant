@@ -123,6 +123,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     factor_df = None
     industry_codes = {}
     # 只有当 factor_mode 不是 'fixed' 时才需要IC计算
+    # reweight模式也需要IC计算（用于动态调整权重）
     if factor_mode != 'fixed':
         print(f"准备因子数据 (factor_mode={factor_mode})...")
         # 获取股票代码列表（排除指数）

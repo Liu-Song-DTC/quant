@@ -78,6 +78,8 @@ def _compute_date_chunk(args):
     # === 阶段1优化参数 ===
     min_factor_count = config.get('min_factor_count', 2)  # 最少因子数量
     min_ic_1f = config.get('min_ic_1f', 0.05)  # 1因子最低IC门槛
+    use_static_candidates = config.get('use_static_candidates', True)
+    industry_factor_config_static = config.get('industry_factor_config', {})
 
     result = {}
 
@@ -115,10 +117,21 @@ def _compute_date_chunk(args):
             if len(ind_df) < min_train_samples:
                 continue
 
+            # 当use_static_candidates时，只搜索静态因子候选池
+            # 避免全28因子搜索导致的多重测试过拟合
+            if use_static_candidates and industry in industry_factor_config_static:
+                static_cfg = industry_factor_config_static[industry]
+                candidate_factors = set()
+                for key in ['factors', 'bull_factors', 'bear_factors']:
+                    candidate_factors.update(static_cfg.get(key, []))
+                search_factors = [fn for fn in factor_names if fn in candidate_factors]
+            else:
+                search_factors = factor_names
+
             # 一次性向量化计算所有日期的截面Spearman IC
             # 使用 pivot + rank + corr 实现真正的向量化
             factor_metrics = []
-            for fn in factor_names:
+            for fn in search_factors:
                 if fn not in ind_df.columns:
                     continue
 
@@ -155,10 +168,10 @@ def _compute_date_chunk(args):
                 ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
 
-                # === 进一步放宽稳定性过滤，提高DYN因子覆盖率 ===
+                # === IC质量过滤 ===
 
-                # 1. IC符号稳定性：降低到40%
-                MIN_STABILITY = 0.4
+                # 1. IC符号稳定性：60%（>50%才有预测能力）
+                MIN_STABILITY = 0.6
                 if ic_stability < MIN_STABILITY:
                     continue
 
@@ -171,16 +184,16 @@ def _compute_date_chunk(args):
                 # combined_ir = ir * (0.5 + 0.5 * stability)
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
 
-                # 3. t统计量过滤：降低到0.5
-                if abs(t_statistic) < 0.5:
+                # 3. t统计量过滤：1.0（p≈0.05附近）
+                if abs(t_statistic) < 1.0:
                     continue
 
                 # 因子方向过滤：只考虑正向因子（ic_mean > 0）
                 if ic_mean <= 0:
                     continue
 
-                # 4. 最小质量阈值：降低到0.01
-                MIN_COMBINED_IR = 0.01
+                # 4. 最小质量阈值
+                MIN_COMBINED_IR = 0.05
                 if combined_ir < MIN_COMBINED_IR:
                     continue
 
@@ -285,9 +298,9 @@ class DynamicFactorSelector:
         config_loader = load_config()
         dynamic_config = config_loader.get('dynamic_factor', {})
 
-        # enabled 由 factor_mode 决定：'dynamic' 或 'both' 时启用
+        # enabled 由 factor_mode 决定：'dynamic' 或 'both' 或 'reweight' 时启用
         factor_mode = config_loader.get('factor_mode', 'both')
-        self.enabled = factor_mode in ['dynamic', 'both']
+        self.enabled = factor_mode in ['dynamic', 'both', 'reweight']
 
         self.train_window_days = dynamic_config.get('train_window_days', 250)
         self.forward_period = dynamic_config.get('forward_period', 20)
@@ -298,6 +311,8 @@ class DynamicFactorSelector:
         # === 阶段1优化参数 ===
         self.min_factor_count = dynamic_config.get('min_factor_count', 2)  # 最少因子数量
         self.min_ic_1f = dynamic_config.get('min_ic_1f', 0.05)  # 1因子最低IC门槛
+        self.use_static_candidates = dynamic_config.get('use_static_candidates', True)
+        self.reweight_blend = dynamic_config.get('reweight_blend', 0.5)  # static vs dynamic IC weight blend
 
     def set_factor_data(self, factor_df: pd.DataFrame):
         """设置因子数据
@@ -388,6 +403,9 @@ class DynamicFactorSelector:
             # === 阶段1优化参数 ===
             'min_factor_count': self.min_factor_count,
             'min_ic_1f': self.min_ic_1f,
+            'use_static_candidates': self.use_static_candidates,
+            'industry_factor_config': load_config().get('industry_factors', {}),
+            'reweight_blend': self.reweight_blend,
         }
 
         # 每个worker处理一个chunk
@@ -749,7 +767,7 @@ class SignalEngine:
         """
         specific_industry = self._get_specific_industry(code, current_date) if code else ''
 
-        # 动态因子优先
+        # 动态因子优先 (仅dynamic/both模式)
         if self.factor_mode in ['dynamic', 'both']:
             if self.dynamic_factor_selector.enabled and code and current_date:
                 result = self._select_factor_dynamic(ind, idx, regime, code, current_date)
@@ -758,22 +776,27 @@ class SignalEngine:
                     return result
                 # 动态选择失败
                 if self.factor_mode == 'dynamic' and not self.factor_fallback_to_fixed:
-                    # mode=dynamic且不允许fallback，不产生信号（保持空仓）
-                    # 这比使用低质量fallback因子更好
                     self._stats['dynamic_fallback_none'] += 1
                     return None
-                # 动态失败但允许fallback，继续执行fixed逻辑
-                # 注意：不要提前return，让代码自然流向fixed分支
+
+        # reweight模式: 走静态因子选择路径, 但使用walk-forward IC调整权重
+        # fixed/both/reweight模式: 走标准静态路径
+
+        # reweight模式: 获取walk-forward IC权重
+        dyn_ic_weights = None
+        if self.factor_mode == 'reweight' and self.dynamic_factor_selector.enabled and code and current_date:
+            dyn_ic_weights = self._get_dynamic_ic_weights(specific_industry, current_date)
 
         # 固定因子（行业特定或默认）
         # 注意：当factor_mode='dynamic'时，只有fallback允许时才会到达这里
-        if self.factor_mode in ['fixed', 'both'] or (self.factor_mode == 'dynamic' and self.factor_fallback_to_fixed):
+        if self.factor_mode in ['fixed', 'both', 'reweight'] or (self.factor_mode == 'dynamic' and self.factor_fallback_to_fixed):
             if self.industry_factor_enabled and code and current_date:
                 # 使用行业特定因子（已按市场状态优化）
                 if specific_industry and specific_industry in INDUSTRY_FACTOR_CONFIG:
                     result = self._calculate_industry_factor_score(ind, idx, specific_industry,
                                                                    code=code, current_date=current_date,
-                                                                   regime=regime)
+                                                                   regime=regime,
+                                                                   dynamic_ic_weights=dyn_ic_weights)
                     if result:
                         self._stats['fixed_industry'] += 1
                         factor_name, factor_value, risk_info = result
@@ -787,6 +810,43 @@ class SignalEngine:
         self._stats['fixed_default'] += 1
         factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
         return factor_name, factor_value, risk_info, False
+
+    def _get_dynamic_ic_weights(self, industry: str, current_date) -> Optional[dict]:
+        """获取walk-forward IC权重（reweight模式）
+
+        Returns:
+            {factor_name: ic_weight} or None
+        """
+        if not industry or self.dynamic_factor_selector.factor_df is None:
+            return None
+
+        if hasattr(current_date, 'date'):
+            current_date_str = str(current_date.date())
+        else:
+            current_date_str = str(current_date)
+
+        all_dates = self.dynamic_factor_selector._all_dates_cache
+        if not all_dates:
+            return None
+
+        try:
+            industry_factors = self.dynamic_factor_selector.select_factors_for_date(current_date_str, all_dates)
+        except:
+            return None
+
+        if not industry_factors or industry not in industry_factors:
+            return None
+
+        selected_info = industry_factors[industry]
+        if not selected_info or 'factors' not in selected_info:
+            return None
+
+        factors = selected_info['factors']
+        weights = selected_info.get('weights', None)
+        if not weights or len(weights) != len(factors):
+            return None
+
+        return {f: w for f, w in zip(factors, weights)}
 
     def _select_factor_dynamic(self, ind: dict, idx: int, regime: int,
                                 code=None, current_date=None) -> Optional[tuple]:
@@ -837,9 +897,7 @@ class SignalEngine:
         dyn_quality = selected_info.get('quality', 0)
 
         # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
-        # 阈值0.01: combined_ir > 0.01 表示因子有正向预测能力
-        # 放宽阈值，允许更多动态因子通过
-        DYN_QUALITY_THRESHOLD = 0.01  # 降低阈值，允许更多因子通过
+        DYN_QUALITY_THRESHOLD = 0.05
         if dyn_quality < DYN_QUALITY_THRESHOLD:
             return None
 
@@ -851,9 +909,8 @@ class SignalEngine:
 
         if n_factors < min_factor_count:
             # 1F因子需要达到IC门槛才使用
-            # 降低门槛，允许IC>1%的1F因子通过
-            if n_factors == 1 and dyn_quality < 0.01:
-                return None  # 1F质量不足（IC<1%）
+            if n_factors == 1 and dyn_quality < min_ic_1f:
+                return None
 
         # 计算动态因子得分
         factor_scores = []
@@ -903,7 +960,7 @@ class SignalEngine:
 
         factor_name = f'DYN_{specific_industry[:4]}_{len(valid_factors)}F'
         risk_info = {'is_high_vol': False, 'dynamic_factor': True, 'n_factors': len(valid_factors),
-                     'dyn_quality': dyn_quality}
+                     'dyn_quality': dyn_quality, 'selected_factors': valid_factors}
 
         return factor_name, factor_value, risk_info, True
 
@@ -974,11 +1031,13 @@ class SignalEngine:
         return factor_name, factor_value, risk_info
 
     def _calculate_industry_factor_score(self, ind: dict, idx: int, industry: str,
-                                           code=None, current_date=None, regime=0) -> tuple:
+                                           code=None, current_date=None, regime=0,
+                                           dynamic_ic_weights=None) -> tuple:
         """计算行业特定因子得分
 
         支持按市场状态选择不同的因子组合，使用IC权重加权
         支持tech_fund_combo等复合因子
+        dynamic_ic_weights: walk-forward IC权重 (reweight模式), {factor_name: ic_weight}
         """
         config = INDUSTRY_FACTOR_CONFIG.get(industry)
         if not config:
@@ -1038,13 +1097,32 @@ class SignalEngine:
         if not factor_scores:
             return None
 
-        # 使用IC权重加权平均（标定产出的权重）
+        # 使用IC权重加权平均
         if valid_weights and len(valid_weights) == len(factor_scores):
-            total_w = sum(abs(w) for w in valid_weights)
-            if total_w > 0:
-                factor_value = sum(s * abs(w) for s, w in zip(factor_scores, valid_weights)) / total_w
+            # reweight模式: 混合静态权重和walk-forward IC权重
+            if dynamic_ic_weights and self.factor_mode == 'reweight':
+                blend = self.dynamic_factor_selector.reweight_blend
+                blended_weights = []
+                for i, (w_s, fn) in enumerate(zip(valid_weights, valid_factors)):
+                    w_d = dynamic_ic_weights.get(fn, None)
+                    if w_d is not None and w_d > 0:
+                        # 混合: blend * static + (1-blend) * dynamic
+                        blended_weights.append(blend * abs(w_s) + (1 - blend) * w_d)
+                    else:
+                        # 无动态IC数据时保留静态权重
+                        blended_weights.append(abs(w_s))
+                total_w = sum(blended_weights)
+                if total_w > 0:
+                    factor_value = sum(s * w for s, w in zip(factor_scores, blended_weights)) / total_w
+                else:
+                    factor_value = np.mean(factor_scores)
             else:
-                factor_value = np.mean(factor_scores)
+                # 标准模式: 使用标定产出的权重
+                total_w = sum(abs(w) for w in valid_weights)
+                if total_w > 0:
+                    factor_value = sum(s * abs(w) for s, w in zip(factor_scores, valid_weights)) / total_w
+                else:
+                    factor_value = np.mean(factor_scores)
         else:
             # 无权重时等权平均
             factor_value = np.mean(factor_scores)
