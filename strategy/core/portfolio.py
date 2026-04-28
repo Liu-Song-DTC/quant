@@ -128,13 +128,27 @@ class PortfolioConstructor:
             c['rank_pct'] = rank_pct.iloc[i]
 
         # === 市场仓位调整 ===
-        # fv_mean连续择时: 将fv_mean线性映射到[0.3, 1.0]
-        # fv_mean=0.05 → 1.0, fv_mean=-0.03 → 0.3
-        # 熊市时floor降至0.2: market_regime是领先信号，fv_mean是滞后信号
+        # 多信号融合择时: fv_mean(截面) + momentum(指数动量) + trend(均线排列)
         fv_mean = float(np.mean(factor_values))
-        floor = 0.2 if bear_risk else 0.3
-        raw_exposure = floor + (fv_mean + 0.03) / (0.05 + 0.03) * (1.0 - floor)
-        target_exposure = float(np.clip(raw_exposure, floor, 1.0))
+        # fv_mean连续映射到[0.3, 1.0]
+        fv_exposure = 0.3 + (fv_mean + 0.03) / (0.05 + 0.03) * 0.7
+        fv_exposure = float(np.clip(fv_exposure, 0.3, 1.0))
+
+        # momentum_score融合: 强负动量时额外降仓
+        # momentum ∈ [-1, 1], 当momentum<-0.3时开始降仓
+        mom_adj = 1.0
+        if momentum_score < -0.3:
+            mom_adj = 0.5 + 0.5 * (momentum_score + 1.0) / 0.7  # [-1,-0.3] → [0.5, 1.0]
+            mom_adj = max(mom_adj, 0.5)
+
+        # trend_score融合: 空头排列时额外降仓
+        trend_adj = 1.0
+        if trend_score < 0:
+            trend_adj = 0.7 + 0.3 * (1.0 + trend_score)  # [-1, 0] → [0.7, 1.0]
+
+        target_exposure = fv_exposure * mom_adj * trend_adj
+        floor = 0.15 if bear_risk else 0.25
+        target_exposure = float(np.clip(target_exposure, floor, 1.0))
         # 滞后平滑: 避免仓位突变
         self.current_exposure = 0.5 * self.current_exposure + 0.5 * target_exposure
 
