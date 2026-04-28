@@ -128,22 +128,13 @@ class PortfolioConstructor:
             c['rank_pct'] = rank_pct.iloc[i]
 
         # === 市场仓位调整 ===
-        # fv_mean滞后择时: 三状态 满仓(1.0) → 半仓(0.6) → 低仓(0.3)
+        # fv_mean连续择时: 将fv_mean线性映射到[0.3, 1.0]
+        # fv_mean=0.05 → 1.0, fv_mean=-0.03 → 0.3
         fv_mean = float(np.mean(factor_values))
-        if self.current_exposure == 1.0:
-            if fv_mean < -0.03:
-                self.current_exposure = 0.3
-            elif fv_mean < -0.01:
-                self.current_exposure = 0.6
-        elif self.current_exposure == 0.6:
-            if fv_mean > 0.02:
-                self.current_exposure = 1.0
-            elif fv_mean < -0.02:
-                self.current_exposure = 0.3
-        elif self.current_exposure == 0.3:
-            if fv_mean > 0.03:
-                self.current_exposure = 0.6
-        target_exposure = self.current_exposure
+        raw_exposure = 0.3 + (fv_mean + 0.03) / (0.05 + 0.03) * 0.7
+        target_exposure = float(np.clip(raw_exposure, 0.3, 1.0))
+        # 滞后平滑: 避免仓位突变
+        self.current_exposure = 0.5 * self.current_exposure + 0.5 * target_exposure
 
         # === 选股: rank_pct > 0.5 → top N → 行业均衡 ===
         qualified = [c for c in candidates if c['rank_pct'] > 0.5]
@@ -200,7 +191,7 @@ class PortfolioConstructor:
             for c in selected:
                 ic_dict = self.industry_ic.get(c['industry'], {})
                 ic = ic_dict.get(regime_key, ic_dict.get('neutral', 0.05))
-                ic_w = np.sqrt(ic / max_ic)
+                ic_w = (ic / max_ic) ** 1.5
                 raw_weights.append(ic_w)
             total_w = sum(raw_weights)
             weights = [w / total_w * target_exposure for w in raw_weights]
