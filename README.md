@@ -82,16 +82,19 @@ data_manager → backtrader_data → signal_runner → Strategy → SignalEngine
 - `backtest.rebalance_days`: 调仓周期 (默认 20 个交易日)
 - `portfolio.position_stop_loss`: 个股止损线 (12%)
 
-### 实盘参数 (trade/config.yaml)
+### 实盘参数
+
+复制 `trade/config.example.yaml` 为 `trade/config.yaml` 并填入真实信息：
 - `start_date`: 实盘起始日期，用于计算调仓日
 - `notification`: 微信推送配置 (Server酱 sckey)
 - `proxy`: akshare 代理配置
 
+> `config.yaml` 已加入 `.gitignore`，token 不会提交到 git。
+
 ### 组合状态 (trade/portfolio_state.json)
 
-首次使用前手动创建此文件，填入你的初始资金。
+模板已内置在仓库中。只需要修改 `cash` 和 `positions`：
 
-**你需要写的内容（只需要 cash 和 positions）：**
 ```json
 {
   "cash": 10000.0,
@@ -99,14 +102,13 @@ data_manager → backtrader_data → signal_runner → Strategy → SignalEngine
 }
 ```
 
-交易后手动更新，例如持有 3 只股票后：
+交易后更新示例：
 ```json
 {
   "cash": 3000.0,
   "positions": {
     "600519": {"shares": 100, "cost_price": 16.80},
-    "000858": {"shares": 200, "cost_price": 15.50},
-    "300750": {"shares": 100, "cost_price": 28.00}
+    "000858": {"shares": 200, "cost_price": 15.50}
   }
 }
 ```

@@ -22,7 +22,12 @@ class PortfolioState:
         self.data = self._default()
 
     def _default(self) -> dict:
-        return {"cash": 0.0, "positions": {}, "exposure": 1.0, "peak_equity": 0.0}
+        return {"cash": 0.0, "positions": {}}
+
+    @property
+    def _internal_file(self) -> str:
+        """内部状态文件: exposure/peak_equity 持久化, 用户无需关心"""
+        return self.state_file.replace(".json", ".internal.json")
 
     @classmethod
     def load(cls, state_file: str) -> "PortfolioState":
@@ -50,21 +55,23 @@ class PortfolioState:
     def positions(self) -> dict:
         return self.data.get("positions", {})
 
-    @property
-    def exposure(self) -> float:
-        return self.data.get("exposure", 1.0)
+    def load_internal(self) -> dict:
+        """加载内部状态, 不存在则返回默认值"""
+        path = self._internal_file
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+        return {"exposure": 1.0, "peak_equity": 0.0}
 
-    @exposure.setter
-    def exposure(self, value: float):
-        self.data["exposure"] = value
-
-    @property
-    def peak_equity(self) -> float:
-        return self.data.get("peak_equity", 0.0)
-
-    @peak_equity.setter
-    def peak_equity(self, value: float):
-        self.data["peak_equity"] = value
+    def save_internal(self, exposure: float, peak_equity: float):
+        """保存内部状态"""
+        path = self._internal_file
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"exposure": exposure, "peak_equity": peak_equity}, f)
 
     def get_current_positions(self, prices: Dict[str, float]) -> Dict[str, float]:
         """返回 {code: market_value} 供策略使用"""

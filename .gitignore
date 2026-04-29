@@ -209,6 +209,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Trade runtime files
+# Trade runtime files (含token, 不提交)
+trade/config.yaml
+trade/portfolio_state.internal.json
 trade/last_recommendations.json
 trade/reports/

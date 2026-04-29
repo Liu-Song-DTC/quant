@@ -56,7 +56,7 @@ class SignalRunner:
             fundamental_data=fundamental_data,
         )
 
-        # 恢复持久化的组合状态(exposure平滑值, peak_equity)
+        # 恢复持久化的 EMA 平滑状态
         if hasattr(self.strategy, 'portfolio'):
             self.strategy.portfolio.current_exposure = exposure
             if peak_equity > 0:

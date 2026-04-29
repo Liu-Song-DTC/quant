@@ -135,7 +135,8 @@ def run_daily(skip_update: bool = False, force: bool = False):
           f"总资产: ¥{total_asset:,.0f}")
 
     # Step 2b: 生成信号 (max_position由PortfolioConstructor自动计算)
-    runner.prepare(exposure=ps.exposure, peak_equity=ps.peak_equity)
+    internal = ps.load_internal()
+    runner.prepare(exposure=internal["exposure"], peak_equity=internal["peak_equity"])
 
     result = runner.run(
         current_positions=ps.get_current_positions(prices),
@@ -143,11 +144,12 @@ def run_daily(skip_update: bool = False, force: bool = False):
         cost=ps.get_cost_basis(),
     )
 
-    # 持久化组合状态(exposure/peak_equity)
+    # 持久化内部状态(exposure/peak_equity → .internal.json, 用户不可见)
     if hasattr(runner.strategy, 'portfolio'):
-        ps.exposure = runner.strategy.portfolio.current_exposure
-        ps.peak_equity = runner.strategy.portfolio.peak_equity or 0.0
-        ps.save()
+        ps.save_internal(
+            runner.strategy.portfolio.current_exposure,
+            runner.strategy.portfolio.peak_equity or 0.0,
+        )
 
     if result is None:
         print("信号生成失败，请检查数据")
