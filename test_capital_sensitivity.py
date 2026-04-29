@@ -25,6 +25,7 @@ from strategy.core.industry_mapping import INDUSTRY_KEYWORDS
 from strategy.bt_execution import BacktraderExecution
 
 CASH_LEVELS = [10000, 20000, 30000, 50000, 100000, 200000, 300000]
+END_DATE = '2025-12-31'  # 与基线回测对齐
 
 config = load_config()
 DATA_PATH = str(ROOT / 'data' / 'stock_data' / 'backtrader_data') + '/'
@@ -54,6 +55,7 @@ for f in os.listdir(DATA_PATH):
     if name != 'sh000001':
         stock_codes.append(name)
     data = pd.read_csv(DATA_PATH + f, parse_dates=['datetime'])
+    data = data[data['datetime'] <= END_DATE]
     stock_data_dict[name] = data
 
 dates = set()
@@ -164,4 +166,4 @@ for r in results:
     sharpe_str = f"{s:.3f}" if s else "N/A"
     print(f" ¥{r['cash']:>9,}  {r['max_position']:>3}  {sharpe_str:>8}  {r['total_return']:>7.1%}  {r['max_drawdown']:>7.1%}  ¥{r['final_value']:>11,.0f}")
 
-print(f"\n公式: max_position = max(3, min(total_equity/10000, 15))")
+print(f"\n公式: max_position = max(3, min(int(total_equity/10000), 15))")

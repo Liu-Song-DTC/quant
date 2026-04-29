@@ -65,10 +65,10 @@ class PortfolioConstructor:
 
     @staticmethod
     def _calc_max_position(total_equity: float, prices: dict) -> int:
-        """根据资金和价格自动计算最大持仓数
+        """根据资金自动计算最大持仓数
 
-        每1万资金可支持1个仓位 (均价~50元 × 100股 × 2倍缓冲)
-        范围: [3, 15]
+        每1万资金支持1个仓位, 范围[3, 15]
+        100k→10只(与基线对齐)
         """
         n = int(total_equity / 10000)
         return max(PortfolioConstructor.MIN_POSITIONS, min(n, PortfolioConstructor.MAX_POSITIONS))  # fv_mean滞后仓位状态
