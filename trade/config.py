@@ -43,27 +43,32 @@ class TradeConfig:
         return self._cfg.get("start_date", datetime.today().strftime("%Y-%m-%d"))
 
     def _count_trading_days(self, from_date, to_date) -> int:
-        """计算两个日期之间的真实交易日数"""
+        """计算 from_date(含) 到 to_date(不含) 的交易日数
+
+        day 0 = start_date 当天 → 调仓日
+        day 20 = 第20个交易日后 → 下一个调仓日
+        """
         dates = self._load_trading_calendar()
         if dates is None:
-            # fallback: 近似
             return int((to_date - from_date).days * 252 / 365)
-        return sum(1 for d in dates if from_date <= d <= to_date)
+        return sum(1 for d in dates if from_date <= d < to_date)
 
     def _trading_day_offset(self, start, n_days: int):
         """从 start 开始偏移 n 个交易日, 返回日期"""
         dates = self._load_trading_calendar()
         if dates is None:
-            # fallback
             return start + timedelta(days=int(n_days * 365 / 252))
-        # 找到 start 之后的第 n_days 个交易日
         count = 0
         for d in dates:
             if d >= start:
                 if count == n_days:
                     return d
                 count += 1
-        return dates[-1] if dates else start
+        # 未来日期: 从最后一个已知日期推算
+        if dates:
+            remaining = n_days - count
+            return dates[-1] + timedelta(days=int(remaining * 365 / 252))
+        return start + timedelta(days=int(n_days * 365 / 252))
 
     def is_rebalance_day(self, today: datetime) -> bool:
         """自动判断今天是否调仓日(每20个交易日, 使用真实交易日历)"""
