@@ -84,7 +84,7 @@ data_manager → backtrader_data → signal_runner → Strategy → SignalEngine
 
 ### 实盘参数
 
-复制 `trade/config.example.yaml` 为 `trade/config.yaml` 并填入真实信息：
+修改 `trade/config.yaml` 并填入真实信息：
 - `start_date`: 实盘起始日期，用于计算调仓日
 - `notification`: 微信推送配置 (Server酱 sckey)
 - `proxy`: akshare 代理配置
