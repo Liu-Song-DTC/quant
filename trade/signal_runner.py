@@ -23,14 +23,11 @@ def _ensure_strategy_path():
 class SignalRunner:
     """实盘信号生成器"""
 
-    # 数据质量过滤
     MIN_PRICE = 2.0
     MIN_VOLUME = 100
 
     def __init__(self, bt_data_dir: str, fund_data_dir: str, max_position: int = 10):
         _ensure_strategy_path()
-        from core.strategy import Strategy
-        from core.fundamental import FundamentalData
         from core.config_loader import load_config
 
         self.bt_data_dir = bt_data_dir
@@ -43,22 +40,37 @@ class SignalRunner:
         self.prices = {}
         self._load_data()
 
+    def prepare(self, max_position: int = None, exposure: float = 1.0, peak_equity: float = 0.0):
+        """加载策略、生成信号（在知道max_position后调用）"""
+        if max_position is not None:
+            self.max_position = max_position
+
+        from core.strategy import Strategy
+        from core.fundamental import FundamentalData
+
         # 加载基本面数据
         stock_codes = [n for n in self.stock_data_dict if n != "sh000001"]
         fundamental_data = None
-        if fund_data_dir and os.path.exists(fund_data_dir):
-            fundamental_data = FundamentalData(fund_data_dir + "/", stock_codes=stock_codes)
+        if self.fund_data_dir and os.path.exists(self.fund_data_dir):
+            fundamental_data = FundamentalData(self.fund_data_dir + "/", stock_codes=stock_codes)
 
         # 初始化策略
         self.strategy = Strategy(
             init_cash=self.config.get('backtest.cash', 100000),
-            max_position=max_position,
+            max_position=self.max_position,
             fundamental_data=fundamental_data,
         )
+
+        # 恢复持久化的组合状态(exposure平滑值, peak_equity)
+        if hasattr(self.strategy, 'portfolio'):
+            self.strategy.portfolio.current_exposure = exposure
+            if peak_equity > 0:
+                self.strategy.portfolio.peak_equity = peak_equity
 
         # 生成市场状态
         if "sh000001" in self.stock_data_dict:
             self.strategy.generate_market_regime(self.stock_data_dict["sh000001"])
+            self.strategy.signal_engine.set_market_regime(self.strategy.index_data)
             print(f"市场状态已生成，共 {len(self.strategy.index_data)} 条记录")
 
         # 准备动态因子数据
@@ -74,7 +86,6 @@ class SignalRunner:
             print(f"数据目录不存在: {self.bt_data_dir}")
             return
 
-        # 计算需要的最短日期（2年前）
         min_date = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
 
         for item in os.listdir(self.bt_data_dir):
@@ -88,11 +99,9 @@ class SignalRunner:
             filepath = os.path.join(self.bt_data_dir, item)
             try:
                 data = pd.read_csv(filepath, parse_dates=['datetime'])
-                # 只保留最近2年数据
                 data = data[data['datetime'] >= min_date]
                 if len(data) > 20:
                     self.stock_data_dict[name] = data
-                    # 记录最新收盘价
                     last_row = data.iloc[-1]
                     if last_row['close'] > 0 and last_row.get('volume', 0) > 0:
                         self.prices[name] = float(last_row['close'])
@@ -122,7 +131,6 @@ class SignalRunner:
         self.strategy.set_factor_data(factor_df, industry_codes)
         print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业")
 
-        # 预计算因子选择
         if hasattr(self.strategy.signal_engine, 'dynamic_factor_selector') and \
            self.strategy.signal_engine.dynamic_factor_selector.enabled:
             print("预计算因子选择...")
@@ -185,7 +193,6 @@ class SignalRunner:
                 continue
             if price < self.MIN_PRICE:
                 continue
-            # 检查成交量
             if code in self.stock_data_dict:
                 last_vol = self.stock_data_dict[code].iloc[-1].get('volume', 0)
                 if last_vol < self.MIN_VOLUME:
@@ -207,8 +214,6 @@ class SignalRunner:
                 bear_risk = bool(row["bear_risk"].values[0]) if "bear_risk" in row.columns else False
                 trend_score = float(row["trend_score"].values[0]) if "trend_score" in row.columns else 0.0
 
-        # 判断是否再平衡日
-        rebalance_days = self.config.get('backtest.rebalance_days', 20)
         # 实盘中：每次运行都视为再平衡日（由用户决定是否执行）
         rebalance = True
 

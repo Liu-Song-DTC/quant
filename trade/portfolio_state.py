@@ -1,24 +1,19 @@
-"""组合状态 — JSON持久化，可直接手动编辑
+"""组合状态 — 极简JSON, 可直接手动编辑
 
-文件格式 (portfolio_state.json):
+trade/portfolio_state.json:
 {
-  "last_update": "2026-04-29",
   "cash": 45000.0,
   "positions": {
     "600519": {"shares": 100, "cost_price": 1680.0},
     "000858": {"shares": 200, "cost_price": 165.0}
-  },
-  "trade_history": [
-    {"date": "2026-04-29", "action": "buy", "code": "600519", "shares": 100, "price": 1680.0}
-  ]
+  }
 }
 
-编辑后运行 `python main.py status` 验证。
+手动编辑后运行 `python main.py status` 验证。
 """
 import json
 import os
-from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 
 class PortfolioState:
@@ -27,12 +22,7 @@ class PortfolioState:
         self.data = self._default()
 
     def _default(self) -> dict:
-        return {
-            "last_update": None,
-            "cash": 0.0,
-            "positions": {},
-            "trade_history": [],
-        }
+        return {"cash": 0.0, "positions": {}, "exposure": 1.0, "peak_equity": 0.0}
 
     @classmethod
     def load(cls, state_file: str) -> "PortfolioState":
@@ -56,84 +46,90 @@ class PortfolioState:
     def cash(self) -> float:
         return self.data.get("cash", 0.0)
 
-    @cash.setter
-    def cash(self, value: float):
-        self.data["cash"] = value
+    @property
+    def positions(self) -> dict:
+        return self.data.get("positions", {})
 
     @property
-    def last_update(self) -> Optional[str]:
-        return self.data.get("last_update")
+    def exposure(self) -> float:
+        return self.data.get("exposure", 1.0)
 
-    def init_cash(self, amount: float):
-        if self.data.get("last_update") is None:
-            self.data["cash"] = amount
-            self.data["last_update"] = str(date.today())
-            self.save()
+    @exposure.setter
+    def exposure(self, value: float):
+        self.data["exposure"] = value
+
+    @property
+    def peak_equity(self) -> float:
+        return self.data.get("peak_equity", 0.0)
+
+    @peak_equity.setter
+    def peak_equity(self, value: float):
+        self.data["peak_equity"] = value
 
     def get_current_positions(self, prices: Dict[str, float]) -> Dict[str, float]:
         """返回 {code: market_value} 供策略使用"""
         result = {}
-        for code, pos in self.data.get("positions", {}).items():
+        for code, pos in self.positions.items():
             shares = pos["shares"]
             price = prices.get(code, pos.get("cost_price", 0))
             if shares > 0 and price > 0:
                 result[code] = shares * price
         return result
 
+    def check_stop_loss(self, prices: Dict[str, float], stop_loss: float = 0.12) -> list:
+        """检查持仓止损, 返回触发止损的股票列表 [{code, pnl_pct, cost_price, current_price}]"""
+        triggered = []
+        for code, pos in self.positions.items():
+            if pos["shares"] <= 0:
+                continue
+            price = prices.get(code, 0)
+            if price <= 0:
+                continue
+            pnl = (price - pos["cost_price"]) / pos["cost_price"]
+            if pnl < -stop_loss:
+                triggered.append({
+                    "code": code, "shares": pos["shares"],
+                    "cost_price": pos["cost_price"], "current_price": price,
+                    "pnl_pct": pnl,
+                })
+        return triggered
+
     def get_cost_basis(self) -> Dict[str, list]:
         """返回 {code: [shares, avg_cost]} 供策略使用"""
         result = {}
-        for code, pos in self.data.get("positions", {}).items():
+        for code, pos in self.positions.items():
             if pos["shares"] > 0:
                 result[code] = [pos["shares"], pos["cost_price"]]
         return result
 
-    def update_after_trade(self, trades: List[dict]):
-        """确认交易后更新持仓
-
-        trades: [{"action": "buy"/"sell", "code": "600519", "shares": 100, "price": 1680.0}, ...]
-        """
+    def update_after_trade(self, trades: list):
+        """确认交易后更新持仓"""
         positions = self.data.setdefault("positions", {})
-
         for trade in trades:
-            action = trade["action"]
-            code = trade["code"]
-            shares = trade["shares"]
-            price = trade["price"]
+            action, code, shares, price = trade["action"], trade["code"], trade["shares"], trade["price"]
 
             if action == "buy":
                 self.data["cash"] -= shares * price
                 if code in positions:
                     pos = positions[code]
-                    total_shares = pos["shares"] + shares
-                    total_cost = pos["cost_price"] * pos["shares"] + price * shares
-                    pos["shares"] = total_shares
-                    pos["cost_price"] = total_cost / total_shares if total_shares > 0 else 0
+                    total = pos["shares"] + shares
+                    pos["cost_price"] = (pos["cost_price"] * pos["shares"] + price * shares) / total
+                    pos["shares"] = total
                 else:
                     positions[code] = {"shares": shares, "cost_price": price}
             elif action == "sell":
                 self.data["cash"] += shares * price
                 if code in positions:
-                    pos = positions[code]
-                    pos["shares"] -= shares
-                    if pos["shares"] <= 0:
+                    positions[code]["shares"] -= shares
+                    if positions[code]["shares"] <= 0:
                         del positions[code]
 
-            self.data.setdefault("trade_history", []).append({
-                "date": str(date.today()),
-                "action": action,
-                "code": code,
-                "shares": shares,
-                "price": price,
-            })
-
-        self.data["last_update"] = str(date.today())
         self.save()
 
     def summary(self, prices: Dict[str, float] = None) -> dict:
         total_mv = 0.0
         details = []
-        for code, pos in self.data.get("positions", {}).items():
+        for code, pos in self.positions.items():
             if pos["shares"] <= 0:
                 continue
             price = (prices or {}).get(code, pos["cost_price"])
@@ -148,5 +144,5 @@ class PortfolioState:
         return {
             "cash": self.cash, "market_value": total_mv,
             "total_value": self.cash + total_mv,
-            "positions": details, "last_update": self.last_update,
+            "positions": details,
         }

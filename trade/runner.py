@@ -1,7 +1,11 @@
 """每日运行流程: 数据更新 → 信号生成 → 交易建议"""
 import json
+import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
+
+import pandas as pd
 
 from .config import TradeConfig
 from .portfolio_state import PortfolioState
@@ -33,32 +37,80 @@ def _get_universe(manager) -> list:
     return symbols
 
 
-def run_daily(skip_update: bool = False, update_fundamental: bool = False):
+def _get_latest_prices(bt_data_dir: str, codes: list = None) -> dict:
+    """轻量获取最新价格，不加载策略引擎"""
+    prices = {}
+    if not os.path.exists(bt_data_dir):
+        return prices
+    for item in os.listdir(bt_data_dir):
+        if not item.endswith('_qfq.csv'):
+            continue
+        name = item[:-8]
+        if codes and name not in codes:
+            continue
+        try:
+            df = pd.read_csv(os.path.join(bt_data_dir, item))
+            if len(df) > 0 and 'close' in df.columns:
+                prices[name] = float(df['close'].iloc[-1])
+        except Exception:
+            pass
+    return prices
+
+
+def run_daily(skip_update: bool = False, force: bool = False):
     cfg = TradeConfig()
+
+    # 判断是否调仓日
+    today = datetime.today()
+    rebal = cfg.rebalance_info(today)
+    print(f"日期: {today.strftime('%Y-%m-%d')}  调仓日: {'是' if rebal['is_rebalance_day'] else '否'}  "
+          f"上次: {rebal['last_rebalance']}  下次: {rebal['next_rebalance']}")
+
+    ps = PortfolioState.load(str(cfg.state_file))
+
+    if not rebal['is_rebalance_day'] and not force:
+        # 非调仓日: 轻量止损检查
+        prices = _get_latest_prices(str(cfg.bt_data_dir), list(ps.positions.keys()))
+        if not prices:
+            print("\n今日非调仓日，无需生成建议")
+            print("如需强制运行: python main.py run --force")
+            return
+
+        triggered = ps.check_stop_loss(prices)
+        if triggered:
+            print(f"\n⚠ 止损警告: {len(triggered)} 只股票触及止损线")
+            for t in triggered:
+                print(f"  {t['code']}: 成本¥{t['cost_price']:.2f} → ¥{t['current_price']:.2f} ({t['pnl_pct']:.1%})")
+            if cfg.notification_enabled and cfg.notification_sckey:
+                from .notifier import Notifier
+                lines = ["**⚠ 止损警告**", ""]
+                for t in triggered:
+                    lines.append(f"- {t['code']}: 成本¥{t['cost_price']:.2f} → ¥{t['current_price']:.2f} ({t['pnl_pct']:.1%})")
+                Notifier(cfg.notification_sckey).send("⚠ 止损警告", "\n".join(lines))
+        else:
+            print("\n今日非调仓日，持仓正常，无需操作")
+        return
 
     # Step 1: 数据更新
     if not skip_update:
-        print("=" * 50)
+        print("\n" + "=" * 50)
         print("Step 1: 更新数据")
         print("=" * 50)
         _add_path("data")
         from data_manager import StockDataManager
-        from datetime import datetime, timedelta
 
         manager = StockDataManager(data_dir=str(cfg.stock_data_dir))
-        manager.get_stock_list(force_update=True)
+        manager.get_stock_list(force_update=False)
 
         symbols = _get_universe(manager)
         print(f"增量更新 {len(symbols)} 只股票行情...")
         manager.batch_download(symbols=symbols, force=False)
 
-        end_date = datetime.today().strftime("%Y-%m-%d")
-        start_date = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+        start_date = (today - timedelta(days=730)).strftime("%Y-%m-%d")
         manager.create_backtrader_data(symbols, start_date, end_date, adj_type="qfq")
 
-        if update_fundamental:
-            print("更新基本面数据...")
-            manager.incremental_update_fundamental()
+        manager.incremental_update_fundamental()
         print("数据更新完成")
     else:
         print("跳过数据更新 (--skip-update)")
@@ -68,22 +120,36 @@ def run_daily(skip_update: bool = False, update_fundamental: bool = False):
     print("Step 2: 生成交易建议")
     print("=" * 50)
 
+    # Step 2a: 先加载数据取价格，算max_position
     _add_path("strategy")
-    ps = PortfolioState.load(str(cfg.state_file))
-    if ps.cash == 0 and not ps.data.get("positions"):
-        ps.init_cash(cfg.init_cash)
-        print(f"初始化组合: ¥{cfg.init_cash:,.0f}")
-
     runner = SignalRunner(
         bt_data_dir=str(cfg.bt_data_dir),
         fund_data_dir=str(cfg.fund_data_dir),
-        max_position=cfg.max_position,
+        max_position=10,  # 占位，下面重算
     )
+    prices = runner.get_prices()
+
+    # 总资产 = 现金 + 持仓市值
+    positions_value = ps.get_current_positions(prices)
+    total_asset = ps.cash + sum(positions_value.values())
+    max_pos = cfg.max_position(total_asset, prices)
+    print(f"现金: ¥{ps.cash:,.0f}  持仓: ¥{sum(positions_value.values()):,.0f}  "
+          f"总资产: ¥{total_asset:,.0f}  仓位: {max_pos} 只")
+
+    # Step 2b: 用正确的max_position生成信号
+    runner.prepare(max_position=max_pos, exposure=ps.exposure, peak_equity=ps.peak_equity)
+
     result = runner.run(
-        current_positions=ps.get_current_positions(runner.get_prices()),
+        current_positions=ps.get_current_positions(prices),
         cash=ps.cash,
         cost=ps.get_cost_basis(),
     )
+
+    # 持久化组合状态(exposure/peak_equity)
+    if hasattr(runner.strategy, 'portfolio'):
+        ps.exposure = runner.strategy.portfolio.current_exposure
+        ps.peak_equity = runner.strategy.portfolio.peak_equity or 0.0
+        ps.save()
 
     if result is None:
         print("信号生成失败，请检查数据")
@@ -105,12 +171,14 @@ def run_daily(skip_update: bool = False, update_fundamental: bool = False):
     reporter.save_report(recommendations, ps.summary(result["prices"]))
 
     # 保存建议
+    recommendations["date"] = today.strftime("%Y-%m-%d")
+    recommendations["rebalance_info"] = rebal
     cfg.rec_file.parent.mkdir(parents=True, exist_ok=True)
     with open(cfg.rec_file, "w", encoding="utf-8") as f:
         json.dump(recommendations, f, ensure_ascii=False, indent=2, default=str)
     print(f"\n建议已保存: {cfg.rec_file}")
     if recommendations.get("buys") or recommendations.get("sells"):
-        print(f"交易完成后请运行: python main.py confirm -i")
+        print(f"执行后回报: python main.py confirm -i")
 
     # 微信推送
     if cfg.notification_enabled and cfg.notification_sckey:
@@ -119,19 +187,21 @@ def run_daily(skip_update: bool = False, update_fundamental: bool = False):
 
 
 def show_status():
-    _add_path("strategy")
-    ps = PortfolioState.load(str(TradeConfig().state_file))
+    """查看组合状态 — 轻量版，不加载策略引擎"""
+    cfg = TradeConfig()
+    ps = PortfolioState.load(str(cfg.state_file))
 
-    prices = {}
-    if ps.data.get("positions"):
-        cfg = TradeConfig()
-        runner = SignalRunner(bt_data_dir=str(cfg.bt_data_dir), fund_data_dir="", max_position=10)
-        prices = runner.get_prices()
+    # 轻量获取现价
+    prices = _get_latest_prices(str(cfg.bt_data_dir), list(ps.positions.keys())) if ps.positions else {}
 
+    rebal = cfg.rebalance_info(datetime.today())
     summary = ps.summary(prices)
     print(f"\n{'=' * 50}")
-    print(f"  组合状态  更新于: {summary['last_update'] or '未初始化'}")
+    print(f"  组合状态")
     print(f"{'=' * 50}")
+    print(f"  今日:     {datetime.today().strftime('%Y-%m-%d')}")
+    print(f"  调仓日:   {'是' if rebal['is_rebalance_day'] else '否'}  "
+          f"上次: {rebal['last_rebalance']}  下次: {rebal['next_rebalance']}")
     print(f"  现金:     ¥{summary['cash']:>12,.2f}")
     print(f"  持仓市值: ¥{summary['market_value']:>12,.2f}")
     print(f"  总资产:   ¥{summary['total_value']:>12,.2f}")

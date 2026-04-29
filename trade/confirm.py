@@ -1,26 +1,9 @@
 """交易确认 — 交互式逐笔确认，支持修改实际成交价/数量"""
 import json
-import sys
-from pathlib import Path
 
 from .config import TradeConfig
 from .portfolio_state import PortfolioState
-
-
-def _get_ref_prices() -> dict:
-    """获取参考价格（用于提示）"""
-    try:
-        # 延迟导入，避免循环依赖
-        from .signal_runner import SignalRunner
-        cfg = TradeConfig()
-        # signal_runner 需要 strategy 在 sys.path
-        strategy_dir = str(Path(__file__).parent.parent / "strategy")
-        if strategy_dir not in sys.path:
-            sys.path.insert(0, strategy_dir)
-        runner = SignalRunner(bt_data_dir=str(cfg.bt_data_dir), fund_data_dir="", max_position=10)
-        return runner.get_prices()
-    except Exception:
-        return {}
+from .runner import _get_latest_prices
 
 
 def confirm_trades(args):
@@ -29,7 +12,11 @@ def confirm_trades(args):
     if not pending:
         return
 
-    ref_prices = _get_ref_prices()
+    # 轻量获取参考价
+    cfg = TradeConfig()
+    codes = [t["code"] for t in pending]
+    ref_prices = _get_latest_prices(str(cfg.bt_data_dir), codes)
+
     confirmed = _interactive_confirm(pending, ref_prices)
 
     if not confirmed:
@@ -37,24 +24,6 @@ def confirm_trades(args):
         return
 
     _finalize(confirmed, ps)
-
-
-def show_history():
-    ps = PortfolioState.load(str(TradeConfig().state_file))
-    history = ps.data.get("trade_history", [])
-    if not history:
-        print("暂无交易记录")
-        return
-
-    print(f"\n{'=' * 70}")
-    print(f"  交易历史  共 {len(history)} 笔")
-    print(f"{'=' * 70}")
-    print(f"  {'日期':<12} {'操作':<6} {'代码':<8} {'数量':>6} {'价格':>10}")
-    print(f"  {'-' * 50}")
-    for t in history[-30:]:
-        action = "买入" if t["action"] == "buy" else "卖出"
-        print(f"  {t['date']:<12} {action:<6} {t['code']:<8} {t['shares']:>6} {t['price']:>10.2f}")
-    print(f"{'=' * 70}")
 
 
 def _collect_pending(args) -> list:
