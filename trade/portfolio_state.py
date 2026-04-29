@@ -1,3 +1,20 @@
+"""组合状态 — JSON持久化，可直接手动编辑
+
+文件格式 (portfolio_state.json):
+{
+  "last_update": "2026-04-29",
+  "cash": 45000.0,
+  "positions": {
+    "600519": {"shares": 100, "cost_price": 1680.0},
+    "000858": {"shares": 200, "cost_price": 165.0}
+  },
+  "trade_history": [
+    {"date": "2026-04-29", "action": "buy", "code": "600519", "shares": 100, "price": 1680.0}
+  ]
+}
+
+编辑后运行 `python main.py status` 验证。
+"""
 import json
 import os
 from datetime import date
@@ -5,8 +22,6 @@ from typing import Dict, List, Optional
 
 
 class PortfolioState:
-    """组合状态管理 — JSON持久化持仓/现金/成本"""
-
     def __init__(self, state_file: str):
         self.state_file = state_file
         self.data = self._default()
@@ -56,7 +71,7 @@ class PortfolioState:
             self.save()
 
     def get_current_positions(self, prices: Dict[str, float]) -> Dict[str, float]:
-        """返回 {code: market_value} 格式供策略使用"""
+        """返回 {code: market_value} 供策略使用"""
         result = {}
         for code, pos in self.data.get("positions", {}).items():
             shares = pos["shares"]
@@ -74,7 +89,7 @@ class PortfolioState:
         return result
 
     def update_after_trade(self, trades: List[dict]):
-        """用户确认执行交易后更新持仓
+        """确认交易后更新持仓
 
         trades: [{"action": "buy"/"sell", "code": "600519", "shares": 100, "price": 1680.0}, ...]
         """
@@ -94,23 +109,16 @@ class PortfolioState:
                     total_cost = pos["cost_price"] * pos["shares"] + price * shares
                     pos["shares"] = total_shares
                     pos["cost_price"] = total_cost / total_shares if total_shares > 0 else 0
-                    pos["cost_total"] = pos["shares"] * pos["cost_price"]
                 else:
-                    positions[code] = {
-                        "shares": shares,
-                        "cost_price": price,
-                        "cost_total": shares * price,
-                    }
+                    positions[code] = {"shares": shares, "cost_price": price}
             elif action == "sell":
                 self.data["cash"] += shares * price
                 if code in positions:
                     pos = positions[code]
                     pos["shares"] -= shares
-                    pos["cost_total"] = pos["shares"] * pos["cost_price"]
                     if pos["shares"] <= 0:
                         del positions[code]
 
-            # 记录交易历史
             self.data.setdefault("trade_history", []).append({
                 "date": str(date.today()),
                 "action": action,
@@ -123,30 +131,22 @@ class PortfolioState:
         self.save()
 
     def summary(self, prices: Dict[str, float] = None) -> dict:
-        """组合摘要"""
-        total_market_value = 0.0
-        pos_details = []
+        total_mv = 0.0
+        details = []
         for code, pos in self.data.get("positions", {}).items():
             if pos["shares"] <= 0:
                 continue
             price = (prices or {}).get(code, pos["cost_price"])
-            market_value = pos["shares"] * price
-            total_market_value += market_value
+            mv = pos["shares"] * price
+            total_mv += mv
             pnl = (price - pos["cost_price"]) / pos["cost_price"] if pos["cost_price"] > 0 else 0
-            pos_details.append({
-                "code": code,
-                "shares": pos["shares"],
-                "cost_price": pos["cost_price"],
-                "current_price": price,
-                "market_value": market_value,
-                "pnl_pct": pnl,
+            details.append({
+                "code": code, "shares": pos["shares"],
+                "cost_price": pos["cost_price"], "current_price": price,
+                "market_value": mv, "pnl_pct": pnl,
             })
-
-        total_value = self.cash + total_market_value
         return {
-            "cash": self.cash,
-            "market_value": total_market_value,
-            "total_value": total_value,
-            "positions": pos_details,
-            "last_update": self.last_update,
+            "cash": self.cash, "market_value": total_mv,
+            "total_value": self.cash + total_mv,
+            "positions": details, "last_update": self.last_update,
         }

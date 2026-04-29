@@ -8,18 +8,16 @@
 """
 import os
 import sys
-import math
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
-from collections import defaultdict
+
+from .config import ROOT
 
 
-def _add_strategy_to_path():
-    """将 strategy/ 加入 sys.path"""
-    strategy_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "strategy")
-    if strategy_dir not in sys.path:
-        sys.path.insert(0, strategy_dir)
+def _ensure_strategy_path():
+    p = str(ROOT / "strategy")
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 
 class SignalRunner:
@@ -30,7 +28,7 @@ class SignalRunner:
     MIN_VOLUME = 100
 
     def __init__(self, bt_data_dir: str, fund_data_dir: str, max_position: int = 10):
-        _add_strategy_to_path()
+        _ensure_strategy_path()
         from core.strategy import Strategy
         from core.fundamental import FundamentalData
         from core.config_loader import load_config

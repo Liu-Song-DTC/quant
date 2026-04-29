@@ -1,20 +1,13 @@
-data:
-  stock_data_dir: ../data/stock_data
-  backtrader_data_dir: ../data/stock_data/backtrader_data
-  fundamental_data_dir: ../data/stock_data/fundamental_data
-
-schedule:
-  data_update_time: "15:35"
-  signal_run_time: "16:00"
-
+# 实盘交易配置（独立于回测策略配置）
 portfolio:
   init_cash: 100000
   max_position: 10
 
+# 微信推送（Server酱 sct.ftqq.com）
 notification:
   enabled: false
-  wechat_sckey: ""
-  push_content: brief
+  sckey: ""
 
+# 文件路径
 state_file: portfolio_state.json
 report_dir: reports/
