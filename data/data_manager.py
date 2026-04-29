@@ -1,5 +1,23 @@
 import akshare_proxy_patch
-akshare_proxy_patch.install_patch("101.201.173.125", "", 30)
+
+# 从 trade/config.yaml 读取代理配置
+try:
+    import yaml
+    from pathlib import Path
+    _cfg_path = Path(__file__).parent.parent / "trade" / "config.yaml"
+    if _cfg_path.exists():
+        with open(_cfg_path, "r", encoding="utf-8") as _f:
+            _cfg = yaml.safe_load(_f) or {}
+        _proxy = _cfg.get("proxy", {})
+        if _proxy.get("host") and _proxy.get("auth_token"):
+            akshare_proxy_patch.install_patch(
+                _proxy["host"],
+                auth_token=_proxy["auth_token"],
+                retry=_proxy.get("retry", 30),
+            )
+            print(f"akshare代理已安装: {_proxy['host']}")
+except Exception:
+    pass
 
 import akshare as ak
 import pandas as pd
@@ -371,31 +389,72 @@ class StockDataManager:
             print(f"计算复权因子失败 {symbol}: {e}")
 
     def incremental_update(self, symbol):
-        """增量更新数据"""
+        """增量更新数据
+
+        逻辑:
+        1. 如果数据已是最新(最后日期 >= 昨天), 跳过
+        2. 否则下载新数据(带5天重叠), 校验复权
+        3. 如果复权因子变了, 全量重新下载qfq/hfq
+        4. 合并保存
+        """
         symbol = str(symbol).zfill(6)
         raw_data_path = self.raw_data_dir / symbol
         raw_data_path.mkdir(exist_ok=True)
+
         # 检查是否有现有数据
         existing_data = {}
         last_dates = {}
-        last_date = pd.to_datetime('1990-01-01')
         types = ['none', 'qfq', 'hfq', 'fq_factors']
+        date_col = 'date' if symbol == INDEX else '日期'
         if symbol == INDEX:
             types = ['qfq']
         if raw_data_path.exists():
             for adj_type in types:
                 file_path = raw_data_path / f"{adj_type}.csv"
                 if file_path.exists():
-                    existing_data[adj_type] = pd.read_csv(file_path, parse_dates=['日期'])
-                    last_dates[adj_type] = existing_data[adj_type]['日期'].max()
-                    existing_data[adj_type]['日期'] = existing_data[adj_type]['日期'].dt.date
-            if len(last_dates) == len(types):
-                last_date = min(last_dates.values()) + timedelta(days=1)
+                    existing_data[adj_type] = pd.read_csv(file_path, parse_dates=[date_col])
+                    last_dates[adj_type] = existing_data[adj_type][date_col].max()
 
-        # 获取最新数据
-        new_data = self.download_raw_data(symbol, start_time=last_date)
+        # 如果所有类型的数据都已最新(>=昨天), 跳过
+        yesterday = (datetime.today() - timedelta(days=1)).date()
+        if last_dates and all(v.date() >= yesterday for v in last_dates.values()):
+            return
+
+        # 确定下载起始日(带5天重叠用于复权校验)
+        if last_dates:
+            last_date = min(last_dates.values())
+            download_start = last_date - timedelta(days=5)
+        else:
+            download_start = pd.to_datetime('1990-01-01')
+
+        new_data = self.download_raw_data(symbol, start_time=download_start)
         if new_data is None:
             return
+
+        # 检测复权变化: 对比重叠日期的qfq收盘价（仅非指数股票）
+        fq_changed = False
+        if symbol != INDEX and 'qfq' in existing_data and 'qfq' in new_data:
+            old_qfq = existing_data['qfq']
+            new_qfq = new_data['qfq']
+            overlap_dates = set(old_qfq[date_col].astype(str)) & set(new_qfq[date_col].astype(str))
+            if overlap_dates:
+                old_subset = old_qfq[old_qfq[date_col].astype(str).isin(overlap_dates)]
+                new_subset = new_qfq[new_qfq[date_col].astype(str).isin(overlap_dates)]
+                old_subset = old_subset.sort_values(date_col).tail(3)
+                new_subset = new_subset.sort_values(date_col).tail(3)
+                if len(old_subset) > 0 and len(new_subset) > 0:
+                    old_close = old_subset['收盘'].values
+                    new_close = new_subset['收盘'].values
+                    if len(old_close) == len(new_close):
+                        diff = abs(old_close - new_close).max()
+                        if diff > 0.01:
+                            fq_changed = True
+
+        # 复权变了, 全量重新下载
+        if fq_changed:
+            full_data = self.download_raw_data(symbol, start_time=pd.to_datetime('1990-01-01'))
+            if full_data is not None:
+                new_data = full_data
 
         # 合并数据
         for adj_type in types:
@@ -403,12 +462,17 @@ class StockDataManager:
                 combined = new_data[adj_type]
             elif adj_type not in new_data:
                 combined = existing_data[adj_type]
+            elif adj_type in ('qfq', 'hfq') and fq_changed:
+                combined = new_data[adj_type]
             else:
-                combined = pd.concat([existing_data[adj_type], new_data[adj_type]],
-                                   ignore_index=True)
-                # 去重
-                combined = combined.drop_duplicates(subset=['日期'], keep='last')
-                combined = combined.sort_values('日期')
+                old_df = existing_data[adj_type]
+                new_df = new_data[adj_type]
+                # 确保日期列类型一致
+                old_df[date_col] = pd.to_datetime(old_df[date_col])
+                new_df[date_col] = pd.to_datetime(new_df[date_col])
+                combined = pd.concat([old_df, new_df], ignore_index=True)
+                combined = combined.drop_duplicates(subset=[date_col], keep='last')
+                combined = combined.sort_values(date_col)
 
             # 保存
             raw_data_path.mkdir(exist_ok=True)
@@ -474,7 +538,9 @@ class StockDataManager:
         return False
 
     def create_backtrader_data(self, symbols, start_date, end_date, adj_type='qfq'):
-        """创建Backtrader格式数据"""
+        """创建Backtrader格式数据（增量：跳过已是最新数据的股票）"""
+        skipped = 0
+        updated = 0
         for symbol in symbols:
             symbol = str(symbol).zfill(6)
             raw_data_path = self.raw_data_dir / symbol
@@ -482,8 +548,26 @@ class StockDataManager:
             # 检查数据文件
             data_file = raw_data_path / f"{adj_type}.csv"
             if not data_file.exists():
-                print(f"{symbol} 的 {adj_type} 数据不存在")
                 continue
+
+            # 增量检查：bt文件已是最新的则跳过
+            bt_file = self.backtrader_data_dir / f"{symbol}_{adj_type}.csv"
+            if bt_file.exists():
+                try:
+                    raw_last = pd.read_csv(data_file, usecols=[0], nrows=1)
+                    # 读取raw文件最后日期
+                    raw_df_tail = pd.read_csv(data_file)
+                    raw_last_date = raw_df_tail.iloc[-1].iloc[0]
+                    del raw_df_tail
+                    # 读取bt文件最后日期
+                    bt_df_tail = pd.read_csv(bt_file)
+                    bt_last_date = bt_df_tail.iloc[-1]['datetime']
+                    del bt_df_tail
+                    if str(raw_last_date) == str(bt_last_date):
+                        skipped += 1
+                        continue
+                except Exception:
+                    pass
 
             try:
                 # 读取数据
@@ -539,11 +623,12 @@ class StockDataManager:
                 # 保存处理后的数据
                 output_file = self.backtrader_data_dir/ f"{symbol}_{adj_type}.csv"
                 bt_df.to_csv(output_file, index=False)
-
-                print(f"已保存 {symbol} 的Backtrader格式数据: {len(bt_df)} 条记录")
+                updated += 1
 
             except Exception as e:
                 print(f"创建Backtrader数据失败 {symbol}: {e}")
+
+        print(f"Backtrader数据: 更新 {updated} 只, 跳过 {skipped} 只(已是最新)")
 
     def _clean_backtrader_data(self, df, symbol):
         """清理Backtrader数据"""
@@ -767,10 +852,22 @@ class StockDataManager:
 
         # 需要获取的日期范围（从2010年到现在）
         current_year = datetime.today().year
+        current_month = datetime.today().month
+        # 披露时间线: 年报/一季报→4月底, 中报→8月底, 三季报→10月底
+        if current_month >= 10:
+            max_quarter = f"{current_year}0930"
+        elif current_month >= 8:
+            max_quarter = f"{current_year}0630"
+        elif current_month >= 4:
+            max_quarter = f"{current_year}0331"
+        else:
+            max_quarter = f"{current_year - 1}1231"
         all_dates = []
-        for year in range(2010, current_year):
+        for year in range(2010, current_year + 1):
             for month in ['0331', '0630', '0930', '1231']:
                 date = f"{year}{month}"
+                if date > max_quarter:
+                    continue
                 # 只返回不完整的日期
                 if date not in existing_dates:
                     all_dates.append(date)
@@ -925,15 +1022,21 @@ class StockDataManager:
         return success
 
     def incremental_update_fundamental(self):
-        """增量更新基本面数据"""
+        """增量更新基本面数据（只更新有新数据的部分）"""
         print("\n======> 增量更新基本面数据...")
 
-        # Step 1: 更新源数据（自动检测已有数据）
-        print("Step 1: 更新财务数据源文件...")
+        # Step 1: 检查是否有缺失的源数据
+        needed = self.get_needed_financial_dates()
+        if not needed:
+            print("基本面源数据已是最新，跳过更新")
+            return
+
+        # Step 2: 更新缺失的源数据
+        print(f"需要更新 {len(needed)} 个季度的源数据...")
         self.update_fundamental_source()
 
-        # Step 2: 从源文件构建股票历史数据
-        print("\nStep 2: 构建股票历史数据...")
+        # Step 3: 从源文件构建股票历史数据
+        print("\n构建股票历史数据...")
         self.build_stock_fundamental_history()
 
         print("\n基本面数据更新完成!")
