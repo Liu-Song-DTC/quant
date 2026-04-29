@@ -120,24 +120,22 @@ def run_daily(skip_update: bool = False, force: bool = False):
     print("Step 2: 生成交易建议")
     print("=" * 50)
 
-    # Step 2a: 先加载数据取价格，算max_position
+    # Step 2a: 先加载数据取价格
     _add_path("strategy")
     runner = SignalRunner(
         bt_data_dir=str(cfg.bt_data_dir),
         fund_data_dir=str(cfg.fund_data_dir),
-        max_position=10,  # 占位，下面重算
     )
     prices = runner.get_prices()
 
     # 总资产 = 现金 + 持仓市值
     positions_value = ps.get_current_positions(prices)
     total_asset = ps.cash + sum(positions_value.values())
-    max_pos = cfg.max_position(total_asset, prices)
     print(f"现金: ¥{ps.cash:,.0f}  持仓: ¥{sum(positions_value.values()):,.0f}  "
-          f"总资产: ¥{total_asset:,.0f}  仓位: {max_pos} 只")
+          f"总资产: ¥{total_asset:,.0f}")
 
-    # Step 2b: 用正确的max_position生成信号
-    runner.prepare(max_position=max_pos, exposure=ps.exposure, peak_equity=ps.peak_equity)
+    # Step 2b: 生成信号 (max_position由PortfolioConstructor自动计算)
+    runner.prepare(exposure=ps.exposure, peak_equity=ps.peak_equity)
 
     result = runner.run(
         current_positions=ps.get_current_positions(prices),
@@ -178,7 +176,7 @@ def run_daily(skip_update: bool = False, force: bool = False):
         json.dump(recommendations, f, ensure_ascii=False, indent=2, default=str)
     print(f"\n建议已保存: {cfg.rec_file}")
     if recommendations.get("buys") or recommendations.get("sells"):
-        print(f"执行后回报: python main.py confirm -i")
+        print(f"执行后请手动更新: trade/portfolio_state.json")
 
     # 微信推送
     if cfg.notification_enabled and cfg.notification_sckey:

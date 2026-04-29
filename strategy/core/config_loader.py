@@ -50,7 +50,6 @@ class ConfigLoader:
     def get_portfolio_config(self) -> Dict[str, Any]:
         """获取组合配置"""
         return {
-            'max_position': self.get('portfolio.max_position', 10),
             'target_volatility': self.get('portfolio.target_volatility', 0.25),
             'entry_speed': self.get('portfolio.entry_speed', 1.0),
             'exit_speed': self.get('portfolio.exit_speed', 1.0),

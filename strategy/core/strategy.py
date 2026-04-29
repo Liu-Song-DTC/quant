@@ -10,22 +10,13 @@ from .config_loader import load_config
 class Strategy:
     """带股灾检测的市场状态判断"""
 
-    def __init__(self, init_cash, max_position=None, fundamental_data=None):
+    def __init__(self, init_cash, fundamental_data=None):
         self.signal_engine = SignalEngine()
         self.fundamental_data = fundamental_data
         if fundamental_data:
             self.signal_engine.set_fundamental_data(fundamental_data)
 
-        # 从配置加载组合参数
-        config = load_config()
-        portfolio_config = config.get_portfolio_config()
-
-        # 使用传入的 max_position 或配置文件中的值
-        final_max_position = max_position if max_position is not None else portfolio_config.get('max_position', 10)
-
-        self.portfolio = PortfolioConstructor(
-            max_position=final_max_position,
-        )
+        self.portfolio = PortfolioConstructor()
         self.market_regime = []
         self.signal_store = SignalStore()
         self.init_cash = init_cash

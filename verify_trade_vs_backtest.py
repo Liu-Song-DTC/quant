@@ -36,7 +36,6 @@ def main():
     runner = SignalRunner(
         bt_data_dir=BT_DATA_DIR,
         fund_data_dir=FUND_DATA_DIR,
-        max_position=10,
     )
 
     # 限制数据到 TEST_DATE 之前（模拟回测窗口）
@@ -56,7 +55,7 @@ def main():
     print(f"数据日期范围: {min_date_str} → {TEST_DATE}")
 
     # 准备策略
-    runner.prepare(max_position=10)
+    runner.prepare()
 
     # 模拟空持仓（等同回测首次调仓）
     test_date = date(2025, 12, 31)

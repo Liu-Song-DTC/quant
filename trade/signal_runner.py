@@ -26,25 +26,21 @@ class SignalRunner:
     MIN_PRICE = 2.0
     MIN_VOLUME = 100
 
-    def __init__(self, bt_data_dir: str, fund_data_dir: str, max_position: int = 10):
+    def __init__(self, bt_data_dir: str, fund_data_dir: str):
         _ensure_strategy_path()
         from core.config_loader import load_config
 
         self.bt_data_dir = bt_data_dir
         self.fund_data_dir = fund_data_dir
         self.config = load_config()
-        self.max_position = max_position
 
         # 加载数据
         self.stock_data_dict = {}
         self.prices = {}
         self._load_data()
 
-    def prepare(self, max_position: int = None, exposure: float = 1.0, peak_equity: float = 0.0):
-        """加载策略、生成信号（在知道max_position后调用）"""
-        if max_position is not None:
-            self.max_position = max_position
-
+    def prepare(self, exposure: float = 1.0, peak_equity: float = 0.0):
+        """加载策略、生成信号"""
         from core.strategy import Strategy
         from core.fundamental import FundamentalData
 
@@ -54,10 +50,9 @@ class SignalRunner:
         if self.fund_data_dir and os.path.exists(self.fund_data_dir):
             fundamental_data = FundamentalData(self.fund_data_dir + "/", stock_codes=stock_codes)
 
-        # 初始化策略
+        # 初始化策略（max_position由PortfolioConstructor自动计算）
         self.strategy = Strategy(
             init_cash=self.config.get('backtest.cash', 100000),
-            max_position=self.max_position,
             fundamental_data=fundamental_data,
         )
 

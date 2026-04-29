@@ -42,31 +42,6 @@ class TradeConfig:
         """实盘开始日期, 用于自动计算调仓日"""
         return self._cfg.get("start_date", datetime.today().strftime("%Y-%m-%d"))
 
-    def max_position(self, total_asset: float, prices: dict) -> int:
-        """根据资金和股票价格推算最大持仓数
-
-        与回测对齐: 默认上限=10(from factor_config.yaml backtest.max_position)
-        同时考虑价格可行性: 过滤价格过高的股票
-        """
-        config_max = self._cfg.get("max_position", 10)
-        # 每只股票至少需要 price*100 元买1手
-        n = int(total_asset / 5000)
-        upper = max(3, min(n, config_max))
-
-        # 价格感知: 如果高价股多, 适当降低上限
-        if prices:
-            sorted_prices = sorted(prices.values(), reverse=True)
-            affordable = 0
-            remaining = total_asset * (upper / config_max)  # 按比例分配
-            for p in sorted_prices[:upper]:
-                if p > 0 and remaining >= p * 100:
-                    remaining -= p * 100
-                    affordable += 1
-                else:
-                    break
-            return max(3, min(affordable, upper))
-        return upper
-
     def _count_trading_days(self, from_date, to_date) -> int:
         """计算两个日期之间的真实交易日数"""
         dates = self._load_trading_calendar()

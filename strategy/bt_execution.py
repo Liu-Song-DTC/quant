@@ -24,7 +24,6 @@ config = load_config()
 CASH = config.get('backtest.cash', 100000.0)
 COMMISSION = config.get('backtest.commission', 0.0015)
 PERC = config.get('backtest.slippage', 0.0015)
-MAX_POSITION = config.get('backtest.max_position', 10)
 REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
 NUM_WORKERS = config.get('backtest.num_workers', 8)
 
@@ -444,7 +443,6 @@ if __name__ == "__main__":
     cerebro = bt.Cerebro()
     strategy = Strategy(
         init_cash=CASH,
-        max_position=MAX_POSITION,
         fundamental_data=fundamental_data
     )
 

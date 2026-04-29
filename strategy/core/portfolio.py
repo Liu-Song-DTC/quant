@@ -37,9 +37,11 @@ def _load_industry_ic_weights():
 class PortfolioConstructor:
     """仓位管理器 - 基于因子排名选股"""
 
+    MIN_POSITIONS = 3
+    MAX_POSITIONS = 15
+
     def __init__(
         self,
-        max_position=None,
         target_volatility=None,
         entry_speed=None,
         exit_speed=None,
@@ -49,7 +51,6 @@ class PortfolioConstructor:
         config = load_config()
         portfolio_config = config.get_portfolio_config()
 
-        self.max_position = max_position if max_position is not None else portfolio_config.get('max_position', 10)
         self.position_stop_loss = position_stop_loss if position_stop_loss is not None else portfolio_config.get('position_stop_loss', 0.12)
         self.entry_speed = entry_speed if entry_speed is not None else portfolio_config.get('entry_speed', 1.0)
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 1.0)
@@ -60,7 +61,17 @@ class PortfolioConstructor:
         self.last_selection = []
         self.current_ranking = {}
         self.current_n_positions = 0
-        self.current_exposure = 1.0  # fv_mean滞后仓位状态
+        self.current_exposure = 1.0
+
+    @staticmethod
+    def _calc_max_position(total_equity: float, prices: dict) -> int:
+        """根据资金和价格自动计算最大持仓数
+
+        每1万资金可支持1个仓位 (均价~50元 × 100股 × 2倍缓冲)
+        范围: [3, 15]
+        """
+        n = int(total_equity / 10000)
+        return max(PortfolioConstructor.MIN_POSITIONS, min(n, PortfolioConstructor.MAX_POSITIONS))  # fv_mean滞后仓位状态
 
     def _build_desired_value(
         self,
@@ -79,8 +90,7 @@ class PortfolioConstructor:
         import pandas as pd
 
         total_equity = cash + sum(current_positions.values())
-
-        n_positions = self.max_position  # 提前定义，用于价格过滤
+        n_positions = self._calc_max_position(total_equity, prices)
 
         # 计算峰值和回撤
         if self.peak_equity is None:

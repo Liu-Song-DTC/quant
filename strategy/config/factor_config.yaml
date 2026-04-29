@@ -418,7 +418,6 @@ regime_multiplier:
   neutral: 0.7
   bear: 0.3
 portfolio:
-  max_position: 10
   target_volatility: 0.15
   entry_speed: 1.0
   exit_speed: 1.0
@@ -436,4 +435,3 @@ backtest:
   commission: 0.0015
   slippage: 0.0015
   rebalance_days: 20
-  max_position: 10

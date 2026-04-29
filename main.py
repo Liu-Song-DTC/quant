@@ -5,7 +5,7 @@
   python main.py run                    # 每日运行: 数据更新 + 信号 + 建议
   python main.py run --skip-update      # 跳过数据更新，只生成信号
   python main.py run --force            # 非调仓日也强制运行
-  python main.py status                 # 查看当前持仓
+  python main.py status                 # 查看当前持仓和止损
 """
 import argparse
 from pathlib import Path
