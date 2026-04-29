@@ -2,6 +2,12 @@
 
 A股多因子量化交易系统，基于 Backtrader 回测框架，Sharpe Ratio 目标 > 1.0。
 
+## 依赖
+* ip池: https://ak.cheapproxy.net/
+* 微信推送: https://sct.ftqq.com/
+  
+` 自己购买填写并相应的token `
+
 ## 快速开始
 
 ### 每日运行
@@ -108,7 +114,6 @@ data_manager → backtrader_data → signal_runner → Strategy → SignalEngine
 - `cash`: 买入减、卖出加
 - `positions`: 买入加、卖出减，清零则删除该条目
 
-系统会自动追加 `exposure` 和 `peak_equity`，不用管。
 
 ## 实盘操作流程
 
@@ -149,7 +154,7 @@ n_positions = total_equity / 10000,  范围 [3, 15]
 
 - **Sharpe Ratio: 1.064** (factor_mode=reweight, blend=0.5)
 - 调仓周期: 20 交易日 | 初始资金: 100,000
-- 最低可行资金: ~30,000 (Sharpe~1.0)
+- 最低可行资金: \~30,000 (Sharpe~1.0)
 
 ## 验证
 
