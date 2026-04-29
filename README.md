@@ -82,18 +82,44 @@ data_manager → backtrader_data → signal_runner → Strategy → SignalEngine
 - `proxy`: akshare 代理配置
 
 ### 组合状态 (trade/portfolio_state.json)
+
+首次使用前手动创建此文件，填入你的初始资金。
+
+**初始配置（1w 空仓起步）：**
 ```json
 {
-  "cash": 45000.0,
-  "positions": {
-    "600519": {"shares": 100, "cost_price": 1680.0}
-  },
-  "exposure": 0.75,
-  "peak_equity": 100000.0
+  "cash": 10000.0,
+  "positions": {},
+  "exposure": 1.0,
+  "peak_equity": 0.0
 }
 ```
-- `cash/positions`: **手动编辑** — 交易后更新资金和持仓
-- `exposure/peak_equity`: 系统自动维护，持久化 EMA 平滑和峰值
+
+**有持仓示例（1w 资金，持有 3 只股票，max_position 自动 = 3）：**
+```json
+{
+  "cash": 3000.0,
+  "positions": {
+    "600519": {"shares": 100, "cost_price": 16.80},
+    "000858": {"shares": 200, "cost_price": 15.50},
+    "300750": {"shares": 100, "cost_price": 28.00}
+  },
+  "exposure": 0.72,
+  "peak_equity": 10200.0
+}
+```
+
+字段说明：
+- `cash`: 当前可用现金，交易后手动更新（买入减、卖出加）
+- `positions`: 当前持仓，`code → {shares, cost_price}`，交易后手动更新
+- `exposure`: 系统自动维护的 EMA 仓位平滑值，**不要手动编辑**
+- `peak_equity`: 系统自动维护的峰值权益，**不要手动编辑**
+
+**交易后更新示例：**
+```
+买入 600519 ×100股 @ ¥1680  →  cash 减 168000, positions 加 600519
+卖出 000858 ×200股 @ ¥170   →  cash 加 34000,  positions 减 000858 (清零则删除)
+```
 
 ## 实盘操作流程
 
