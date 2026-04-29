@@ -1,0 +1,20 @@
+data:
+  stock_data_dir: ../data/stock_data
+  backtrader_data_dir: ../data/stock_data/backtrader_data
+  fundamental_data_dir: ../data/stock_data/fundamental_data
+
+schedule:
+  data_update_time: "15:35"
+  signal_run_time: "16:00"
+
+portfolio:
+  init_cash: 100000
+  max_position: 10
+
+notification:
+  enabled: false
+  wechat_sckey: ""
+  push_content: brief
+
+state_file: portfolio_state.json
+report_dir: reports/
