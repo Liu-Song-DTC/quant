@@ -4,11 +4,11 @@ start_date: "2026-04-30"
 
 # 微信推送 (Server酱 sct.ftqq.com)
 notification:
-  enabled: true
-  sckey: "SCT343706Tf8qv1VR5HRThP6uE21N6Ppig"
+  enabled: false
+  sckey: "YOUR_SCKEY"
 
 # 代理配置 (akshare_proxy_patch)
 proxy:
-  host: "101.201.173.125"
-  auth_token: "20260429KZVIPF4L"
+  host: ""
+  auth_token: ""
   retry: 30
