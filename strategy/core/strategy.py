@@ -1,4 +1,5 @@
 import pandas as pd
+from typing import Optional
 
 from .signal_engine import SignalEngine
 from .signal_store import SignalStore
@@ -8,9 +9,9 @@ from .config_loader import load_config
 
 
 class Strategy:
-    """带股灾检测的市场状态判断"""
+    """带股灾检测的市场状态判断 + 情绪分析集成"""
 
-    def __init__(self, init_cash, fundamental_data=None):
+    def __init__(self, init_cash, fundamental_data=None, sentiment_orchestrator=None):
         self.signal_engine = SignalEngine()
         self.fundamental_data = fundamental_data
         if fundamental_data:
@@ -22,6 +23,7 @@ class Strategy:
         self.init_cash = init_cash
 
         self.index_data = None
+        self.sentiment_orchestrator = sentiment_orchestrator
 
         # 使用独立的市场状态检测器
         self.regime_detector = MarketRegimeDetector()
@@ -38,6 +40,19 @@ class Strategy:
 
     def generate_signal(self, code, market_data):
         self.signal_engine.generate(code, market_data, self.signal_store)
+
+    def set_sentiment_multipliers(self, date, market_regime: int = 0):
+        """从情绪编排器获取行业情绪权重并注入组合构建器"""
+        if self.sentiment_orchestrator is None:
+            return
+        try:
+            multipliers = self.sentiment_orchestrator.get_sentiment_weights(
+                market_regime=market_regime
+            )
+            if multipliers:
+                self.portfolio.set_sentiment_multipliers(multipliers)
+        except Exception as e:
+            pass  # 情绪模块异常不中断主流程
 
     def generate_positions(
         self,
@@ -60,6 +75,11 @@ class Strategy:
                 momentum_score = float(row["momentum_score"].values[0])
                 bear_risk = bool(row["bear_risk"].values[0]) if "bear_risk" in row.columns else False
                 trend_score = float(row["trend_score"].values[0]) if "trend_score" in row.columns else 0.0
+
+        # 再平衡日更新情绪权重
+        if rebalance:
+            self.set_sentiment_multipliers(date, market_regime)
+
         return self.portfolio.build(
             date=date,
             universe=universe,

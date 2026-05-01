@@ -17,6 +17,13 @@ from core.config_loader import load_config
 from core.industry_mapping import INDUSTRY_KEYWORDS
 from core.market_regime_detector import MarketRegimeDetector
 
+# 情绪分析集成
+try:
+    from sentiment.orchestrator import SentimentOrchestrator
+    SENTIMENT_AVAILABLE = True
+except ImportError:
+    SENTIMENT_AVAILABLE = False
+
 # 加载配置
 config = load_config()
 
@@ -73,17 +80,14 @@ def _generate_stock_signal_worker(args):
     if engine is None:
         # Fallback: 创建新 engine
         engine = SignalEngine()
-        if fundamental_path and os.path.exists(fundamental_path):
-            fd = FundamentalData(fundamental_path, [code])
+        if FUNDAMENTAL_PATH and os.path.exists(FUNDAMENTAL_PATH):
+            fd = FundamentalData(FUNDAMENTAL_PATH, [code])
             engine.set_fundamental_data(fd)
 
     store = SignalStore()
     data = pd.DataFrame(data_dict)
     engine.generate(code, data, store)
     return (code, store._store)
-
-
-fundamental_path = FUNDAMENTAL_PATH  # 全局变量供 worker 使用
 
 
 def add_data_and_signal(cerebro, strategy, fundamental_data=None):
@@ -293,6 +297,7 @@ class BacktraderExecution(bt.Strategy):
         self.last_date = None
         self.cost = defaultdict(list)
         self.portfolio_selections = []  # 记录每期选股结果
+        self._prev_total_value = None  # 用于计算每日收益率
 
     def _is_tradable(self, d):
         """检查股票是否可交易（非停牌、价格正常）"""
@@ -401,6 +406,13 @@ class BacktraderExecution(bt.Strategy):
                 order = self.sell(data=d, size=size)
                 self.orders_list[date].append(order)
 
+        # 计算并记录每日收益率（供组合层波动率控制使用）
+        total_value = self.broker.getvalue()
+        if self._prev_total_value is not None and self._prev_total_value > 0:
+            daily_return = (total_value - self._prev_total_value) / self._prev_total_value
+            self.p.real_strategy.portfolio.update_returns(daily_return)
+        self._prev_total_value = total_value
+
     def notify_order(self, order):
         # 未被处理的订单
         if order.status in [order.Submitted, order.Accepted]:
@@ -440,10 +452,37 @@ if __name__ == "__main__":
             stock_codes.append(f.replace('_hfq.csv', ''))
     fundamental_data = FundamentalData(FUNDAMENTAL_PATH, stock_codes)
 
+    # 初始化情绪分析编排器
+    sentiment_orch = None
+    sentiment_enabled = config.get('industry_sentiment.enabled', False)
+    if sentiment_enabled and SENTIMENT_AVAILABLE:
+        print("[Sentiment] 初始化情绪分析模块...")
+        try:
+            sentiment_orch = SentimentOrchestrator(config)
+            # 回测模式：检查是否有预计算的rolling_sentiment.csv
+            sentiment_csv = sentiment_orch.store._csv_path
+            if sentiment_csv.exists():
+                print(f"[Sentiment] 使用已缓存的情绪数据: {sentiment_csv}")
+            else:
+                print("[Sentiment] 无缓存情绪数据，回测中将跳过情绪调整")
+                # 如果raw/目录有数据，运行回测模式生成
+                raw_files = list(sentiment_orch.collector.raw_dir.glob("*.json"))
+                if raw_files:
+                    from datetime import date
+                    print(f"[Sentiment] 回测模式: 分析 {len(raw_files)} 天新闻数据...")
+                    sentiment_orch.run_backtest(
+                        start=date(2010, 1, 1),
+                        end=date(2030, 12, 31),
+                    )
+        except Exception as e:
+            print(f"[Sentiment] 初始化异常 (将跳过情绪调整): {e}")
+            sentiment_orch = None
+
     cerebro = bt.Cerebro()
     strategy = Strategy(
         init_cash=CASH,
-        fundamental_data=fundamental_data
+        fundamental_data=fundamental_data,
+        sentiment_orchestrator=sentiment_orch,
     )
 
     add_data_and_signal(cerebro, strategy, fundamental_data)

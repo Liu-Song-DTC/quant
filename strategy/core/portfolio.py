@@ -9,7 +9,9 @@
 4. 止损仅限再平衡日: 避免非再平衡日过早卖出
 """
 import numpy as np
+from collections import deque
 from copy import deepcopy
+from datetime import date as date_type
 from .config_loader import load_config
 import yaml
 import os
@@ -37,8 +39,8 @@ def _load_industry_ic_weights():
 class PortfolioConstructor:
     """仓位管理器 - 基于因子排名选股"""
 
-    MIN_POSITIONS = 3
-    MAX_POSITIONS = 15
+    MIN_POSITIONS = 2
+    MAX_POSITIONS = 5
 
     def __init__(
         self,
@@ -55,23 +57,127 @@ class PortfolioConstructor:
         self.entry_speed = entry_speed if entry_speed is not None else portfolio_config.get('entry_speed', 1.0)
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 1.0)
 
+        # === 波动率控制 ===
+        self.vol_control_enabled = portfolio_config.get('volatility_control_enabled', True)
+        self.target_volatility = target_volatility if target_volatility is not None else portfolio_config.get('target_volatility', 0.15)
+        self.vol_lookback = portfolio_config.get('volatility_control_lookback', 20)
+        self._daily_returns = deque(maxlen=self.vol_lookback * 2)  # store up to 2x for safety
+
+        # === 组合止损 ===
+        self.stop_loss_enabled = portfolio_config.get('portfolio_stop_loss_enabled', True)
+        self.portfolio_stop_loss = portfolio_stop_loss if portfolio_stop_loss is not None else portfolio_config.get('portfolio_stop_loss', 0.08)
+        self.emergency_exposure = portfolio_config.get('emergency_exposure', 0.3)
+
+        # === fv_exposure 可配置参数 ===
+        fv_params = portfolio_config.get('fv_exposure_params', {})
+        self.fv_low = fv_params.get('fv_low', -0.03)
+        self.fv_high = fv_params.get('fv_high', 0.05)
+        self.fv_exposure_min = fv_params.get('exposure_min', 0.3)
+        self.fv_exposure_max = fv_params.get('exposure_max', 1.0)
+
+        # === 换手惩罚 ===
+        self.turnover_bonus = portfolio_config.get('turnover_bonus', 0.02)
+
+        # === 风险平价 ===
+        rp_config = config.get('risk_parity', {}) if hasattr(config, 'get') else portfolio_config.get('risk_parity', {})
+        self.risk_parity_enabled = rp_config.get('enabled', False)
+        self.rp_target_risk = rp_config.get('target_risk_per_stock', 0.10)
+        self.rp_max_iterations = rp_config.get('max_iterations', 50)
+
+        # === 增强止损 ===
+        es_config = config.get('enhanced_stop_loss', {}) if hasattr(config, 'get') else portfolio_config.get('enhanced_stop_loss', {})
+        self.time_stop_days = es_config.get('time_stop_days', 60)
+        self.time_stop_min_return = es_config.get('time_stop_min_return', -0.02)
+        self.trailing_stop_pct = es_config.get('trailing_stop_pct', 0.15)
+        self.trailing_stop_enabled = es_config.get('trailing_stop_enabled', True)
+        self.volatility_adaptive_mult = es_config.get('volatility_adaptive_mult', 1.5)
+
+        # 追踪每个持仓的入场时间和峰值价格
+        self._entry_dates: dict = {}  # {code: date}
+        self._peak_prices: dict = {}  # {code: peak_price_since_entry}
+
         self.peak_equity = None
         self.industry_ic = _load_industry_ic_weights()
         self.position_cost = {}
+        self.sentiment_multipliers: dict = {}  # 情绪乘数，由外部注入
         self.last_selection = []
         self.current_ranking = {}
         self.current_n_positions = 0
         self.current_exposure = 1.0
+        self._stop_loss_triggered = False
+        self._stop_loss_recovery_days = 0
+        self._min_hold_days = 5  # 最短持仓天数，防止whipsaw
+
+    def set_sentiment_multipliers(self, multipliers: dict):
+        """设置行业情绪乘数，用于调整行业 IC 权重
+
+        Args:
+            multipliers: {industry: multiplier}, 范围 [0.8, 1.2]
+        """
+        self.sentiment_multipliers = multipliers
+
+    def update_returns(self, daily_return: float):
+        """记录每日收益率（用于波动率控制）
+
+        从 BacktraderExecution.next() 中调用，每次传入当日收益率
+        """
+        self._daily_returns.append(daily_return)
 
     @staticmethod
     def _calc_max_position(total_equity: float, prices: dict) -> int:
-        """根据资金自动计算最大持仓数
+        """根据资金自动计算最大持仓数 - 超级集中持仓
 
-        每1万资金支持1个仓位, 范围[3, 15]
-        100k→10只(与基线对齐)
+        每4万资金支持1个仓位, 范围[2, 5]
+        100k→2-3只(极致集中)
         """
-        n = int(total_equity / 10000)
-        return max(PortfolioConstructor.MIN_POSITIONS, min(n, PortfolioConstructor.MAX_POSITIONS))  # fv_mean滞后仓位状态
+        n = int(total_equity / 40000)
+        return max(PortfolioConstructor.MIN_POSITIONS, min(n, PortfolioConstructor.MAX_POSITIONS))
+
+    def _risk_parity_weights(self, selected: list, total_equity: float) -> list:
+        """风险平价权重分配：每只股票贡献相等的风险预算
+
+        Args:
+            selected: 选中的股票列表，每项含 'risk_vol', 'code'
+            total_equity: 总权益
+
+        Returns:
+            权重列表，和为 target_exposure
+        """
+        n = len(selected)
+        if n == 0:
+            return []
+
+        # 用波动率作为风险的代理指标
+        vols = np.array([c.get('risk_vol', 0.03) for c in selected])
+        vols = np.clip(vols, 0.01, 0.10)  # 限制极端值
+
+        # 初始等权
+        weights = np.ones(n) / n
+        target_risk_contrib = self.rp_target_risk / n
+
+        # 简单实现：与波动率倒数成正比（Naive Risk Parity）
+        inv_vols = 1.0 / vols
+        weights = inv_vols / inv_vols.sum()
+
+        # 迭代优化风险贡献（最多N次迭代）
+        for _ in range(self.rp_max_iterations):
+            # 风险贡献：w_i * sigma_i
+            risk_contrib = weights * vols
+            # 总风险
+            total_risk = np.sqrt(np.sum((weights * vols) ** 2))
+            if total_risk < 1e-10:
+                break
+            # 调整权重使风险贡献更均衡
+            target_risk_contrib = total_risk / n
+            adj = target_risk_contrib / (risk_contrib + 1e-10)
+            weights = weights * (0.5 + 0.5 * adj)  # 平滑调整
+            weights = weights / weights.sum()
+            # 收敛检查
+            max_dev = np.max(np.abs(risk_contrib / total_risk - 1.0 / n))
+            if max_dev < 0.01:
+                break
+
+        return weights.tolist()
 
     def _build_desired_value(
         self,
@@ -140,51 +246,89 @@ class PortfolioConstructor:
         # === 市场仓位调整 ===
         # 多信号融合择时: fv_mean(截面) + momentum(指数动量) + trend(均线排列)
         fv_mean = float(np.mean(factor_values))
-        # fv_mean连续映射到[0.3, 1.0]
-        fv_exposure = 0.3 + (fv_mean + 0.03) / (0.05 + 0.03) * 0.7
-        fv_exposure = float(np.clip(fv_exposure, 0.3, 1.0))
+        # fv_mean连续映射到[exposure_min, exposure_max]，使用可配置参数
+        fv_range = self.fv_high - self.fv_low
+        fv_exposure = self.fv_exposure_min + (fv_mean - self.fv_low) / fv_range * (self.fv_exposure_max - self.fv_exposure_min)
+        fv_exposure = float(np.clip(fv_exposure, self.fv_exposure_min, self.fv_exposure_max))
 
-        # momentum_score融合: 强负动量时额外降仓
-        # momentum ∈ [-1, 1], 当momentum<-0.3时开始降仓
+        # momentum_score融合: 强负动量时额外降仓（提高阈值，减少不必要的降仓）
+        # momentum ∈ [-1, 1], 当momentum<-0.5时开始降仓
         mom_adj = 1.0
-        if momentum_score < -0.3:
-            mom_adj = 0.5 + 0.5 * (momentum_score + 1.0) / 0.7  # [-1,-0.3] → [0.5, 1.0]
-            mom_adj = max(mom_adj, 0.5)
+        if momentum_score < -0.5:
+            mom_adj = 0.6 + 0.4 * (momentum_score + 1.0) / 0.5  # [-1,-0.5] → [0.6, 1.0]
+            mom_adj = max(mom_adj, 0.6)
 
-        # trend_score融合: 空头排列时额外降仓
+        # trend_score融合: 空头排列时额外降仓（提高下限）
         trend_adj = 1.0
         if trend_score < 0:
-            trend_adj = 0.7 + 0.3 * (1.0 + trend_score)  # [-1, 0] → [0.7, 1.0]
+            trend_adj = 0.8 + 0.2 * (1.0 + trend_score)  # [-1, 0] → [0.8, 1.0]
 
         target_exposure = fv_exposure * mom_adj * trend_adj
-        floor = 0.15 if bear_risk else 0.25
-        target_exposure = float(np.clip(target_exposure, floor, 1.0))
-        # 滞后平滑: 避免仓位突变
-        self.current_exposure = 0.5 * self.current_exposure + 0.5 * target_exposure
+        # 熊市几乎空仓，牛市满仓，震荡市高仓位
+        if bear_risk:
+            floor = 0.15
+            ceiling = 0.3
+        elif market_regime == 1:  # bull
+            floor = 0.8
+            ceiling = 1.0
+        else:  # neutral
+            floor = 0.65
+            ceiling = 1.0
+        target_exposure = float(np.clip(target_exposure, floor, ceiling))
 
-        # === 选股: rank_pct > 0.5 → top N → 行业均衡 ===
-        qualified = [c for c in candidates if c['rank_pct'] > 0.5]
+        # === 波动率控制: 实现波动率超过目标时降仓 ===
+        if self.vol_control_enabled and len(self._daily_returns) >= self.vol_lookback:
+            recent_rets = list(self._daily_returns)[-self.vol_lookback:]
+            realized_vol = float(np.std(recent_rets) * np.sqrt(252))  # 年化
+            if realized_vol > 0.01:
+                vol_scale = self.target_volatility / realized_vol
+                target_exposure *= float(np.clip(vol_scale, 0.5, 1.0))
+
+        # === 组合止损: 回撤超过阈值时强制降仓至紧急敞口（含恢复冷却期） ===
+        if self.stop_loss_enabled and drawdown > self.portfolio_stop_loss:
+            target_exposure = min(target_exposure, self.emergency_exposure)
+            self._stop_loss_triggered = True
+            self._stop_loss_recovery_days = 10
+        elif self._stop_loss_triggered and self._stop_loss_recovery_days > 0:
+            # 恢复期：逐步提升敞口，防止whipsaw
+            target_exposure = min(target_exposure, self.emergency_exposure +
+                                  (1.0 - self.emergency_exposure) * (1.0 - self._stop_loss_recovery_days / 10))
+            self._stop_loss_recovery_days -= 1
+            if self._stop_loss_recovery_days <= 0:
+                self._stop_loss_triggered = False
+
+        # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）
+        self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure
+
+        # === 选股: 高rank阈值 → top N → 行业均衡 ===
+        # 提高门槛只选最强信号，集中持仓
+        qualified = [c for c in candidates if c['rank_pct'] > 0.55]
         if not qualified:
-            qualified = [c for c in candidates if c['rank_pct'] > 0.3]
+            qualified = [c for c in candidates if c['rank_pct'] > 0.35]
+        if not qualified:
+            qualified = [c for c in candidates if c['rank_pct'] > 0.2]
 
-        # 换手控制：现有持仓的rank_pct仍>hold_threshold时优先保留
+        # 换手控制：现有持仓给予换手惩罚加分，需超过交易成本才能被替换
         current_codes = set(current_positions.keys())
-        hold_threshold = 0.5  # 已持仓股票，rank_pct>0.5即可保留
+        hold_threshold = 0.4  # 已持仓股票，rank_pct>0.4即可保留
 
-        # 按factor_value降序，但已持仓优先
+        # 计算有效得分：已持仓加分(turnover_bonus)，需超越此加分才能替换
         for c in qualified:
             c['is_held'] = c['code'] in current_codes
             if c['is_held'] and c['rank_pct'] > hold_threshold:
-                pass  # 已持仓且仍合格，保留
+                c['effective_score'] = c['factor_value'] + self.turnover_bonus
             elif c['is_held'] and c['rank_pct'] <= hold_threshold:
-                c['is_held'] = False  # 信号太弱，标记为替换
+                c['is_held'] = False
+                c['effective_score'] = c['factor_value']
+            else:
+                c['effective_score'] = c['factor_value']
 
-        # 排序：已持仓优先（稳定持仓），再按factor_value排序
-        qualified.sort(key=lambda x: (-x['is_held'], -x['factor_value']))
+        # 排序：按有效得分降序（已持仓有换手加分）
+        qualified.sort(key=lambda x: -x['effective_score'])
 
-        # 行业均衡选股
+        # 行业均衡选股：行业上限随持仓数动态调整
         industry_count = {}
-        industry_cap = 5
+        industry_cap = max(2, int(np.ceil(n_positions / 3)))
 
         selected = []
         for c in qualified:
@@ -203,9 +347,12 @@ class PortfolioConstructor:
         self.current_ranking = {c['code']: i for i, c in enumerate(candidates)}
         self.current_n_positions = len(selected)
 
-        # === IC加权行业权重分配（分市场IC）===
+        # === 权重分配（IC加权 or 风险平价）===
         n = len(selected)
-        if self.industry_ic:
+        if self.risk_parity_enabled:
+            rp_weights = self._risk_parity_weights(selected, total_equity)
+            weights = [w * target_exposure for w in rp_weights]
+        elif self.industry_ic:
             regime_key = {1: 'bull', -1: 'bear', 0: 'neutral'}.get(market_regime, 'neutral')
             max_ic = 0.05
             for c in selected:
@@ -218,6 +365,9 @@ class PortfolioConstructor:
                 ic_dict = self.industry_ic.get(c['industry'], {})
                 ic = ic_dict.get(regime_key, ic_dict.get('neutral', 0.05))
                 ic_w = (ic / max_ic) ** 1.5
+                # 情绪乘数调整
+                if self.sentiment_multipliers and c['industry'] in self.sentiment_multipliers:
+                    ic_w *= self.sentiment_multipliers[c['industry']]
                 raw_weights.append(ic_w)
             total_w = sum(raw_weights)
             weights = [w / total_w * target_exposure for w in raw_weights]
@@ -265,21 +415,62 @@ class PortfolioConstructor:
         stop_loss_sells = {}
         total_equity = cash + sum(current_positions.values())
 
-        # 个股止损检查 - 仅成本止损
+        # 个股止损检查 - 成本止损 + 时间止损 + 移动止损
         for code, current_value in current_positions.items():
             if code not in prices or current_value <= 0:
                 continue
 
-            # 成本止损: 亏损超过position_stop_loss
+            current_price = prices[code]
+            stopped = False
+            stop_reason = ""
+
+            # 1. 成本止损: 亏损超过position_stop_loss
             if cost and code in cost and len(cost[code]) >= 2 and cost[code][0] > 0:
                 avg_cost = cost[code][1]
-                current_price = prices[code]
                 pnl_pct = (current_price - avg_cost) / avg_cost
-                if pnl_pct < -self.position_stop_loss:
-                    stop_loss_sells[code] = 0.0
 
-            # 不使用信号卖出: 组合层用截面rank_pct排序选股
-            # factor_value的绝对值不决定卖出，排名才决定
+                # 波动率自适应调整：高波动股票放宽止损线
+                sig = signal_store.get(code, date)
+                vol = getattr(sig, 'risk_vol', 0.03) if sig else 0.03
+                adaptive_mult = self.volatility_adaptive_mult
+                adaptive_stop = self.position_stop_loss * (1 + vol * adaptive_mult * 10)
+                adaptive_stop = min(adaptive_stop, self.position_stop_loss * 1.5)
+
+                if pnl_pct < -adaptive_stop:
+                    stopped = True
+                    stop_reason = "cost_stop"
+
+            # 2. 时间止损: 持仓超N天且微亏/微赚
+            if not stopped and code in self._entry_dates:
+                if isinstance(date, date_type):
+                    days_held = (date - self._entry_dates[code]).days
+                else:
+                    days_held = 0
+                if days_held > self.time_stop_days:
+                    if cost and code in cost and len(cost[code]) >= 2 and cost[code][0] > 0:
+                        avg_cost = cost[code][1]
+                        pnl_pct = (current_price - avg_cost) / avg_cost
+                        if pnl_pct < self.time_stop_min_return:
+                            stopped = True
+                            stop_reason = "time_stop"
+
+            # 3. 移动止损: 从最高点回撤超过阈值
+            if not stopped and self.trailing_stop_enabled and code in self._peak_prices:
+                peak = self._peak_prices[code]
+                drawdown_from_peak = (peak - current_price) / peak
+                if drawdown_from_peak > self.trailing_stop_pct:
+                    stopped = True
+                    stop_reason = "trailing_stop"
+
+            if stopped:
+                stop_loss_sells[code] = 0.0
+                # 清理追踪状态
+                self._entry_dates.pop(code, None)
+                self._peak_prices.pop(code, None)
+
+            # 更新峰值价格
+            if code in self._entry_dates:
+                self._peak_prices[code] = max(self._peak_prices.get(code, 0), current_price)
 
         desired_value = {}
         if rebalance:
@@ -329,13 +520,32 @@ class PortfolioConstructor:
 
             adjusted[code] = current + move
 
-        # 再平衡日：清仓不在目标中的旧持仓
+        # 再平衡日：清仓不在目标中的旧持仓，并更新入场追踪
         if rebalance:
-            for code, current in current_positions.items():
+            for code, current in list(current_positions.items()):
                 if code in adjusted:
                     continue
                 if code in desired_value:
                     continue
+                # 最短持仓保护：新买入的持仓未满min_hold_days不卖出
+                if code in self._entry_dates:
+                    if isinstance(date, date_type):
+                        days_held = (date - self._entry_dates[code]).days
+                    else:
+                        days_held = 0
+                    if days_held < self._min_hold_days:
+                        # 保留持仓，不卖出
+                        adjusted[code] = current
+                        continue
                 adjusted[code] = 0.0
+                # 清理追踪
+                self._entry_dates.pop(code, None)
+                self._peak_prices.pop(code, None)
+
+            # 记录新入场持仓
+            for code, target_val in adjusted.items():
+                if target_val > 0 and code not in self._entry_dates:
+                    self._entry_dates[code] = date
+                    self._peak_prices[code] = prices.get(code, 0)
 
         return adjusted

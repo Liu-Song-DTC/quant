@@ -40,6 +40,21 @@ backtest_factors:
 - momentum_reversal
 - momentum_acceleration
 - trend_lowvol
+- illiq_20
+- turnover_stability
+- overnight_ret
+- intraday_ret
+- skewness_20
+- kurtosis_20
+- max_ret_20
+- tail_risk
+- price_volume_corr_20
+- volatility_skew
+- gap_ratio
+- vol_confirm
+- low_downside
+- inv_turnover
+- turnover_shrink
 industry_factor_config:
   lookback_days: 120
   forward_period: 20
@@ -376,6 +391,23 @@ industry_factors:
     - 0.471
     bear_ic: 0.1081
     bear_combined_ic: 0.1276
+# ==================== LLM 行业情绪分析 ====================
+industry_sentiment:
+  enabled: true
+  data_dir: "data/sentiment_data"
+  deepseek_api_key: ""
+  analysis_frequency: "daily"
+  max_news_batch: 50
+  notify_on_completion: true
+  weight_impact:
+    enabled: true
+    max_multiplier: 1.20
+    min_multiplier: 0.80
+    smoothing_days: 3
+    regime_adjustment: true
+  backtest:
+    precomputed_file: ""
+
 indicator_params:
   ema_periods:
   - 5
@@ -415,21 +447,45 @@ signal:
   sell_threshold: -0.15
 regime_multiplier:
   bull: 1.0
-  neutral: 0.7
-  bear: 0.3
+  neutral: 0.9
+  bear: 0.25
 portfolio:
-  target_volatility: 0.15
+  target_volatility: 0.25
   entry_speed: 1.0
   exit_speed: 1.0
-  position_stop_loss: 0.12
-  portfolio_stop_loss: 0.08
-  max_single_weight: 0.15
+  position_stop_loss: 0.30
+  portfolio_stop_loss: 0.25
+  max_single_weight: 0.30
+  fv_exposure_params:
+    fv_low: -0.01
+    fv_high: 0.02
+    exposure_min: 0.6
+    exposure_max: 1.0
+  turnover_bonus: 0.05
 portfolio_stop_loss:
-  enabled: false
-  emergency_exposure: 0.3
+  enabled: true
+  emergency_exposure: 0.6
 volatility_control:
-  enabled: false
+  enabled: true
   lookback_period: 20
+# === 因子中性化 ===
+factor_neutralization:
+  enabled: false
+  neutralize_industry: true
+  neutralize_market_cap: true
+  min_samples_per_industry: 3
+# === 增强止损 ===
+enhanced_stop_loss:
+  time_stop_days: 250
+  time_stop_min_return: -0.10
+  trailing_stop_pct: 0.35
+  trailing_stop_enabled: false
+  volatility_adaptive_mult: 1.5
+# === 风险平价 ===
+risk_parity:
+  enabled: true
+  target_risk_per_stock: 0.10
+  max_iterations: 50
 backtest:
   cash: 100000.0
   commission: 0.0015
