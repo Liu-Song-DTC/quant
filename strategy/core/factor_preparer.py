@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import os
 from typing import Dict, List, Tuple
-from multiprocessing import Pool
+import multiprocessing
 from tqdm import tqdm
 
 from .config_loader import load_config
@@ -52,10 +52,11 @@ def _compute_stock_factors_worker(args):
     high_arr = df['high'].values if 'high' in df.columns else close_arr
     low_arr = df['low'].values if 'low' in df.columns else close_arr
     vol_arr = df['volume'].values if 'volume' in df.columns else np.ones(n)
+    open_arr = df['open'].values if 'open' in df.columns else close_arr
 
     # === 使用统一的因子计算器计算所有基础指标 ===
     params = get_default_params()
-    ind = calculate_indicators(close_arr, high_arr, low_arr, vol_arr, params)
+    ind = calculate_indicators(close_arr, high_arr, low_arr, vol_arr, params, open_arr=open_arr)
 
     # === 构建日期到索引的映射（O(1) 查找）===
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}
@@ -211,7 +212,8 @@ def prepare_factor_data(stock_data: dict, fd,
 
     all_factor_data = []
     # 使用 initializer，每个 worker 创建一个 FundamentalData 实例供所有股票复用
-    with Pool(num_workers, initializer=_init_factor_worker, initargs=(fundamental_path, stock_codes)) as pool:
+    ctx = multiprocessing.get_context('fork')
+    with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fundamental_path, stock_codes)) as pool:
         for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=10),
                        total=len(args_list), desc="计算因子"):
             all_factor_data.extend(res)

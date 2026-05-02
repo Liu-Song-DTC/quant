@@ -350,7 +350,7 @@ class DynamicFactorSelector:
             progress_callback: 进度回调函数，接受 (current, total) 参数
             num_workers: 并行进程数
         """
-        from multiprocessing import Pool
+        import multiprocessing
         import numpy as np
 
         if self.factor_df is None or self.industry_codes is None:
@@ -417,7 +417,8 @@ class DynamicFactorSelector:
         # 并行计算
         print(f"开始并行计算 {total} 个chunk...")
         all_results = []
-        with Pool(total) as pool:
+        ctx = multiprocessing.get_context('fork')
+        with ctx.Pool(total) as pool:
             results = pool.map(_compute_date_chunks_worker, worker_args)
             for r in results:
                 all_results.extend(r)
@@ -596,9 +597,10 @@ class SignalEngine:
         low = data['low'].values
         volume = data['volume'].values
         turnover_rate = data['turnover_rate'].values if 'turnover_rate' in data.columns else None
+        open_price = data['open'].values if 'open' in data.columns else None
 
         # 使用统一的因子计算器
-        result = calc_indicators(close, high, low, volume, params, turnover_rate=turnover_rate)
+        result = calc_indicators(close, high, low, volume, params, turnover_rate=turnover_rate, open_arr=open_price)
 
         # 收益率
         result['ret_30'] = close / self._shift(close, 30) - 1
