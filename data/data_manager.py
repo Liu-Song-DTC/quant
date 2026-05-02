@@ -39,7 +39,7 @@ warnings.filterwarnings('ignore')
 INDEX = "sh000001"
 
 class StockDataManager:
-    def __init__(self, data_dir="./stock_data"):
+    def __init__(self, data_dir="./data/stock_data"):
         """初始化数据管理器"""
         self.data_dir = Path(data_dir)
         self.raw_data_dir = self.data_dir / "raw_data"
@@ -1068,7 +1068,7 @@ def main():
         symbols=sample_symbols,
         start_date='2015-01-01',
         end_date='2025-12-31',
-        min_days=600
+        min_days=300
     )
 
     print("\n" + "=" * 50)
