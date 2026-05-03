@@ -640,7 +640,7 @@ risk_parity:
   target_risk_per_stock: 0.10
   max_iterations: 50
 backtest:
-  cash: 100000.0
+  cash: 150000.0
   commission: 0.0015
   slippage: 0.0015
   rebalance_days: 10
