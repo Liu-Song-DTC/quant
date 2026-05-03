@@ -229,6 +229,64 @@ def calc_factor_composite(
     return result
 
 
+# ==================== Alpha 因子 ====================
+
+def calc_factor_skewness_20(close: np.ndarray) -> np.ndarray:
+    """20日收益偏度：正偏度=上涨集中"""
+    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
+    result = np.zeros_like(close)
+    for i in range(20, len(close)):
+        r = returns[i-20:i]
+        if np.std(r) > 1e-10:
+            result[i] = ((r - np.mean(r)) ** 3).mean() / (np.std(r) ** 3 + 1e-10)
+    return np.tanh(result)
+
+
+def calc_factor_kurtosis_20(close: np.ndarray) -> np.ndarray:
+    """20日收益峰度：低峰度=正信号（尾部风险小）"""
+    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
+    result = np.zeros_like(close)
+    for i in range(20, len(close)):
+        r = returns[i-20:i]
+        if np.std(r) > 1e-10:
+            result[i] = ((r - np.mean(r)) ** 4).mean() / (np.std(r) ** 4 + 1e-10) - 3
+    return np.tanh(-result / 3)
+
+
+def calc_factor_max_ret_20(close: np.ndarray) -> np.ndarray:
+    """20日最大单日涨幅：动量突破捕捉"""
+    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
+    result = np.zeros_like(close)
+    for i in range(20, len(close)):
+        result[i] = np.max(returns[i-20:i])
+    return np.tanh(result * 3)
+
+
+def calc_factor_tail_risk(close: np.ndarray) -> np.ndarray:
+    """尾部风险（CVaR-like）：最差5日平均收益"""
+    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
+    result = np.zeros_like(close)
+    for i in range(20, len(close)):
+        r = returns[i-20:i]
+        result[i] = np.mean(np.sort(r)[:5])
+    return np.tanh(result * 5)
+
+
+def calc_factor_volatility_skew(close: np.ndarray) -> np.ndarray:
+    """波动率偏度：上行波动/下行波动 - 1"""
+    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
+    result = np.zeros_like(close)
+    for i in range(20, len(close)):
+        r = returns[i-20:i]
+        up_r = r[r > 0]
+        down_r = r[r < 0]
+        up_vol = np.std(up_r) if len(up_r) > 2 else 0
+        down_vol = np.std(down_r) if len(down_r) > 2 else 0
+        if down_vol > 1e-10:
+            result[i] = up_vol / down_vol - 1
+    return np.tanh(result)
+
+
 # 注册因子
 FactorRegistry.register('volatility_10', calc_factor_volatility_10, 'volatility')
 FactorRegistry.register('volatility_5', calc_factor_volatility_5, 'volatility')
@@ -241,3 +299,9 @@ FactorRegistry.register('bb_width_20', calc_factor_bb_width_20, 'bollinger')
 FactorRegistry.register('momentum_10', calc_factor_momentum_10, 'momentum')
 FactorRegistry.register('momentum_20', calc_factor_momentum_20, 'momentum')
 FactorRegistry.register('atr', calc_factor_atr, 'volatility')
+# Alpha因子
+FactorRegistry.register('skewness_20', calc_factor_skewness_20, 'alpha')
+FactorRegistry.register('kurtosis_20', calc_factor_kurtosis_20, 'alpha')
+FactorRegistry.register('max_ret_20', calc_factor_max_ret_20, 'alpha')
+FactorRegistry.register('tail_risk', calc_factor_tail_risk, 'alpha')
+FactorRegistry.register('volatility_skew', calc_factor_volatility_skew, 'alpha')

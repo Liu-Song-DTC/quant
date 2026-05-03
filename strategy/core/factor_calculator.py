@@ -60,6 +60,7 @@ def calculate_indicators(
     params: Optional[Dict] = None,
     turnover_rate: Optional[np.ndarray] = None,
     amplitude: Optional[np.ndarray] = None,
+    open_arr: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """
     计算所有技术指标（与signal_engine._calculate_indicators逻辑一致）
@@ -83,6 +84,7 @@ def calculate_indicators(
         'high': high if high is not None else close,
         'low': low if low is not None else close,
         'volume': volume if volume is not None else np.ones(n),
+        'open': open_arr if open_arr is not None else close,
     }
 
     close_arr = close
@@ -252,10 +254,114 @@ def calculate_indicators(
         # 换手率变化: 当前/MA20-1, 缩量=正信号
         tr_ratio = turnover_rate / (tr_ma20 + 1e-6)
         result['turnover_shrink'] = np.tanh(-(tr_ratio - 1) * 3)  # 缩量为正
+
+        # === 流动性因子 ===
+        # Amihud非流动性: |ret| / (close * volume)
+        daily_illiq = np.abs(result['ret']) / (close_arr * vol_arr + 1e-10)
+        illiq_20 = _sma(daily_illiq, 20)
+        # 高流动性 = 低illiq = 正因子值
+        result['illiq_20'] = np.tanh(-illiq_20 * 1e10)
+
+        # 换手率稳定性: 换手率变异系数的负值 (稳定=正信号)
+        tr_std_20 = _rolling_std(turnover_rate, 20)
+        tr_ma20_safe = tr_ma20 + 1e-6
+        turnover_cv = tr_std_20 / tr_ma20_safe
+        result['turnover_stability'] = np.tanh(-turnover_cv * 2)
     else:
         n_pts = len(close)
         result['inv_turnover'] = np.zeros(n_pts)
         result['turnover_shrink'] = np.zeros(n_pts)
+        result['illiq_20'] = np.zeros(n_pts)
+        result['turnover_stability'] = np.zeros(n_pts)
+
+    # === 新增Alpha因子 ===
+
+    # 1. 隔夜收益 vs 日内收益：隔夜跳空是信息驱动的，日内是噪音
+    # 高隔夜收益=强基本面信号，压缩到(-1, 1)
+    open_arr = result.get('open', close_arr)
+    if open_arr is not None:
+        overnight_ret = np.zeros(n)
+        overnight_ret[1:] = (open_arr[1:] - close_arr[:-1]) / (close_arr[:-1] + 1e-10)
+        # 20日累计隔夜收益
+        overnight_cum = np.zeros(n)
+        for i in range(20, n):
+            overnight_cum[i] = np.sum(overnight_ret[i-19:i+1])
+        result['overnight_ret'] = np.tanh(overnight_cum * 15)
+
+        intraday_ret = np.zeros(n)
+        intraday_ret[1:] = (close_arr[1:] - open_arr[1:]) / (open_arr[1:] + 1e-10)
+        intraday_cum = np.zeros(n)
+        for i in range(20, n):
+            intraday_cum[i] = np.sum(intraday_ret[i-19:i+1])
+        result['intraday_ret'] = np.tanh(intraday_cum * 15)
+    else:
+        result['overnight_ret'] = np.zeros(n)
+        result['intraday_ret'] = np.zeros(n)
+
+    # 2. 收益偏度（20日）：正偏度=上涨集中，负偏度=下跌集中
+    skew_20 = np.zeros(n)
+    for i in range(20, n):
+        r = returns[i-20:i]
+        if np.std(r) > 1e-10:
+            skew_20[i] = ((r - np.mean(r)) ** 3).mean() / (np.std(r) ** 3 + 1e-10)
+    result['skewness_20'] = np.tanh(skew_20)
+
+    # 3. 收益峰度（20日）：高峰度=尾部风险高
+    kurt_20 = np.zeros(n)
+    for i in range(20, n):
+        r = returns[i-20:i]
+        if np.std(r) > 1e-10:
+            kurt_20[i] = ((r - np.mean(r)) ** 4).mean() / (np.std(r) ** 4 + 1e-10) - 3
+    result['kurtosis_20'] = np.tanh(-kurt_20 / 3)  # 低峰度=正信号
+
+    # 4. 最大单日涨幅（20日）：捕捉动量突破
+    max_ret_20 = np.zeros(n)
+    for i in range(20, n):
+        max_ret_20[i] = np.max(returns[i-20:i])
+    result['max_ret_20'] = np.tanh(max_ret_20 * 3)
+
+    # 5. 尾部风险（CVaR-like）：过去20日最差5日平均收益
+    tail_risk = np.zeros(n)
+    for i in range(20, n):
+        r = returns[i-20:i]
+        tail_risk[i] = np.mean(np.sort(r)[:5])
+    result['tail_risk'] = np.tanh(tail_risk * 5)
+
+    # 6. 量价相关性（20日）：价格变化 vs 成交量变化的相关性
+    pv_corr_20 = np.zeros(n)
+    for i in range(20, n):
+        price_chg = np.diff(close_arr[i-20:i+1])
+        vol_chg = np.diff(vol_arr[i-20:i+1])
+        if np.std(price_chg) > 0 and np.std(vol_chg) > 0 and len(price_chg) >= 5:
+            corr = np.corrcoef(price_chg, vol_chg)[0, 1]
+            pv_corr_20[i] = corr if not np.isnan(corr) else 0
+    # 量价正相关+上涨趋势=正信号；负相关+下跌趋势=负信号
+    result['price_volume_corr_20'] = np.tanh(pv_corr_20 * mom20 * 10)
+
+    # 7. 波动率偏度：上行波动/下行波动 - 1
+    vol_skew = np.zeros(n)
+    for i in range(20, n):
+        r = returns[i-20:i]
+        up_r = r[r > 0]
+        down_r = r[r < 0]
+        up_vol = np.std(up_r) if len(up_r) > 2 else 0
+        down_vol = np.std(down_r) if len(down_r) > 2 else 0
+        if down_vol > 1e-10:
+            vol_skew[i] = up_vol / down_vol - 1
+    result['volatility_skew'] = np.tanh(vol_skew)
+
+    # 8. 跳空缺口比率：向上跳空 / (向上+向下跳空)
+    if open_arr is not None:
+        gap_ratio = np.zeros(n)
+        for i in range(20, n):
+            gaps = overnight_ret[i-20:i]
+            up_gaps = np.sum(gaps[gaps > 0.01])
+            down_gaps = np.sum(np.abs(gaps[gaps < -0.01]))
+            total = up_gaps + down_gaps
+            gap_ratio[i] = (up_gaps - down_gaps) / (total + 1e-10)
+        result['gap_ratio'] = np.tanh(gap_ratio * 3)
+    else:
+        result['gap_ratio'] = np.zeros(n)
 
     return result
 
@@ -508,8 +614,34 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
     if 'turnover_shrink' in ind:
         result['turnover_shrink'] = ind['turnover_shrink'][idx]
 
+    # 流动性因子
+    if 'illiq_20' in ind:
+        result['illiq_20'] = ind['illiq_20'][idx] if not np.isnan(ind['illiq_20'][idx]) else 0.0
+    if 'turnover_stability' in ind:
+        result['turnover_stability'] = ind['turnover_stability'][idx] if not np.isnan(ind['turnover_stability'][idx]) else 0.0
+
     # 下行风险因子
     if 'low_downside' in ind:
         result['low_downside'] = ind['low_downside'][idx]
+
+    # === 新增Alpha因子 ===
+    if 'overnight_ret' in ind:
+        result['overnight_ret'] = ind['overnight_ret'][idx] if not np.isnan(ind['overnight_ret'][idx]) else 0.0
+    if 'intraday_ret' in ind:
+        result['intraday_ret'] = ind['intraday_ret'][idx] if not np.isnan(ind['intraday_ret'][idx]) else 0.0
+    if 'skewness_20' in ind:
+        result['skewness_20'] = ind['skewness_20'][idx] if not np.isnan(ind['skewness_20'][idx]) else 0.0
+    if 'kurtosis_20' in ind:
+        result['kurtosis_20'] = ind['kurtosis_20'][idx] if not np.isnan(ind['kurtosis_20'][idx]) else 0.0
+    if 'max_ret_20' in ind:
+        result['max_ret_20'] = ind['max_ret_20'][idx] if not np.isnan(ind['max_ret_20'][idx]) else 0.0
+    if 'tail_risk' in ind:
+        result['tail_risk'] = ind['tail_risk'][idx] if not np.isnan(ind['tail_risk'][idx]) else 0.0
+    if 'price_volume_corr_20' in ind:
+        result['price_volume_corr_20'] = ind['price_volume_corr_20'][idx] if not np.isnan(ind['price_volume_corr_20'][idx]) else 0.0
+    if 'volatility_skew' in ind:
+        result['volatility_skew'] = ind['volatility_skew'][idx] if not np.isnan(ind['volatility_skew'][idx]) else 0.0
+    if 'gap_ratio' in ind:
+        result['gap_ratio'] = ind['gap_ratio'][idx] if not np.isnan(ind['gap_ratio'][idx]) else 0.0
 
     return result

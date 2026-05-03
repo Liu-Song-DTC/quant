@@ -4,8 +4,10 @@ trade/portfolio_state.json:
 {
   "cash": 45000.0,
   "positions": {
-    "600519": {"shares": 100, "cost_price": 1680.0},
-    "000858": {"shares": 200, "cost_price": 165.0}
+    "603628": {"shares": 5400, "cost_price": 12.4},
+    "601899": {"shares": 1200, "cost_price": 33.3}
+    "600021": {"shares": 1700, "cost_price": 16.863}
+    "300442": {"shares": 200, "cost_price": 89.146}
   }
 }
 

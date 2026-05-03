@@ -215,8 +215,7 @@ class PortfolioConstructor:
             if factor_value is None or (isinstance(factor_value, float) and np.isnan(factor_value)):
                 continue
 
-            # 价格约束：100股整手下，100*price必须接近理想单只仓位
-            # 否则该股在bt_execution中因floor(raw)=0而无法买入，成为死权重
+            # 价格约束：100股整手下，100*price必须不超过理想仓位
             # 允许2倍理想仓位（100股整手会导致超配，但至少能买入）
             price = prices.get(code, 0)
             ideal_per_stock = total_equity / n_positions
@@ -376,7 +375,12 @@ class PortfolioConstructor:
 
         desired_value = {}
         for c, w in zip(selected, weights):
-            desired_value[c['code']] = w * total_equity
+            val = w * total_equity
+            # 确保至少1手（100股），避免整手取整后变为0
+            min_lot = c['price'] * 100
+            if val < min_lot:
+                val = min_lot
+            desired_value[c['code']] = val
 
         # 记录选股结果
         self.last_selection = [

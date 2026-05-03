@@ -45,15 +45,15 @@ class SignalRunner:
         from core.fundamental import FundamentalData
 
         # 加载基本面数据
-        stock_codes = [n for n in self.stock_data_dict if n != "sh000001"]
-        fundamental_data = None
+        self._stock_codes = [n for n in self.stock_data_dict if n != "sh000001"]
+        self._fundamental_data = None
         if self.fund_data_dir and os.path.exists(self.fund_data_dir):
-            fundamental_data = FundamentalData(self.fund_data_dir + "/", stock_codes=stock_codes)
+            self._fundamental_data = FundamentalData(self.fund_data_dir + "/", stock_codes=self._stock_codes)
 
         # 初始化策略（max_position由PortfolioConstructor自动计算）
         self.strategy = Strategy(
             init_cash=self.config.get('backtest.cash', 100000),
-            fundamental_data=fundamental_data,
+            fundamental_data=self._fundamental_data,
         )
 
         # 恢复持久化的 EMA 平滑状态
@@ -62,6 +62,11 @@ class SignalRunner:
             if peak_equity > 0:
                 self.strategy.portfolio.peak_equity = peak_equity
 
+    def set_sentiment_multipliers(self, multipliers: dict):
+        """注入行业情绪乘数到组合构建器"""
+        if hasattr(self.strategy, 'portfolio') and multipliers:
+            self.strategy.portfolio.set_sentiment_multipliers(multipliers)
+
         # 生成市场状态
         if "sh000001" in self.stock_data_dict:
             self.strategy.generate_market_regime(self.stock_data_dict["sh000001"])
@@ -69,10 +74,10 @@ class SignalRunner:
             print(f"市场状态已生成，共 {len(self.strategy.index_data)} 条记录")
 
         # 准备动态因子数据
-        self._setup_dynamic_factors(stock_codes, fundamental_data)
+        self._setup_dynamic_factors(self._stock_codes, self._fundamental_data)
 
         # 生成信号
-        self._generate_all_signals(stock_codes)
+        self._generate_all_signals(self._stock_codes)
 
     def _load_data(self):
         """加载股票数据"""

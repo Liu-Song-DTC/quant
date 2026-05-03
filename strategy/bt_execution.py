@@ -458,22 +458,7 @@ if __name__ == "__main__":
     if sentiment_enabled and SENTIMENT_AVAILABLE:
         print("[Sentiment] 初始化情绪分析模块...")
         try:
-            sentiment_orch = SentimentOrchestrator(config)
-            # 回测模式：检查是否有预计算的rolling_sentiment.csv
-            sentiment_csv = sentiment_orch.store._csv_path
-            if sentiment_csv.exists():
-                print(f"[Sentiment] 使用已缓存的情绪数据: {sentiment_csv}")
-            else:
-                print("[Sentiment] 无缓存情绪数据，回测中将跳过情绪调整")
-                # 如果raw/目录有数据，运行回测模式生成
-                raw_files = list(sentiment_orch.collector.raw_dir.glob("*.json"))
-                if raw_files:
-                    from datetime import date
-                    print(f"[Sentiment] 回测模式: 分析 {len(raw_files)} 天新闻数据...")
-                    sentiment_orch.run_backtest(
-                        start=date(2010, 1, 1),
-                        end=date(2030, 12, 31),
-                    )
+            sentiment_orch = SentimentOrchestrator(config, backtest_mode=True)
         except Exception as e:
             print(f"[Sentiment] 初始化异常 (将跳过情绪调整): {e}")
             sentiment_orch = None

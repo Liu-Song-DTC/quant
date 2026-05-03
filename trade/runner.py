@@ -37,6 +37,21 @@ def _get_universe(manager) -> list:
     return symbols
 
 
+def _last_recommendation_empty(cfg) -> bool:
+    """检查上次建议是否为空（无买入且无卖出）"""
+    rec_file = cfg.rec_file
+    if not rec_file.exists():
+        return True  # 从未运行过，视为空
+    try:
+        with open(rec_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        buys = data.get("buys", [])
+        sells = data.get("sells", [])
+        return len(buys) == 0 and len(sells) == 0
+    except (json.JSONDecodeError, IOError):
+        return True
+
+
 def _get_latest_prices(bt_data_dir: str, codes: list = None) -> dict:
     """轻量获取最新价格，不加载策略引擎"""
     prices = {}
@@ -69,27 +84,32 @@ def run_daily(skip_update: bool = False, force: bool = False):
     ps = PortfolioState.load(str(cfg.state_file))
 
     if not rebal['is_rebalance_day'] and not force:
-        # 非调仓日: 轻量止损检查
-        prices = _get_latest_prices(str(cfg.bt_data_dir), list(ps.positions.keys()))
-        if not prices:
-            print("\n今日非调仓日，无需生成建议")
-            print("如需强制运行: python main.py run --force")
-            return
-
-        triggered = ps.check_stop_loss(prices)
-        if triggered:
-            print(f"\n⚠ 止损警告: {len(triggered)} 只股票触及止损线")
-            for t in triggered:
-                print(f"  {t['code']}: 成本¥{t['cost_price']:.2f} → ¥{t['current_price']:.2f} ({t['pnl_pct']:.1%})")
-            if cfg.notification_enabled and cfg.notification_sckey:
-                from .notifier import Notifier
-                lines = ["**⚠ 止损警告**", ""]
-                for t in triggered:
-                    lines.append(f"- {t['code']}: 成本¥{t['cost_price']:.2f} → ¥{t['current_price']:.2f} ({t['pnl_pct']:.1%})")
-                Notifier(cfg.notification_sckey).send("⚠ 止损警告", "\n".join(lines))
+        # 非调仓日: 检查上次建议是否为空（整手取整导致0股等）
+        last_empty = _last_recommendation_empty(cfg)
+        if last_empty:
+            print("\n上次建议为空（买入/卖出均为0），自动重新生成...")
         else:
-            print("\n今日非调仓日，持仓正常，无需操作")
-        return
+            # 轻量止损检查
+            prices = _get_latest_prices(str(cfg.bt_data_dir), list(ps.positions.keys()))
+            if not prices:
+                print("\n今日非调仓日，无需生成建议")
+                print("如需强制运行: python main.py run --force")
+                return
+
+            triggered = ps.check_stop_loss(prices)
+            if triggered:
+                print(f"\n⚠ 止损警告: {len(triggered)} 只股票触及止损线")
+                for t in triggered:
+                    print(f"  {t['code']}: 成本¥{t['cost_price']:.2f} → ¥{t['current_price']:.2f} ({t['pnl_pct']:.1%})")
+                if cfg.notification_enabled and cfg.notification_sckey:
+                    from .notifier import Notifier
+                    lines = ["**⚠ 止损警告**", ""]
+                    for t in triggered:
+                        lines.append(f"- {t['code']}: 成本¥{t['cost_price']:.2f} → ¥{t['current_price']:.2f} ({t['pnl_pct']:.1%})")
+                    Notifier(cfg.notification_sckey).send("⚠ 止损警告", "\n".join(lines))
+            else:
+                print("\n今日非调仓日，持仓正常，无需操作")
+            return
 
     # Step 1: 数据更新
     if not skip_update:
@@ -115,6 +135,38 @@ def run_daily(skip_update: bool = False, force: bool = False):
     else:
         print("跳过数据更新 (--skip-update)")
 
+    # Step 1b: 行业情绪分析（在数据更新之后，信号生成之前）
+    sentiment_multipliers = {}
+    if not skip_update and cfg.industry_sentiment_enabled:
+        print("\n" + "=" * 50)
+        print("Step 1b: LLM 行业情绪分析")
+        print("=" * 50)
+        try:
+            _add_path("strategy")
+            from sentiment.orchestrator import SentimentOrchestrator
+            from core.config_loader import load_config
+
+            config = load_config()
+            orchestrator = SentimentOrchestrator(config)
+            scores = orchestrator.run_daily(notify=cfg.notification_enabled)
+
+            if scores:
+                sentiment_multipliers = orchestrator.get_sentiment_weights()
+                print(f"情绪乘数已计算: {len(sentiment_multipliers)} 个行业")
+
+            # 发送微信情绪摘要
+            if scores and cfg.notification_enabled and cfg.notification_sckey:
+                from .notifier import Notifier
+                Notifier(cfg.notification_sckey).send_industry_sentiment(
+                    today.strftime("%Y-%m-%d"), scores
+                )
+        except ImportError as e:
+            print(f"情绪分析模块导入失败 (非关键): {e}")
+        except Exception as e:
+            print(f"情绪分析失败 (非关键): {e}")
+            import traceback
+            traceback.print_exc()
+
     # Step 2: 信号 + 建议
     print("\n" + "=" * 50)
     print("Step 2: 生成交易建议")
@@ -137,6 +189,10 @@ def run_daily(skip_update: bool = False, force: bool = False):
     # Step 2b: 生成信号 (max_position由PortfolioConstructor自动计算)
     internal = ps.load_internal()
     runner.prepare(exposure=internal["exposure"], peak_equity=internal["peak_equity"])
+
+    # 注入行业情绪乘数
+    if sentiment_multipliers:
+        runner.set_sentiment_multipliers(sentiment_multipliers)
 
     result = runner.run(
         current_positions=ps.get_current_positions(prices),

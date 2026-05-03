@@ -80,6 +80,7 @@ def _compute_date_chunk(args):
     min_ic_1f = config.get('min_ic_1f', 0.05)  # 1因子最低IC门槛
     use_static_candidates = config.get('use_static_candidates', True)
     industry_factor_config_static = config.get('industry_factor_config', {})
+    extra_candidate_factors = config.get('extra_candidate_factors', [])
 
     result = {}
 
@@ -117,13 +118,15 @@ def _compute_date_chunk(args):
             if len(ind_df) < min_train_samples:
                 continue
 
-            # 当use_static_candidates时，只搜索静态因子候选池
+            # 当use_static_candidates时，只搜索静态因子候选池 + extra_candidate_factors
             # 避免全28因子搜索导致的多重测试过拟合
             if use_static_candidates and industry in industry_factor_config_static:
                 static_cfg = industry_factor_config_static[industry]
                 candidate_factors = set()
                 for key in ['factors', 'bull_factors', 'bear_factors']:
                     candidate_factors.update(static_cfg.get(key, []))
+                # 合并额外候选因子（Alpha因子等）
+                candidate_factors.update(extra_candidate_factors)
                 search_factors = [fn for fn in factor_names if fn in candidate_factors]
             else:
                 search_factors = factor_names
@@ -406,6 +409,7 @@ class DynamicFactorSelector:
             'use_static_candidates': self.use_static_candidates,
             'industry_factor_config': load_config().get('industry_factors', {}),
             'reweight_blend': self.reweight_blend,
+            'extra_candidate_factors': load_config().get('dynamic_factor', {}).get('extra_candidate_factors', []),
         }
 
         # 每个worker处理一个chunk
@@ -1009,21 +1013,22 @@ class SignalEngine:
     def _calculate_default_factor(self, ind: dict, idx: int, regime: int, industry_category: str) -> tuple:
         """计算默认因子组合
 
-        使用稳定的基本面+动量因子组合，值域标准化到[-1, 1]左右
+        使用动量+低波动核心，叠加尾部风险和质量因子
         """
-        # 获取原始指标
+        # 核心因子
         vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
-        mom_10 = self._safe_get(ind, 'mom_10', idx, 0)
         mom_20 = self._safe_get(ind, 'mom_20', idx, 0)
 
-        # 动量×低波动因子（最稳定的技术面因子）
-        # 使用 np.tanh 压缩替代 clip，保留相对大小信息
-        # np.tanh(x) 将任意值平滑压缩到 (-1, 1)，比 clip 更好地保留极端值信息
-        mom_lowvol = mom_20 * (1 - vol_10 * 10)  # 低波动加成
-        mom_lowvol = np.tanh(mom_lowvol / 0.5) * 0.5  # 平滑压缩到 [-0.5, 0.5]
+        # 动量×低波动因子
+        mom_lowvol = mom_20 * (1 - vol_10 * 10)
+        mom_lowvol = np.tanh(mom_lowvol / 0.5) * 0.5
 
-        # 组合因子值
-        factor_value = mom_lowvol
+        # Alpha增强：尾部风险（低尾部风险=正信号）
+        tail_risk = self._safe_get(ind, 'tail_risk', idx, 0)
+        skewness = self._safe_get(ind, 'skewness_20', idx, 0)
+
+        # 等权组合：核心动量60% + 尾部风险20% + 偏度20%
+        factor_value = mom_lowvol * 0.6 + tail_risk * 0.2 + skewness * 0.2
 
         # 不做熊市折扣：组合层用截面rank_pct排序，均匀缩放不改变排名
 

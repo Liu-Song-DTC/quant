@@ -5,6 +5,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import List, Dict, Optional
 
+import akshare_proxy_patch  # noqa: F401 - 代理补丁，必须在 akshare 之前导入
+
 
 class NewsCollector:
     """获取并整理每日金融新闻，供 LLM 分析"""

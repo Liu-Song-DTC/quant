@@ -1,7 +1,7 @@
-factor_mode: reweight
+factor_mode: both
 dynamic_factor:
   train_window_days: 360
-  forward_period: 20
+  forward_period: 10
   top_n_factors: 3
   min_train_samples: 80
   min_ic_dates: 20
@@ -11,6 +11,18 @@ dynamic_factor:
   min_ic_1f: 0.03
   use_static_candidates: true
   reweight_blend: 0.5
+  extra_candidate_factors:
+  - skewness_20
+  - kurtosis_20
+  - max_ret_20
+  - tail_risk
+  - volatility_skew
+  - overnight_ret
+  - intraday_ret
+  - gap_ratio
+  - price_volume_corr_20
+  - illiq_20
+  - turnover_stability
 backtest_factors:
 - trend_mom_v41
 - trend_mom_v24
@@ -57,7 +69,7 @@ backtest_factors:
 - turnover_shrink
 industry_factor_config:
   lookback_days: 120
-  forward_period: 20
+  forward_period: 10
 industry_factors:
   半导体/光伏:
     factors:
@@ -107,7 +119,30 @@ industry_factors:
     - 0.4857
     bear_ic: 0.107
     bear_combined_ic: 0.1098
-  消费/传媒/农业/环保/医药:
+  人工智能/算力:
+    factors:
+    - fund_score
+    - tech_fund_combo
+    weights:
+    - 0.5
+    - 0.5
+    ic: 0.05
+    combined_ic: 0.07
+    bull_factors:
+    - volatility
+    - fund_score
+    bull_weights:
+    - 0.5
+    - 0.5
+    bull_ic: 0.05
+    bull_combined_ic: 0.07
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.07
+    bear_combined_ic: 0.07
+  消费:
     factors:
     - fund_score
     - tech_fund_combo
@@ -132,6 +167,121 @@ industry_factors:
     - 1.0
     bear_ic: 0.0721
     bear_combined_ic: 0.0721
+  医药:
+    factors:
+    - fund_score
+    - fund_roe
+    - fund_profit_growth
+    weights:
+    - 0.4
+    - 0.3
+    - 0.3
+    ic: 0.05
+    combined_ic: 0.07
+    bull_factors:
+    - fund_revenue_growth
+    - fund_score
+    bull_weights:
+    - 0.5
+    - 0.5
+    bull_ic: 0.04
+    bull_combined_ic: 0.06
+    bear_factors:
+    - trend_lowvol
+    bear_weights:
+    - 1.0
+    bear_ic: 0.05
+    bear_combined_ic: 0.05
+  传媒:
+    factors:
+    - fund_score
+    - trend_lowvol
+    weights:
+    - 0.5
+    - 0.5
+    ic: 0.05
+    combined_ic: 0.07
+    bull_factors:
+    - volatility
+    - fund_score
+    bull_weights:
+    - 0.5
+    - 0.5
+    bull_ic: 0.05
+    bull_combined_ic: 0.07
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.06
+    bear_combined_ic: 0.06
+  农业:
+    factors:
+    - fund_profit_growth
+    - fund_roe
+    weights:
+    - 0.5
+    - 0.5
+    ic: 0.05
+    combined_ic: 0.07
+    bull_factors:
+    - fund_score
+    - volatility
+    bull_weights:
+    - 0.5
+    - 0.5
+    bull_ic: 0.04
+    bull_combined_ic: 0.06
+    bear_factors:
+    - bb_width_20
+    bear_weights:
+    - 1.0
+    bear_ic: 0.05
+    bear_combined_ic: 0.05
+  环保/公用:
+    factors:
+    - fund_score
+    - trend_lowvol
+    weights:
+    - 0.5
+    - 0.5
+    ic: 0.05
+    combined_ic: 0.07
+    bull_factors:
+    - fund_revenue_growth
+    bull_weights:
+    - 1.0
+    bull_ic: 0.04
+    bull_combined_ic: 0.04
+    bear_factors:
+    - trend_lowvol
+    bear_weights:
+    - 1.0
+    bear_ic: 0.06
+    bear_combined_ic: 0.06
+  建材:
+    factors:
+    - fund_profit_growth
+    - fund_roe
+    weights:
+    - 0.5
+    - 0.5
+    ic: 0.05
+    combined_ic: 0.07
+    bull_factors:
+    - volatility
+    - fund_profit_growth
+    bull_weights:
+    - 0.5
+    - 0.5
+    bull_ic: 0.05
+    bull_combined_ic: 0.07
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.06
+    bear_combined_ic: 0.06
   通信/计算机:
     factors:
     - fund_score
@@ -159,7 +309,7 @@ industry_factors:
     - 0.4997
     bear_ic: 0.1107
     bear_combined_ic: 0.1111
-  有色/钢铁/煤炭/建材:
+  有色/钢铁/煤炭:
     factors:
     - fund_profit_growth
     weights:
@@ -448,13 +598,13 @@ signal:
 regime_multiplier:
   bull: 1.0
   neutral: 0.9
-  bear: 0.25
+  bear: 0.40
 portfolio:
   target_volatility: 0.25
   entry_speed: 1.0
   exit_speed: 1.0
-  position_stop_loss: 0.30
-  portfolio_stop_loss: 0.25
+  position_stop_loss: 0.18
+  portfolio_stop_loss: 0.15
   max_single_weight: 0.30
   fv_exposure_params:
     fv_low: -0.01
@@ -464,22 +614,22 @@ portfolio:
   turnover_bonus: 0.05
 portfolio_stop_loss:
   enabled: true
-  emergency_exposure: 0.6
+  emergency_exposure: 0.35
 volatility_control:
   enabled: true
   lookback_period: 20
 # === 因子中性化 ===
 factor_neutralization:
-  enabled: false
+  enabled: true
   neutralize_industry: true
   neutralize_market_cap: true
   min_samples_per_industry: 3
 # === 增强止损 ===
 enhanced_stop_loss:
-  time_stop_days: 250
-  time_stop_min_return: -0.10
-  trailing_stop_pct: 0.35
-  trailing_stop_enabled: false
+  time_stop_days: 30
+  time_stop_min_return: -0.08
+  trailing_stop_pct: 0.20
+  trailing_stop_enabled: true
   volatility_adaptive_mult: 1.5
 # === 风险平价 ===
 risk_parity:
@@ -490,4 +640,4 @@ backtest:
   cash: 100000.0
   commission: 0.0015
   slippage: 0.0015
-  rebalance_days: 20
+  rebalance_days: 10

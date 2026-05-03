@@ -96,3 +96,50 @@ class Notifier:
             lines.append(f"⚠️ **资金不足，请调整买入**")
 
         return self.send("【交易提醒】需调仓", "\n".join(lines))
+
+    def send_industry_sentiment(self, date_str: str, scores: dict) -> bool:
+        """发送每日行业情绪摘要到微信（显示全部行业）
+
+        Args:
+            date_str: YYYY-MM-DD 格式的日期
+            scores: {industry: sentiment_score}，score 在 [-1.0, 1.0]
+        """
+        if not scores:
+            return False
+
+        sorted_inds = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        positive = [(i, s) for i, s in sorted_inds if s > 0.1]
+        neutral = [(i, s) for i, s in sorted_inds if -0.1 <= s <= 0.1]
+        negative = [(i, s) for i, s in sorted_inds if s < -0.1]
+
+        lines = [
+            f"## 每日行业情绪 {date_str}",
+            f"覆盖 {len(scores)} 个行业",
+            f"",
+        ]
+
+        if positive:
+            lines.append(f"🟢 看多 ({len(positive)})")
+            for ind, score in positive:
+                bar = "█" * min(10, max(1, int(score * 10))) + "░" * max(0, 10 - max(1, int(score * 10)))
+                lines.append(f"- **{ind}** `{score:+.2f}` {bar}")
+
+        if neutral:
+            lines.append(f"")
+            lines.append(f"⚪ 中性 ({len(neutral)})")
+            for ind, score in neutral:
+                lines.append(f"- **{ind}** `{score:+.2f}`")
+
+        if negative:
+            lines.append(f"")
+            lines.append(f"🔴 看空 ({len(negative)})")
+            for ind, score in negative:
+                abs_score = abs(score)
+                bar = "█" * min(10, max(1, int(abs_score * 10))) + "░" * max(0, 10 - max(1, int(abs_score * 10)))
+                lines.append(f"- **{ind}** `{score:+.2f}` {bar}")
+
+        lines.append("")
+        lines.append("---")
+        lines.append("来源: LLM(DeepSeek) 新闻情绪分析")
+
+        return self.send("每日行业情绪", "\n".join(lines))

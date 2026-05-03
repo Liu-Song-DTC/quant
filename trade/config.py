@@ -140,3 +140,16 @@ class TradeConfig:
     @property
     def proxy_retry(self) -> int:
         return self._cfg.get("proxy", {}).get("retry", 30)
+
+    @property
+    def industry_sentiment_enabled(self) -> bool:
+        """检查情绪分析是否启用（通过 factor_config.yaml）"""
+        try:
+            cfg_path = ROOT / "strategy" / "config" / "factor_config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                return cfg.get("industry_sentiment", {}).get("enabled", False)
+        except Exception:
+            pass
+        return False

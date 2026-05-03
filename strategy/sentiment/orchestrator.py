@@ -14,14 +14,21 @@ ROOT = Path(__file__).parent.parent.parent.resolve()
 
 
 class SentimentOrchestrator:
-    """行业情绪分析的顶层编排器"""
+    """行业情绪分析的顶层编排器
 
-    def __init__(self, config):
+    支持两种模式：
+    - 实盘模式: 采集新闻 + LLM分析 + 存储
+    - 回测模式: 从预计算的CSV加载历史情绪数据
+    """
+
+    def __init__(self, config, backtest_mode: bool = False):
         """
         Args:
             config: ConfigLoader 实例或 dict
+            backtest_mode: True=仅从CSV读取，无需API密钥
         """
         self._cfg = config
+        self._backtest_mode = backtest_mode
 
         data_dir = self._get_config("industry_sentiment.data_dir", "data/sentiment_data")
         if not Path(data_dir).is_absolute():
@@ -31,9 +38,11 @@ class SentimentOrchestrator:
         if not api_key:
             api_key = os.environ.get("DEEPSEEK_API_KEY", os.environ.get("ANTHROPIC_AUTH_TOKEN", ""))
 
-        self.collector = NewsCollector(data_dir=data_dir)
-        self.analyzer = IndustrySentimentAnalyzer(api_key=api_key)
+        self.collector = None if backtest_mode else NewsCollector(data_dir=data_dir)
         self.store = SentimentStore(data_dir=data_dir)
+
+        # 回测模式：analyzer 仅用于权重计算（纯函数，无需API）
+        self.analyzer = IndustrySentimentAnalyzer(api_key=api_key if not backtest_mode else "backtest-mode")
 
         self.max_news_batch = int(self._get_config("industry_sentiment.max_news_batch", 50))
         self.notify_enabled = self._get_config("industry_sentiment.notify_on_completion", True)
@@ -43,6 +52,20 @@ class SentimentOrchestrator:
         self.min_multiplier = float(wi.get("min_multiplier", 0.80))
         self.smoothing_days = int(wi.get("smoothing_days", 3))
         self.regime_adjustment = wi.get("regime_adjustment", True)
+
+        # 回测模式：加载预计算的情绪数据
+        if backtest_mode:
+            precomputed = self._get_config("industry_sentiment.backtest.precomputed_file", "")
+            if not precomputed:
+                precomputed = str(ROOT / "data" / "sentiment_data" / "processed" / "rolling_sentiment.csv")
+            if Path(precomputed).exists() and precomputed != str(self.store._csv_path):
+                import shutil
+                import pandas as pd
+                df = pd.read_csv(precomputed)
+                df.to_csv(self.store._csv_path, index=False)
+                print(f"[Sentiment] 回测模式：已加载预计算情绪数据 {precomputed} ({len(df)} 条)")
+            elif self.store._csv_path.exists():
+                print(f"[Sentiment] 回测模式：使用已有情绪数据 {self.store._csv_path}")
 
     def _get_config(self, key: str, default=None):
         """从配置中获取值，兼容 ConfigLoader 和 dict"""

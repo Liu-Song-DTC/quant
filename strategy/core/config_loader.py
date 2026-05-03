@@ -58,8 +58,13 @@ class ConfigLoader:
             'max_single_weight': self.get('portfolio.max_single_weight', 0.15),
             'enable_industry_weighting': self.get('portfolio.enable_industry_weighting', True),
             'volatility_control_enabled': self.get('volatility_control.enabled', False),
+            'volatility_control_lookback': self.get('volatility_control.lookback_period', 20),
             'portfolio_stop_loss_enabled': self.get('portfolio_stop_loss.enabled', False),
             'emergency_exposure': self.get('portfolio_stop_loss.emergency_exposure', 0.50),
+            'fv_exposure_params': self.get('portfolio.fv_exposure_params', {
+                'fv_low': -0.03, 'fv_high': 0.05, 'exposure_min': 0.3, 'exposure_max': 1.0,
+            }),
+            'turnover_bonus': self.get('portfolio.turnover_bonus', 0.02),
         }
 
     def get_industry_factor_config(self) -> Dict[str, Any]:

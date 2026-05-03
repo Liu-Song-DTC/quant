@@ -48,7 +48,8 @@ class SentimentStore:
 
         df = pd.DataFrame(rows)
         if self._csv_path.exists():
-            existing = pd.read_csv(self._csv_path, parse_dates=["date"])
+            existing = pd.read_csv(self._csv_path)
+            existing["date"] = pd.to_datetime(existing["date"], format="mixed")
             # 移除同日同行业旧数据
             existing = existing[~(
                 (existing["date"].dt.date == target_date) &
@@ -66,7 +67,8 @@ class SentimentStore:
         """加载某一天的情绪分数"""
         if not self._csv_path.exists():
             return {}
-        df = pd.read_csv(self._csv_path, parse_dates=["date"])
+        df = pd.read_csv(self._csv_path)
+        df["date"] = pd.to_datetime(df["date"], format="mixed")
         day_data = df[df["date"].dt.date == target_date]
         if day_data.empty:
             return {}
@@ -77,7 +79,8 @@ class SentimentStore:
         if not self._csv_path.exists():
             return pd.DataFrame()
 
-        df = pd.read_csv(self._csv_path, parse_dates=["date"])
+        df = pd.read_csv(self._csv_path)
+        df["date"] = pd.to_datetime(df["date"], format="mixed")
         mask = (df["date"].dt.date >= start) & (df["date"].dt.date <= end)
         df = df[mask]
 
@@ -97,9 +100,10 @@ class SentimentStore:
         if not self._csv_path.exists():
             return {}
 
-        df = pd.read_csv(self._csv_path, parse_dates=["date"])
+        df = pd.read_csv(self._csv_path)
         if df.empty:
             return {}
+        df["date"] = pd.to_datetime(df["date"], format="mixed")
 
         latest_date = df["date"].max().date()
         start_date = latest_date - timedelta(days=n_days)

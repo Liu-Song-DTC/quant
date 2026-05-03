@@ -229,4 +229,25 @@ def prepare_factor_data(stock_data: dict, fd,
         ]
         print(f"因子数据: {original_len} 条 -> {len(factor_data)} 条 (过滤极端值 {original_len - len(factor_data)} 条)")
 
+    # 因子中性化（行业+市值剥离）
+    neu_config = config_loader.get('factor_neutralization', {})
+    if neu_config.get('enabled', False) and len(factor_data) > 0:
+        from .factor_neutralizer import neutralize_factor_df
+        factor_cols = [c for c in factor_data.columns
+                       if c not in ('code', 'date', 'future_ret', 'industry')]
+        print(f"因子中性化: {len(factor_cols)} 个因子列, "
+              f"行业={'✓' if neu_config.get('neutralize_industry') else '✗'}, "
+              f"市值={'✓' if neu_config.get('neutralize_market_cap') else '✗'}")
+        factor_data = neutralize_factor_df(
+            factor_data, factor_cols, industry_col='industry',
+            market_cap_col=None, date_col='date',
+        )
+        # 用中性化后的列替换原始列
+        for fc in factor_cols:
+            neu_col = f'{fc}_neu'
+            if neu_col in factor_data.columns:
+                factor_data[fc] = factor_data[neu_col]
+        factor_data.drop(columns=[c for c in factor_data.columns if c.endswith('_neu')],
+                        inplace=True)
+
     return factor_data, industry_codes, all_dates
