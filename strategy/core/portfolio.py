@@ -263,10 +263,15 @@ class PortfolioConstructor:
             trend_adj = 0.8 + 0.2 * (1.0 + trend_score)  # [-1, 0] → [0.8, 1.0]
 
         target_exposure = fv_exposure * mom_adj * trend_adj
-        # 熊市几乎空仓，牛市满仓，震荡市高仓位
+        # 渐进式熊市乘数：根据回撤深度分档，而非熊市/中性/牛市一刀切
+        # 解决熊市一刀切 0.15-0.30 在 V 型反弹中滞后的问题
         if bear_risk:
-            floor = 0.15
-            ceiling = 0.3
+            if drawdown > 0.20:          # 深熊：回撤>20%
+                floor, ceiling = 0.25, 0.40
+            elif drawdown > 0.10:        # 浅熊：回撤10-20%
+                floor, ceiling = 0.45, 0.65
+            else:                         # 风险预警但未深跌
+                floor, ceiling = 0.55, 0.75
         elif market_regime == 1:  # bull
             floor = 0.8
             ceiling = 1.0
@@ -299,13 +304,17 @@ class PortfolioConstructor:
         # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）
         self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure
 
-        # === 选股: 高rank阈值 → top N → 行业均衡 ===
-        # 提高门槛只选最强信号，集中持仓
-        qualified = [c for c in candidates if c['rank_pct'] > 0.55]
-        if not qualified:
-            qualified = [c for c in candidates if c['rank_pct'] > 0.35]
-        if not qualified:
-            qualified = [c for c in candidates if c['rank_pct'] > 0.2]
+        # === 选股: 固定门槛 → top N → 行业均衡 ===
+        # 取消三层 fallback，弱信号时期宁愿少选股也不填弱仓
+        # 熊市自动降低 rank 门槛以释放更多候选，牛市保持高门槛
+        if bear_risk or market_regime == -1:
+            min_rank = 0.40  # 熊市放宽：更多候选可供选择
+        elif market_regime == 1:
+            min_rank = 0.55  # 牛市收紧：只选最强
+        else:
+            min_rank = 0.50  # 中性
+
+        qualified = [c for c in candidates if c['rank_pct'] > min_rank]
 
         # 换手控制：现有持仓给予换手惩罚加分，需超过交易成本才能被替换
         current_codes = set(current_positions.keys())

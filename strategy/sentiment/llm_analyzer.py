@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Optional
 
+import pandas as pd
 import requests
 
 # 确保 industry_mapping 可以被导入
@@ -237,6 +238,62 @@ class IndustrySentimentAnalyzer:
                     multiplier = 1.0 + (multiplier - 1.0) * 0.5
                 elif market_regime == 1:  # 牛市：放大正面情绪
                     multiplier = 1.0 + (multiplier - 1.0) * 1.2
+
+            multiplier = max(min_multiplier, min(max_multiplier, multiplier))
+            multipliers[industry] = multiplier
+
+        return multipliers
+
+    def get_sentiment_weights_v2(
+        self,
+        latest_scores: Dict[str, float],
+        sentiment_history: Optional[pd.DataFrame] = None,
+        market_regime: int = 0,
+        max_multiplier: float = 1.15,
+        min_multiplier: float = 0.70,
+        halflife: int = 5,
+        negativity_bias: float = 1.5,
+    ) -> Dict[str, float]:
+        """情绪权重 v2：EMA 平滑 + 不对称乘数
+
+        改进：
+        1. EMA 替代 SMA：对近期情绪更高权重，旧情绪自然衰减
+        2. 正/负面不对称：负面情绪惩罚更重（negativity_bias 控制幅度）
+        3. 熊市负面情绪加倍：熊市中负面情绪乘数放大
+
+        Args:
+            latest_scores: 当日情绪分数 {industry: score}
+            sentiment_history: 历史情绪 DataFrame（行=日期，列=行业）
+            market_regime: 1=bull, 0=neutral, -1=bear
+            halflife: EMA 半衰期（天）
+            negativity_bias: 负面情绪放大倍数
+        """
+        multipliers = {}
+        for industry in get_all_categories():
+            raw_score = latest_scores.get(industry, 0.0)
+
+            # EMA 平滑：从历史序列计算
+            if sentiment_history is not None and industry in sentiment_history.columns:
+                hist = sentiment_history[industry].dropna()
+                if len(hist) > 0:
+                    smoothed = float(hist.ewm(halflife=halflife).mean().iloc[-1])
+                    score = 0.7 * smoothed + 0.3 * raw_score
+                else:
+                    score = raw_score
+            else:
+                score = raw_score
+
+            # 不对称乘数映射
+            if score > 0:
+                # 正面情绪：[1.0, max_multiplier]，影响较小
+                multiplier = 1.0 + score * (max_multiplier - 1.0)
+            else:
+                # 负面情绪：[min_multiplier, 1.0]，影响更大（negativity_bias）
+                multiplier = 1.0 + score * (1.0 - min_multiplier) * negativity_bias
+
+            # 熊市中负面情绪加倍影响
+            if market_regime == -1 and score < 0:
+                multiplier = 1.0 + (multiplier - 1.0) * 1.5
 
             multiplier = max(min_multiplier, min(max_multiplier, multiplier))
             multipliers[industry] = multiplier

@@ -26,6 +26,33 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+# 因子家族分类（用于分散化约束，避免单一因子家族集体霸榜）
+FACTOR_FAMILIES = {
+    'momentum':  ['mom_10', 'mom_20', 'mom_diff_5_20', 'mom_diff_10_20',
+                  'momentum_reversal', 'momentum_acceleration', 'max_ret_20',
+                  'ret_vol_ratio_10', 'ret_vol_ratio_20'],
+    'lowvol':    ['volatility', 'volatility_5', 'volatility_10', 'volatility_20',
+                  'trend_lowvol', 'bb_width_20', 'atr_ratio_20', 'vol_confirm',
+                  'low_downside'],
+    'value':     ['fund_score', 'fund_roe', 'fund_profit_growth', 'fund_eps',
+                  'fund_cf_to_profit', 'fund_gross_margin', 'fund_debt_ratio',
+                  'fund_pg_improve', 'fund_rg_improve', 'inv_turnover'],
+    'quality':   ['fund_revenue_growth', 'tech_fund_combo', 'turnover_stability',
+                  'rsi_vol_combo', 'bb_rsi_combo', 'turnover_shrink'],
+    'alpha':     ['skewness_20', 'kurtosis_20', 'tail_risk', 'volatility_skew',
+                  'overnight_ret', 'intraday_ret', 'gap_ratio',
+                  'price_volume_corr_20', 'illiq_20'],
+}
+
+
+def _get_factor_family(factor_name: str) -> str:
+    """返回因子所属家族，未分类的返回 'other'"""
+    for fam, members in FACTOR_FAMILIES.items():
+        if factor_name in members:
+            return fam
+    return 'other'
+
+
 # 行业因子配置（从YAML加载）
 def _load_industry_factors():
     """加载行业因子配置"""
@@ -77,6 +104,7 @@ def _compute_date_chunk(args):
     ic_decay_factor = config.get('ic_decay_factor', 1.0)  # 1.0=不衰减
     # === 阶段1优化参数 ===
     min_factor_count = config.get('min_factor_count', 2)  # 最少因子数量
+    min_factor_families = config.get('min_factor_families', 2)  # 最少因子家族数
     min_ic_1f = config.get('min_ic_1f', 0.05)  # 1因子最低IC门槛
     use_static_candidates = config.get('use_static_candidates', True)
     industry_factor_config_static = config.get('industry_factor_config', {})
@@ -212,7 +240,27 @@ def _compute_date_chunk(args):
                 # 按质量排序，取所有通过阈值的因子（动态N）
                 factor_metrics.sort(key=lambda x: x['combined_ir'], reverse=True)
                 # 最多取top_n，但如果有超过top_n个因子通过质量阈值，也只取top_n
-                top_factors = factor_metrics[:top_n]
+                # 加入因子家族分散化约束：至少来自 min_families 个不同家族
+                min_families = config.get('min_factor_families', 2)
+                diversified = []
+                used_families = set()
+                for fm in factor_metrics:
+                    fam = _get_factor_family(fm['factor'])
+                    if len(diversified) < top_n:
+                        diversified.append(fm)
+                        used_families.add(fam)
+                    elif len(used_families) < min_families and fam not in used_families:
+                        # 家族约束：替换排名最低的同家族因子
+                        for j in range(len(diversified) - 1, -1, -1):
+                            if _get_factor_family(diversified[j]['factor']) == fam:
+                                continue
+                            if len({_get_factor_family(d['factor']) for d in diversified if d != diversified[j]} | {fam}) >= min_families:
+                                diversified[j] = fm
+                                used_families = {_get_factor_family(d['factor']) for d in diversified}
+                                break
+                    else:
+                        break
+                top_factors = diversified[:top_n]
 
                 # === 阶段1优化：1F因子需要更高IC门槛 ===
                 # 1F因子IC仅0.64%（接近随机），而3F因子IC=7.25%
@@ -405,6 +453,7 @@ class DynamicFactorSelector:
             'ic_decay_factor': self.ic_decay_factor,
             # === 阶段1优化参数 ===
             'min_factor_count': self.min_factor_count,
+            'min_factor_families': load_config().get('dynamic_factor', {}).get('min_factor_families', 2),
             'min_ic_1f': self.min_ic_1f,
             'use_static_candidates': self.use_static_candidates,
             'industry_factor_config': load_config().get('industry_factors', {}),

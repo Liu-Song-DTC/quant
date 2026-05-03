@@ -47,7 +47,8 @@ class Strategy:
             return
         try:
             multipliers = self.sentiment_orchestrator.get_sentiment_weights(
-                market_regime=market_regime
+                market_regime=market_regime,
+                current_date=date,
             )
             if multipliers:
                 self.portfolio.set_sentiment_multipliers(multipliers)

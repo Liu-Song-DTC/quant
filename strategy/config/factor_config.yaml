@@ -8,6 +8,7 @@ dynamic_factor:
   ic_decay_factor: 0.92
   fallback_to_static: true
   min_factor_count: 2
+  min_factor_families: 2
   min_ic_1f: 0.03
   use_static_candidates: true
   reweight_blend: 0.5
@@ -551,10 +552,12 @@ industry_sentiment:
   notify_on_completion: true
   weight_impact:
     enabled: true
-    max_multiplier: 1.20
-    min_multiplier: 0.80
-    smoothing_days: 3
+    max_multiplier: 1.15
+    min_multiplier: 0.70
+    smoothing_halflife: 5
+    smoothing_method: ema
     regime_adjustment: true
+    negativity_bias: 1.5
   backtest:
     precomputed_file: ""
 

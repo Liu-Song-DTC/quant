@@ -48,10 +48,12 @@ class SentimentOrchestrator:
         self.notify_enabled = self._get_config("industry_sentiment.notify_on_completion", True)
 
         wi = self._get_config("industry_sentiment.weight_impact", {}) or {}
-        self.max_multiplier = float(wi.get("max_multiplier", 1.20))
-        self.min_multiplier = float(wi.get("min_multiplier", 0.80))
-        self.smoothing_days = int(wi.get("smoothing_days", 3))
+        self.max_multiplier = float(wi.get("max_multiplier", 1.15))
+        self.min_multiplier = float(wi.get("min_multiplier", 0.70))
+        self.smoothing_halflife = int(wi.get("smoothing_halflife", 5))
+        self.smoothing_method = wi.get("smoothing_method", "ema")
         self.regime_adjustment = wi.get("regime_adjustment", True)
+        self.negativity_bias = float(wi.get("negativity_bias", 1.5))
 
         # 回测模式：加载预计算的情绪数据
         if backtest_mode:
@@ -120,18 +122,32 @@ class SentimentOrchestrator:
 
         return scores
 
-    def get_sentiment_weights(self, market_regime: int = 0) -> Dict[str, float]:
-        """获取最新的情绪行业权重乘数"""
-        scores = self.store.get_latest_sentiment(n_days=self.smoothing_days)
+    def get_sentiment_weights(self, market_regime: int = 0,
+                               current_date=None) -> Dict[str, float]:
+        """获取最新的情绪行业权重乘数（EMA 平滑 + 不对称乘数）"""
+        scores = self.store.get_latest_sentiment(n_days=self.smoothing_halflife * 2)
         if not scores:
             return {}
 
-        return self.analyzer.get_sentiment_weights(
+        # 回测模式：基于 current_date 查询历史；实盘模式：用最近 N 日
+        if current_date is not None:
+            ref_date = pd.Timestamp(current_date)
+            hist_start = ref_date - pd.Timedelta(days=self.smoothing_halflife * 4)
+            sentiment_history = self.store.query_range(
+                hist_start.date() if hasattr(hist_start, 'date') else hist_start,
+                ref_date.date() if hasattr(ref_date, 'date') else ref_date,
+            )
+        else:
+            sentiment_history = None
+
+        return self.analyzer.get_sentiment_weights_v2(
             scores,
+            sentiment_history=sentiment_history if len(sentiment_history) > 0 else None,
             market_regime=market_regime,
             max_multiplier=self.max_multiplier,
             min_multiplier=self.min_multiplier,
-            regime_adjust=self.regime_adjustment,
+            halflife=self.smoothing_halflife,
+            negativity_bias=self.negativity_bias,
         )
 
     def run_backtest(self, start: date, end: date) -> pd.DataFrame:
