@@ -39,7 +39,7 @@ def _load_industry_ic_weights():
 class PortfolioConstructor:
     """仓位管理器 - 基于因子排名选股"""
 
-    MAX_POSITIONS = 5
+    MAX_POSITIONS = 8
 
     def __init__(
         self,
@@ -156,13 +156,12 @@ class PortfolioConstructor:
 
     @staticmethod
     def _calc_max_position(total_equity: float, prices: dict) -> int:
-        """根据资金自动计算最大持仓数 - 超级集中持仓
+        """根据资金自动计算最大持仓数
 
-        每4万资金支持1个仓位, 范围[2, 5]
-        100k→2-3只(极致集中)
+        每2.5万资金支持1个仓位, 范围[3, 8]
         """
-        n = int(total_equity / 40000)
-        return max(2, min(n, PortfolioConstructor.MAX_POSITIONS))
+        n = int(total_equity / 25000)
+        return max(3, min(n, PortfolioConstructor.MAX_POSITIONS))
 
     def _get_min_positions(self, market_regime: int) -> int:
         """动态最小持仓数（小说：熊市允许空仓）
@@ -297,11 +296,11 @@ class PortfolioConstructor:
         # 渐进式熊市乘数：根据回撤深度分档
         if bear_risk:
             if drawdown > 0.20:          # 深熊：回撤>20%
-                floor, ceiling = 0.35, 0.50
+                floor, ceiling = 0.50, 0.65
             elif drawdown > 0.10:        # 浅熊：回撤10-20%
-                floor, ceiling = 0.55, 0.70
+                floor, ceiling = 0.60, 0.75
             else:                         # 风险预警但未深跌
-                floor, ceiling = 0.65, 0.80
+                floor, ceiling = 0.70, 0.85
         elif market_regime == 1:  # bull
             floor, ceiling = 0.80, 1.0
         else:  # neutral
@@ -314,7 +313,7 @@ class PortfolioConstructor:
             realized_vol = float(np.std(recent_rets) * np.sqrt(252))  # 年化
             if realized_vol > 0.01:
                 vol_scale = self.target_volatility / realized_vol
-                target_exposure *= float(np.clip(vol_scale, 0.5, 1.0))
+                target_exposure *= float(np.clip(vol_scale, 0.65, 1.0))
 
         # === 组合止损: 回撤超过阈值时强制降仓至紧急敞口（含恢复冷却期） ===
         if self.stop_loss_enabled and drawdown > self.portfolio_stop_loss:
@@ -387,8 +386,8 @@ class PortfolioConstructor:
 
         # 行业强制分散选股：每行业最多 1 只（小说"龙头洁癖"：每行业只选最强）
         # 解决原版行业集中度 81.5% 的问题
-        MAX_PER_INDUSTRY = 1
-        MIN_INDUSTRIES = 5
+        MAX_PER_INDUSTRY = 2
+        MIN_INDUSTRIES = 3
 
         industry_count = {}
         selected = []
@@ -512,13 +511,20 @@ class PortfolioConstructor:
             stopped = False
             stop_reason = ""
 
+            # === Chan理论保护：买入点区域放宽止损（防洗盘） ===
+            chan_protection = False
+            sig = signal_store.get(code, date)
+            chan_div_type = getattr(sig, 'chan_divergence_type', '') if sig else ''
+            chan_div_strength = getattr(sig, 'chan_divergence_strength', 0.0) if sig else 0.0
+            if chan_div_type in ('bottom', 'hidden_bottom') and chan_div_strength > 0.3:
+                chan_protection = True
+
             # 1. 成本止损: 亏损超过position_stop_loss
             if cost and code in cost and len(cost[code]) >= 2 and cost[code][0] > 0:
                 avg_cost = cost[code][1]
                 pnl_pct = (current_price - avg_cost) / avg_cost
 
                 # 波动率自适应调整：高波动股票放宽止损线
-                sig = signal_store.get(code, date)
                 vol = getattr(sig, 'risk_vol', 0.03) if sig else 0.03
                 adaptive_mult = self.volatility_adaptive_mult
                 adaptive_stop = self.position_stop_loss * (1 + vol * adaptive_mult * 10)
@@ -577,15 +583,6 @@ class PortfolioConstructor:
                 if not stopped and chan_struct_score < -0.4:
                     stopped = True
                     stop_reason = "chan_trend_exhaustion"
-
-            # === Chan理论保护：买入点区域放宽止损（防洗盘） ===
-            chan_protection = False
-            if not stopped:
-                sig = signal_store.get(code, date)
-                chan_div_type = getattr(sig, 'chan_divergence_type', '') if sig else ''
-                chan_div_strength = getattr(sig, 'chan_divergence_strength', 0.0) if sig else 0.0
-                if chan_div_type in ('bottom', 'hidden_bottom') and chan_div_strength > 0.3:
-                    chan_protection = True
 
             if stopped:
                 stop_loss_sells[code] = 0.0

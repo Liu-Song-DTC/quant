@@ -1,4 +1,4 @@
-factor_mode: fixed
+factor_mode: both
 dynamic_factor:
   train_window_days: 180
   forward_period: 10
@@ -10,7 +10,7 @@ dynamic_factor:
   min_factor_count: 1
   min_factor_families: 1
   min_ic_1f: 0.02
-  use_static_candidates: true
+  use_static_candidates: false
   reweight_blend: 0.5
   extra_candidate_factors:
   - skewness_20
@@ -639,9 +639,9 @@ portfolio:
   # 核心逻辑："龙头洁癖"——不仅要比别人好，还要自己够格
   # rank_pct<min_rank 直接淘汰，score<min_score 即使排名够也不选
   selection:
-    min_rank_pct: 0.5        # 截面相对排名（现有）
-    min_absolute_score: 0.15  # 绝对分数门槛（新增）
-    min_confidence: 0.80      # 信心分数门槛（提高）
+    min_rank_pct: 0.3        # 截面相对排名（放宽：top 70%）
+    min_absolute_score: 0.08  # 绝对分数门槛（放宽）
+    min_confidence: 0.70      # 信心分数门槛（放宽）
   fv_exposure_params:
     fv_low: -0.01
     fv_high: 0.02
@@ -650,7 +650,7 @@ portfolio:
   turnover_bonus: 0.05
 portfolio_stop_loss:
   enabled: true
-  emergency_exposure: 0.35
+  emergency_exposure: 0.50
 volatility_control:
   enabled: true
   lookback_period: 20
@@ -714,6 +714,12 @@ chan_theory:
     trend_exhaustion_exit: -0.4      # 趋势耗尽退出阈值
     buy_zone_stop_protection: 2.0    # 底背离买入点止损放宽倍数
     volume_divergence_exit: true     # 启用量价背离退出
+# === 股票池配置 ===
+stock_pool:
+  enabled: true            # true=1000只(剔除科创板), false=全市场
+  size: 1000
+  source: "CSI800(剔除科创板) + CSI1000补足1000"
+
 backtest:
   cash: 150000.0
   commission: 0.0015

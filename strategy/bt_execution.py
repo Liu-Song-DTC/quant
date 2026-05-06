@@ -16,6 +16,7 @@ from core.signal_store import SignalStore
 from core.config_loader import load_config
 from core.industry_mapping import INDUSTRY_KEYWORDS
 from core.market_regime_detector import MarketRegimeDetector
+from core.stock_pool import get_stock_pool
 
 # 情绪分析集成
 try:
@@ -113,6 +114,19 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             continue
         data = pd.read_csv(DATA_PATH + item, parse_dates=['datetime'])
         stock_data_dict[name] = data
+
+    # === 股票池过滤 ===
+    stock_pool_enabled = config.get('stock_pool.enabled', True)
+    if stock_pool_enabled:
+        stock_pool = get_stock_pool()
+        # 保留池内股票 + sh000001（指数）
+        pool_codes = stock_pool | {'sh000001'}
+        before_count = len(stock_data_dict)
+        stock_data_dict = {k: v for k, v in stock_data_dict.items() if k in pool_codes}
+        after_count = len(stock_data_dict)
+        print(f"股票池过滤: {before_count} -> {after_count} 只 (CSI800 + CSI1000 top200)")
+    else:
+        print(f"股票池过滤: 已关闭，使用全市场 {len(stock_data_dict)} 只股票")
 
     # 从任意一个DataFrame获取日期（所有股票数据共享日历）
     dates = set()
@@ -467,12 +481,22 @@ class BacktraderExecution(bt.Strategy):
 
 if __name__ == "__main__":
     # 加载基本面数据 (支持 _qfq.csv 和 _hfq.csv)
+    stock_pool_enabled = config.get('stock_pool.enabled', True)
     stock_codes = []
     for f in os.listdir(DATA_PATH):
         if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv':
             stock_codes.append(f.replace('_qfq.csv', ''))
         elif f.endswith('_hfq.csv') and f != 'sh000001_hfq.csv':
             stock_codes.append(f.replace('_hfq.csv', ''))
+
+    # 股票池过滤
+    if stock_pool_enabled:
+        stock_pool = get_stock_pool()
+        stock_codes = [c for c in stock_codes if c in stock_pool]
+        print(f"基本面数据加载(股票池): {len(stock_codes)} 只")
+    else:
+        print(f"基本面数据加载(全市场): {len(stock_codes)} 只")
+
     fundamental_data = FundamentalData(FUNDAMENTAL_PATH, stock_codes)
 
     # 初始化情绪分析编排器

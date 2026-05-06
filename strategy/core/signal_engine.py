@@ -204,7 +204,7 @@ def _compute_date_chunk(args):
                 # === IC质量过滤 ===
 
                 # 1. IC符号稳定性：60%（>50%才有预测能力）
-                MIN_STABILITY = 0.6
+                MIN_STABILITY = 0.55
                 if ic_stability < MIN_STABILITY:
                     continue
 
@@ -218,7 +218,7 @@ def _compute_date_chunk(args):
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
 
                 # 3. t统计量过滤：1.0（p≈0.05附近）
-                if abs(t_statistic) < 1.0:
+                if abs(t_statistic) < 0.8:
                     continue
 
                 # 因子方向过滤：只考虑正向因子（ic_mean > 0）
@@ -226,7 +226,7 @@ def _compute_date_chunk(args):
                     continue
 
                 # 4. 最小质量阈值
-                MIN_COMBINED_IR = 0.05
+                MIN_COMBINED_IR = 0.03
                 if combined_ir < MIN_COMBINED_IR:
                     continue
 
@@ -905,12 +905,12 @@ class SignalEngine:
         # - 绝对阈值导致52.7%信号为NONE，其中79.6%的factor_value>0
         # - rank_pct选股准确率50.9% vs buy_signal 47.9%
         #
-        # 简化逻辑：只要factor_value有效就标记buy=True
-        # 组合层通过截面rank_pct排序选股，不再依赖信号层的buy过滤
+        # 使用配置的buy_threshold预过滤，减少组合层无效候选
 
         # 安全过滤：极端值和无效值不产生信号
         buy = (factor_value is not None and
                not np.isnan(factor_value) and
+               factor_value > self.buy_threshold and
                abs(score) < 5.0)
 
         # sell信号：仅在factor_value明确为负时标记
@@ -1095,7 +1095,7 @@ class SignalEngine:
         dyn_quality = selected_info.get('quality', 0)
 
         # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
-        DYN_QUALITY_THRESHOLD = 0.05
+        DYN_QUALITY_THRESHOLD = 0.02
         if dyn_quality < DYN_QUALITY_THRESHOLD:
             return None
 

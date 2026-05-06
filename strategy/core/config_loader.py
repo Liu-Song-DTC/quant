@@ -70,7 +70,7 @@ class ConfigLoader:
                 'bull': 2, 'neutral': 1, 'bear': 0,
             }),
             'selection': self.get('portfolio.selection', {
-                'min_rank_pct': 0.5, 'min_absolute_score': 0.15, 'min_confidence': 0.80,
+                'min_rank_pct': 0.3, 'min_absolute_score': 0.08, 'min_confidence': 0.70,
             }),
         }
 

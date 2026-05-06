@@ -142,7 +142,7 @@ class SentimentOrchestrator:
 
         return self.analyzer.get_sentiment_weights_v2(
             scores,
-            sentiment_history=sentiment_history if len(sentiment_history) > 0 else None,
+            sentiment_history=sentiment_history if sentiment_history is not None and len(sentiment_history) > 0 else None,
             market_regime=market_regime,
             max_multiplier=self.max_multiplier,
             min_multiplier=self.min_multiplier,
