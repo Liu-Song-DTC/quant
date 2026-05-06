@@ -14,6 +14,13 @@
 import numpy as np
 from typing import Dict, Optional
 
+from .divergence_detector import compute_divergence
+from .structure_analyzer import (
+    detect_pivot_zone,
+    classify_trend_structure,
+    compute_multi_level_alignment,
+)
+
 
 # ==================== 基本面因子压缩（单点真源） ====================
 
@@ -95,6 +102,8 @@ def calculate_indicators(
     # === EMA ===
     for span in params.get('ema_periods', [5, 10, 20, 60]):
         result[f'ema{span}'] = _ema(close_arr, span)
+    # 120日EMA（缠论大级别方向判断）
+    result['ema120'] = _ema(close_arr, 120)
 
     # === MA ===
     for span in params.get('ma_periods', [5, 10, 20, 30, 60]):
@@ -363,6 +372,189 @@ def calculate_indicators(
     else:
         result['gap_ratio'] = np.zeros(n)
 
+    # === 小说灵感因子：成交量+价格结构分析 ===
+
+    # 9. 洗盘检测因子 (wash_sale_score)
+    # 核心逻辑（来自小说）：放量下跌+高换手+快速回升=主力洗盘而非出货
+    # 特征：过去N天内出现放量大跌(>3%)，但随后价格快速回升到跌幅的50%以上
+    # 值越大越像洗盘，正值为看涨信号
+    wash_score = np.zeros(n)
+    for i in range(20, n):
+        recent_ret = returns[i-20:i]
+        recent_vol = vol_arr[i-20:i]
+        recent_close = close_arr[i-20:i]
+        # 找过去20天内的最大单日跌幅
+        min_ret_idx = np.argmin(recent_ret)
+        min_ret = recent_ret[min_ret_idx]
+        # 条件1：有显著下跌（>3%）
+        if min_ret < -0.03:
+            # 条件2：下跌日成交量放大（>1.5倍均量）
+            avg_vol = np.mean(recent_vol)
+            if recent_vol[min_ret_idx] > avg_vol * 1.5:
+                # 条件3：下跌后价格回升
+                post_low = recent_close[min_ret_idx:]
+                recovery = (post_low[-1] - post_low[0]) / (abs(post_low[0]) + 1e-10)
+                if recovery > 0.5 * abs(min_ret):  # 回升超过跌幅的50%
+                    # 条件4（来自小说）：换手率特征 - 高换手+缩量回升
+                    # 用成交量变化率作为换手率替代
+                    vol_after = recent_vol[min_ret_idx:]
+                    vol_contracting = np.mean(vol_after[-3:]) < np.mean(vol_after[:3]) if len(vol_after) >= 6 else False
+                    wash_score[i] = abs(min_ret) * 3 + (0.2 if vol_contracting else 0)
+    result['wash_sale_score'] = np.tanh(wash_score * 2)
+
+    # 10. 量价突破因子 (vol_price_breakout)
+    # 核心逻辑（来自小说）：缩量盘整后的放量突破 = 主力拉升信号
+    # "量在价先" - 成交量先行于价格
+    vol_breakout = np.zeros(n)
+    for i in range(20, n):
+        recent_vol_20 = vol_arr[i-20:i]
+        recent_high_20 = high_arr[i-20:i]
+        avg_vol_20 = np.mean(recent_vol_20)
+        # 当日成交量 > 2倍 20日均量（放量）
+        if vol_arr[i] > avg_vol_20 * 2.0:
+            # 价格突破20日高点
+            if close_arr[i] > np.max(recent_high_20[:-1]):  # 不包含今天
+                vol_breakout[i] = 1.0
+            # 或接近突破（在2%以内）
+            elif close_arr[i] > np.max(recent_high_20[:-1]) * 0.98:
+                vol_breakout[i] = 0.5
+    result['vol_price_breakout'] = np.tanh(vol_breakout * 2)
+
+    # 11. 缩量回调因子 (volume_contraction)
+    # 核心逻辑（来自小说）：上升趋势中缩量回调 = 洗盘结束，准备拉升
+    # "缩量回调不破支撑" = 买入时机
+    vol_contract = np.zeros(n)
+    for i in range(20, n):
+        # 中期趋势向上（20日均线向上）
+        ma20_now = np.mean(close_arr[i-19:i+1])
+        ma20_before = np.mean(close_arr[i-24:i-4]) if i >= 24 else ma20_now
+        trend_up = ma20_now > ma20_before
+        # 近5日缩量（成交量递减）
+        recent_5vol = vol_arr[i-4:i+1]
+        prev_5vol = vol_arr[i-9:i-4] if i >= 9 else recent_5vol
+        vol_shrinking = np.mean(recent_5vol) < np.mean(prev_5vol) * 0.8
+        # 价格回调但幅度不大（<5%）
+        price_drawdown = (np.max(close_arr[i-10:i+1]) - close_arr[i]) / (np.max(close_arr[i-10:i+1]) + 1e-10)
+        mild_pullback = 0 < price_drawdown < 0.05
+        if trend_up and vol_shrinking and mild_pullback:
+            vol_contract[i] = 1.0 - price_drawdown * 10  # 回调越小信号越强
+    result['volume_contraction'] = np.tanh(vol_contract * 3)
+
+    # 12. 强者恒强因子 (relative_strength)
+    # 核心逻辑（来自小说）：强势股在大盘涨时涨更多，大盘跌时跌更少
+    # 用相对强度衡量：近期收益/近期波动，捕捉独立行情
+    rs_score = np.zeros(n)
+    for i in range(20, n):
+        ret_20d = (close_arr[i] - close_arr[i-20]) / (close_arr[i-20] + 1e-10) if i >= 20 else 0
+        ret_10d = (close_arr[i] - close_arr[i-10]) / (close_arr[i-10] + 1e-10) if i >= 10 else 0
+        ret_5d = (close_arr[i] - close_arr[i-5]) / (close_arr[i-5] + 1e-10) if i >= 5 else 0
+        # 各周期动量一致性：短中长期都为正更可靠
+        momentum_consistency = (1 if ret_5d > 0 else -0.5) + (1 if ret_10d > 0 else -0.5) + (1 if ret_20d > 0 else -0.5)
+        # 波动调整收益
+        vol_20d = np.std(returns[i-19:i+1]) if i >= 19 else 0.02
+        if vol_20d > 1e-6:
+            rs_score[i] = (ret_20d / vol_20d) * (0.5 + 0.5 * max(0, momentum_consistency / 3))
+    result['relative_strength'] = np.tanh(rs_score * 0.5)
+
+    # 13. 主力资金流向推断因子 (smart_money_flow)
+    # 核心逻辑（来自小说）：通过价量关系推断主力动向
+    # 量价齐升（放量上涨）= 主力买入；量价背离（缩量上涨/放量下跌）= 警惕
+    # 综合5日量价关系
+    mf_score = np.zeros(n)
+    for i in range(5, n):
+        score_5d = 0.0
+        for j in range(i-4, i+1):
+            ret_day = returns[j] if j > 0 else 0
+            vol_ratio_day = vol_arr[j] / (np.mean(vol_arr[max(0,j-20):j+1]) + 1e-6)
+            if ret_day > 0 and vol_ratio_day > 1.2:  # 放量上涨：主力买入
+                score_5d += ret_day * min(vol_ratio_day, 3) * 2
+            elif ret_day > 0 and vol_ratio_day < 0.7:  # 缩量上涨：趋势持续但力度减弱
+                score_5d += ret_day * 0.5
+            elif ret_day < 0 and vol_ratio_day > 1.5:  # 放量下跌：可能是洗盘
+                score_5d += ret_day * 0.3  # 轻罚（洗盘可能性）
+            elif ret_day < 0 and vol_ratio_day < 0.7:  # 缩量下跌：正常调整
+                score_5d += ret_day * 1.0
+            else:
+                score_5d += ret_day
+        mf_score[i] = score_5d / 5
+    result['smart_money_flow'] = np.tanh(mf_score * 3)
+
+    # 14. 盘整突破准备因子 (consolidation_breakout)
+    # 核心逻辑（来自小说）：小5浪调整后缩量走平 = 即将突破
+    # 特征：近10天振幅收窄 + 成交量萎缩 + 价格走平
+    cb_score = np.zeros(n)
+    for i in range(20, n):
+        recent_10_high = high_arr[i-9:i+1]
+        recent_10_low = low_arr[i-9:i+1]
+        recent_10_vol = vol_arr[i-9:i+1]
+        recent_10_close = close_arr[i-9:i+1]
+        # 振幅收窄：近期振幅 < 前期振幅的70%
+        recent_range = (np.mean(recent_10_high) - np.mean(recent_10_low)) / (np.mean(recent_10_close) + 1e-10)
+        prev_range = (np.mean(high_arr[i-19:i-9]) - np.mean(low_arr[i-19:i-9])) / (np.mean(close_arr[i-19:i-9]) + 1e-10) if i >= 19 else recent_range * 2
+        range_narrowing = recent_range < prev_range * 0.7
+        # 成交量萎缩：近期量 < 前期量的80%
+        vol_shrink = np.mean(recent_10_vol) < np.mean(vol_arr[i-19:i-9]) * 0.8 if i >= 19 else False
+        # 价格走平：近期价格标准差很小
+        price_flat = np.std(recent_10_close) / (np.mean(recent_10_close) + 1e-10) < 0.03
+        # 趋势向上（中长期均线多头）
+        ma20_val = np.mean(close_arr[i-19:i+1])
+        ma60_val = np.mean(close_arr[i-59:i+1]) if i >= 59 else ma20_val
+        trend_ok = ma20_val > ma60_val
+        if range_narrowing and vol_shrink and price_flat and trend_ok:
+            cb_score[i] = 1.0
+        elif range_narrowing and (vol_shrink or price_flat):
+            cb_score[i] = 0.4
+    result['consolidation_breakout'] = np.tanh(cb_score * 2)
+
+    # === 缠论：MACD背离检测 ===
+    # MACD已在上面计算（macd, macd_signal, macd_hist）
+    divergence_params = params.get('divergence', {})
+    div_result = compute_divergence(
+        close_arr,
+        result['macd_hist'],
+        ema20=result['ema20'],
+        ema60=result['ema60'],
+        lookback=divergence_params.get('lookback', 20),
+        peak_trough_lookback=divergence_params.get('peak_trough_lookback', 5),
+        strength_threshold=divergence_params.get('strength_threshold', 0.3),
+        verify_trend=divergence_params.get('verify_trend', True),
+    )
+    result['top_divergence'] = div_result['top_divergence']
+    result['bottom_divergence'] = div_result['bottom_divergence']
+    result['hidden_top_divergence'] = div_result['hidden_top']
+    result['hidden_bottom_divergence'] = div_result['hidden_bottom']
+    result['divergence_active'] = div_result['divergence_active'].astype(float)
+
+    # === 缠论：多级别结构分析 ===
+    structure_params = params.get('structure', {})
+    pivot_info = detect_pivot_zone(
+        high_arr, low_arr, close_arr,
+        min_overlap=structure_params.get('pivot_min_overlap', 3),
+        zone_buffer=structure_params.get('pivot_zone_buffer', 0.02),
+    )
+    structure_info = classify_trend_structure(
+        close_arr, high_arr, low_arr,
+        result['ema20'], result['ema60'], pivot_info,
+        min_trend_bars=structure_params.get('min_trend_bars', 8),
+        zhongyin_threshold=structure_params.get('zhongyin_threshold', 0.02),
+    )
+    alignment = compute_multi_level_alignment(
+        close_arr, result['ema20'], result['ema60'], result['ema120'],
+    )
+
+    result['pivot_present'] = pivot_info['pivot_present'].astype(float)
+    result['pivot_top'] = pivot_info['pivot_top']
+    result['pivot_bottom'] = pivot_info['pivot_bottom']
+    result['pivot_mid'] = pivot_info['pivot_mid']
+    result['pivot_level'] = pivot_info['pivot_level'].astype(float)
+    result['pivot_count'] = pivot_info['pivot_count'].astype(float)
+    result['structure_complete'] = structure_info['structure_complete'].astype(float)
+    result['zhongyin'] = structure_info['zhongyin'].astype(float)
+    result['breakout_above_pivot'] = structure_info['breakout_above_pivot'].astype(float)
+    result['breakout_below_pivot'] = structure_info['breakout_below_pivot'].astype(float)
+    result['pivot_distance'] = structure_info['pivot_distance']
+    result['alignment_score'] = alignment
+
     return result
 
 
@@ -378,6 +570,19 @@ def get_default_params() -> Dict:
         'volatility_periods': [5, 10, 20],
         'atr_periods': [10, 14, 20],
         'volume_ma_period': 20,
+        # 缠论参数
+        'divergence': {
+            'lookback': 20,
+            'peak_trough_lookback': 5,
+            'strength_threshold': 0.3,
+            'verify_trend': True,
+        },
+        'structure': {
+            'pivot_min_overlap': 3,
+            'pivot_zone_buffer': 0.02,
+            'min_trend_bars': 8,
+            'zhongyin_threshold': 0.02,
+        },
     }
 
 
@@ -643,5 +848,19 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['volatility_skew'] = ind['volatility_skew'][idx] if not np.isnan(ind['volatility_skew'][idx]) else 0.0
     if 'gap_ratio' in ind:
         result['gap_ratio'] = ind['gap_ratio'][idx] if not np.isnan(ind['gap_ratio'][idx]) else 0.0
+
+    # === 小说灵感因子（计算与 ind 中的值一致）===
+    if 'wash_sale_score' in ind:
+        result['wash_sale_score'] = ind['wash_sale_score'][idx] if not np.isnan(ind['wash_sale_score'][idx]) else 0.0
+    if 'vol_price_breakout' in ind:
+        result['vol_price_breakout'] = ind['vol_price_breakout'][idx] if not np.isnan(ind['vol_price_breakout'][idx]) else 0.0
+    if 'volume_contraction' in ind:
+        result['volume_contraction'] = ind['volume_contraction'][idx] if not np.isnan(ind['volume_contraction'][idx]) else 0.0
+    if 'relative_strength' in ind:
+        result['relative_strength'] = ind['relative_strength'][idx] if not np.isnan(ind['relative_strength'][idx]) else 0.0
+    if 'smart_money_flow' in ind:
+        result['smart_money_flow'] = ind['smart_money_flow'][idx] if not np.isnan(ind['smart_money_flow'][idx]) else 0.0
+    if 'consolidation_breakout' in ind:
+        result['consolidation_breakout'] = ind['consolidation_breakout'][idx] if not np.isnan(ind['consolidation_breakout'][idx]) else 0.0
 
     return result

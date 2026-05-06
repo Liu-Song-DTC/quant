@@ -1,15 +1,15 @@
-factor_mode: both
+factor_mode: fixed
 dynamic_factor:
-  train_window_days: 360
+  train_window_days: 180
   forward_period: 10
   top_n_factors: 3
-  min_train_samples: 80
-  min_ic_dates: 20
+  min_train_samples: 60
+  min_ic_dates: 10
   ic_decay_factor: 0.92
   fallback_to_static: true
-  min_factor_count: 2
-  min_factor_families: 2
-  min_ic_1f: 0.03
+  min_factor_count: 1
+  min_factor_families: 1
+  min_ic_1f: 0.02
   use_static_candidates: true
   reweight_blend: 0.5
   extra_candidate_factors:
@@ -24,6 +24,13 @@ dynamic_factor:
   - price_volume_corr_20
   - illiq_20
   - turnover_stability
+  # === 小说灵感因子 ===
+  - wash_sale_score
+  - vol_price_breakout
+  - volume_contraction
+  - relative_strength
+  - smart_money_flow
+  - consolidation_breakout
 backtest_factors:
 - trend_mom_v41
 - trend_mom_v24
@@ -68,6 +75,13 @@ backtest_factors:
 - low_downside
 - inv_turnover
 - turnover_shrink
+# === 小说灵感因子 ===
+- wash_sale_score
+- vol_price_breakout
+- volume_contraction
+- relative_strength
+- smart_money_flow
+- consolidation_breakout
 industry_factor_config:
   lookback_days: 120
   forward_period: 10
@@ -552,12 +566,12 @@ industry_sentiment:
   notify_on_completion: true
   weight_impact:
     enabled: true
-    max_multiplier: 1.15
-    min_multiplier: 0.70
+    max_multiplier: 1.10
+    min_multiplier: 0.90
     smoothing_halflife: 5
     smoothing_method: ema
     regime_adjustment: true
-    negativity_bias: 1.5
+    negativity_bias: 1.2
   backtest:
     precomputed_file: ""
 
@@ -596,6 +610,7 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
+  # === 小说优化：确定性优先，宁缺毋滥 ===
   buy_threshold: 0.5
   sell_threshold: -0.15
 regime_multiplier:
@@ -604,11 +619,29 @@ regime_multiplier:
   bear: 0.40
 portfolio:
   target_volatility: 0.25
-  entry_speed: 1.0
-  exit_speed: 1.0
-  position_stop_loss: 0.18
-  portfolio_stop_loss: 0.15
+  # === 小说优化：分批进出，不一把梭 ===
+  # 核心逻辑："越涨越卖，越跌越买，分批操作"
+  # 每次调仓只执行50%的目标仓位变化，分两次完成
+  entry_speed: 0.5
+  exit_speed: 0.5
+  # === 小说优化：7%铁律止损（亏损10%需赚20%回本）===
+  position_stop_loss: 0.07
+  portfolio_stop_loss: 0.12
   max_single_weight: 0.30
+  # === 小说优化：动态最小持仓 ===
+  # 熊市/弱势允许空仓（"不会空仓的人永远长不大"）
+  # 牛市至少持有2只（"龙头洁癖"也不降标准）
+  dynamic_min_positions:
+    bull: 2
+    neutral: 1
+    bear: 0
+  # === 小说优化：绝对质量门槛 ===
+  # 核心逻辑："龙头洁癖"——不仅要比别人好，还要自己够格
+  # rank_pct<min_rank 直接淘汰，score<min_score 即使排名够也不选
+  selection:
+    min_rank_pct: 0.5        # 截面相对排名（现有）
+    min_absolute_score: 0.15  # 绝对分数门槛（新增）
+    min_confidence: 0.80      # 信心分数门槛（提高）
   fv_exposure_params:
     fv_low: -0.01
     fv_high: 0.02
@@ -627,11 +660,13 @@ factor_neutralization:
   neutralize_industry: true
   neutralize_market_cap: true
   min_samples_per_industry: 3
-# === 增强止损 ===
+# === 增强止损（小说优化：更严格的时间+移动止损）===
 enhanced_stop_loss:
-  time_stop_days: 30
-  time_stop_min_return: -0.08
-  trailing_stop_pct: 0.20
+  # 小说：持仓超20天无收益就离场
+  time_stop_days: 20
+  time_stop_min_return: -0.05
+  # 小说：控制回撤，移动止损从高点回撤12%即离场
+  trailing_stop_pct: 0.12
   trailing_stop_enabled: true
   volatility_adaptive_mult: 1.5
 # === 风险平价 ===
@@ -639,8 +674,49 @@ risk_parity:
   enabled: true
   target_risk_per_stock: 0.10
   max_iterations: 50
+# === 小说优化：动态调仓周期 ===
+# 核心逻辑：牛市"捂股不动"延长周期，熊市"快进快出"缩短周期
+dynamic_rebalance:
+  enabled: true
+  bull_period: 30       # 牛市长持，减少换手
+  neutral_period: 20    # 中性保持默认
+  bear_period: 15       # 熊市灵活，快进快出
+# === 缠论优化：背离检测 + 结构分析 ===
+# 核心来源：缠中说禅 + 股神：5万本金悟道 + 股道人生
+# MACD顶/底背离 → 买卖时机，中枢/级别 → 趋势确认，中阴 → 防假突破
+chan_theory:
+  enabled: true
+  # 背离检测参数
+  divergence:
+    enabled: true
+    lookback: 20                # 背离检测回看窗口
+    peak_trough_lookback: 5     # 局部极值检测半径
+    strength_threshold: 0.3     # 最小背离强度（0-1）
+    verify_trend: true          # "没有趋势，没有背驰" — 验证趋势结构
+  # 中枢/结构分析参数
+  structure:
+    enabled: true
+    pivot_min_overlap: 3        # 中枢最少K线重叠数
+    pivot_zone_buffer: 0.02     # 中枢边界缓冲
+    min_trend_bars: 8           # 趋势确认最少K线数
+    zhongyin_threshold: 0.02    # EMA间距阈值（中阴判定）
+  # 信号增强参数
+  signal_boost:
+    bottom_divergence_mult: 1.25     # 底背离买入信号增强
+    top_divergence_mult: 0.70        # 顶背离买入信号抑制
+    alignment_boost: 0.10            # 多级别对齐额外加分
+    zhongyin_penalty: 0.85           # 中阴状态信号惩罚
+    pivot_breakout_buy_mult: 1.15    # 中枢突破买入乘数（3买）
+    pivot_breakout_sell_mult: 0.75   # 中枢跌破卖出乘数（3卖）
+  # 退出增强参数
+  exit:
+    top_divergence_exit: 0.4         # 顶背离退出强度阈值
+    trend_exhaustion_exit: -0.4      # 趋势耗尽退出阈值
+    buy_zone_stop_protection: 2.0    # 底背离买入点止损放宽倍数
+    volume_divergence_exit: true     # 启用量价背离退出
 backtest:
   cash: 150000.0
   commission: 0.0015
   slippage: 0.0015
-  rebalance_days: 10
+  rebalance_days: 20
+  num_workers: 4

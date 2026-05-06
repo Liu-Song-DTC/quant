@@ -51,8 +51,8 @@ class ConfigLoader:
         """获取组合配置"""
         return {
             'target_volatility': self.get('portfolio.target_volatility', 0.25),
-            'entry_speed': self.get('portfolio.entry_speed', 1.0),
-            'exit_speed': self.get('portfolio.exit_speed', 1.0),
+            'entry_speed': self.get('portfolio.entry_speed', 0.5),
+            'exit_speed': self.get('portfolio.exit_speed', 0.5),
             'position_stop_loss': self.get('portfolio.position_stop_loss', 0.15),
             'portfolio_stop_loss': self.get('portfolio.portfolio_stop_loss', 0.12),
             'max_single_weight': self.get('portfolio.max_single_weight', 0.15),
@@ -65,6 +65,13 @@ class ConfigLoader:
                 'fv_low': -0.03, 'fv_high': 0.05, 'exposure_min': 0.3, 'exposure_max': 1.0,
             }),
             'turnover_bonus': self.get('portfolio.turnover_bonus', 0.02),
+            # === 小说优化新增 ===
+            'dynamic_min_positions': self.get('portfolio.dynamic_min_positions', {
+                'bull': 2, 'neutral': 1, 'bear': 0,
+            }),
+            'selection': self.get('portfolio.selection', {
+                'min_rank_pct': 0.5, 'min_absolute_score': 0.15, 'min_confidence': 0.80,
+            }),
         }
 
     def get_industry_factor_config(self) -> Dict[str, Any]:
@@ -76,7 +83,7 @@ class ConfigLoader:
         })
 
     def get_indicator_params(self) -> Dict[str, Any]:
-        """获取技术指标参数"""
+        """获取技术指标参数（含缠论参数）"""
         return self.get('indicator_params', {
             'ema_periods': [5, 10, 20, 60],
             'ma_periods': [5, 10, 20, 30, 60],
@@ -87,6 +94,53 @@ class ConfigLoader:
             'volatility_periods': [5, 10, 20],
             'atr_periods': [10, 14, 20],
             'volume_ma_period': 20,
+            # 缠论参数
+            'divergence': {
+                'lookback': 20,
+                'peak_trough_lookback': 5,
+                'strength_threshold': 0.3,
+                'verify_trend': True,
+            },
+            'structure': {
+                'pivot_min_overlap': 3,
+                'pivot_zone_buffer': 0.02,
+                'min_trend_bars': 8,
+                'zhongyin_threshold': 0.02,
+            },
+        })
+
+    def get_chan_theory_params(self) -> Dict[str, Any]:
+        """获取缠论参数配置"""
+        return self.get('chan_theory', {
+            'enabled': True,
+            'divergence': {
+                'enabled': True,
+                'lookback': 20,
+                'peak_trough_lookback': 5,
+                'strength_threshold': 0.3,
+                'verify_trend': True,
+            },
+            'structure': {
+                'enabled': True,
+                'pivot_min_overlap': 3,
+                'pivot_zone_buffer': 0.02,
+                'min_trend_bars': 8,
+                'zhongyin_threshold': 0.02,
+            },
+            'signal_boost': {
+                'bottom_divergence_mult': 1.25,
+                'top_divergence_mult': 0.70,
+                'alignment_boost': 0.10,
+                'zhongyin_penalty': 0.85,
+                'pivot_breakout_buy_mult': 1.15,
+                'pivot_breakout_sell_mult': 0.75,
+            },
+            'exit': {
+                'top_divergence_exit': 0.4,
+                'trend_exhaustion_exit': -0.4,
+                'buy_zone_stop_protection': 2.0,
+                'volume_divergence_exit': True,
+            },
         })
 
     @property

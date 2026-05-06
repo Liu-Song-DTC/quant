@@ -182,13 +182,22 @@ def prepare_factor_data(stock_data: dict, fd,
     for code in stock_data.keys():
         matched = False
         try:
-            sample_date = all_dates[100]  # 用较早的日期获取行业
+            # 从日期范围中部采样（避免太早导致基本面数据未发布，也太晚导致已退市）
+            # 行业分类稳定，使用中期日期最大化匹配率
+            sample_date = all_dates[len(all_dates) // 2]
             ind = fd.get_industry(code, sample_date) if fd else None
-            for cat, keywords in detailed_industries.items():
-                if ind and any(kw in str(ind) for kw in keywords):
-                    industry_codes[cat].append(code)
-                    matched = True
-                    break
+            # 如果中期日期无数据，尝试用更晚的日期
+            if ind is None:
+                for late_date in reversed(all_dates[-200:]):  # 尝试最后200个日期
+                    ind = fd.get_industry(code, late_date) if fd else None
+                    if ind:
+                        break
+            if ind:
+                for cat, keywords in detailed_industries.items():
+                    if any(kw in str(ind) for kw in keywords):
+                        industry_codes[cat].append(code)
+                        matched = True
+                        break
         except:
             pass
         if not matched:

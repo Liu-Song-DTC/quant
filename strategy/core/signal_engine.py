@@ -30,10 +30,10 @@ warnings.filterwarnings('ignore')
 FACTOR_FAMILIES = {
     'momentum':  ['mom_10', 'mom_20', 'mom_diff_5_20', 'mom_diff_10_20',
                   'momentum_reversal', 'momentum_acceleration', 'max_ret_20',
-                  'ret_vol_ratio_10', 'ret_vol_ratio_20'],
+                  'ret_vol_ratio_10', 'ret_vol_ratio_20', 'relative_strength'],
     'lowvol':    ['volatility', 'volatility_5', 'volatility_10', 'volatility_20',
                   'trend_lowvol', 'bb_width_20', 'atr_ratio_20', 'vol_confirm',
-                  'low_downside'],
+                  'low_downside', 'volume_contraction', 'consolidation_breakout'],
     'value':     ['fund_score', 'fund_roe', 'fund_profit_growth', 'fund_eps',
                   'fund_cf_to_profit', 'fund_gross_margin', 'fund_debt_ratio',
                   'fund_pg_improve', 'fund_rg_improve', 'inv_turnover'],
@@ -42,6 +42,8 @@ FACTOR_FAMILIES = {
     'alpha':     ['skewness_20', 'kurtosis_20', 'tail_risk', 'volatility_skew',
                   'overnight_ret', 'intraday_ret', 'gap_ratio',
                   'price_volume_corr_20', 'illiq_20'],
+    # === 小说灵感家族：量价结构分析 ===
+    'volume_price': ['wash_sale_score', 'vol_price_breakout', 'smart_money_flow'],
 }
 
 
@@ -698,13 +700,86 @@ class SignalEngine:
             'bear_risk': False,
         }
 
+    def _get_chan_boost(self, ind: dict, idx: int) -> dict:
+        """
+        缠论增强：从背离和结构分析计算信号调整乘数。
+
+        核心规则（来自缠中说禅 + 两本股道小说）:
+        - 底背离 → 买入信号增强（"空头陷阱就是最佳机会"）
+        - 顶背离 → 买入信号抑制（"多头陷阱当然就是天堂"→卖出）
+        - 多级别对齐 → 趋势确认
+        - 中阴状态 → 方向不明，降低仓位
+        - 中枢突破 → 第三类买卖点
+        """
+        mult = 1.0
+        is_buy_boost = False
+        is_sell_boost = False
+        div_quality = 0.0
+
+        bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
+        top_div = self._safe_get(ind, 'top_divergence', idx, 0.0)
+        hidden_bottom = self._safe_get(ind, 'hidden_bottom_divergence', idx, 0.0)
+        alignment = self._safe_get(ind, 'alignment_score', idx, 0.0)
+        pivot_present = self._safe_get(ind, 'pivot_present', idx, 0.0)
+        structure_complete = self._safe_get(ind, 'structure_complete', idx, 0.0)
+        zhongyin = self._safe_get(ind, 'zhongyin', idx, 0.0)
+        breakout_above = self._safe_get(ind, 'breakout_above_pivot', idx, 0.0)
+        breakout_below = self._safe_get(ind, 'breakout_below_pivot', idx, 0.0)
+
+        # 规则1：底背离 → 空头陷阱 → 最佳买入机会
+        if bottom_div > 0.3:
+            mult *= 1.25  # 买入信号增强25%
+            div_quality = bottom_div
+            is_buy_boost = True
+
+        # 规则2：顶背离 → 多头陷阱 → 卖出/抑制买入
+        if top_div > 0.3:
+            mult *= 0.70  # 买入信号降低30%
+            div_quality = max(div_quality, top_div)
+            is_sell_boost = True
+
+        # 规则3：隐藏底背离 → 趋势中继，温和看涨
+        if hidden_bottom > 0.15 and bottom_div < 0.3:
+            mult *= 1.10
+
+        # 规则4：多级别对齐 → 趋势确认
+        if abs(alignment) > 0.5:
+            mult *= (1.0 + 0.12 * alignment)  # 看涨时提升，看跌时降低
+        elif zhongyin > 0:
+            # 中阴状态 → 方向不明确 → 降低仓位（小说："看不懂的不做"）
+            mult *= 0.85
+
+        # 规则5："走势终完美"——结构未完成时谨慎
+        if structure_complete < 0.5 and abs(alignment) < 0.3:
+            mult *= 0.90
+
+        # 规则6：中枢突破 = 第三类买卖点
+        if breakout_above > 0 and alignment > 0.3:
+            mult *= 1.15  # 向上突破中枢，趋势强劲（3买）
+            is_buy_boost = True
+        if breakout_below > 0 and alignment < -0.3:
+            mult *= 0.75  # 向下跌破中枢，趋势转熊（3卖）
+            is_sell_boost = True
+
+        # 规则7：中枢存在 + 底背离区域 = 2买的可能位置
+        if pivot_present > 0 and bottom_div > 0.15:
+            mult *= 1.08  # 中枢附近底背离，安全性更高
+
+        return {
+            'boost_multiplier': float(np.clip(mult, 0.5, 1.5)),
+            'is_chan_buy_boost': is_buy_boost,
+            'is_chan_sell_boost': is_sell_boost,
+            'divergence_quality': div_quality,
+        }
+
     def _generate_signal(self, ind: dict, idx: int, last_sig, current_date=None, code=None) -> Signal:
         """生成信号"""
         if idx < 60:
             return Signal(
                 buy=False, sell=False, score=0.0, factor_value=0.0,
                 factor_name='V41', risk_vol=0.03, risk_regime=0,
-                risk_confidence=0.0, risk_extreme=False, adjusted_score=0.0
+                risk_confidence=0.0, risk_extreme=False, adjusted_score=0.0,
+                industry=self._get_specific_industry(code, current_date) if code else ''
             )
 
         # 市场状态
@@ -757,6 +832,49 @@ class SignalEngine:
 
         score = base_score
 
+        # === 小说灵感：量价确认（量在价先）===
+        # 核心逻辑：成交量/换手率无法造假，用于过滤虚假信号
+        vol_ratio = self._safe_get(ind, 'volume_ratio', idx, 0)
+        smart_money = self._safe_get(ind, 'smart_money_flow', idx, 0)
+        wash_sale = self._safe_get(ind, 'wash_sale_score', idx, 0)
+        vol_breakout = self._safe_get(ind, 'vol_price_breakout', idx, 0)
+        vol_contract = self._safe_get(ind, 'volume_contraction', idx, 0)
+        rel_strength = self._safe_get(ind, 'relative_strength', idx, 0)
+
+        # 量价确认乘数：信号方向与资金流向一致时放大，不一致时缩小
+        vol_confirm_mult = 1.0
+        if score > 0 and smart_money > 0.1:
+            vol_confirm_mult = 1.15  # 放量上涨：主力买入确认
+        elif score > 0 and smart_money < -0.1:
+            vol_confirm_mult = 0.85  # 量价背离：警惕虚假信号
+        elif score < 0 and smart_money < -0.1:
+            vol_confirm_mult = 1.15  # 放量下跌：空头确认
+
+        # 洗盘检测加分：洗盘形态的股票，反转概率高
+        if wash_sale > 0.2 and score > 0:
+            vol_confirm_mult += 0.10  # 洗盘后看涨
+
+        # 缩量回调+趋势向上：洗盘结束信号（小说核心战法）
+        if vol_contract > 0.2:
+            vol_confirm_mult += 0.08
+
+        # 放量突破：确定性最高（小说："等放量突破确认主升浪"）
+        if vol_breakout > 0.3:
+            vol_confirm_mult += 0.12
+
+        # 强者恒强：动量持续性好的股票加分
+        if rel_strength > 0.2 and score > 0:
+            vol_confirm_mult += 0.05
+
+        vol_confirm_mult = np.clip(vol_confirm_mult, 0.7, 1.4)
+
+        # === 缠论增强：背离 + 结构确认 ===
+        chan_info = self._get_chan_boost(ind, idx)
+        chan_mult = chan_info['boost_multiplier']
+
+        # 量价确认和缠论增强结合（两者独立，相乘）
+        score = score * vol_confirm_mult * chan_mult
+
         # 4. 波动率风险指标
         risk_vol = self._safe_get(ind, 'volatility_10', idx, 0.02)
 
@@ -770,6 +888,14 @@ class SignalEngine:
             factor_tags.append('F')
         if style_confidence > 0.3:
             factor_tags.append(style_regime[:2].upper())
+        if vol_confirm_mult > 1.05:
+            factor_tags.append('V')  # 量价确认标记
+        if chan_info['divergence_quality'] > 0.3:
+            factor_tags.append('D')  # 背离确认标记
+        if chan_info['is_chan_buy_boost'] and chan_info['divergence_quality'] > 0.25:
+            factor_tags.append('B')  # Chan买入点
+        if chan_info['is_chan_sell_boost']:
+            factor_tags.append('S')  # Chan卖出点
         factor_name = factor_name + ('_' + ''.join(factor_tags) if factor_tags else '_T')
 
         # 6. 交易信号
@@ -798,6 +924,20 @@ class SignalEngine:
         # 提取因子质量（用于组合层权重调整）
         factor_quality = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
 
+        # 缠论背离类型判定
+        bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
+        top_div = self._safe_get(ind, 'top_divergence', idx, 0.0)
+        if bottom_div > top_div and bottom_div > 0.3:
+            chan_div_type = 'bottom'
+        elif top_div > bottom_div and top_div > 0.3:
+            chan_div_type = 'top'
+        elif self._safe_get(ind, 'hidden_bottom_divergence', idx, 0.0) > 0.15:
+            chan_div_type = 'hidden_bottom'
+        elif self._safe_get(ind, 'hidden_top_divergence', idx, 0.0) > 0.15:
+            chan_div_type = 'hidden_top'
+        else:
+            chan_div_type = 'none'
+
         return Signal(
             buy=buy, sell=sell, score=score, factor_value=factor_value,
             factor_name=factor_name, industry=specific_industry or '',
@@ -805,7 +945,10 @@ class SignalEngine:
             risk_confidence=market_info.get('confidence', 0.0),
             risk_extreme=risk_extreme or risk_info.get('is_high_vol', False),
             adjusted_score=adjusted_score,
-            factor_quality=factor_quality
+            factor_quality=factor_quality,
+            chan_divergence_type=chan_div_type,
+            chan_divergence_strength=chan_info['divergence_quality'],
+            chan_structure_score=float(self._safe_get(ind, 'alignment_score', idx, 0.0)),
         )
 
     def _select_factor(self, ind: dict, idx: int, regime: int, industry_category: str = 'default',

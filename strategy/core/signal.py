@@ -30,6 +30,11 @@ class Signal:
     # === 因子质量（用于动态阈值）===
     factor_quality: float = 0.0   # 动态因子质量分数
 
+    # === 缠论信号 ===
+    chan_divergence_type: str = ""           # 'none'/'bottom'/'top'/'hidden_bottom'/'hidden_top'
+    chan_divergence_strength: float = 0.0    # 背离强度 [0, 1]
+    chan_structure_score: float = 0.0        # 结构对齐分数 [-1, 1]
+
     def to_dict(self) -> dict:
         """转换为字典"""
         return {
@@ -45,6 +50,9 @@ class Signal:
             'risk_extreme': self.risk_extreme,
             'adjusted_score': self.adjusted_score,
             'factor_quality': self.factor_quality,
+            'chan_divergence_type': self.chan_divergence_type,
+            'chan_divergence_strength': self.chan_divergence_strength,
+            'chan_structure_score': self.chan_structure_score,
         }
 
     def get_risk_level(self) -> str:

@@ -32,6 +32,13 @@ CASH = config.get('backtest.cash', 100000.0)
 COMMISSION = config.get('backtest.commission', 0.0015)
 PERC = config.get('backtest.slippage', 0.0015)
 REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
+
+# === 小说优化：动态调仓周期 ===
+DYNAMIC_REBALANCE_CONFIG = config.get('dynamic_rebalance', {})
+DYNAMIC_REBALANCE_ENABLED = DYNAMIC_REBALANCE_CONFIG.get('enabled', True)
+REBALANCE_BULL = DYNAMIC_REBALANCE_CONFIG.get('bull_period', 30)
+REBALANCE_NEUTRAL = DYNAMIC_REBALANCE_CONFIG.get('neutral_period', 20)
+REBALANCE_BEAR = DYNAMIC_REBALANCE_CONFIG.get('bear_period', 15)
 NUM_WORKERS = config.get('backtest.num_workers', 8)
 
 # 数据路径 - 从配置文件读取
@@ -293,6 +300,7 @@ class BacktraderExecution(bt.Strategy):
     def __init__(self):
         self.universe = [d._name for d in self.datas]
         self.count = 0
+        self.current_rebalance_period = REBALANCE_DAYS  # 动态周期，默认20天
         self.orders_list = defaultdict(list)
         self.last_date = None
         self.cost = defaultdict(list)
@@ -343,7 +351,22 @@ class BacktraderExecution(bt.Strategy):
         }
 
         rebalance = False
-        if self.count >= REBALANCE_DAYS:
+        # === 动态调仓周期（小说：牛市捂股，熊市灵活）===
+        if DYNAMIC_REBALANCE_ENABLED and self.p.real_strategy.index_data is not None:
+            date_ts = pd.to_datetime(date)
+            idx_row = self.p.real_strategy.index_data[
+                self.p.real_strategy.index_data["datetime"].dt.date == date
+            ]
+            if not idx_row.empty:
+                regime = int(idx_row["regime"].values[0])
+                if regime == 1:
+                    self.current_rebalance_period = REBALANCE_BULL
+                elif regime == -1:
+                    self.current_rebalance_period = REBALANCE_BEAR
+                else:
+                    self.current_rebalance_period = REBALANCE_NEUTRAL
+
+        if self.count >= self.current_rebalance_period:
             self.count = 1
             rebalance = True
         target = self.p.real_strategy.generate_positions(
