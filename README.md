@@ -2,6 +2,15 @@
 
 A股多因子量化交易系统，基于 Backtrader 回测框架，Sharpe Ratio 目标 > 1.0。
 
+## 策略演进
+
+| 版本 | 核心改进 | 来源 |
+|------|------|------|
+| v1 | 基础多因子 + 行业轮动 | — |
+| v2 | 20行业分类 + Alpha因子 + 截面中性化 + 10日调仓 | — |
+| v3 | 因子家族分散 + 渐进熊市 + 不对称情绪 + 固定信号门槛 | — |
+| **v4** | **MACD背离 + 中枢结构 + 三类买卖点 + Chan感知退出** | 缠中说禅 + 股神：5万本金悟道 + 股道人生 |
+
 ## 依赖
 * ip池: https://ak.cheapproxy.net/
 * 微信推送: https://sct.ftqq.com/
@@ -82,9 +91,11 @@ strategy/                   # 策略层
 ├── config/factor_config.yaml   # 策略配置（因子/组合/回测/情绪参数）
 ├── core/
 │   ├── strategy.py             # 策略主类（信号+组合+情绪编排）
-│   ├── signal_engine.py        # 信号引擎（动态因子选择/WF-IC验证/信号生成）
-│   ├── portfolio.py            # 组合构建（截面排名/行业均衡/风险预算/止损）
-│   ├── factor_calculator.py    # 因子计算（技术面+Alpha+基本面组合因子）
+│   ├── signal_engine.py        # 信号引擎（动态因子选择/WF-IC验证/信号生成+Chan增强）
+│   ├── portfolio.py            # 组合构建（截面排名/行业均衡/风险预算/Chan感知止损）
+│   ├── factor_calculator.py    # 因子计算（技术面+Alpha+基本面+Chan指标）
+│   ├── divergence_detector.py  # MACD背离检测（顶/底背离+隐藏背离，缠论核心）
+│   ├── structure_analyzer.py   # 多级别结构分析（K线重叠中枢+级别+中阴+三类买卖点）
 │   ├── factor_library.py       # 因子库（波动率/动量/RSI/布林带/Alpha因子注册）
 │   ├── factor_preparer.py      # 因子预计算（多进程并行+截面中性化）
 │   ├── factor_neutralizer.py   # 因子中性化（行业+市值截面回归剥离）
@@ -123,9 +134,12 @@ data_manager → backtrader_data → factor_preparer → factor_df (中性化)
                                               (Walk-Forward IC验证)
                                                          ↓
                               sentiment_store → SignalEngine → signals
+                                           ↓                    ↓
+                              DivergenceDetector (背离)    ChanBoost ×1.25/×0.70
+                              StructureAnalyzer  (中枢)    中阴×0.85/突破×1.15
                                                          ↓
                                           PortfolioConstructor → positions
-                                          (风险预算+行业均衡+止损)
+                                          (风险预算+行业均衡+Chan感知止损)
                                                          ↓
                                           recommender → 微信推送
 ```
@@ -214,7 +228,56 @@ factor_raw ~ industry_dummies + log(market_cap) → residual = 纯因子值
 
 每个行业配置了独立的牛市/中性/熊市因子组合，通过 Walk-Forward IC 验证产出的权重进行动态调整。
 
-### 5. 信号生成
+### 5. 缠论增强 (v4 新增)
+
+基于缠中说禅 + 股神：5万本金悟道 + 股道人生三本书的核心思想，新增两大模块：
+
+#### 5a. MACD 背离检测 (`divergence_detector.py`)
+
+```
+顶背离: 价格新高 + MACD柱未新高 → 卖出信号（多头陷阱）
+底背离: 价格新低 + MACD柱未新低 → 买入信号（空头陷阱）
+隐藏背离: 趋势中继确认
+```
+
+- 纯 NumPy 实现，无外部依赖
+- "没有趋势，没有背驰"：背离成立前验证 EMA 趋势结构
+- 背离信号持续衰减传播（最多 10 根 K 线）
+
+#### 5b. 多级别结构分析 (`structure_analyzer.py`)
+
+- **K线重叠中枢**: 3K=1F, 4-9K=5F, 10-19K=15F, 20K+=30F（日线图）
+- **中阴识别**: EMA20/EMA60 间距 < 2% 且存在中枢 → 方向不明，降低仓位
+- **走势终完美**: 趋势结构中至少形成一个5F级别中枢才算完成
+- **三类买卖点**: 1买(底背离终结点)、2买(回调不破1买低点)、3买(突破中枢上沿+回踩不破)
+- **多级别对齐**: EMA20>EMA60>EMA120 多头排列 → 正分；反之为负分
+
+#### 5c. 信号增强乘数
+
+```python
+score = factor_value
+     × vol_confirm_mult     # 量价确认 (0.7~1.4)
+     × chan_boost_mult      # 缠论增强 (0.5~1.5)
+
+chan_boost_mult 规则:
+  - 底背离 > 0.3        → ×1.25  ("空头陷阱就是最佳机会")
+  - 顶背离 > 0.3        → ×0.70  ("多头陷阱就是天堂"→卖出)
+  - 中阴状态            → ×0.85  ("看不懂的不做")
+  - 多级别正对齐 > 0.5  → ×1.12  (趋势确认)
+  - 中枢突破 + 正对齐   → ×1.15  (第三类买点)
+  - 结构未完成          → ×0.90  ("走势终完美")
+```
+
+#### 5d. Chan 感知退出
+
+| 退出类型 | 触发条件 | 说明 |
+|------|------|------|
+| 顶背离退出 | divergence_type=top + strength>0.4 | MACD顶背离，提前止盈 |
+| 趋势耗尽退出 | alignment_score < -0.4 | 多级别对齐反转 |
+| 隐藏背离退出 | hidden_top + strength>0.25 + 结构走弱 | 趋势转弱预警 |
+| 买入点保护 | bottom/hidden_bottom + strength>0.3 → 止损放宽2倍 | 防止洗盘震出 |
+
+### 6. 信号生成
 
 ```python
 # 核心公式
@@ -229,7 +292,7 @@ sell = factor_value < sell_threshold (-0.15)
 
 信号层只产出 `factor_value`，实际的买卖决策由组合层通过**截面 rank_pct 排序**决定。这种设计避免了绝对阈值带来的信号稀疏问题（历史数据显示绝对阈值导致 52.7% 信号为 NONE）。
 
-### 6. 组合构建
+### 7. 组合构建
 
 **风险预算模型**：每只股票的仓位由其信号质量和波动率共同决定。
 
@@ -250,7 +313,7 @@ weight = signal_score / volatility × IC_weight × industry_exposure
 n_positions = total_equity / 10000,  范围 [3, 15]
 ```
 
-### 7. 多层止损体系
+### 8. 多层止损体系
 
 | 止损类型 | 参数 | 说明 |
 |------|------|------|
@@ -258,8 +321,11 @@ n_positions = total_equity / 10000,  范围 [3, 15]
 | **时间止损** | 30天 + 收益 < -8% | 持仓过久且无收益 |
 | **移动止盈** | 从最高点回撤 20% | 保护已有利润 |
 | **组合止损** | 组合回撤 > 15% | 仓位暴露降至 35%，10日逐步恢复 |
+| **Chan顶背离退出** | 顶背离强度 > 0.4 | MACD顶背离提前止盈 (v4) |
+| **Chan趋势耗尽** | alignment_score < -0.4 | 多级别对齐反转退出 (v4) |
+| **Chan买入点保护** | 底背离区域止损×2 | 防止洗盘震出 (v4) |
 
-### 8. LLM 行业情绪分析
+### 9. LLM 行业情绪分析
 
 基于 DeepSeek API 的每日行业情绪分析管道：
 
@@ -295,7 +361,13 @@ n_positions = total_equity / 10000,  范围 [3, 15]
 | `factor_neutralization` | `enabled` | true | 截面行业+市值中性化 |
 | `risk_parity` | `enabled` | true | 风险平价配置 |
 | `volatility_control` | `enabled` | true | 波动率自适应控制 |
-| `backtest` | `cash` | 100000 | 回测初始资金 |
+| `chan_theory` | `enabled` | true | 缠论增强总开关 (v4) |
+| | `divergence.strength_threshold` | 0.3 | 背离强度阈值 |
+| | `signal_boost.bottom_divergence_mult` | 1.25 | 底背离买入乘数 |
+| | `signal_boost.top_divergence_mult` | 0.70 | 顶背离抑制乘数 |
+| | `signal_boost.zhongyin_penalty` | 0.85 | 中阴状态惩罚 |
+| | `exit.buy_zone_stop_protection` | 2.0 | 买入点止损放宽倍数 |
+| `backtest` | `cash` | 150000 | 回测初始资金 |
 | | `commission` | 0.0015 | 交易佣金 |
 | | `rebalance_days` | 10 | 调仓周期（每2周） |
 
