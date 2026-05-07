@@ -53,6 +53,9 @@ coverage.xml
 cover/
 
 data/stock_data*
+stock_data/
+stock_data_all.tar.gz
+._*
 strategy/rolling_validation_results/*.csv
 # Translations
 *.mo
