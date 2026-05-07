@@ -506,6 +506,36 @@ def calculate_indicators(
             cb_score[i] = 0.4
     result['consolidation_breakout'] = np.tanh(cb_score * 2)
 
+    # === 15. 残差动量因子：剔除市场均值后的纯特质动量 ===
+    residual_mom = np.zeros(n)
+    for i in range(20, n):
+        stock_rets = returns[i-19:i+1]
+        # 用自身收益均值作为市场代理的简化实现
+        mean_ret = np.mean(stock_rets)
+        residual = stock_rets - mean_ret
+        if np.std(residual) > 1e-10:
+            residual_mom[i] = np.sum(residual[-5:]) / np.std(residual)
+    result['residual_momentum'] = np.tanh(residual_mom * 2)
+
+    # === 16. 短期反转因子：单日极端涨跌(>4%)后均值回归 ===
+    short_reversal = np.zeros(n)
+    for i in range(5, n):
+        daily_ret = returns[i]
+        if abs(daily_ret) > 0.04:
+            avg_range = np.mean(high_arr[i-4:i+1] - low_arr[i-4:i+1]) / (close_arr[i] + 1e-10)
+            if avg_range > 0.03:
+                short_reversal[i] = -daily_ret * 2  # 反转信号
+    result['short_reversal'] = np.tanh(short_reversal)
+
+    # === 17. 盈利质量因子：低波动率+稳定换手=高质量盈利 ===
+    if turnover_rate is not None:
+        inv_turnover = result.get('inv_turnover', np.zeros(n))
+        vol_20 = result.get('volatility', np.zeros(n))
+        eq_quality = inv_turnover * (1.0 / (1.0 + np.abs(vol_20) * 10))
+        result['earnings_quality'] = np.tanh(eq_quality * 3)
+    else:
+        result['earnings_quality'] = np.zeros(n)
+
     # === 缠论：MACD背离检测 ===
     # MACD已在上面计算（macd, macd_signal, macd_hist）
     divergence_params = params.get('divergence', {})
@@ -862,5 +892,11 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['smart_money_flow'] = ind['smart_money_flow'][idx] if not np.isnan(ind['smart_money_flow'][idx]) else 0.0
     if 'consolidation_breakout' in ind:
         result['consolidation_breakout'] = ind['consolidation_breakout'][idx] if not np.isnan(ind['consolidation_breakout'][idx]) else 0.0
+    if 'residual_momentum' in ind:
+        result['residual_momentum'] = ind['residual_momentum'][idx] if not np.isnan(ind['residual_momentum'][idx]) else 0.0
+    if 'short_reversal' in ind:
+        result['short_reversal'] = ind['short_reversal'][idx] if not np.isnan(ind['short_reversal'][idx]) else 0.0
+    if 'earnings_quality' in ind:
+        result['earnings_quality'] = ind['earnings_quality'][idx] if not np.isnan(ind['earnings_quality'][idx]) else 0.0
 
     return result

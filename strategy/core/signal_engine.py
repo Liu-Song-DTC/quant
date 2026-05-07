@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional, Tuple
 from scipy import stats
+from collections import deque
 
 from .signal import Signal
 from .signal_store import SignalStore
@@ -201,14 +202,14 @@ def _compute_date_chunk(args):
                 ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
 
-                # === IC质量过滤 ===
+                # === IC质量过滤（收紧防过拟合） ===
 
-                # 1. IC符号稳定性：60%（>50%才有预测能力）
-                MIN_STABILITY = 0.55
+                # 1. IC符号稳定性：65%（>60%才有稳定预测方向）
+                MIN_STABILITY = 0.65
                 if ic_stability < MIN_STABILITY:
                     continue
 
-                # 2. IC方差过滤：放宽到5.0
+                # 2. IC方差过滤
                 ic_variance = ic_std / (abs(ic_mean) + 1e-10) if abs(ic_mean) > 1e-10 else 999
                 MAX_IC_VARIANCE = 5.0
                 if ic_variance > MAX_IC_VARIANCE:
@@ -217,18 +218,37 @@ def _compute_date_chunk(args):
                 # combined_ir = ir * (0.5 + 0.5 * stability)
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
 
-                # 3. t统计量过滤：1.0（p≈0.05附近）
-                if abs(t_statistic) < 0.8:
+                # 3. t统计量过滤：1.3（p≈0.10，t=0.8仅p≈0.22接近随机）
+                if abs(t_statistic) < 1.3:
                     continue
 
                 # 因子方向过滤：只考虑正向因子（ic_mean > 0）
                 if ic_mean <= 0:
                     continue
 
-                # 4. 最小质量阈值
-                MIN_COMBINED_IR = 0.03
+                # 4. 最小组合IR阈值：0.08（0.03在28因子搜索中基本是噪声）
+                MIN_COMBINED_IR = 0.08
                 if combined_ir < MIN_COMBINED_IR:
                     continue
+
+                # 5. Bootstrap p值：IC均值>0的概率必须显著
+                p_value = stats.norm.sf(ic_mean / (ic_std / np.sqrt(n_dates)))
+                if p_value > 0.15:
+                    continue
+
+                # 6. 至少60%的日期IC>0，防止少数极端日期拉动均值
+                n_positive = sum(1 for ic in ic_list if ic > 0)
+                if n_positive / n_dates < 0.60:
+                    continue
+
+                # 7. 前瞻验证：最近20%日期作为mini OOS，IC必须>0
+                if n_dates >= 10:
+                    split_idx = int(n_dates * 0.8)
+                    oos_ic_list = ic_list[split_idx:]
+                    if len(oos_ic_list) >= 3:
+                        oos_ic = np.mean(oos_ic_list)
+                        if oos_ic <= 0:
+                            continue
 
                 factor_metrics.append({
                     'factor': fn,
@@ -239,41 +259,57 @@ def _compute_date_chunk(args):
                 })
 
             if len(factor_metrics) >= 1:
-                # 按质量排序，取所有通过阈值的因子（动态N）
+                # 按质量排序
                 factor_metrics.sort(key=lambda x: x['combined_ir'], reverse=True)
-                # 最多取top_n，但如果有超过top_n个因子通过质量阈值，也只取top_n
-                # 加入因子家族分散化约束：至少来自 min_families 个不同家族
                 min_families = config.get('min_factor_families', 2)
-                diversified = []
-                used_families = set()
+
+                # === 因子家族分散化：两轮选择 ===
+                # Round 1: 每个家族只选最佳因子（保证多样性）
+                family_best = {}
                 for fm in factor_metrics:
                     fam = _get_factor_family(fm['factor'])
-                    if len(diversified) < top_n:
-                        diversified.append(fm)
-                        used_families.add(fam)
-                    elif len(used_families) < min_families and fam not in used_families:
-                        # 家族约束：替换排名最低的同家族因子
-                        for j in range(len(diversified) - 1, -1, -1):
-                            if _get_factor_family(diversified[j]['factor']) == fam:
-                                continue
-                            if len({_get_factor_family(d['factor']) for d in diversified if d != diversified[j]} | {fam}) >= min_families:
-                                diversified[j] = fm
-                                used_families = {_get_factor_family(d['factor']) for d in diversified}
+                    if fam not in family_best:
+                        family_best[fam] = fm
+
+                # Round 2: 按质量排序家族，取 top_n，确保至少 min_families 个家族
+                families_ranked = sorted(family_best.values(),
+                                         key=lambda x: x['combined_ir'], reverse=True)
+                diversified = families_ranked[:top_n]
+                used_families = {_get_factor_family(f['factor']) for f in diversified}
+
+                # 如果家族不够，从剩余因子中补充新家族
+                if len(used_families) < min_families:
+                    for fm in factor_metrics:
+                        fam = _get_factor_family(fm['factor'])
+                        if fam not in used_families:
+                            # 替换最弱的同家族因子
+                            if len(diversified) >= top_n:
+                                # 找diversified中排名最低且家族>1个因子的替换
+                                for j in range(len(diversified) - 1, -1, -1):
+                                    to_replace_fam = _get_factor_family(diversified[j]['factor'])
+                                    if sum(1 for d in diversified if _get_factor_family(d['factor']) == to_replace_fam) > 1:
+                                        diversified[j] = fm
+                                        used_families = {_get_factor_family(d['factor']) for d in diversified}
+                                        break
+                                else:
+                                    # 所有家族都只有1个因子，替换最弱的
+                                    diversified[-1] = fm
+                                    used_families = {_get_factor_family(d['factor']) for d in diversified}
+                            else:
+                                diversified.append(fm)
+                                used_families.add(fam)
+                            if len(used_families) >= min_families:
                                 break
-                    else:
-                        break
+
                 top_factors = diversified[:top_n]
 
-                # === 阶段1优化：1F因子需要更高IC门槛 ===
-                # 1F因子IC仅0.64%（接近随机），而3F因子IC=7.25%
+                # === 因子数量门槛检查 ===
                 n_selected = len(top_factors)
                 avg_quality = np.mean([f['combined_ir'] for f in top_factors])
 
-                # 如果只有1个因子，检查是否达到1F专用门槛
+                # 因子数量不足最小要求则fallback（让调用方使用静态因子）
                 if n_selected < min_factor_count:
-                    if n_selected == 1 and avg_quality < min_ic_1f:
-                        # 1F质量不足，不记录（让调用方fallback到静态因子）
-                        continue
+                    continue
 
                 # 质量加权：combined_ir 反映因子质量，用于权重分配
                 total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10
@@ -541,6 +577,13 @@ class SignalEngine:
             'ic_values': [],
         }
 
+        # 动态买入阈值：滚动缓冲区（最近1000个因子值）
+        self._factor_value_buffer = deque(maxlen=2000)
+        # 行业内因子值缓存：{industry: deque(maxlen=500)}
+        self._industry_factor_cache = {}
+        # 动态阈值基准百分位
+        self._buy_threshold_pct = self.config.get('signal', {}).get('buy_threshold_pct', 0.60)
+
     def _load_config(self):
         """从配置文件加载参数"""
         config_loader = load_config()
@@ -572,6 +615,13 @@ class SignalEngine:
         # 动态因子选择器
         self.dynamic_factor_selector = DynamicFactorSelector()
 
+        # === ML预测层 ===
+        ml_config = config_loader.get('ml', {})
+        self.ml_enabled = ml_config.get('enabled', False)
+        self.ml_blend_weight = ml_config.get('blend_weight', 0.30)
+        self.ml_predictor = None
+        self._ml_predictions = {}  # {(code, date): float}
+
         # 动态因子模式配置：dynamic(仅动态) / fixed(仅固定) / both(动态优先+固定兜底)
         self.factor_mode = config_loader.get('factor_mode', 'both')
         # 兼容两种配置key: fallback_to_fixed 和 fallback_to_static
@@ -599,6 +649,14 @@ class SignalEngine:
     def set_fundamental_data(self, fundamental_data):
         """设置基本面数据"""
         self.fundamental_data = fundamental_data
+
+    def set_ml_predictor(self, predictor):
+        """设置ML预测器"""
+        self.ml_predictor = predictor
+
+    def set_ml_predictions(self, predictions: dict):
+        """设置预计算的ML预测值 {(code, date): float}"""
+        self._ml_predictions = predictions
 
     def set_market_regime(self, regime_df: pd.DataFrame):
         """设置市场状态数据"""
@@ -826,6 +884,19 @@ class SignalEngine:
         # 1. 基础分数 = 因子值
         base_score = np.clip(factor_value, -10, 10)
 
+        # 1a. 行业内截面归一化：减去行业均值，消除行业系统性偏差
+        specific_industry = self._get_specific_industry(code, current_date) if code else ''
+        if specific_industry and abs(base_score) > 0.001:
+            if specific_industry not in self._industry_factor_cache:
+                self._industry_factor_cache[specific_industry] = deque(maxlen=500)
+            self._industry_factor_cache[specific_industry].append(base_score)
+            ind_vals = list(self._industry_factor_cache[specific_industry])
+            if len(ind_vals) >= 10:
+                ind_mean = np.mean(ind_vals)
+                ind_std = max(np.std(ind_vals), 0.01)
+                # z-score归一化后缩放到[-1, 1]
+                base_score = np.tanh((base_score - ind_mean) / ind_std * 0.3)
+
         # 2. 基本面增强（仅对非行业因子生效）
         if not is_industry and fundamental_score > 0:
             base_score = base_score + fundamental_score * 0.1
@@ -875,6 +946,15 @@ class SignalEngine:
         # 量价确认和缠论增强结合（两者独立，相乘）
         score = score * vol_confirm_mult * chan_mult
 
+        # === ML预测混合（非线性因子交互） ===
+        if self.ml_enabled and self.ml_predictor is not None and \
+           self.ml_predictor.is_trained() and code and current_date:
+            ml_pred = self._ml_predictions.get((code, current_date))
+            if ml_pred is not None and not np.isnan(ml_pred):
+                ml_pred_scaled = np.tanh(ml_pred * 3)  # 压缩到(-1, 1)
+                score = (1 - self.ml_blend_weight) * score + \
+                        self.ml_blend_weight * ml_pred_scaled
+
         # 4. 波动率风险指标
         risk_vol = self._safe_get(ind, 'volatility_10', idx, 0.02)
 
@@ -898,28 +978,45 @@ class SignalEngine:
             factor_tags.append('S')  # Chan卖出点
         factor_name = factor_name + ('_' + ''.join(factor_tags) if factor_tags else '_T')
 
-        # 6. 交易信号
-        # === 核心改动：信号层只产出factor_value，buy/sell由组合层通过rank_pct决定 ===
-        # 离线验证结论：
-        # - rank_pct>0.5 top10行业均衡: Sharpe=0.77（vs 绝对阈值buy_signal: 0.60）
-        # - 绝对阈值导致52.7%信号为NONE，其中79.6%的factor_value>0
-        # - rank_pct选股准确率50.9% vs buy_signal 47.9%
-        #
-        # 使用配置的buy_threshold预过滤，减少组合层无效候选
+        # 6. 信号信心度评分（四重确认）
+        # 综合因子质量 + 量价确认 + 缠论背离 + 趋势对齐
+        confidence_factors = []
+        if risk_info and risk_info.get('dyn_quality', 0) > 0.02:
+            confidence_factors.append(min(risk_info['dyn_quality'] * 5, 0.3))
+        if vol_confirm_mult > 1.05:
+            confidence_factors.append(0.15)
+        if chan_info['divergence_quality'] > 0.3:
+            confidence_factors.append(0.2)
+        trend_aligned = (score > 0 and chan_info.get('alignment', 0) > 0) or \
+                        (score < 0 and chan_info.get('alignment', 0) < 0)
+        if trend_aligned:
+            confidence_factors.append(0.15)
+        signal_confidence = min(sum(confidence_factors), 0.8) + 0.2  # base 0.2
 
-        # 安全过滤：极端值和无效值不产生信号
+        # 7. 交易信号：动态买入阈值（百分位-based，强制选择性）
+        # 更新因子值滚动缓冲区
+        if factor_value is not None and not np.isnan(factor_value):
+            self._factor_value_buffer.append(float(factor_value))
+
+        # 动态阈值：缓冲区>100时取top 40%，否则使用配置的固定阈值
+        if len(self._factor_value_buffer) > 100:
+            dynamic_threshold = float(np.percentile(
+                list(self._factor_value_buffer),
+                self._buy_threshold_pct * 100
+            ))
+            effective_threshold = max(dynamic_threshold, self.buy_threshold * 0.5)
+        else:
+            effective_threshold = self.buy_threshold
+
         buy = (factor_value is not None and
                not np.isnan(factor_value) and
-               factor_value > self.buy_threshold and
+               factor_value > effective_threshold and
                abs(score) < 5.0)
 
         # sell信号：仅在factor_value明确为负时标记
         sell = (factor_value is not None and
                 not np.isnan(factor_value) and
                 factor_value < self.sell_threshold)
-
-        # 获取具体行业用于组合层行业均衡
-        specific_industry = self._get_specific_industry(code, current_date) if code else ''
 
         # 提取因子质量（用于组合层权重调整）
         factor_quality = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
@@ -946,6 +1043,7 @@ class SignalEngine:
             risk_extreme=risk_extreme or risk_info.get('is_high_vol', False),
             adjusted_score=adjusted_score,
             factor_quality=factor_quality,
+            signal_confidence=signal_confidence,
             chan_divergence_type=chan_div_type,
             chan_divergence_strength=chan_info['divergence_quality'],
             chan_structure_score=float(self._safe_get(ind, 'alignment_score', idx, 0.0)),

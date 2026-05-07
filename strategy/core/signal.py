@@ -30,6 +30,9 @@ class Signal:
     # === 因子质量（用于动态阈值）===
     factor_quality: float = 0.0   # 动态因子质量分数
 
+    # === 信号信心度 ===
+    signal_confidence: float = 0.0    # 四重确认综合信心度 [0, 1]
+
     # === 缠论信号 ===
     chan_divergence_type: str = ""           # 'none'/'bottom'/'top'/'hidden_bottom'/'hidden_top'
     chan_divergence_strength: float = 0.0    # 背离强度 [0, 1]
@@ -50,6 +53,7 @@ class Signal:
             'risk_extreme': self.risk_extreme,
             'adjusted_score': self.adjusted_score,
             'factor_quality': self.factor_quality,
+            'signal_confidence': self.signal_confidence,
             'chan_divergence_type': self.chan_divergence_type,
             'chan_divergence_strength': self.chan_divergence_strength,
             'chan_structure_score': self.chan_structure_score,

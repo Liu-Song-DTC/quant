@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
+from collections import deque
 
 
 @dataclass
@@ -23,6 +24,8 @@ class MarketRegimeInfo:
     style_confidence: float  # 风格置信度: 0-1
     # 熊市风险信号 (新增)
     bear_risk: bool       # 熊市风险（用于风险管理）
+    # 状态切换率
+    regime_volatility: float = 0.0  # 0(稳定) ~ 1(混沌)，用于动态调仓频率
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +40,7 @@ class MarketRegimeInfo:
             'size_score': self.size_score,
             'style_confidence': self.style_confidence,
             'bear_risk': self.bear_risk,
+            'regime_volatility': self.regime_volatility,
         }
 
 
@@ -109,6 +113,17 @@ class MarketRegimeDetector:
         self.index_data['style_confidence'] = [r.style_confidence for r in regime_info_list]
         # 熊市风险信号
         self.index_data['bear_risk'] = [r.bear_risk for r in regime_info_list]
+        # 状态切换率（后处理：基于已生成的regime序列计算20日切换频率）
+        regime_vals = self.index_data['regime'].values
+        regime_vol_list = []
+        for i in range(len(regime_vals)):
+            if i < 20:
+                regime_vol_list.append(0.0)
+            else:
+                recent = regime_vals[i-20:i+1]
+                changes = sum(1 for j in range(1, len(recent)) if recent[j] != recent[j-1])
+                regime_vol_list.append(min(changes / 20 * 5, 1.0))
+        self.index_data['regime_volatility'] = regime_vol_list
 
         return self.index_data
 
@@ -189,17 +204,22 @@ class MarketRegimeDetector:
         # 均线空头排列检测（熊市辅助判断）
         ema_bearish = not ema20_above_60 and not ema60_above_120
 
-        # 熊市判断：快速下跌 或 持续下跌+均线空头
-        # 修改：要求60日动量也为负，才确认熊市（避免假熊市）
-        if (mom_5 < self.mom5_bear or mom < self.mom_bear) and mom_60 < 0:
+        # === 多周期动量确认（5日+20日+60日三周期对齐才判定）===
+        # 熊市判断：要求至少2/3周期确认，且60日动量为负
+        mom_signals_bear = sum([
+            mom_5 < self.mom5_bear,
+            mom < self.mom_bear,
+            mom_60 < -0.02
+        ])
+        if mom_signals_bear >= 2 and mom_60 < 0:
             regime = -1
-            confidence = 1.0
+            confidence = 0.7 + 0.1 * mom_signals_bear
         elif mom < self.mom_bear_sustained and ema_bearish and mom_60 < 0:
             # 持续下跌 + 均线空头排列 = 熊市
             regime = -1
             confidence = 0.8
 
-        # 牛市判断：动量强劲 且 均线多头
+        # 牛市判断：要求至少2/3周期确认
         elif mom > self.mom_bull and mom_60 > self.mom60_bull:
             regime = 1
             confidence = 1.0
@@ -212,15 +232,13 @@ class MarketRegimeDetector:
         is_extreme = vol > self.vol_extreme_high or vol < self.vol_extreme_low
 
         # === 熊市风险检测（用于风险管理）===
-        # 条件：深度回撤 + 长期动量为负
-        # 不同于短期下跌检测，这是真正的系统性风险
         drawdown = self._safe_get(self.drawdown, i, 0)
         mom_120 = self._safe_get(self.momentum_120, i, 0)
         bear_risk = (drawdown < -self.bear_risk_drawdown and
                      mom_120 < self.bear_risk_momentum and
                      ema_bearish)
 
-        # === 风格状态检测 (新增) ===
+        # === 风格状态检测 ===
         style_regime, style_score, size_score, style_confidence = self._detect_style_regime(i)
 
         return MarketRegimeInfo(

@@ -363,8 +363,13 @@ class PortfolioConstructor:
                 confidence += 0.05
             c['confidence'] = np.clip(confidence, 0.7, 1.3)
 
-        # 信心不足的股票淘汰
-        qualified = [c for c in qualified if c['confidence'] >= self.min_confidence]
+        # 信心不足的股票淘汰（熊市提高门槛）
+        eff_min_conf = self.min_confidence
+        if bear_risk or market_regime == -1:
+            eff_min_conf = min(self.min_confidence + 0.10, 0.95)
+        elif market_regime == 0:
+            eff_min_conf = self.min_confidence
+        qualified = [c for c in qualified if c['confidence'] >= eff_min_conf]
 
         # 换手控制：现有持仓给予换手惩罚加分，需超过交易成本才能被替换
         current_codes = set(current_positions.keys())
@@ -384,34 +389,49 @@ class PortfolioConstructor:
         # 排序：按有效得分降序（已持仓有换手加分）
         qualified.sort(key=lambda x: -x['effective_score'])
 
-        # 行业强制分散选股：每行业最多 1 只（小说"龙头洁癖"：每行业只选最强）
-        # 解决原版行业集中度 81.5% 的问题
-        MAX_PER_INDUSTRY = 2
-        MIN_INDUSTRIES = 3
+        # === 多轮行业分散选股 ===
+        # Round 1: 每行业只选最强冠军（保证多样性）
+        # Round 2: 若仓位未满，从最强行业中补充亚军
+        MAX_PER_INDUSTRY = 1
+        MIN_INDUSTRIES = 4
 
-        industry_count = {}
-        selected = []
-
-        # 严格约束每行业最多 MAX_PER_INDUSTRY 只
+        # Round 1: 行业冠军
+        industry_champions = {}
         for c in qualified:
             ind = c['industry']
-            if industry_count.get(ind, 0) >= MAX_PER_INDUSTRY:
-                continue
-            selected.append(c)
-            industry_count[ind] = industry_count.get(ind, 0) + 1
+            if ind not in industry_champions:
+                industry_champions[ind] = c
+            elif c['effective_score'] > industry_champions[ind]['effective_score']:
+                industry_champions[ind] = c
+
+        # 按冠军质量排序行业
+        ind_by_quality = sorted(
+            industry_champions.items(),
+            key=lambda x: x[1]['effective_score'],
+            reverse=True
+        )
+
+        # Round 1 选择：每个行业首位冠军
+        selected = []
+        industry_count = {}
+        for ind, champion in ind_by_quality:
             if len(selected) >= n_positions:
                 break
+            selected.append(champion)
+            industry_count[ind] = 1
 
-        # 检查行业覆盖：不足 MIN_INDUSTRIES 时，从未覆盖行业中补充
-        if len(industry_count) < MIN_INDUSTRIES and len(selected) < len(qualified):
-            remaining = [c for c in qualified if c not in selected]
-            for c in remaining:
+        # Round 2: 若仓位未满且行业覆盖足够，从最强行业补充亚军
+        if len(selected) < n_positions and len(industry_count) >= MIN_INDUSTRIES:
+            for c in qualified:
                 ind = c['industry']
-                if ind not in industry_count:
-                    selected.append(c)
-                    industry_count[ind] = industry_count.get(ind, 0) + 1
-                    if len(industry_count) >= MIN_INDUSTRIES:
-                        break
+                if industry_count.get(ind, 0) >= MAX_PER_INDUSTRY + 1:
+                    continue
+                if c in selected:
+                    continue
+                selected.append(c)
+                industry_count[ind] = industry_count.get(ind, 0) + 1
+                if len(selected) >= n_positions:
+                    break
 
         # === 动态最小持仓（小说：熊市允许空仓）===
         min_pos = self._get_min_positions(market_regime)
@@ -427,31 +447,34 @@ class PortfolioConstructor:
         self.current_ranking = {c['code']: i for i, c in enumerate(candidates)}
         self.current_n_positions = len(selected)
 
-        # === 权重分配（IC加权 + 信心加权）===
+        # === 权重分配（Kelly最优 + 风险平价）===
         n = len(selected)
         if self.risk_parity_enabled:
+            # 协方差风险平价（优先）
             rp_weights = self._risk_parity_weights(selected, total_equity)
             weights = [w * target_exposure for w in rp_weights]
         elif self.industry_ic:
+            # Kelly最优：仓位 = edge / variance（半凯利上限0.5）
             regime_key = {1: 'bull', -1: 'bear', 0: 'neutral'}.get(market_regime, 'neutral')
-            max_ic = 0.05
-            for c in selected:
-                ic_dict = self.industry_ic.get(c['industry'], {})
-                ic_val = ic_dict.get(regime_key, ic_dict.get('neutral', 0.05))
-                max_ic = max(max_ic, ic_val)
-
             raw_weights = []
             for c in selected:
                 ic_dict = self.industry_ic.get(c['industry'], {})
                 ic = ic_dict.get(regime_key, ic_dict.get('neutral', 0.05))
-                ic_w = (ic / max_ic) ** 1.5
-                # 情绪乘数调整
+                # Edge: IC × |signal_strength|
+                signal = np.clip(abs(c.get('factor_value', 0)), 0, 1)
+                edge = max(ic * signal, 0.001)
+                # Variance: volatility²
+                vol = c.get('risk_vol', 0.03)
+                variance = max(vol ** 2, 0.0001)
+                # Half-Kelly fraction
+                kelly_fraction = min(edge / variance * 0.01, 0.5)
+                # 情绪乘数
                 if self.sentiment_multipliers and c['industry'] in self.sentiment_multipliers:
-                    ic_w *= self.sentiment_multipliers[c['industry']]
-                # 信心加权：确定性高的持仓给更多权重
-                ic_w *= c.get('confidence', 1.0)
-                raw_weights.append(ic_w)
-            total_w = sum(raw_weights)
+                    kelly_fraction *= self.sentiment_multipliers[c['industry']]
+                # 信心加权
+                kelly_fraction *= c.get('confidence', 1.0)
+                raw_weights.append(max(kelly_fraction, 0.01))
+            total_w = sum(raw_weights) + 1e-10
             weights = [w / total_w * target_exposure for w in raw_weights]
         else:
             weights = [target_exposure / n] * n

@@ -52,7 +52,8 @@ _worker_engine = None
 _worker_use_dynamic = False
 
 
-def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry_codes, factor_cache, all_dates, regime_df):
+def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry_codes, factor_cache, all_dates, regime_df,
+                 ml_model_path=None, ml_preds=None):
     """Worker 进程初始化函数"""
     global _worker_engine, _worker_use_dynamic
     _worker_use_dynamic = use_dynamic
@@ -76,6 +77,18 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry
         # 设置预计算的因子选择缓存（避免worker重复计算）
         if factor_cache is not None and all_dates is not None:
             _worker_engine.dynamic_factor_selector.set_factor_cache(factor_cache, all_dates)
+
+    # 设置ML预测（每个worker加载模型副本）
+    if ml_model_path is not None and os.path.exists(ml_model_path):
+        try:
+            from core.ml_predictor import MLFactorPredictor
+            worker_ml = MLFactorPredictor()
+            worker_ml.load_model(ml_model_path)
+            _worker_engine.set_ml_predictor(worker_ml)
+        except Exception:
+            pass  # ML加载失败不阻塞回测
+    if ml_preds is not None:
+        _worker_engine.set_ml_predictions(ml_preds)
 
 
 def _generate_stock_signal_worker(args):
@@ -163,6 +176,43 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     else:
         print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
 
+    # === ML预测层训练 ===
+    ml_config = config.config.get('ml', {})
+    _ml_model_path = None
+    _ml_preds = {}
+    if ml_config.get('enabled', False) and factor_df is not None:
+        try:
+            from core.ml_predictor import MLFactorPredictor
+            print("训练XGBoost预测模型...")
+            ml_predictor = MLFactorPredictor(config.config)
+            val_ic = ml_predictor.train(factor_df)
+            if val_ic is not None and val_ic > 0:
+                # 保存模型到临时文件（供worker进程加载）
+                import tempfile
+                _ml_model_path = os.path.join(tempfile.gettempdir(), 'xgb_strategy_model.json')
+                ml_predictor.save_model(_ml_model_path)
+                print(f"ML模型已保存: {_ml_model_path}")
+
+                # 生成所有日期/股票的ML预测（主进程）
+                print("生成ML预测...")
+                all_dates_sorted = sorted(factor_df['date'].unique())
+                for date in tqdm(all_dates_sorted, desc="ML预测"):
+                    date_df = factor_df[factor_df['date'] == date]
+                    if len(date_df) == 0:
+                        continue
+                    preds = ml_predictor.predict(date_df.copy())
+                    for i, (_, row) in enumerate(date_df.iterrows()):
+                        _ml_preds[(row['code'], date)] = preds[i]
+                print(f"ML预测完成: {len(_ml_preds)} 条预测")
+            else:
+                print(f"[ML] 验证IC不足({val_ic}), 跳过ML预测")
+        except ImportError:
+            print("[ML] xgboost未安装，跳过ML预测")
+        except Exception as e:
+            print(f"[ML] 训练失败: {e}")
+            import traceback
+            traceback.print_exc()
+
     # 生成信号（多进程并行）
     # use_dynamic 表示是否使用动态因子选择器
     use_dynamic = factor_mode != 'fixed'
@@ -175,6 +225,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         main_engine.set_factor_data(factor_df)
         main_engine.set_industry_mapping(industry_codes)
         main_engine.set_fundamental_data(fundamental_data)
+        # 设置ML预测值和模型（用于主引擎）
+        if _ml_model_path is not None and _ml_preds:
+            from core.ml_predictor import MLFactorPredictor
+            ml_predictor = MLFactorPredictor(config.config)
+            ml_predictor.load_model(_ml_model_path)
+            main_engine.set_ml_predictor(ml_predictor)
+            main_engine.set_ml_predictions(_ml_preds)
         print(f"主引擎已设置动态因子数据")
 
         # 预计算所有日期的因子选择（避免多进程中重复计算）
@@ -213,7 +270,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     with Pool(
         processes=NUM_WORKERS,
         initializer=_init_worker,
-        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, factor_df, industry_codes, precomputed_cache, precomputed_all_dates, regime_df)
+        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, factor_df, industry_codes, precomputed_cache, precomputed_all_dates, regime_df,
+                  _ml_model_path, _ml_preds)
     ) as pool:
         # imap_unordered 比 map 更快，且结果顺序不影响
         results = []

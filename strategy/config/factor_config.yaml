@@ -1,16 +1,16 @@
 factor_mode: both
 dynamic_factor:
-  train_window_days: 180
+  train_window_days: 250       # 延长至1年，IC估计更稳健（+40%观测值）
   forward_period: 10
   top_n_factors: 3
-  min_train_samples: 60
-  min_ic_dates: 10
-  ic_decay_factor: 0.92
+  min_train_samples: 120        # 提高最小样本数
+  min_ic_dates: 15              # 更多IC日期才可靠
+  ic_decay_factor: 0.95         # 更慢衰减，稳定选择
   fallback_to_static: true
-  min_factor_count: 1
-  min_factor_families: 1
-  min_ic_1f: 0.02
-  use_static_candidates: false
+  min_factor_count: 2           # 必须≥2因子，消除单因子高方差
+  min_factor_families: 2        # 强制正交因子来源，防止单一家族霸榜
+  min_ic_1f: 0.05               # 单因子需要更高IC门槛
+  use_static_candidates: true   # 限定离线验证过的候选池，防止28因子多重检验
   reweight_blend: 0.5
   extra_candidate_factors:
   - skewness_20
@@ -31,6 +31,10 @@ dynamic_factor:
   - relative_strength
   - smart_money_flow
   - consolidation_breakout
+  # === 新增Alpha因子 ===
+  - residual_momentum
+  - short_reversal
+  - earnings_quality
 backtest_factors:
 - trend_mom_v41
 - trend_mom_v24
@@ -616,7 +620,7 @@ signal:
 regime_multiplier:
   bull: 1.0
   neutral: 0.9
-  bear: 0.40
+  bear: 0.50    # 从0.40提升，避免熊市过度降仓
 portfolio:
   target_volatility: 0.25
   # === 小说优化：分批进出，不一把梭 ===
@@ -624,8 +628,8 @@ portfolio:
   # 每次调仓只执行50%的目标仓位变化，分两次完成
   entry_speed: 0.5
   exit_speed: 0.5
-  # === 小说优化：7%铁律止损（亏损10%需赚20%回本）===
-  position_stop_loss: 0.07
+  # 止损：稍微放宽避免被震荡洗出
+  position_stop_loss: 0.10    # 从7%放宽到10%，减少假止损
   portfolio_stop_loss: 0.12
   max_single_weight: 0.30
   # === 小说优化：动态最小持仓 ===
@@ -639,9 +643,9 @@ portfolio:
   # 核心逻辑："龙头洁癖"——不仅要比别人好，还要自己够格
   # rank_pct<min_rank 直接淘汰，score<min_score 即使排名够也不选
   selection:
-    min_rank_pct: 0.3        # 截面相对排名（放宽：top 70%）
-    min_absolute_score: 0.08  # 绝对分数门槛（放宽）
-    min_confidence: 0.70      # 信心分数门槛（放宽）
+    min_rank_pct: 0.55        # 截面相对排名（提高：仅选top 45%）
+    min_absolute_score: 0.10  # 绝对分数门槛（提高）
+    min_confidence: 0.75      # 信心分数门槛（提高）
   fv_exposure_params:
     fv_low: -0.01
     fv_high: 0.02
@@ -719,6 +723,23 @@ stock_pool:
   enabled: true            # true=1000只(剔除科创板), false=全市场
   size: 1000
   source: "CSI800(剔除科创板) + CSI1000补足1000"
+
+# === ML预测层 ===
+ml:
+  enabled: true
+  blend_weight: 0.30           # ML预测与线性因子混合比例（0.3=30%ML+70%线性）
+  retrain_frequency: 20        # 每N个交易日重新训练
+  # XGBoost参数（浅树防过拟合）
+  n_estimators: 200
+  max_depth: 4
+  learning_rate: 0.05
+  subsample: 0.7
+  colsample_bytree: 0.6
+  reg_lambda: 2.0
+  reg_alpha: 1.0
+  min_child_weight: 5
+  use_cross_features: true     # top-8因子两两交互
+  use_regime_features: true    # 市场状态×因子交互
 
 backtest:
   cash: 150000.0
