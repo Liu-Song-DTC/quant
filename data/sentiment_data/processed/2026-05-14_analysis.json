@@ -1,0 +1,1412 @@
+[
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "neutral",
+    "importance": 2,
+    "confidence": 0.8,
+    "reasoning": "腾讯辟谣AI员工离职传闻，对行业影响中性",
+    "related_headlines": [
+      "腾讯辟谣“AI一位号即将离职”"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "工信部组织新能源汽车动力电池回收利用调研座谈，利好行业规范发展",
+    "related_headlines": [
+      "工信部节能与综合利用司组织开展新能源汽车动力电池回收利用行业调研及座谈"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "中际旭创成交额达300亿元，显示市场对算力板块高度关注",
+    "related_headlines": [
+      "中际旭创成交额达300亿元"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "晶升股份提及碳化硅业务产能，反映行业生产情况",
+    "related_headlines": [
+      "晶升股份：若将产能全部投放于碳化硅业务 现阶段可满足每月约100台碳化硅单晶炉的生产需求"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "台积电指出AIGC应用快速成长，消耗大量Token，利好算力需求",
+    "related_headlines": [
+      "台积电：AIGC应用与Agent工作流快速成长 正指数性消耗大量Token"
+    ]
+  },
+  {
+    "industry": "电子",
+    "original_industry": "电子",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "机构预测到2032年多数可穿戴设备搭载端侧AI，利好电子行业",
+    "related_headlines": [
+      "机构：到2032年每10台可穿戴设备中将有8台搭载端侧AI"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "碳酸锂期货主力合约跌幅扩大，利空有色板块",
+    "related_headlines": [
+      "碳酸锂期货主力合约跌幅扩大 现跌4.5%"
+    ]
+  },
+  {
+    "industry": "金融",
+    "original_industry": "金融",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "中国诚通等成立科技成果转化创投基金，对金融行业影响中性",
+    "related_headlines": [
+      "中国诚通等成立科技成果转化创投基金 出资额10亿"
+    ]
+  },
+  {
+    "industry": "电子",
+    "original_industry": "电子",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "三星电子收盘上涨创纪录，利好电子行业",
+    "related_headlines": [
+      "三星电子收盘上涨4.23% 创出纪录最高收盘水准"
+    ]
+  },
+  {
+    "industry": "互联网/软件",
+    "original_industry": "互联网/软件",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "港股MINIMAX-W上涨，利好互联网软件板块",
+    "related_headlines": [
+      "港股MINIMAX-W盘中再涨超6%"
+    ]
+  },
+  {
+    "industry": "农业",
+    "original_industry": "农业",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "十部门联合部署粮食收购工作，对农业行业影响中性",
+    "related_headlines": [
+      "线上预约+线下收购 十部门联合部署2026年粮食收购工作"
+    ]
+  },
+  {
+    "industry": "电子",
+    "original_industry": "电子",
+    "sentiment": "neutral",
+    "importance": 2,
+    "confidence": 0.8,
+    "reasoning": "成都光明与舜宇光学签署战略合作协议，对电子行业影响中性",
+    "related_headlines": [
+      "成都光明与舜宇光学签署战略合作协议"
+    ]
+  },
+  {
+    "industry": "自动化/制造",
+    "original_industry": "自动化/制造",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "发那科与谷歌达成实体AI合作，利好自动化制造行业",
+    "related_headlines": [
+      "发那科与谷歌达成实体AI合作 机构看好其机器人业务"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "台积电指出AI封装产能增长，利好算力行业",
+    "related_headlines": [
+      "台积电：AI封装产能今年突破80% N2首年产出将优于N3"
+    ]
+  },
+  {
+    "industry": "交运",
+    "original_industry": "交运",
+    "sentiment": "neutral",
+    "importance": 2,
+    "confidence": 0.8,
+    "reasoning": "西门子收购意大利轨道技术公司，对交运行业影响中性",
+    "related_headlines": [
+      "西门子收购意大利轨道技术公司MERMEC部分关键业务"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "鸿海预计人工智能服务器需求强劲，利好算力行业",
+    "related_headlines": [
+      "鸿海：人工智能服务器需求强劲"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "寒武纪成交额超200亿元，显示市场对算力板块高度关注",
+    "related_headlines": [
+      "寒武纪成交额超200亿元"
+    ]
+  },
+  {
+    "industry": "传媒",
+    "original_industry": "传媒",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "人民锐评要求短视频行业规范，对传媒行业影响中性",
+    "related_headlines": [
+      "人民锐评：让“亮明身份”成为短视频行业的“硬规矩”"
+    ]
+  },
+  {
+    "industry": "互联网/软件",
+    "original_industry": "互联网/软件",
+    "sentiment": "neutral",
+    "importance": 2,
+    "confidence": 0.8,
+    "reasoning": "豆包输入法上新，对互联网软件行业影响中性",
+    "related_headlines": [
+      "豆包输入法上新 可在电脑上语音打字"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "云南锗业手握稀缺锗资源，对有色行业影响中性",
+    "related_headlines": [
+      "云南锗业手握稀缺“锗牌” 一年四倍涨幅里的业绩“裸泳”"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "新易盛成交额达200亿元，显示市场对算力板块高度关注",
+    "related_headlines": [
+      "新易盛成交额达200亿元"
+    ]
+  },
+  {
+    "industry": "互联网/软件",
+    "original_industry": "互联网/软件",
+    "sentiment": "neutral",
+    "importance": 2,
+    "confidence": 0.8,
+    "reasoning": "阿里云发布万小智2.0，对互联网软件行业影响中性",
+    "related_headlines": [
+      "阿里云发布万小智2.0"
+    ]
+  },
+  {
+    "industry": "交运",
+    "original_industry": "交运",
+    "sentiment": "negative",
+    "importance": 2,
+    "confidence": 0.8,
+    "reasoning": "港股航空股午后走低，利空交运行业",
+    "related_headlines": [
+      "港股航空股午后走低"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 2,
+    "confidence": 0.8,
+    "reasoning": "港股贝克微午后涨超8%，利好半导体行业",
+    "related_headlines": [
+      "港股贝克微午后涨超8%"
+    ]
+  },
+  {
+    "industry": "农业",
+    "original_industry": "农业",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "养殖板块延续反弹，利好农业行业",
+    "related_headlines": [
+      "养殖板块延续反弹势头！养殖ETF易方达（159020）涨1.95%，逼近1元关口"
+    ]
+  },
+  {
+    "industry": "军工",
+    "original_industry": "军工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "我国商业液氧甲烷火箭进入规模化应用阶段，利好军工行业",
+    "related_headlines": [
+      "我国商业液氧甲烷火箭进入规模化应用阶段"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "英伟达美股夜盘短线拉升，利好算力行业",
+    "related_headlines": [
+      "英伟达美股夜盘短线拉升 现涨2%"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "CPO概念午后回暖，利好算力行业",
+    "related_headlines": [
+      "CPO概念午后回暖 汇绿生态涨停"
+    ]
+  },
+  {
+    "industry": "军工",
+    "original_industry": "军工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "朱雀二号进化版首飞成功，利好军工行业",
+    "related_headlines": [
+      "加长8米、取消尾翼 朱雀二号进化版首飞成功"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "明牌珠宝跨界光伏决策失误致歉，反映光伏行业投资风险",
+    "related_headlines": [
+      "投资者质疑跨界光伏决策失误 明牌珠宝致歉：市场变化超预期"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "英伟达股价上涨，显示AI算力需求强劲",
+    "related_headlines": [
+      "英伟达美股夜盘短线拉升 现涨1.7%"
+    ]
+  },
+  {
+    "industry": "军工",
+    "original_industry": "军工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "执宇航天完成融资，航天领域受资本关注",
+    "related_headlines": [
+      "执宇航天完成数千万元天使轮融资"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "negative",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "三星电子降低芯片产量以应对罢工，供应端承压",
+    "related_headlines": [
+      "三星电子从周四开始降低芯片产量 以应对可能发生的罢工"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "OpenAI回应供应链攻击，未发现数据泄露，影响中性",
+    "related_headlines": [
+      "OpenAI回应TanStack供应链攻击：未发现用户数据泄露"
+    ]
+  },
+  {
+    "industry": "环保/公用",
+    "original_industry": "环保/公用",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.7,
+    "reasoning": "古巴燃料油储备耗尽，能源供应紧张",
+    "related_headlines": [
+      "古巴官员称该国柴油和燃料油储备已耗尽"
+    ]
+  },
+  {
+    "industry": "基建/地产/石油石化",
+    "original_industry": "基建/地产/石油石化",
+    "sentiment": "neutral",
+    "importance": 5,
+    "confidence": 0.9,
+    "reasoning": "中美领导人会谈，涉及宏观关系，影响广泛但中性",
+    "related_headlines": [
+      "习近平同美国总统特朗普会谈"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "台积电提出AI芯片光互连技术，利好半导体先进封装",
+    "related_headlines": [
+      "台积电首提AI芯片“三层蛋糕”理论：光互连“未来最重要” COUPE技术或站“C位”"
+    ]
+  },
+  {
+    "industry": "金融",
+    "original_industry": "金融",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "上海科创基金投资组合IPO数量增加，利好创投和金融",
+    "related_headlines": [
+      "上海科创基金投资组合IPO数量增至202家"
+    ]
+  },
+  {
+    "industry": "农业",
+    "original_industry": "农业",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "养殖ETF上涨，去产能节奏加速利好养殖业",
+    "related_headlines": [
+      "市场化去产能节奏有望加速，养殖ETF平安涨超2%"
+    ]
+  },
+  {
+    "industry": "基建/地产/石油石化",
+    "original_industry": "基建/地产/石油石化",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "九丰能源在新疆成立新公司，拓展石油天然气业务",
+    "related_headlines": [
+      "九丰能源在新疆成立新公司 含石油天然气技术服务业务"
+    ]
+  },
+  {
+    "industry": "化工",
+    "original_industry": "化工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "鼎龙股份成立新型材料公司，布局新材料领域",
+    "related_headlines": [
+      "鼎龙股份成立新型材料公司"
+    ]
+  },
+  {
+    "industry": "金融",
+    "original_industry": "金融",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "沪深两市成交额连续突破2.5万亿，市场活跃利好券商",
+    "related_headlines": [
+      "沪深两市成交额连续第15个交易日突破2.5万亿 较上一日此时放量超2000亿"
+    ]
+  },
+  {
+    "industry": "农业",
+    "original_industry": "农业",
+    "sentiment": "neutral",
+    "importance": 2,
+    "confidence": 0.6,
+    "reasoning": "程序员被要求养猪，反映农业企业招聘特色，影响有限",
+    "related_headlines": [
+      "男子应聘程序员岗位被要求先养两个月猪 HR回应：基本上所有岗位都要在入职前期接触养殖业务"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "Anthropic企业采用率首超OpenAI，AI竞争格局变化",
+    "related_headlines": [
+      "报告：Anthropic企业采用率首超OpenAI"
+    ]
+  },
+  {
+    "industry": "化工",
+    "original_industry": "化工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "金博股份推出钠电硬碳负极新品，利好化工新材料",
+    "related_headlines": [
+      "金博股份推出钠电KBHC系列超高纯硬碳负极新品"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "negative",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "本田将电动汽车亏损设定为5000亿日元，显示行业盈利压力",
+    "related_headlines": [
+      "本田将2026财年电动汽车相关亏损设定为5000亿日元"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "碳化硅概念拉升，天岳先进涨停，半导体材料受追捧",
+    "related_headlines": [
+      "碳化硅概念再度拉升 天岳先进逼近20cm涨停"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "比亚迪鲨鱼换标，皮卡市场竞争加剧，利好新能源车",
+    "related_headlines": [
+      "比亚迪鲨鱼换标“洄游” 国内“皮卡大战”一触即发？"
+    ]
+  },
+  {
+    "industry": "农业",
+    "original_industry": "农业",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "多部门召集猪企座谈，猪肉概念拉升，政策利好养殖",
+    "related_headlines": [
+      "多部门召集猪企座谈 猪肉概念持续拉升"
+    ]
+  },
+  {
+    "industry": "互联网/软件",
+    "original_industry": "互联网/软件",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "360发布新一代安全龙虾，降低Token消耗，利好网络安全",
+    "related_headlines": [
+      "360发布新一代安全龙虾 Token消耗大幅降低"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "马斯克、黄仁勋、库克互动，显示科技巨头合作氛围",
+    "related_headlines": [
+      "马斯克说会谈很顺利 黄仁勋点赞、库克比耶"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "中韩半导体ETF临时停牌，技术性调整，影响中性",
+    "related_headlines": [
+      "上交所：华泰柏瑞中证韩交所中韩半导体交易型开放式指数证券投资基金（QDII）临时停牌"
+    ]
+  },
+  {
+    "industry": "自动化/制造",
+    "original_industry": "自动化/制造",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "方正电机机器人关节电机小批量量产，利好自动化",
+    "related_headlines": [
+      "方正电机：机器人关节电机已实现部分产品小批量量产"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "国联股份成立智算科技公司，布局AI业务",
+    "related_headlines": [
+      "国联股份等成立智算科技公司 含多项AI业务"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "小摩唱多三星，存储热潮持续，利好半导体",
+    "related_headlines": [
+      "罢工危机难撼存储热潮！小摩坚定唱多三星：任何回调都是上车良机"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "SpaceX IPO相关机构被要求订阅Grok，xAI寻求收入增长",
+    "related_headlines": [
+      "参与SpaceX IPO的华尔街机构被要求订阅Grok xAI迫切希望提高收入"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "摩尔线程启动工业具身智能创新中心，利好AI和智能制造",
+    "related_headlines": [
+      "摩尔线程（无锡）工业具身智能创新中心启动"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "阿石创在半导体先进封装领域形成核心产品，利好半导体材料",
+    "related_headlines": [
+      "阿石创：公司在半导体先进封装领域已形成多款核心产品"
+    ]
+  },
+  {
+    "industry": "军工",
+    "original_industry": "军工",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "蓝箭航天朱雀二号成功发射，民营火箭突破高轨运力瓶颈",
+    "related_headlines": [
+      "蓝箭航天朱雀二号遥五成功发射 民营火箭突破高轨运力瓶颈"
+    ]
+  },
+  {
+    "industry": "化工",
+    "original_industry": "化工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "美联新材称化工行业回暖，三聚氯氰价格反弹",
+    "related_headlines": [
+      "美联新材：化工行业整体呈现回暖迹象 三聚氯氰价格逐步反弹"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "中韩半导体ETF停牌，技术性调整，影响中性",
+    "related_headlines": [
+      "中韩半导体ETF华泰柏瑞：本基金将于5月14日下午开市起至当日收市停牌"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "OpenAI采取措施保护认证流程，安全措施中性",
+    "related_headlines": [
+      "OpenAI：正采取措施保护相关认证流程"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "negative",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "本田汽车第四财季净亏损，显示汽车行业盈利压力",
+    "related_headlines": [
+      "本田汽车第四财季销售净额5.82万亿日元",
+      "本田汽车第四季度净亏损8,893.8亿日元 预估亏损9,621.5亿日元"
+    ]
+  },
+  {
+    "industry": "金融",
+    "original_industry": "金融",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "中信银行增资，增强资本实力，利好银行",
+    "related_headlines": [
+      "中信银行增资至556.5亿元 增幅约14%"
+    ]
+  },
+  {
+    "industry": "医药",
+    "original_industry": "医药",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "武田制药裁员，反映行业调整压力",
+    "related_headlines": [
+      "武田制药将裁员约4500人"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "neutral",
+    "importance": 2,
+    "confidence": 0.9,
+    "reasoning": "焦作万方澄清不生产镓产品，对行业影响中性",
+    "related_headlines": [
+      "焦作万方：目前不生产镓产品"
+    ]
+  },
+  {
+    "industry": "医药",
+    "original_industry": "医药",
+    "sentiment": "negative",
+    "importance": 2,
+    "confidence": 0.7,
+    "reasoning": "塞拉利昂暴发麻疹疫情，可能影响疫苗相关需求",
+    "related_headlines": [
+      "塞拉利昂暴发麻疹疫情"
+    ]
+  },
+  {
+    "industry": "金融",
+    "original_industry": "金融",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "中信银行增资，增强资本实力",
+    "related_headlines": [
+      "中信银行增资至556.5亿 增幅约14%"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "字节跳动、上汽等入股自变量机器人，显示AI机器人领域投资活跃",
+    "related_headlines": [
+      "字节跳动、上汽等入股自变量机器人"
+    ]
+  },
+  {
+    "industry": "自动化/制造",
+    "original_industry": "自动化/制造",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "字节跳动、上汽等入股自变量机器人，利好机器人制造",
+    "related_headlines": [
+      "字节跳动、上汽等入股自变量机器人"
+    ]
+  },
+  {
+    "industry": "自动化/制造",
+    "original_industry": "自动化/制造",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "工信部征求白酒行业智能制造标准意见，利好智能制造",
+    "related_headlines": [
+      "工信部公开征求《智能制造 白酒行业应用 白酒灌装数字化车间通用技术要求》等行业标准意见"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "科创芯片设计ETF逆势上涨，资金流入，显示芯片行业受关注",
+    "related_headlines": [
+      "调整不改长线逻辑！科创芯片设计ETF国联安(588780)逆势上涨，盘中续创历史新高！近5日净流入超1.1亿，同类第一"
+    ]
+  },
+  {
+    "industry": "自动化/制造",
+    "original_industry": "自动化/制造",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "万里扬谐波减速器等产品进行客户验证，利好机器人零部件制造",
+    "related_headlines": [
+      "万里扬：谐波减速器、行星减速器及关节模组产品，目前正在进行客户端的试验验证"
+    ]
+  },
+  {
+    "industry": "军工",
+    "original_industry": "军工",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "朱雀二号改进型遥五运载火箭发射成功，利好航天军工",
+    "related_headlines": [
+      "朱雀二号改进型遥五运载火箭发射成功"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "算力租赁板块走低，反映短期调整",
+    "related_headlines": [
+      "A股午盘丨沪指跌1.02%，算力租赁板块走低"
+    ]
+  },
+  {
+    "industry": "农业",
+    "original_industry": "农业",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "牧原股份成本目标降低，利好养殖业",
+    "related_headlines": [
+      "牧原股份：未来生猪成本将向10元/公斤目标迈进 上半年不急于推进降负债工作"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "建发股份与宁德时代合作，利好新能源车产业链",
+    "related_headlines": [
+      "建发股份与宁德时代签署战略合作备忘录"
+    ]
+  },
+  {
+    "industry": "化工",
+    "original_industry": "化工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "化工板块逆势上扬，环氧丙烷走强",
+    "related_headlines": [
+      "午评：创业板指半日跌近2% 化工板块逆势上扬",
+      "沪指跌1.02% 创业板指跌1.93% 氦气概念、环氧丙烷走强"
+    ]
+  },
+  {
+    "industry": "电子",
+    "original_industry": "电子",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "vivo Pocket云台相机由立讯精密代工，利好消费电子代工",
+    "related_headlines": [
+      "vivo Pocket 云台相机由立讯精密代工"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "小米、特斯拉跟进涨价，显示新能源车需求强劲",
+    "related_headlines": [
+      "小米、特斯拉跟进涨价 新能源车全面看涨？"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "全球芯片LOF溢价率高，显示芯片行业热度",
+    "related_headlines": [
+      "全球芯片LOF复牌交易 溢价率居高不下仍超40%"
+    ]
+  },
+  {
+    "industry": "军工",
+    "original_industry": "军工",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "英国采购榴弹炮，利好军工出口",
+    "related_headlines": [
+      "英国将斥资10亿英镑采购榴弹炮"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "寒武纪跌超5%，反映AI芯片股短期调整",
+    "related_headlines": [
+      "寒武纪跌超5%"
+    ]
+  },
+  {
+    "industry": "军工",
+    "original_industry": "军工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "箭元科技火箭试验推进，利好航天",
+    "related_headlines": [
+      "箭元科技：元行者一号首飞箭各关键分系统试验正按计划稳步推进 目标年底首飞"
+    ]
+  },
+  {
+    "industry": "自动化/制造",
+    "original_industry": "自动化/制造",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "罗博特科拟赴港IPO，但大幅转亏，商誉高悬，利空",
+    "related_headlines": [
+      "罗博特科拟赴港IPO：2025年大幅转亏 业务结构剧烈重构 16.6亿元商誉悬顶"
+    ]
+  },
+  {
+    "industry": "电力设备",
+    "original_industry": "电力设备",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "正泰电器成立新能源科技公司含海上风电，利好电力设备",
+    "related_headlines": [
+      "正泰电器成立新能源科技公司 含海上风电业务"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "正泰电器成立新能源科技公司含海上风电，利好风电",
+    "related_headlines": [
+      "正泰电器成立新能源科技公司 含海上风电业务"
+    ]
+  },
+  {
+    "industry": "互联网/软件",
+    "original_industry": "互联网/软件",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "阿里腾讯业绩出炉，AI转型加速，中概互联网ETF走强",
+    "related_headlines": [
+      "阿里腾讯重磅业绩出炉，AI转型加速释放成长动能，中概互联网ETF易方达(513050)应声走强涨超2%"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "阿里腾讯AI转型加速，利好AI行业",
+    "related_headlines": [
+      "阿里腾讯重磅业绩出炉，AI转型加速释放成长动能，中概互联网ETF易方达(513050)应声走强涨超2%"
+    ]
+  },
+  {
+    "industry": "自动化/制造",
+    "original_industry": "自动化/制造",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "FF与机器人电商平台合作，利好机器人",
+    "related_headlines": [
+      "FF：与北美机器人电商平台RobotShop签署合作备忘录"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "脉脉数据显示AI岗位增长8.7倍，显示AI行业高景气",
+    "related_headlines": [
+      "脉脉：新经济岗位量增长22.6% AI岗位增长8.7倍"
+    ]
+  },
+  {
+    "industry": "电力设备",
+    "original_industry": "电力设备",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "大连化物所研发出全球首例气-固氢负离子原型电池，利好新能源电池",
+    "related_headlines": [
+      "大连化物所研发出全球首例气-固氢负离子原型电池"
+    ]
+  },
+  {
+    "industry": "电力设备",
+    "original_industry": "电力设备",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "维科技术发布钠离子电池新品，利好电池行业",
+    "related_headlines": [
+      "维科技术发布新一代钠离子电池新品"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "negative",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "欧佩克下调全球石油需求增长预期，利空石油石化",
+    "related_headlines": [
+      "欧佩克下调今年全球石油需求增长预期"
+    ]
+  },
+  {
+    "industry": "基建/地产/石油石化",
+    "original_industry": "基建/地产/石油石化",
+    "sentiment": "negative",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "欧佩克下调全球石油需求增长预期，利空石油石化",
+    "related_headlines": [
+      "欧佩克下调今年全球石油需求增长预期"
+    ]
+  },
+  {
+    "industry": "金融",
+    "original_industry": "金融",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.7,
+    "reasoning": "连续7日净流出通常指资金从市场流出，对金融板块情绪偏空",
+    "related_headlines": [
+      "连续7日净流出 这一信号值得关注！"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "铜冠铜箔市盈率显著高于行业，提示风险，利空铜箔相关有色板块",
+    "related_headlines": [
+      "市盈率显著高于行业 铜冠铜箔提示投资者注意风险"
+    ]
+  },
+  {
+    "industry": "电力设备",
+    "original_industry": "电力设备",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "电网设备板块持续走弱，通达股份触及跌停，利空电力设备行业",
+    "related_headlines": [
+      "电网设备板块持续走弱 通达股份触及跌停"
+    ]
+  },
+  {
+    "industry": "互联网/软件",
+    "original_industry": "互联网/软件",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "数字陆海新通道可信数据空间发布，利好互联网/软件行业的数据安全与云服务",
+    "related_headlines": [
+      "数字陆海新通道可信数据空间正式发布"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "negative",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "AI算力指数盘中大幅走低，中国长城跌超9%，利空人工智能/算力板块",
+    "related_headlines": [
+      "AI算力指数盘中大幅走低 中国长城跌超9%"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "新石器无人车在陕西成立智车科技公司，利好无人驾驶及新能源车产业链",
+    "related_headlines": [
+      "新石器无人车在陕西成立智车科技公司"
+    ]
+  },
+  {
+    "industry": "化工",
+    "original_industry": "化工",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "欧盟对华烷基膦酸及其钠盐作出反倾销初裁，利空相关化工出口企业",
+    "related_headlines": [
+      "欧盟对华烷基膦酸及其钠盐作出反倾销初裁"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "碳酸锂价格下跌，利空锂矿及有色板块",
+    "related_headlines": [
+      "今日MMLC电池级碳酸锂（早盘）价格较昨日下跌1750元/吨"
+    ]
+  },
+  {
+    "industry": "人工智能/算力",
+    "original_industry": "人工智能/算力",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "生成式AI移动应用内购收入进入指数级爆发通道，利好AI应用及算力需求",
+    "related_headlines": [
+      "Sensor Tower：生成式AI移动应用内购收入进入指数级爆发通道"
+    ]
+  },
+  {
+    "industry": "传媒",
+    "original_industry": "传媒",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "网易云音乐涨超4%，利好传媒板块中的数字音乐领域",
+    "related_headlines": [
+      "网易云音乐涨超4%"
+    ]
+  },
+  {
+    "industry": "互联网/软件",
+    "original_industry": "互联网/软件",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "阿里企业级Agent平台“悟空”开始规模化放量，利好互联网/软件行业",
+    "related_headlines": [
+      "阿里企业级Agent平台“悟空”开始逐步规模化放量"
+    ]
+  },
+  {
+    "industry": "金融",
+    "original_industry": "金融",
+    "sentiment": "negative",
+    "importance": 4,
+    "confidence": 0.8,
+    "reasoning": "富时中国A50指数期货下跌1%，利空金融及大盘情绪",
+    "related_headlines": [
+      "富时中国A50指数期货下跌1%"
+    ]
+  },
+  {
+    "industry": "自动化/制造",
+    "original_industry": "自动化/制造",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "机器人概念逆势拉升，巨轮智能涨停，利好自动化/制造行业",
+    "related_headlines": [
+      "机器人概念逆势拉升 巨轮智能涨停"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "锂矿概念走弱，永杉锂业跌逾6%，利空锂矿及有色板块",
+    "related_headlines": [
+      "锂矿概念走弱 永杉锂业跌逾6%"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.7,
+    "reasoning": "寒武纪成交额达100亿元，反映市场关注度高，但情绪中性",
+    "related_headlines": [
+      "寒武纪成交额达100亿元"
+    ]
+  },
+  {
+    "industry": "电力设备",
+    "original_industry": "电力设备",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "燃气轮机概念震荡调整，联德股份触及跌停，利空电力设备板块",
+    "related_headlines": [
+      "燃气轮机概念震荡调整 联德股份触及跌停"
+    ]
+  },
+  {
+    "industry": "电子",
+    "original_industry": "电子",
+    "sentiment": "neutral",
+    "importance": 3,
+    "confidence": 0.7,
+    "reasoning": "光迅科技成交额达100亿元，反映市场关注度高，但情绪中性",
+    "related_headlines": [
+      "光迅科技成交额达100亿元"
+    ]
+  },
+  {
+    "industry": "医药",
+    "original_industry": "医药",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "泰尔茂比司特与仲恩生医合作推进间充质干细胞疗法后期临床生产，利好医药行业",
+    "related_headlines": [
+      "泰尔茂比司特与仲恩生医合作推进间充质干细胞疗法后期临床生产"
+    ]
+  },
+  {
+    "industry": "环保/公用",
+    "original_industry": "环保/公用",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "电投绿能旗下氢能公司增资，利好氢能及环保公用板块",
+    "related_headlines": [
+      "电投绿能旗下氢能公司注册资本从5000万元增加至约1.16亿元"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "台积电预测AI驱动增长，2030年全球芯片市场规模达1.5万亿美元，利好半导体行业",
+    "related_headlines": [
+      "台积电：因AI驱动增长 2030年全球芯片市场规模将达1.5万亿美元"
+    ]
+  },
+  {
+    "industry": "交运",
+    "original_industry": "交运",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "航运板块逆势拉升，招商南油涨停，利好交运行业",
+    "related_headlines": [
+      "航运板块逆势拉升 招商南油涨停"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "福建布局第四代半导体、量子信息、新型光伏等前沿领域，利好半导体和光伏行业",
+    "related_headlines": [
+      "福建：布局第四代半导体、量子信息、新型光伏、具身智能等前沿领域"
+    ]
+  },
+  {
+    "industry": "电子",
+    "original_industry": "电子",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "京东方旗下材料科技公司增资，利好电子行业的面板及材料领域",
+    "related_headlines": [
+      "京东方旗下材料科技公司增资至9.2亿"
+    ]
+  },
+  {
+    "industry": "基建/地产/石油石化",
+    "original_industry": "基建/地产/石油石化",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "招金矿业子公司基建矿区发生事故，利空基建及矿业板块",
+    "related_headlines": [
+      "子公司一基建矿区发生事故 招金矿业盘中跌超5%"
+    ]
+  },
+  {
+    "industry": "新能源车/风电",
+    "original_industry": "新能源车/风电",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "大族激光在苏州投资成立新能源公司，利好新能源车及风电产业链",
+    "related_headlines": [
+      "大族激光在苏州投资成立新能源公司"
+    ]
+  },
+  {
+    "industry": "电力设备",
+    "original_industry": "电力设备",
+    "sentiment": "positive",
+    "importance": 4,
+    "confidence": 0.9,
+    "reasoning": "厄尔尼诺或将加速电力新一轮量价双升周期，电力ETF博时涨超1%，利好电力设备行业",
+    "related_headlines": [
+      "厄尔尼诺或将加速电力新一轮量价双升周期，电力ETF博时涨超1%冲击4连涨，成份股大唐发电7连板"
+    ]
+  },
+  {
+    "industry": "化工",
+    "original_industry": "化工",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "化工板块表现活跃，红宝丽、永和股份双双涨停，利好化工行业",
+    "related_headlines": [
+      "化工板块表现活跃 红宝丽、永和股份双双涨停"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "negative",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "碳酸锂主力合约日内跌幅达4%，利空锂矿及有色板块",
+    "related_headlines": [
+      "碳酸锂主力合约日内跌幅达4%"
+    ]
+  },
+  {
+    "industry": "互联网/软件",
+    "original_industry": "互联网/软件",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "港股互联网龙头集体回暖，港股通互联网ETF涨2.2%，利好互联网/软件行业",
+    "related_headlines": [
+      "港股互联网龙头集体回暖！港股通互联网ETF易方达（513040）涨2.2%"
+    ]
+  },
+  {
+    "industry": "半导体/光伏",
+    "original_industry": "半导体/光伏",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "光伏概念盘初走强，协鑫集成等多股涨停，利好光伏行业",
+    "related_headlines": [
+      "光伏概念盘初走强 协鑫集成等多股涨停"
+    ]
+  },
+  {
+    "industry": "交运",
+    "original_industry": "交运",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.8,
+    "reasoning": "今年前四个月我国新开国际航空货运航线68条，利好交运行业中的航空物流",
+    "related_headlines": [
+      "今年前四个月我国新开国际航空货运航线68条"
+    ]
+  },
+  {
+    "industry": "有色/钢铁/煤炭",
+    "original_industry": "有色/钢铁/煤炭",
+    "sentiment": "positive",
+    "importance": 3,
+    "confidence": 0.9,
+    "reasoning": "工业金属板块盘初走强，株冶集团涨停，利好有色/钢铁/煤炭行业",
+    "related_headlines": [
+      "工业金属板块盘初走强 株冶集团涨停"
+    ]
+  },
+  {
+    "industry": "基建/地产/石油石化",
+    "original_industry": "基建/地产/石油石化",
+    "sentiment": "neutral",
+    "importance": 2,
+    "confidence": 0.7,
+    "reasoning": "螺纹钢期货价格小幅波动，对基建/地产/石油石化行业影响中性",
+    "related_headlines": [
+      "螺纹钢期货近3日: 2026-05-11 收盘3286.0, 2026-05-12 收盘3255.0, 2026-05-13 收盘3257.0"
+    ]
+  }
+]

@@ -8,8 +8,6 @@ import sys
 import numpy as np
 import pandas as pd
 from collections import defaultdict
-import warnings
-warnings.filterwarnings('ignore')
 
 BASE_DIR = '/Users/litiancheng01/code/ltc/quant'
 sys.path.insert(0, BASE_DIR)
@@ -29,7 +27,7 @@ def load_data(code, ndays=400):
         if len(df) < 200:
             return None
         return df
-    except:
+    except Exception:
         return None
 
 

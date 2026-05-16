@@ -15,6 +15,16 @@ from typing import Dict, Any, List, Optional, Tuple
 from scipy import stats
 from collections import deque
 
+try:
+    from numba import njit
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
+    def njit(*args, **kwargs):
+        def wrapper(fn):
+            return fn
+        return wrapper
+
 from .signal import Signal
 from .signal_store import SignalStore
 from .config_loader import load_config
@@ -24,37 +34,17 @@ import yaml
 import os
 
 import warnings
-warnings.filterwarnings('ignore')
 
 
-# 因子家族分类（用于分散化约束，避免单一因子家族集体霸榜）
-FACTOR_FAMILIES = {
-    'momentum':  ['mom_10', 'mom_20', 'mom_diff_5_20', 'mom_diff_10_20',
-                  'momentum_reversal', 'momentum_acceleration', 'max_ret_20',
-                  'ret_vol_ratio_10', 'ret_vol_ratio_20', 'relative_strength'],
-    'lowvol':    ['volatility', 'volatility_5', 'volatility_10', 'volatility_20',
-                  'trend_lowvol', 'bb_width_20', 'atr_ratio_20', 'vol_confirm',
-                  'low_downside', 'volume_contraction', 'consolidation_breakout'],
-    'value':     ['fund_score', 'fund_roe', 'fund_profit_growth', 'fund_eps',
-                  'fund_cf_to_profit', 'fund_gross_margin', 'fund_debt_ratio',
-                  'fund_pg_improve', 'fund_rg_improve', 'inv_turnover'],
-    'quality':   ['fund_revenue_growth', 'tech_fund_combo', 'turnover_stability',
-                  'rsi_vol_combo', 'bb_rsi_combo', 'turnover_shrink'],
-    'alpha':     ['skewness_20', 'kurtosis_20', 'tail_risk', 'volatility_skew',
-                  'overnight_ret', 'intraday_ret', 'gap_ratio',
-                  'price_volume_corr_20', 'illiq_20'],
-    # === 小说灵感家族：量价结构分析 ===
-    'volume_price': ['wash_sale_score', 'vol_price_breakout', 'smart_money_flow'],
-}
-
-
-def _get_factor_family(factor_name: str) -> str:
-    """返回因子所属家族，未分类的返回 'other'"""
-    for fam, members in FACTOR_FAMILIES.items():
-        if factor_name in members:
-            return fam
-    return 'other'
-
+from .dynamic_factor_selector import (
+    DynamicFactorSelector,
+    FACTOR_FAMILIES,
+    get_factor_family,
+    _compute_date_chunk,
+    _compute_date_chunks_worker,
+)
+# 向后兼容别名
+_get_factor_family = get_factor_family
 
 # 行业因子配置（从YAML加载）
 def _load_industry_factors():
@@ -69,488 +59,6 @@ def _load_industry_factors():
 
 
 INDUSTRY_FACTOR_CONFIG = _load_industry_factors()
-
-
-def _compute_date_chunk(args):
-    """Compute IC and factor selection for a date chunk.
-
-    设计：chunk [start:end] 只计算 [start:end-forward_period] 的IC
-    即每个chunk的最后forward_period个日期无法计算IC，因为没有足够的未来收益数据
-    这些无法计算的日期会由下一个chunk覆盖
-
-    Args:
-        args: (date_chunk, factor_df, industry_codes, config)
-
-    Returns:
-        {date: {industry: {'factors': [factors], 'quality': avg_quality}}}
-    """
-    import pandas as pd
-    from scipy import stats
-    from tqdm import tqdm
-
-    date_chunk, factor_df, industry_codes, config = args
-
-    # Ensure date column is datetime
-    if factor_df['date'].dtype != 'datetime64[ns]':
-        factor_df = factor_df.copy()
-        factor_df['date'] = pd.to_datetime(factor_df['date'])
-
-    # Factor columns
-    exclude_cols = ['code', 'date', 'future_ret', 'industry']
-    factor_names = [c for c in factor_df.columns if c not in exclude_cols]
-
-    train_window_days = config['train_window_days']
-    forward_period = config['forward_period']
-    top_n = config['top_n_factors']
-    min_train_samples = config['min_train_samples']
-    min_ic_dates = config.get('min_ic_dates', 5)
-    ic_decay_factor = config.get('ic_decay_factor', 1.0)  # 1.0=不衰减
-    # === 阶段1优化参数 ===
-    min_factor_count = config.get('min_factor_count', 2)  # 最少因子数量
-    min_factor_families = config.get('min_factor_families', 2)  # 最少因子家族数
-    min_ic_1f = config.get('min_ic_1f', 0.05)  # 1因子最低IC门槛
-    use_static_candidates = config.get('use_static_candidates', True)
-    industry_factor_config_static = config.get('industry_factor_config', {})
-    extra_candidate_factors = config.get('extra_candidate_factors', [])
-
-    result = {}
-
-    # Chunk [start:end] 只计算 [start:end-forward_period] 的IC
-    # 即跳过最后forward_period个日期，这些日期由下一个chunk覆盖
-    chunk_start = date_chunk[0]
-    chunk_end = date_chunk[-1]
-    valid_end = chunk_end - pd.Timedelta(days=forward_period)
-
-    # 计算实际需要处理的日期数量（用于进度条）
-    valid_dates = [d for d in date_chunk if d <= valid_end]
-    total = len(valid_dates)
-
-    for val_date in tqdm(valid_dates, desc=f"IC计算({len(date_chunk)}天)", leave=False):
-        val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
-
-        # Training window: [val_date - train_window_days, val_date - forward_period]
-        train_start_date = val_date_ts - pd.Timedelta(days=train_window_days)
-        train_end_date = val_date_ts - pd.Timedelta(days=forward_period)
-
-        # Filter training data
-        train_mask = (factor_df['date'] >= train_start_date) & (factor_df['date'] < train_end_date)
-        train_df = factor_df[train_mask]
-
-        if len(train_df) < min_train_samples:
-            continue
-
-        # Compute IC for each industry
-        date_result = {}
-        for industry, codes in industry_codes.items():
-            if not codes:
-                continue
-
-            ind_df = train_df[train_df['code'].isin(codes)]
-            if len(ind_df) < min_train_samples:
-                continue
-
-            # 当use_static_candidates时，只搜索静态因子候选池 + extra_candidate_factors
-            # 避免全28因子搜索导致的多重测试过拟合
-            if use_static_candidates and industry in industry_factor_config_static:
-                static_cfg = industry_factor_config_static[industry]
-                candidate_factors = set()
-                for key in ['factors', 'bull_factors', 'bear_factors']:
-                    candidate_factors.update(static_cfg.get(key, []))
-                # 合并额外候选因子（Alpha因子等）
-                candidate_factors.update(extra_candidate_factors)
-                search_factors = [fn for fn in factor_names if fn in candidate_factors]
-            else:
-                search_factors = factor_names
-
-            # 一次性向量化计算所有日期的截面Spearman IC
-            # 使用 pivot + rank + corr 实现真正的向量化
-            factor_metrics = []
-            for fn in search_factors:
-                if fn not in ind_df.columns:
-                    continue
-
-                try:
-                    # pivot: dates x stocks
-                    fn_pivot = ind_df.pivot(index='date', columns='code', values=fn)
-                    ret_pivot = ind_df.pivot(index='date', columns='code', values='future_ret')
-
-                    # rank across stocks for each date (截面秩)
-                    fn_rank = fn_pivot.rank(axis=1, na_option='keep')
-                    ret_rank = ret_pivot.rank(axis=1, na_option='keep')
-
-                    # row-wise Pearson correlation of ranks = Spearman IC
-                    ic_series = fn_rank.corrwith(ret_rank, axis=1)
-                    ic_list = ic_series.dropna().tolist()
-                except:
-                    ic_list = []
-
-                if len(ic_list) < min_ic_dates:
-                    continue
-
-                # 计算IC质量指标
-                n_dates = len(ic_list)
-                if ic_decay_factor < 1.0:
-                    weights = np.array([ic_decay_factor ** (n_dates - i - 1) for i in range(n_dates)])
-                    weights = weights / weights.sum()
-                    ic_mean = np.sum(np.array(ic_list) * weights)
-                else:
-                    ic_mean = np.mean(ic_list)
-
-                ic_std = np.std(ic_list) + 1e-10
-                ir = ic_mean / ic_std
-                ic_signs = np.sign(ic_list)
-                ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
-                t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
-
-                # === IC质量过滤（收紧防过拟合） ===
-
-                # 1. IC符号稳定性：65%（>60%才有稳定预测方向）
-                MIN_STABILITY = 0.65
-                if ic_stability < MIN_STABILITY:
-                    continue
-
-                # 2. IC方差过滤
-                ic_variance = ic_std / (abs(ic_mean) + 1e-10) if abs(ic_mean) > 1e-10 else 999
-                MAX_IC_VARIANCE = 5.0
-                if ic_variance > MAX_IC_VARIANCE:
-                    continue
-
-                # combined_ir = ir * (0.5 + 0.5 * stability)
-                combined_ir = ir * (0.5 + 0.5 * ic_stability)
-
-                # 3. t统计量过滤：1.3（p≈0.10，t=0.8仅p≈0.22接近随机）
-                if abs(t_statistic) < 1.3:
-                    continue
-
-                # 因子方向过滤：只考虑正向因子（ic_mean > 0）
-                if ic_mean <= 0:
-                    continue
-
-                # 4. 最小组合IR阈值：0.08（0.03在28因子搜索中基本是噪声）
-                MIN_COMBINED_IR = 0.08
-                if combined_ir < MIN_COMBINED_IR:
-                    continue
-
-                # 5. Bootstrap p值：IC均值>0的概率必须显著
-                p_value = stats.norm.sf(ic_mean / (ic_std / np.sqrt(n_dates)))
-                if p_value > 0.15:
-                    continue
-
-                # 6. 至少60%的日期IC>0，防止少数极端日期拉动均值
-                n_positive = sum(1 for ic in ic_list if ic > 0)
-                if n_positive / n_dates < 0.60:
-                    continue
-
-                # 7. 前瞻验证：最近20%日期作为mini OOS，IC必须>0
-                if n_dates >= 10:
-                    split_idx = int(n_dates * 0.8)
-                    oos_ic_list = ic_list[split_idx:]
-                    if len(oos_ic_list) >= 3:
-                        oos_ic = np.mean(oos_ic_list)
-                        if oos_ic <= 0:
-                            continue
-
-                factor_metrics.append({
-                    'factor': fn,
-                    'ic_mean': ic_mean,
-                    'ir': ir,
-                    'ic_stability': ic_stability,
-                    'combined_ir': combined_ir,
-                })
-
-            if len(factor_metrics) >= 1:
-                # 按质量排序
-                factor_metrics.sort(key=lambda x: x['combined_ir'], reverse=True)
-                min_families = config.get('min_factor_families', 2)
-
-                # === 因子家族分散化：两轮选择 ===
-                # Round 1: 每个家族只选最佳因子（保证多样性）
-                family_best = {}
-                for fm in factor_metrics:
-                    fam = _get_factor_family(fm['factor'])
-                    if fam not in family_best:
-                        family_best[fam] = fm
-
-                # Round 2: 按质量排序家族，取 top_n，确保至少 min_families 个家族
-                families_ranked = sorted(family_best.values(),
-                                         key=lambda x: x['combined_ir'], reverse=True)
-                diversified = families_ranked[:top_n]
-                used_families = {_get_factor_family(f['factor']) for f in diversified}
-
-                # 如果家族不够，从剩余因子中补充新家族
-                if len(used_families) < min_families:
-                    for fm in factor_metrics:
-                        fam = _get_factor_family(fm['factor'])
-                        if fam not in used_families:
-                            # 替换最弱的同家族因子
-                            if len(diversified) >= top_n:
-                                # 找diversified中排名最低且家族>1个因子的替换
-                                for j in range(len(diversified) - 1, -1, -1):
-                                    to_replace_fam = _get_factor_family(diversified[j]['factor'])
-                                    if sum(1 for d in diversified if _get_factor_family(d['factor']) == to_replace_fam) > 1:
-                                        diversified[j] = fm
-                                        used_families = {_get_factor_family(d['factor']) for d in diversified}
-                                        break
-                                else:
-                                    # 所有家族都只有1个因子，替换最弱的
-                                    diversified[-1] = fm
-                                    used_families = {_get_factor_family(d['factor']) for d in diversified}
-                            else:
-                                diversified.append(fm)
-                                used_families.add(fam)
-                            if len(used_families) >= min_families:
-                                break
-
-                top_factors = diversified[:top_n]
-
-                # === 因子数量门槛检查 ===
-                n_selected = len(top_factors)
-                avg_quality = np.mean([f['combined_ir'] for f in top_factors])
-
-                # 因子数量不足最小要求则fallback（让调用方使用静态因子）
-                if n_selected < min_factor_count:
-                    continue
-
-                # 质量加权：combined_ir 反映因子质量，用于权重分配
-                total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10
-                date_result[industry] = {
-                    'factors': [f['factor'] for f in top_factors],
-                    'weights': [f['combined_ir'] / total_quality for f in top_factors],  # 质量加权
-                    'quality': avg_quality
-                }
-
-        if date_result:
-            result[val_date] = date_result
-
-    return result
-
-
-def _compute_date_chunks_worker(args):
-    """Worker function: compute IC for multiple overlapping chunks.
-
-    Args:
-        args: (chunks, factor_df, industry_codes, config)
-            - chunks: list of date lists (each chunk is a list of dates)
-            - factor_df: DataFrame with factor data
-            - industry_codes: {industry: [stock_codes]}
-            - config: computation config
-
-    Returns:
-        list of (date, factors) tuples for all dates in all chunks
-    """
-    chunks, factor_df, industry_codes, config = args
-
-    all_results = []
-    for chunk in chunks:
-        chunk_result = _compute_date_chunk((chunk, factor_df, industry_codes, config))
-        for date, factors in chunk_result.items():
-            all_results.append((date, factors))
-
-    return all_results
-
-
-class DynamicFactorSelector:
-    """动态因子选择器 - 基于Walk-Forward验证的动态因子选择
-
-    在每个验证时点，使用训练窗口内的历史数据计算各因子的IC/IR，
-    动态选择IR最高的Top-N因子，避免静态配置的过拟合问题。
-    """
-
-    def __init__(self, config: dict = None):
-        self.config = config or {}
-        self._load_config()
-
-        # 缓存: {date: {industry: [factors]}}
-        self._factor_cache = {}
-
-        # 因子数据: DataFrame with columns [code, date, factor1, factor2, ..., future_ret]
-        self.factor_df = None
-
-        # 行业映射: {category: [codes]}
-        self.industry_codes = {}
-
-        # 缓存: 已排序的唯一日期列表（避免每次都重新计算）
-        self._all_dates_cache = None
-
-    def set_factor_cache(self, factor_cache: dict, all_dates: list):
-        """设置预计算的因子选择缓存（用于多进程共享）
-
-        Args:
-            factor_cache: {date: {industry: [factors]}}
-            all_dates: 已排序的日期列表
-        """
-        self._factor_cache = factor_cache
-        self._all_dates_cache = all_dates
-
-    def _load_config(self):
-        """加载配置"""
-        config_loader = load_config()
-        dynamic_config = config_loader.get('dynamic_factor', {})
-
-        # enabled 由 factor_mode 决定：'dynamic' 或 'both' 或 'reweight' 时启用
-        factor_mode = config_loader.get('factor_mode', 'both')
-        self.enabled = factor_mode in ['dynamic', 'both', 'reweight']
-
-        self.train_window_days = dynamic_config.get('train_window_days', 250)
-        self.forward_period = dynamic_config.get('forward_period', 20)
-        self.top_n_factors = dynamic_config.get('top_n_factors', 3)
-        self.min_train_samples = dynamic_config.get('min_train_samples', 50)
-        self.min_ic_dates = dynamic_config.get('min_ic_dates', 5)
-        self.ic_decay_factor = dynamic_config.get('ic_decay_factor', 1.0)  # 1.0=不衰减
-        # === 阶段1优化参数 ===
-        self.min_factor_count = dynamic_config.get('min_factor_count', 2)  # 最少因子数量
-        self.min_ic_1f = dynamic_config.get('min_ic_1f', 0.05)  # 1因子最低IC门槛
-        self.use_static_candidates = dynamic_config.get('use_static_candidates', True)
-        self.reweight_blend = dynamic_config.get('reweight_blend', 0.5)  # static vs dynamic IC weight blend
-
-    def set_factor_data(self, factor_df: pd.DataFrame):
-        """设置因子数据
-
-        Args:
-            factor_df: DataFrame with columns [code, date, factor1, factor2, ..., future_ret]
-        """
-        # 只在factor_df实际改变时才清除缓存（避免每次调用都清除缓存）
-        if self.factor_df is not factor_df:
-            self.factor_df = factor_df
-            self._factor_cache.clear()
-            # 缓存已排序的唯一日期列表
-            if factor_df is not None and len(factor_df) > 0:
-                self._all_dates_cache = sorted(factor_df['date'].unique().tolist())
-            else:
-                self._all_dates_cache = []
-
-    def set_industry_mapping(self, industry_codes: Dict[str, List[str]]):
-        """设置行业映射
-
-        Args:
-            industry_codes: {category: [stock_codes]}
-        """
-        self.industry_codes = industry_codes
-
-    def precompute_all_factor_selections(self, progress_callback=None, num_workers=4):
-        """预计算因子选择（多进程并行）
-
-        设计：使用重叠的日期chunk
-        - Chunk [start:start+90] 只计算 [start:start+90-forward_period] 的IC
-        - 相邻chunk重叠20天（forward_period），确保所有日期都被覆盖
-        - 例如：Chunk1 [0:90] -> 计算[0:70], Chunk2 [70:160] -> 计算[70:140]
-
-        Args:
-            progress_callback: 进度回调函数，接受 (current, total) 参数
-            num_workers: 并行进程数
-        """
-        import multiprocessing
-        import numpy as np
-
-        if self.factor_df is None or self.industry_codes is None:
-            return
-
-        all_dates = self._all_dates_cache
-        if not all_dates:
-            return
-
-        # Ensure all_dates are Timestamp type
-        all_dates = [pd.to_datetime(d) if not isinstance(d, pd.Timestamp) else d for d in all_dates]
-
-        # 按进程数划分日期范围，每个进程处理一段，保证边界有重叠
-        total_dates = len(all_dates)
-        n_workers = min(num_workers, total_dates // 50)  # 至少保证每段有50天
-        if n_workers < 1:
-            n_workers = 1
-
-        # 每个worker处理一段日期，重叠窗口 = train_window_days
-        # chunk i: [i*stride : i*stride + chunk_size + overlap]
-        # 其中 stride = total_dates // n_workers
-        stride = total_dates // n_workers
-        overlap = self.train_window_days  # 重叠窗口保证边界IC计算完整
-
-        chunks = []
-        for i in range(n_workers):
-            start = i * stride
-            end = min((i + 1) * stride + overlap, total_dates)
-            chunk_dates = all_dates[start:end]
-            chunks.append(chunk_dates)
-
-        total = len(chunks)
-        print(f"预计算因子选择: {total} 个chunk (按进程数划分), 每段约 {stride} 天, 重叠 {overlap} 天")
-
-        if total == 0:
-            return
-
-        # Prepare data
-        factor_df = self.factor_df.copy()
-        if factor_df['date'].dtype != 'datetime64[ns]':
-            factor_df['date'] = pd.to_datetime(factor_df['date'])
-        industry_codes = self.industry_codes
-        config = {
-            'train_window_days': self.train_window_days,
-            'forward_period': self.forward_period,
-            'top_n_factors': self.top_n_factors,
-            'min_train_samples': self.min_train_samples,
-            'min_ic_dates': self.min_ic_dates,
-            'ic_decay_factor': self.ic_decay_factor,
-            # === 阶段1优化参数 ===
-            'min_factor_count': self.min_factor_count,
-            'min_factor_families': load_config().get('dynamic_factor', {}).get('min_factor_families', 2),
-            'min_ic_1f': self.min_ic_1f,
-            'use_static_candidates': self.use_static_candidates,
-            'industry_factor_config': load_config().get('industry_factors', {}),
-            'reweight_blend': self.reweight_blend,
-            'extra_candidate_factors': load_config().get('dynamic_factor', {}).get('extra_candidate_factors', []),
-        }
-
-        # 每个worker处理一个chunk
-        worker_args = [
-            ([chunk], factor_df, industry_codes, config)
-            for chunk in chunks
-        ]
-
-        # 并行计算
-        print(f"开始并行计算 {total} 个chunk...")
-        all_results = []
-        ctx = multiprocessing.get_context('fork')
-        with ctx.Pool(total) as pool:
-            results = pool.map(_compute_date_chunks_worker, worker_args)
-            for r in results:
-                all_results.extend(r)
-
-        # 汇总结果
-        for date, factors in all_results:
-            self._factor_cache[date] = factors
-
-        print(f"因子选择预计算完成: {len(self._factor_cache)} 个日期")
-
-        if progress_callback:
-            progress_callback(total, total)
-
-    def select_factors_for_date(self, val_date: str, all_dates: List[str]) -> Dict[str, Dict]:
-        """为指定日期选择各行业的最优因子
-
-        Args:
-            val_date: 验证日期
-            all_dates: 所有可用日期列表
-
-        Returns:
-            {industry: {'factors': [factors], 'quality': avg_quality}} 各行业选中的因子及质量分数
-        """
-        # 统一转换为 Timestamp（确保与缓存键类型一致）
-        val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
-
-        # 检查缓存（使用 Timestamp 类型的键）
-        if val_date_ts in self._factor_cache:
-            return self._factor_cache[val_date_ts]
-
-        # 如果缓存未命中，尝试找最近的之前日期的缓存结果
-        for i in range(len(all_dates) - 1, -1, -1):
-            if all_dates[i] < val_date_ts:
-                nearest_date = all_dates[i]
-                if nearest_date in self._factor_cache:
-                    return self._factor_cache[nearest_date]
-
-        # 缓存完全未命中
-        return {}
-
-
 class SignalEngine:
     """信号生成引擎 - 使用行业验证后的高质量因子"""
 
@@ -621,6 +129,12 @@ class SignalEngine:
         self.ml_blend_weight = ml_config.get('blend_weight', 0.30)
         self.ml_predictor = None
         self._ml_predictions = {}  # {(code, date): float}
+
+        # === 缠论增强配置 ===
+        chan_config = config_loader.get('chan_theory', {})
+        div_config = chan_config.get('divergence', {})
+        self.chan_bottom_div_threshold = div_config.get('bottom_div_threshold', 0.3)
+        self.chan_top_div_threshold = div_config.get('top_div_threshold', 0.3)
 
         # 动态因子模式配置：dynamic(仅动态) / fixed(仅固定) / both(动态优先+固定兜底)
         self.factor_mode = config_loader.get('factor_mode', 'both')
@@ -695,6 +209,14 @@ class SignalEngine:
 
         indicators = self._calculate_indicators(market_data)
 
+        # 预加载基本面缓存（避免每根K线查询DataFrame，提速100x+）
+        self._preload_stock_fundamentals(code, dates)
+
+        # 预分配百分位节流计数器
+        self._pct_counter = 0
+        self._cached_buy_threshold = self.buy_threshold
+        self._cached_sell_threshold = self.sell_threshold
+
         last_sig = None
         for i in range(len(close)):
             sig = self._generate_signal(indicators, i, last_sig, dates[i], code)
@@ -711,9 +233,12 @@ class SignalEngine:
         volume = data['volume'].values
         turnover_rate = data['turnover_rate'].values if 'turnover_rate' in data.columns else None
         open_price = data['open'].values if 'open' in data.columns else None
+        amplitude = data['amplitude'].values if 'amplitude' in data.columns else None
 
         # 使用统一的因子计算器
-        result = calc_indicators(close, high, low, volume, params, turnover_rate=turnover_rate, open_arr=open_price)
+        result = calc_indicators(close, high, low, volume, params,
+                                 turnover_rate=turnover_rate, open_arr=open_price,
+                                 amplitude=amplitude)
 
         # 收益率
         result['ret_30'] = close / self._shift(close, 30) - 1
@@ -760,68 +285,238 @@ class SignalEngine:
 
     def _get_chan_boost(self, ind: dict, idx: int) -> dict:
         """
-        缠论增强：从背离和结构分析计算信号调整乘数。
+        缠论增强 (czsc风格 v2): 使用分型→笔→线段→中枢→买卖点的完整层级。
 
-        核心规则（来自缠中说禅 + 两本股道小说）:
-        - 底背离 → 买入信号增强（"空头陷阱就是最佳机会"）
-        - 顶背离 → 买入信号抑制（"多头陷阱当然就是天堂"→卖出）
-        - 多级别对齐 → 趋势确认
-        - 中阴状态 → 方向不明，降低仓位
-        - 中枢突破 → 第三类买卖点
+        核心规则（对齐czsc三类买卖点）:
+        - 一买(B1): 下跌趋势结束+底背离 → 最强买入信号
+        - 二买(B2): 一买后回调不破前低 → 二次确认
+        - 三买(B3): 突破中枢上沿后回调不进中枢 → 趋势加速
+        - 一卖(S1): 上涨趋势结束+顶背离 → 最强卖出信号
+        - 二卖(S2): 一卖后反弹不破前高 → 二次确认
+        - 三卖(S3): 跌破中枢下沿后反弹不回中枢 → 加速下跌
         """
         mult = 1.0
         is_buy_boost = False
         is_sell_boost = False
         div_quality = 0.0
 
+        # === 新数据: 买卖点 (来自 chan_theory + chanlun-pro增强) ===
+        buy_point = int(self._safe_get(ind, 'buy_point', idx, 0))
+        sell_point = int(self._safe_get(ind, 'sell_point', idx, 0))
+        buy_conf = self._safe_get(ind, 'buy_confidence', idx, 0.0)
+        sell_conf = self._safe_get(ind, 'sell_confidence', idx, 0.0)
+        chan_buy = self._safe_get(ind, 'chan_buy_score', idx, 0.0)
+        chan_sell = self._safe_get(ind, 'chan_sell_score', idx, 0.0)
+        # chanlun-pro 增强字段
+        signal_level = int(self._safe_get(ind, 'signal_level', idx, 0))
+        confirmed_buy = bool(self._safe_get(ind, 'confirmed_buy', idx, 0))
+        confirmed_sell = bool(self._safe_get(ind, 'confirmed_sell', idx, 0))
+        buy_strength = self._safe_get(ind, 'buy_strength', idx, 0.0)
+        sell_strength = self._safe_get(ind, 'sell_strength', idx, 0.0)
+        bi_td = bool(self._safe_get(ind, 'bi_td', idx, 0))
+        bi_buy = int(self._safe_get(ind, 'bi_buy_point', idx, 0))
+        bi_sell = int(self._safe_get(ind, 'bi_sell_point', idx, 0))
+
+        trend_type = int(self._safe_get(ind, 'trend_type', idx, 0))
+        trend_strength = self._safe_get(ind, 'trend_strength', idx, 0.0)
+        pivot_pos = int(self._safe_get(ind, 'pivot_position', idx, 0))
+        consolidation = self._safe_get(ind, 'consolidation_zone', idx, 0.0)
+        stroke_dir = int(self._safe_get(ind, 'stroke_direction', idx, 0))
+        alignment = self._safe_get(ind, 'alignment_score', idx, 0.0)
+        structure_complete = self._safe_get(ind, 'structure_complete', idx, 0.0)
+        zhongyin = self._safe_get(ind, 'zhongyin', idx, 0.0)
+
+        # === 旧数据 (divergence_detector) 作为补充 ===
         bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
         top_div = self._safe_get(ind, 'top_divergence', idx, 0.0)
         hidden_bottom = self._safe_get(ind, 'hidden_bottom_divergence', idx, 0.0)
-        alignment = self._safe_get(ind, 'alignment_score', idx, 0.0)
-        pivot_present = self._safe_get(ind, 'pivot_present', idx, 0.0)
-        structure_complete = self._safe_get(ind, 'structure_complete', idx, 0.0)
-        zhongyin = self._safe_get(ind, 'zhongyin', idx, 0.0)
-        breakout_above = self._safe_get(ind, 'breakout_above_pivot', idx, 0.0)
-        breakout_below = self._safe_get(ind, 'breakout_below_pivot', idx, 0.0)
 
-        # 规则1：底背离 → 空头陷阱 → 最佳买入机会
-        if bottom_div > 0.3:
-            mult *= 1.25  # 买入信号增强25%
-            div_quality = bottom_div
+        # === Layer 1: 多级别确认 (chanlun-pro最高优先级) ===
+
+        # 双级别确认 (笔+线段同时) → 最强信号
+        if signal_level == 3 and confirmed_buy:
+            mult *= 1.35  # 双级别确认买点 → 最强买入
+            div_quality = max(div_quality, buy_strength)
             is_buy_boost = True
-
-        # 规则2：顶背离 → 多头陷阱 → 卖出/抑制买入
-        if top_div > 0.3:
-            mult *= 0.70  # 买入信号降低30%
-            div_quality = max(div_quality, top_div)
+        elif signal_level == -3 and confirmed_sell:
+            mult *= 0.55  # 双级别确认卖点 → 最强卖出
+            div_quality = max(div_quality, sell_strength)
             is_sell_boost = True
 
-        # 规则3：隐藏底背离 → 趋势中继，温和看涨
-        if hidden_bottom > 0.15 and bottom_div < 0.3:
-            mult *= 1.10
+        # 线段级别信号
+        elif signal_level == 2 and confirmed_buy:
+            mult *= 1.25
+            div_quality = max(div_quality, buy_strength)
+            is_buy_boost = True
+        elif signal_level == -2 and confirmed_sell:
+            mult *= 0.65
+            div_quality = max(div_quality, sell_strength)
+            is_sell_boost = True
 
-        # 规则4：多级别对齐 → 趋势确认
+        # 笔级别信号
+        elif signal_level == 1 and confirmed_buy:
+            mult *= 1.15
+            div_quality = max(div_quality, buy_strength * 0.7)
+            is_buy_boost = True
+        elif signal_level == -1 and confirmed_sell:
+            mult *= 0.75
+            div_quality = max(div_quality, sell_strength * 0.7)
+            is_sell_boost = True
+
+        # === Layer 1.5: 底部分型观察 ===
+        # 底部分型是缠论最基础的转折信号，比笔/线段更早发现底部
+        bottom_fx_quality = self._safe_get(ind, 'bottom_fractal_quality', idx, 0.0)
+        bottom_fx_strength = self._safe_get(ind, 'bottom_fractal_strength', idx, 0.0)
+        bottom_fx_vol = self._safe_get(ind, 'bottom_fractal_vol_ratio', idx, 1.0)
+        bottom_fx_spike = self._safe_get(ind, 'bottom_fractal_vol_spike', idx, 1.0)
+        # 量在价先: 相对前日放量3倍以上 = 极度恐慌抛售 = 强反转
+        is_volume_spike_3x = bottom_fx_spike >= 3.0
+
+        if bottom_fx_quality > 0.25:  # 降低最低门槛（原来0.35），让量在价先有机会进入
+            if is_buy_boost:
+                # 已有买点信号 + 强底分型 → 增强确认
+                base_boost = 0.12 * bottom_fx_quality
+                if is_volume_spike_3x:
+                    base_boost += 0.08  # 量在价先额外增强
+                mult *= 1.0 + base_boost
+                div_quality = max(div_quality, bottom_fx_quality * 0.65)
+            elif not is_sell_boost:
+                # 量在价先: 3x放量+底分型 → 降低独立买信号门槛到0.30
+                standalone_threshold = 0.30 if is_volume_spike_3x else 0.55
+                mild_threshold = 0.25 if is_volume_spike_3x else 0.35
+
+                if bottom_fx_quality > standalone_threshold:
+                    # 高质量底分型 → 独立买信号
+                    boost = 0.14 * bottom_fx_quality
+                    if is_volume_spike_3x:
+                        boost += 0.10  # 量在价先显著增强
+                    mult *= 1.0 + boost
+                    is_buy_boost = True
+                    div_quality = max(div_quality, bottom_fx_quality * 0.55)
+                elif bottom_fx_quality > mild_threshold:
+                    # 温和买倾向
+                    mult *= 1.0 + 0.07 * bottom_fx_quality
+                    if is_volume_spike_3x:
+                        mult *= 1.06  # 3x放量翻倍温和信号
+                    elif bottom_fx_vol > 1.3:
+                        mult *= 1.03  # 放量底分型额外加分
+                # 量在价先 + 笔趋势耗尽 → 强确认
+                if bottom_fx_quality > 0.45 and bi_td:
+                    mult *= 1.06
+                if is_volume_spike_3x and bi_td:
+                    mult *= 1.04  # 3x放量+趋势耗尽双重确认
+
+        # === Layer 1.6: 二买 (B2) — 缠论最安全的买点 ===
+        # B2 = 一买后回调不破前低 + 底分型 + MACD背离
+        second_buy = bool(self._safe_get(ind, 'second_buy_point', idx, 0))
+        second_buy_conf = self._safe_get(ind, 'second_buy_confidence', idx, 0.0)
+        b1_ref = int(self._safe_get(ind, 'second_buy_b1_ref', idx, -1))
+
+        if second_buy and second_buy_conf >= 0.45:
+            # B2是缠论中最可靠的买点 — 趋势已反转 + 回调确认
+            b2_boost = 0.18 * second_buy_conf  # 最高约 +17%
+            if not is_sell_boost:
+                mult *= 1.0 + b2_boost
+                is_buy_boost = True
+                div_quality = max(div_quality, second_buy_conf * 0.75)
+            elif is_buy_boost:
+                # 已有买信号 + B2确认 → 强力共振
+                mult *= 1.0 + b2_boost * 0.7
+                div_quality = max(div_quality, second_buy_conf * 0.75)
+
+        # 回退到旧的三类买卖点 (无多级别确认时)
+        if not is_buy_boost and not is_sell_boost:
+            if buy_point == 1 and buy_conf > 0.3:
+                mult *= 1.25
+                div_quality = max(div_quality, buy_conf)
+                is_buy_boost = True
+            elif buy_point == 2 and buy_conf > 0.2:
+                mult *= 1.15
+                div_quality = max(div_quality, buy_conf * 0.8)
+                is_buy_boost = True
+            elif buy_point == 3 and buy_conf > 0.2:
+                # B3=突破中枢后回调确认，缠论最可靠的趋势加速买点
+                mult *= 1.30
+                div_quality = max(div_quality, buy_conf * 0.90)
+                is_buy_boost = True
+
+            if sell_point == 1 and sell_conf > 0.3:
+                mult *= 0.65
+                div_quality = max(div_quality, sell_conf)
+                is_sell_boost = True
+            elif sell_point == 2 and sell_conf > 0.2:
+                mult *= 0.70
+                div_quality = max(div_quality, sell_conf * 0.8)
+                is_sell_boost = True
+            elif sell_point == 3 and sell_conf > 0.2:
+                mult *= 0.75
+                div_quality = max(div_quality, sell_conf * 0.85)
+                is_sell_boost = True
+
+        # === Layer 2: 统一Chan信号 (当买卖点不明显时使用) ===
+        if buy_point == 0 and sell_point == 0:
+            if chan_buy > 0.5:
+                mult *= 1.0 + 0.15 * chan_buy
+                is_buy_boost = True
+                div_quality = max(div_quality, chan_buy * 0.6)
+            if chan_sell > 0.5:
+                mult *= 1.0 - 0.25 * chan_sell
+                is_sell_boost = True
+                div_quality = max(div_quality, chan_sell * 0.6)
+
+        # === Layer 3: 背离检测 (兜底，但必须有趋势 — "没有趋势，没有背驰") ===
+        if not is_buy_boost and not is_sell_boost:
+            if bottom_div > top_div and bottom_div > self.chan_bottom_div_threshold:
+                # 底背离仅在下跌趋势中有意义（盘整中的背离无效）
+                if trend_type != 0:  # 有趋势才启用背离
+                    mult *= 1.20
+                    div_quality = bottom_div
+                    is_buy_boost = True
+            elif top_div > bottom_div and top_div > self.chan_top_div_threshold:
+                # 顶背离仅在上涨趋势中有意义
+                if trend_type != 0:
+                    mult *= 0.70
+                    div_quality = top_div
+                    is_sell_boost = True
+
+        # === Layer 4: 趋势类型调整 ===
+        if trend_type == 2:  # 上涨趋势
+            if is_buy_boost:
+                mult *= 1.08  # 顺势做多
+            elif is_sell_boost:
+                mult *= 0.92  # 逆势做空打折扣
+        elif trend_type == -2:  # 下跌趋势
+            if is_sell_boost:
+                mult *= 0.92  # 顺势做空（mult已是sell信号）
+            elif is_buy_boost:
+                mult *= 0.92  # 逆势抄底需谨慎
+        elif trend_type == 1:  # 盘整
+            if abs(mult - 1.0) > 0.1:
+                mult = 1.0 + (mult - 1.0) * 0.7  # 盘整时信号打7折
+
+        # === Layer 5: 中枢位置调整 ===
+        if pivot_pos == -1 and trend_type >= 1:  # 中枢下方+非下跌趋势
+            if is_buy_boost:
+                mult *= 1.10  # 中枢下方买入 = 低成本
+        elif pivot_pos == 1 and trend_type <= -1:  # 中枢上方+非上涨趋势
+            if is_sell_boost:
+                mult *= 0.90  # 中枢上方卖出 = 好价位
+
+        # === Layer 6: 状态调整 ===
+        if hidden_bottom > 0.15 and not is_sell_boost:
+            mult *= 1.08
         if abs(alignment) > 0.5:
-            mult *= (1.0 + 0.12 * alignment)  # 看涨时提升，看跌时降低
-        elif zhongyin > 0:
-            # 中阴状态 → 方向不明确 → 降低仓位（小说："看不懂的不做"）
+            mult *= (1.0 + 0.10 * alignment)
+        # 中阴阶段: 方向不明，大幅降分（缠论第99课：中阴阶段不操作）
+        if zhongyin > 0 and abs(alignment) < 0.3:
+            mult *= 0.50
+        if structure_complete < 0.5 and abs(alignment) < 0.3:
             mult *= 0.85
 
-        # 规则5："走势终完美"——结构未完成时谨慎
-        if structure_complete < 0.5 and abs(alignment) < 0.3:
-            mult *= 0.90
-
-        # 规则6：中枢突破 = 第三类买卖点
-        if breakout_above > 0 and alignment > 0.3:
-            mult *= 1.15  # 向上突破中枢，趋势强劲（3买）
-            is_buy_boost = True
-        if breakout_below > 0 and alignment < -0.3:
-            mult *= 0.75  # 向下跌破中枢，趋势转熊（3卖）
-            is_sell_boost = True
-
-        # 规则7：中枢存在 + 底背离区域 = 2买的可能位置
-        if pivot_present > 0 and bottom_div > 0.15:
-            mult *= 1.08  # 中枢附近底背离，安全性更高
+        # === Layer 7: 中枢附近 + 底背离 → 2买可能位置 ===
+        chan_pivot_present = self._safe_get(ind, 'chan_pivot_present', idx, 0.0)
+        if chan_pivot_present > 0 and bottom_div > 0.15:
+            mult *= 1.06
 
         return {
             'boost_multiplier': float(np.clip(mult, 0.5, 1.5)),
@@ -881,70 +576,42 @@ class SignalEngine:
         # 核心思想: score = factor_value，与标定验证的IC完全对齐
         # 组合层通过截面rank_pct排序选股，不再依赖信号层的额外增强
 
-        # 1. 基础分数 = 因子值
+        # 1. 基础分数 = 因子值（不做行业归一化，保留行业轮动alpha）
         base_score = np.clip(factor_value, -10, 10)
 
-        # 1a. 行业内截面归一化：减去行业均值，消除行业系统性偏差
+        # 获取行业（用于标签）
         specific_industry = self._get_specific_industry(code, current_date) if code else ''
-        if specific_industry and abs(base_score) > 0.001:
-            if specific_industry not in self._industry_factor_cache:
-                self._industry_factor_cache[specific_industry] = deque(maxlen=500)
-            self._industry_factor_cache[specific_industry].append(base_score)
-            ind_vals = list(self._industry_factor_cache[specific_industry])
-            if len(ind_vals) >= 10:
-                ind_mean = np.mean(ind_vals)
-                ind_std = max(np.std(ind_vals), 0.01)
-                # z-score归一化后缩放到[-1, 1]
-                base_score = np.tanh((base_score - ind_mean) / ind_std * 0.3)
 
         # 2. 基本面增强（仅对非行业因子生效）
         if not is_industry and fundamental_score > 0:
-            base_score = base_score + fundamental_score * 0.1
+            base_score = base_score + fundamental_score * 0.15
 
+        # 纯动量：直接使用因子值，不做二次加工
         score = base_score
 
-        # === 小说灵感：量价确认（量在价先）===
-        # 核心逻辑：成交量/换手率无法造假，用于过滤虚假信号
-        vol_ratio = self._safe_get(ind, 'volume_ratio', idx, 0)
+        # === 缠论增强（czsc风格 7层融合）===
+        chan_boost = self._get_chan_boost(ind, idx)
+        chan_sl = int(self._safe_get(ind, 'signal_level', idx, 0))
+
+        # === 缠论门控：强结构信号时缠论主导，弱信号时因子主导 ===
+        # 门控公式保留 chan_boost['boost_multiplier'] 的7层调整 (趋势/中枢/中阴等)
+        chan_mult = chan_boost['boost_multiplier']
+        if chan_sl >= 2 and chan_boost.get('is_chan_buy_boost'):
+            # 线段级/双级别买入 → 缠论主导，因子辅助，7层调整保留
+            chan_score = 0.5 + 0.5 * chan_boost.get('divergence_quality', 0.5)
+            score = chan_score * 1.5 * max(1.0, chan_mult) + base_score * 0.2
+        elif chan_sl <= -2 and chan_boost.get('is_chan_sell_boost'):
+            # 线段级/双级别卖出 → 缠论主导，7层调整保留 (sell_mult<1转为负分强度)
+            chan_score = 0.5 + 0.5 * chan_boost.get('divergence_quality', 0.5)
+            sell_intensity = max(0.3, (1.0 - chan_mult) * 3.0)
+            score = -chan_score * sell_intensity + base_score * 0.2
+        else:
+            # 无强结构信号或仅笔级 → 因子主导，缠论乘法增强（原行为）
+            score = score * chan_mult
+
         smart_money = self._safe_get(ind, 'smart_money_flow', idx, 0)
-        wash_sale = self._safe_get(ind, 'wash_sale_score', idx, 0)
-        vol_breakout = self._safe_get(ind, 'vol_price_breakout', idx, 0)
-        vol_contract = self._safe_get(ind, 'volume_contraction', idx, 0)
-        rel_strength = self._safe_get(ind, 'relative_strength', idx, 0)
-
-        # 量价确认乘数：信号方向与资金流向一致时放大，不一致时缩小
-        vol_confirm_mult = 1.0
-        if score > 0 and smart_money > 0.1:
-            vol_confirm_mult = 1.15  # 放量上涨：主力买入确认
-        elif score > 0 and smart_money < -0.1:
-            vol_confirm_mult = 0.85  # 量价背离：警惕虚假信号
-        elif score < 0 and smart_money < -0.1:
-            vol_confirm_mult = 1.15  # 放量下跌：空头确认
-
-        # 洗盘检测加分：洗盘形态的股票，反转概率高
-        if wash_sale > 0.2 and score > 0:
-            vol_confirm_mult += 0.10  # 洗盘后看涨
-
-        # 缩量回调+趋势向上：洗盘结束信号（小说核心战法）
-        if vol_contract > 0.2:
-            vol_confirm_mult += 0.08
-
-        # 放量突破：确定性最高（小说："等放量突破确认主升浪"）
-        if vol_breakout > 0.3:
-            vol_confirm_mult += 0.12
-
-        # 强者恒强：动量持续性好的股票加分
-        if rel_strength > 0.2 and score > 0:
-            vol_confirm_mult += 0.05
-
-        vol_confirm_mult = np.clip(vol_confirm_mult, 0.7, 1.4)
-
-        # === 缠论增强：背离 + 结构确认 ===
-        chan_info = self._get_chan_boost(ind, idx)
-        chan_mult = chan_info['boost_multiplier']
-
-        # 量价确认和缠论增强结合（两者独立，相乘）
-        score = score * vol_confirm_mult * chan_mult
+        bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
+        top_div = self._safe_get(ind, 'top_divergence', idx, 0.0)
 
         # === ML预测混合（非线性因子交互） ===
         if self.ml_enabled and self.ml_predictor is not None and \
@@ -958,9 +625,58 @@ class SignalEngine:
         # 4. 波动率风险指标
         risk_vol = self._safe_get(ind, 'volatility_10', idx, 0.02)
 
-        # 5. 极端市场调整
-        regime_weight = 0.9 if risk_extreme else 1.0
+        # 5. 市场状态调整（portfolio层管理敞口，信号层仅温和折扣）
+        if risk_regime == -1:
+            score = score * 0.85  # 熊市温和降分（给portfolio层留空间）
+        elif risk_regime == 0:
+            score = score * 0.95  # 中性市场轻微折扣
+        # 牛市不调整
+
+        regime_weight = 0.85 if risk_extreme else 1.0
         adjusted_score = score * regime_weight
+
+        # === 缠论三系统共振 ===
+        # 系统1(技术指标): score (已计算)
+        # 系统2(资金流向): capital_flow_score
+        # 系统3(资讯热点): news_sentiment_score
+        # 三个系统独立运行，互不影响。多系统共振才产生强信号。
+        cf_score = self._safe_get(ind, 'capital_flow_score', idx, 0.0)
+        ns_score = self._safe_get(ind, 'news_sentiment_score', idx, 0.0)
+        cf_dir = int(self._safe_get(ind, 'capital_flow_direction', idx, 0))
+        ns_dir = int(self._safe_get(ind, 'news_sentiment_direction', idx, 0))
+
+        # 判定各系统是否发出买入信号
+        sys1_buy = score > self.buy_threshold * 0.7  # 放宽阈值，查共振而非绝对强度
+        sys2_buy = cf_score > 0.5 and cf_dir >= 0    # 资金流入
+        sys3_buy = ns_score > 0.3 and ns_dir >= 0    # 利好冲击
+        sys1_sell = score < self.sell_threshold
+        sys2_sell = cf_score > 0.5 and cf_dir == -1  # 资金流出
+        sys3_sell = ns_score > 0.3 and ns_dir == -1  # 利空冲击
+
+        n_buy_systems = sum([sys1_buy, sys2_buy, sys3_buy])
+        n_sell_systems = sum([sys1_sell, sys2_sell, sys3_sell])
+
+        # 共振逻辑: 只有多系统同向时才放大信号
+        if n_buy_systems >= 3:
+            # 三系统共振 → 最强买入
+            score = score * 1.25
+            adjusted_score = adjusted_score * 1.25
+        elif n_buy_systems == 2:
+            # 双系统共振 → 较强买入
+            score = score * 1.12
+            adjusted_score = adjusted_score * 1.12
+        elif n_buy_systems == 1 and not sys1_buy:
+            # 仅资金或资讯系统有信号，技术系统无信号 → 观望
+            score = score * 0.7
+            adjusted_score = adjusted_score * 0.7
+        elif n_sell_systems >= 2:
+            # 多系统看空 → 强化卖出
+            score = score * 0.7
+            adjusted_score = adjusted_score * 0.7
+        elif n_buy_systems == 0 and n_sell_systems == 0:
+            # 三系统全无信号 → 不交易
+            score = score * 0.8
+            adjusted_score = adjusted_score * 0.8
 
         # 添加标签（先生成标签再决定buy信号）
         factor_tags = []
@@ -968,63 +684,109 @@ class SignalEngine:
             factor_tags.append('F')
         if style_confidence > 0.3:
             factor_tags.append(style_regime[:2].upper())
-        if vol_confirm_mult > 1.05:
-            factor_tags.append('V')  # 量价确认标记
-        if chan_info['divergence_quality'] > 0.3:
-            factor_tags.append('D')  # 背离确认标记
-        if chan_info['is_chan_buy_boost'] and chan_info['divergence_quality'] > 0.25:
-            factor_tags.append('B')  # Chan买入点
-        if chan_info['is_chan_sell_boost']:
-            factor_tags.append('S')  # Chan卖出点
+        if smart_money > 0.15:
+            factor_tags.append('V')
+        if bottom_div > 0.3 or top_div > 0.3:
+            factor_tags.append('D')
+        # 三系统共振标签
+        if n_buy_systems >= 2:
+            factor_tags.append(f'R{n_buy_systems}')  # R2=双系统, R3=三系统
         factor_name = factor_name + ('_' + ''.join(factor_tags) if factor_tags else '_T')
 
-        # 6. 信号信心度评分（四重确认）
-        # 综合因子质量 + 量价确认 + 缠论背离 + 趋势对齐
+        # 6. 信号信心度评分
         confidence_factors = []
         if risk_info and risk_info.get('dyn_quality', 0) > 0.02:
             confidence_factors.append(min(risk_info['dyn_quality'] * 5, 0.3))
-        if vol_confirm_mult > 1.05:
+        if abs(smart_money) > 0.15:
+            confidence_factors.append(0.10)
+        if abs(bottom_div) > 0.3 or abs(top_div) > 0.3:
             confidence_factors.append(0.15)
-        if chan_info['divergence_quality'] > 0.3:
-            confidence_factors.append(0.2)
-        trend_aligned = (score > 0 and chan_info.get('alignment', 0) > 0) or \
-                        (score < 0 and chan_info.get('alignment', 0) < 0)
-        if trend_aligned:
+        bottom_fx_qual = self._safe_get(ind, 'bottom_fractal_quality', idx, 0.0)
+        if bottom_fx_qual > 0.45:
+            confidence_factors.append(0.12)
+        elif bottom_fx_qual > 0.35:
+            confidence_factors.append(0.06)
+        # 三系统共振置信度
+        if n_buy_systems >= 3:
+            confidence_factors.append(0.25)
+        elif n_buy_systems == 2:
             confidence_factors.append(0.15)
-        signal_confidence = min(sum(confidence_factors), 0.8) + 0.2  # base 0.2
+        elif n_buy_systems == 1:
+            confidence_factors.append(0.05)
+        # 缠论结构信号置信度：结构层级越高越可信
+        chan_sl = int(self._safe_get(ind, 'signal_level', idx, 0))
+        chan_div_q = chan_boost.get('divergence_quality', 0.0)
+        if chan_sl >= 3 and chan_div_q > 0.3:
+            confidence_factors.append(0.20)   # 双级别确认 → 高置信
+        elif chan_sl >= 2 and chan_div_q > 0.2:
+            confidence_factors.append(0.12)   # 线段级 → 中高置信
+        elif chan_sl == 1 and chan_div_q > 0.15:
+            confidence_factors.append(0.06)   # 笔级 → 基础置信
+        signal_confidence = min(sum(confidence_factors), 0.8) + 0.2
 
-        # 7. 交易信号：动态买入阈值（百分位-based，强制选择性）
-        # 更新因子值滚动缓冲区
-        if factor_value is not None and not np.isnan(factor_value):
-            self._factor_value_buffer.append(float(factor_value))
+        # 7. 交易信号：基于score（含所有增强），而非裸factor_value
+        # 更新score滚动缓冲区（替代factor_value buffer）
+        if score is not None and not np.isnan(score):
+            self._factor_value_buffer.append(float(score))
 
-        # 动态阈值：缓冲区>100时取top 40%，否则使用配置的固定阈值
-        if len(self._factor_value_buffer) > 100:
-            dynamic_threshold = float(np.percentile(
-                list(self._factor_value_buffer),
-                self._buy_threshold_pct * 100
-            ))
-            effective_threshold = max(dynamic_threshold, self.buy_threshold * 0.5)
-        else:
-            effective_threshold = self.buy_threshold
+        # 动态阈值：每20根K线重算一次（百分位计算很贵，阈值变化缓慢）
+        self._pct_counter += 1
+        if len(self._factor_value_buffer) > 100 and self._pct_counter % 20 == 0:
+            buf = list(self._factor_value_buffer)
+            pct = self._buy_threshold_pct * 100
+            self._cached_buy_threshold = max(
+                float(np.percentile(buf, pct)),
+                self.buy_threshold * 0.6
+            )
+            self._cached_sell_threshold = min(
+                float(np.percentile(buf, 100 - pct)),
+                self.sell_threshold
+            )
+        effective_buy_threshold = self._cached_buy_threshold
+        effective_sell_threshold = self._cached_sell_threshold
 
-        buy = (factor_value is not None and
-               not np.isnan(factor_value) and
-               factor_value > effective_threshold and
+        buy = (score is not None and
+               not np.isnan(score) and
+               score > effective_buy_threshold and
                abs(score) < 5.0)
 
-        # sell信号：仅在factor_value明确为负时标记
-        sell = (factor_value is not None and
-                not np.isnan(factor_value) and
-                factor_value < self.sell_threshold)
+        # 缠论止盈: 强卖点信号直接触发sell=True，不依赖分数阈值
+        chan_sell_signal = chan_boost.get('is_chan_sell_boost', False)
+        sl_for_sell = int(self._safe_get(ind, 'signal_level', idx, 0))
+        sp_for_sell = int(self._safe_get(ind, 'sell_point', idx, 0))
+        sell = (score is not None and
+                not np.isnan(score) and
+                (score < effective_sell_threshold or
+                 (chan_sell_signal and (sl_for_sell <= -2 or sp_for_sell >= 1))))
 
         # 提取因子质量（用于组合层权重调整）
         factor_quality = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
 
-        # 缠论背离类型判定
+        # 缠论背离类型判定（chanlun-pro增强版：多级别确认优先）
+        buy_point = int(self._safe_get(ind, 'buy_point', idx, 0))
+        sell_point = int(self._safe_get(ind, 'sell_point', idx, 0))
+        bi_buy = int(self._safe_get(ind, 'bi_buy_point', idx, 0))
+        bi_sell = int(self._safe_get(ind, 'bi_sell_point', idx, 0))
+        signal_level = int(self._safe_get(ind, 'signal_level', idx, 0))
+        confirmed_buy = bool(self._safe_get(ind, 'confirmed_buy', idx, 0))
+        confirmed_sell = bool(self._safe_get(ind, 'confirmed_sell', idx, 0))
         bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
         top_div = self._safe_get(ind, 'top_divergence', idx, 0.0)
-        if bottom_div > top_div and bottom_div > 0.3:
+
+        # 双级别确认 (chanlun-pro核心): 笔+线段同时确认 → 最强信号
+        if signal_level == 3 and confirmed_buy:
+            chan_div_type = f'bi{bi_buy}_seg{buy_point}_buy'
+        elif signal_level == -3 and confirmed_sell:
+            chan_div_type = f'bi{bi_sell}_seg{sell_point}_sell'
+        elif signal_level == 2 and confirmed_buy:
+            chan_div_type = f'buy{buy_point}'
+        elif signal_level == -2 and confirmed_sell:
+            chan_div_type = f'sell{sell_point}'
+        elif signal_level == 1 and confirmed_buy:
+            chan_div_type = f'bi{bi_buy}'
+        elif signal_level == -1 and confirmed_sell:
+            chan_div_type = f'bi{bi_sell}'
+        elif bottom_div > top_div and bottom_div > 0.3:
             chan_div_type = 'bottom'
         elif top_div > bottom_div and top_div > 0.3:
             chan_div_type = 'top'
@@ -1032,6 +794,12 @@ class SignalEngine:
             chan_div_type = 'hidden_bottom'
         elif self._safe_get(ind, 'hidden_top_divergence', idx, 0.0) > 0.15:
             chan_div_type = 'hidden_top'
+        elif self._safe_get(ind, 'second_buy_point', idx, 0) > 0:
+            chan_div_type = 'B2'  # 二买 — 最安全的缠论买点
+        elif self._safe_get(ind, 'bottom_fractal_vol_spike', idx, 0.0) >= 3.0:
+            chan_div_type = 'bottom_fx_3x'  # 量在价先
+        elif self._safe_get(ind, 'bottom_fractal_quality', idx, 0.0) > 0.35:
+            chan_div_type = 'bottom_fx'
         else:
             chan_div_type = 'none'
 
@@ -1045,8 +813,19 @@ class SignalEngine:
             factor_quality=factor_quality,
             signal_confidence=signal_confidence,
             chan_divergence_type=chan_div_type,
-            chan_divergence_strength=chan_info['divergence_quality'],
+            chan_divergence_strength=max(bottom_div, top_div, self._safe_get(ind, 'buy_confidence', idx, 0.0),
+                                         self._safe_get(ind, 'sell_confidence', idx, 0.0)),
             chan_structure_score=float(self._safe_get(ind, 'alignment_score', idx, 0.0)),
+            chan_buy_point=buy_point,
+            chan_sell_point=sell_point,
+            signal_level=int(self._safe_get(ind, 'signal_level', idx, 0)),
+            resonance_systems=max(n_buy_systems, n_sell_systems),
+            capital_flow_score=cf_score,
+            news_sentiment_score=ns_score,
+            trend_type=int(self._safe_get(ind, 'trend_type', idx, 0)),
+            chan_pivot_zg=float(self._safe_get(ind, 'chan_pivot_zg', idx, np.nan)),
+            chan_pivot_zd=float(self._safe_get(ind, 'chan_pivot_zd', idx, np.nan)),
+            chan_pivot_zz=float(self._safe_get(ind, 'chan_pivot_zz', idx, np.nan)),
         )
 
     def _select_factor(self, ind: dict, idx: int, regime: int, industry_category: str = 'default',
@@ -1062,6 +841,12 @@ class SignalEngine:
             (factor_name, factor_value, risk_info, is_industry_factor)
         """
         specific_industry = self._get_specific_industry(code, current_date) if code else ''
+
+        # fixed模式：直接使用默认因子（跳过行业配置）
+        if self.factor_mode == 'fixed':
+            self._stats['fixed_default'] += 1
+            factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
+            return factor_name, factor_value, risk_info, False
 
         # 动态因子优先 (仅dynamic/both模式)
         if self.factor_mode in ['dynamic', 'both']:
@@ -1127,7 +912,7 @@ class SignalEngine:
 
         try:
             industry_factors = self.dynamic_factor_selector.select_factors_for_date(current_date_str, all_dates)
-        except:
+        except Exception:
             return None
 
         if not industry_factors or industry not in industry_factors:
@@ -1168,8 +953,8 @@ class SignalEngine:
         if not specific_industry:
             return None
 
-        # 检查因子数据是否存在
-        if self.dynamic_factor_selector.factor_df is None:
+        # 检查因子数据是否存在（factor_df 或预计算的 factor_cache 至少有一个）
+        if self.dynamic_factor_selector.factor_df is None and not self.dynamic_factor_selector._factor_cache:
             return None
 
         # 获取动态选择的因子
@@ -1193,20 +978,14 @@ class SignalEngine:
         dyn_quality = selected_info.get('quality', 0)
 
         # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
-        DYN_QUALITY_THRESHOLD = 0.02
+        DYN_QUALITY_THRESHOLD = 0.01
         if dyn_quality < DYN_QUALITY_THRESHOLD:
             return None
 
-        # === 阶段1优化：检查因子数量 ===
-        # 放宽1F因子限制，只要有正IC就使用
+        # 只要有因子通过IC验证就使用
         n_factors = len(selected_factors)
-        min_factor_count = self.dynamic_factor_selector.min_factor_count
-        min_ic_1f = self.dynamic_factor_selector.min_ic_1f
-
-        if n_factors < min_factor_count:
-            # 1F因子需要达到IC门槛才使用
-            if n_factors == 1 and dyn_quality < min_ic_1f:
-                return None
+        if n_factors < 1:
+            return None
 
         # 计算动态因子得分
         factor_scores = []
@@ -1271,10 +1050,22 @@ class SignalEngine:
         return compress_fundamental_factor(raw_value, factor_name)
 
     def _get_raw_fundamental_value(self, code, current_date, factor_name: str) -> Optional[float]:
-        """获取基本面因子原始值"""
+        """获取基本面因子原始值（使用预加载缓存）"""
+        # 优先使用预加载缓存
+        if hasattr(self, '_fund_cache') and self._has_fund_data_cache:
+            cache_key = str(current_date)[:10]
+            entry = self._fund_cache.get(cache_key)
+            if entry:
+                row = entry.get('row')
+                if row is not None:
+                    try:
+                        return self._extract_fund_value_from_row(row, factor_name)
+                    except Exception:
+                        pass
+
+        # Fallback
         if not hasattr(self, 'fundamental_data') or not self.fundamental_data:
             return None
-
         try:
             if factor_name == 'fund_score':
                 return self.fundamental_data.get_fundamental_score(code, current_date)
@@ -1296,35 +1087,68 @@ class SignalEngine:
                 return self.fundamental_data.get_profit_growth_improve(code, current_date)
             elif factor_name == 'fund_rg_improve':
                 return self.fundamental_data.get_revenue_growth_improve(code, current_date)
-        except:
+        except Exception:
             pass
         return None
 
+    @staticmethod
+    def _extract_fund_value_from_row(row, factor_name: str) -> Optional[float]:
+        """从缓存row提取基本面原始值"""
+        col_map = {
+            'fund_score': None,  # 单独计算
+            'fund_profit_growth': '净利润-同比增长',
+            'fund_roe': '净资产收益率',
+            'fund_revenue_growth': '营业总收入-同比增长',
+            'fund_eps': '每股收益',
+            'fund_cf_to_profit': None,
+            'fund_debt_ratio': 'zcfz_资产负债率',
+            'fund_gross_margin': '销售毛利率',
+            'fund_pg_improve': None,
+            'fund_rg_improve': None,
+        }
+        col = col_map.get(factor_name)
+        if col is None:
+            return None
+        val = row.get(col)
+        if val is None:
+            return None
+        try:
+            if isinstance(val, str):
+                return float(val.strip('%')) / 100
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+
     def _calculate_default_factor(self, ind: dict, idx: int, regime: int, industry_category: str) -> tuple:
-        """计算默认因子组合
+        """指数条件信号：指数涨=追涨，指数跌=抄底
 
-        使用动量+低波动核心，叠加尾部风险和质量因子
+        所有输出均tanh压缩到(-1,1)，与动态因子和行业因子的量纲一致。
         """
-        # 核心因子
-        vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
         mom_20 = self._safe_get(ind, 'mom_20', idx, 0)
+        mom_10 = self._safe_get(ind, 'mom_10', idx, 0)
+        mom_5 = self._safe_get(ind, 'mom_5', idx, 0)
+        vol_20 = self._safe_get(ind, 'volatility', idx, 0)
+        rel_str = self._safe_get(ind, 'relative_strength', idx, 0)
 
-        # 动量×低波动因子
-        mom_lowvol = mom_20 * (1 - vol_10 * 10)
-        mom_lowvol = np.tanh(mom_lowvol / 0.5) * 0.5
+        momentum = mom_20 * 0.5 + mom_10 * 0.3 + rel_str * 0.2
+        reversal = -(mom_20 * 0.4 + mom_10 * 0.3 + mom_5 * 0.3)
 
-        # Alpha增强：尾部风险（低尾部风险=正信号）
-        tail_risk = self._safe_get(ind, 'tail_risk', idx, 0)
-        skewness = self._safe_get(ind, 'skewness_20', idx, 0)
+        # 用市场状态决定方向：牛追涨，熊抄底
+        # tanh压缩统一量纲，与动态/行业因子对齐
+        if regime == 1:
+            factor_value = np.tanh(momentum * 3)
+            factor_name = 'MOM'
+        elif regime == -1:
+            factor_value = np.tanh(reversal * 3)
+            factor_name = 'REV'
+        else:
+            # 中性：用风险调整动量
+            vol = abs(vol_20) + 0.01
+            sharpe_raw = momentum / vol
+            factor_value = np.tanh(sharpe_raw)
+            factor_name = 'SHARPE'
 
-        # 等权组合：核心动量60% + 尾部风险20% + 偏度20%
-        factor_value = mom_lowvol * 0.6 + tail_risk * 0.2 + skewness * 0.2
-
-        # 不做熊市折扣：组合层用截面rank_pct排序，均匀缩放不改变排名
-
-        factor_name = 'DEFAULT_MomLowVol'
-
-        risk_info = {'is_high_vol': vol_10 > 0.04}
+        risk_info = {'is_high_vol': False}
         return factor_name, factor_value, risk_info
 
     def _calculate_industry_factor_score(self, ind: dict, idx: int, industry: str,
@@ -1452,119 +1276,187 @@ class SignalEngine:
             return np.tanh((0.02 - vol_10) * 5) * 0.3
         return 0.0
 
+    def _preload_stock_fundamentals(self, code, dates):
+        """预加载股票基本面数据缓存，避免每根K线查询DataFrame
+
+        核心优化：基本面数据按季度发布，对2000根K线只需计算~16次而非2000次。
+        通过指针推进找到每根K线适用的最新财报，预计算score和industry。
+        """
+        self._fund_cache = {}  # date_str -> {'score': float, 'industry': str, ...}
+        self._has_fund_data_cache = False
+
+        if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
+            return
+
+        fd = self.fundamental_data
+        if code not in fd.stock_data:
+            return
+
+        df = fd.stock_data[code]
+        if '数据可用日期' not in df.columns or len(df) == 0:
+            return
+
+        df = df.copy()
+        df['数据可用日期_str'] = df['数据可用日期'].astype(str)
+        df = df.sort_values('数据可用日期_str').reset_index(drop=True)
+
+        # 对每个K线日期，用指针推进找到适用财报
+        sorted_dates = sorted(dates)
+        report_idx = -1
+        n_reports = len(df)
+
+        for d in sorted_dates:
+            d_ts = pd.Timestamp(d)
+            d_str = d_ts.strftime('%Y%m%d')
+
+            # 推进指针：下一份财报已可用
+            while report_idx + 1 < n_reports and df.iloc[report_idx + 1]['数据可用日期_str'] <= d_str:
+                report_idx += 1
+
+            if report_idx >= 0:
+                row = df.iloc[report_idx]
+                cache_key = str(d)[:10]
+                if cache_key not in self._fund_cache:
+                    score = self._compute_fund_score_from_row(row)
+                    industry = row.get('所处行业', None)
+                    # 存原始row数据供 _get_fundamental_factor_value 使用
+                    self._fund_cache[cache_key] = {
+                        'score': score,
+                        'industry': industry,
+                        'row': row,
+                    }
+
+        self._has_fund_data_cache = True
+
+    @staticmethod
+    @staticmethod
+    def _compute_fund_score_from_row(row) -> float:
+        """从基本面数据行计算评分 — 委托给 factor_calculator.compute_fundamental_score"""
+        from .factor_calculator import compute_fundamental_score
+
+        def _parse_pct(val):
+            if val is None:
+                return None
+            try:
+                if isinstance(val, str):
+                    return float(val.strip('%')) / 100
+                return float(val)
+            except (ValueError, TypeError):
+                return None
+
+        return compute_fundamental_score(
+            roe=_parse_pct(row.get('净资产收益率')),
+            profit_growth=_parse_pct(row.get('净利润-同比增长')),
+            revenue_growth=_parse_pct(row.get('营业总收入-同比增长')),
+            eps=_parse_pct(row.get('每股收益')),
+        )
+
     def _get_industry_category(self, code, current_date) -> str:
         """获取股票所属行业类型"""
+        # 使用预加载缓存
+        if hasattr(self, '_fund_cache') and self._has_fund_data_cache:
+            cache_key = str(current_date)[:10]
+            entry = self._fund_cache.get(cache_key)
+            if entry:
+                industry = entry.get('industry')
+                if industry:
+                    return industry
+            return 'default'
+
         if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
             return 'default'
         try:
             industry = self.fundamental_data.get_industry(code, current_date)
             if not industry:
                 return 'default'
-            # 简化：返回行业本身
             return industry
-        except:
+        except Exception:
             return 'default'
 
     def _get_specific_industry(self, code, current_date) -> str:
         """获取具体行业名（使用INDUSTRY_KEYWORDS映射）"""
-        # 动态因子模式下，允许没有 fundamental_data
-        # 但如果没有 fundamental_data，尝试从 industry_codes 推断
-        has_fd = hasattr(self, 'fundamental_data') and self.fundamental_data
         has_ic = hasattr(self, 'industry_codes') and self.industry_codes
 
-        # 首先尝试从 industry_codes 查找（更可靠）
+        # 首先尝试从 industry_codes 查找（更可靠，O(1)）
         if has_ic:
             for ind_name, codes in self.industry_codes.items():
                 if code in codes:
                     return ind_name
 
-        # 如果没找到，尝试从 fundamental_data 获取
+        # 使用预加载缓存
+        if hasattr(self, '_fund_cache') and self._has_fund_data_cache:
+            cache_key = str(current_date)[:10]
+            entry = self._fund_cache.get(cache_key)
+            if entry:
+                raw_industry = entry.get('industry')
+                if raw_industry:
+                    cleaned = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
+                    for config_key, keywords in INDUSTRY_KEYWORDS.items():
+                        if raw_industry in keywords or cleaned in keywords:
+                            if config_key in INDUSTRY_FACTOR_CONFIG:
+                                return config_key
+                        for kw in keywords:
+                            if kw in raw_industry or kw in cleaned:
+                                if config_key in INDUSTRY_FACTOR_CONFIG:
+                                    return config_key
+                    return raw_industry
+
+        # Fallback: 直接查询 fundamental_data
+        has_fd = hasattr(self, 'fundamental_data') and self.fundamental_data
         if has_fd:
             try:
                 raw_industry = self.fundamental_data.get_industry(code, current_date)
                 if not raw_industry:
                     return None
-
-                # 清理行业名（去除Ⅱ、Ⅲ等特殊字符）
                 cleaned_industry = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
-
-                # 使用 INDUSTRY_KEYWORDS 将原始行业名转换为配置行业键
                 for config_key, keywords in INDUSTRY_KEYWORDS.items():
-                    # 精确匹配或包含匹配
                     if raw_industry in keywords or cleaned_industry in keywords:
-                        # 检查该行业键是否在 INDUSTRY_FACTOR_CONFIG 中
                         if config_key in INDUSTRY_FACTOR_CONFIG:
                             return config_key
-                    # 额外检查：关键词是否包含在原始行业中
                     for kw in keywords:
                         if kw in raw_industry or kw in cleaned_industry:
                             if config_key in INDUSTRY_FACTOR_CONFIG:
                                 return config_key
-            except:
+            except Exception:
                 pass
         return None
 
     def _get_fundamental_score(self, code, current_date) -> float:
-        """获取基本面因子评分"""
+        """获取基本面因子评分（使用预加载缓存）"""
+        if hasattr(self, '_fund_cache') and self._has_fund_data_cache:
+            cache_key = str(current_date)[:10]
+            entry = self._fund_cache.get(cache_key)
+            if entry:
+                return entry.get('score', 0.0)
+
         if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
             return 0.0
 
-        score = 0.0
-        roe = self.fundamental_data.get_roe(code, current_date)
-        if roe is not None:
-            if roe > 0.15:
-                score += 0.35
-            elif roe > 0.10:
-                score += 0.25
-            elif roe > 0.05:
-                score += 0.15
-
-        profit_growth = self.fundamental_data.get_profit_growth(code, current_date)
-        if profit_growth is not None:
-            if profit_growth > 0.50:
-                score += 0.30
-            elif profit_growth > 0.20:
-                score += 0.20
-            elif profit_growth > 0:
-                score += 0.10
-
-        revenue_growth = self.fundamental_data.get_revenue_growth(code, current_date)
-        if revenue_growth is not None:
-            if revenue_growth > 0.30:
-                score += 0.20
-            elif revenue_growth > 0.15:
-                score += 0.12
-            elif revenue_growth > 0:
-                score += 0.05
-
-        eps = self.fundamental_data.get_eps(code, current_date)
-        if eps is not None and eps > 0:
-            if eps > 1.0:
-                score += 0.20
-            elif eps > 0.5:
-                score += 0.12
-
-        return min(1.0, score)
+        from .factor_calculator import compute_fundamental_score
+        return compute_fundamental_score(
+            roe=self.fundamental_data.get_roe(code, current_date),
+            profit_growth=self.fundamental_data.get_profit_growth(code, current_date),
+            revenue_growth=self.fundamental_data.get_revenue_growth(code, current_date),
+            eps=self.fundamental_data.get_eps(code, current_date),
+        )
 
     # === 辅助函数 ===
-    def _safe_get(self, ind: dict, key: str, idx: int, default: float = 0.0) -> float:
+    @staticmethod
+    def _safe_get(ind: dict, key: str, idx: int, default: float = 0.0) -> float:
+        """快速安全获取指标值（假设ind值为numpy数组，跳过昂贵类型检查）"""
         arr = ind.get(key)
         if arr is None:
             return default
-        # 检查是否是真正的标量（不包括 numpy 标量）
-        if np.isscalar(arr) and not hasattr(arr, '__len__'):
-            if isinstance(arr, (int, float)) and (np.isnan(arr) or np.isinf(arr)):
-                return default
-            return arr
-        if hasattr(arr, '__len__') and not isinstance(arr, str):
-            if len(arr) <= idx:
+        try:
+            if idx >= len(arr):
                 return default
             val = arr[idx]
-            # 检查 NaN 和 Inf
-            if isinstance(val, (int, float)) and (np.isnan(val) or np.isinf(val)):
+            # NaN/Inf检查: val!=val 只在NaN时为True, 比np.isnan快
+            if val != val or val == float('inf') or val == float('-inf'):
                 return default
-            return val
-        return default
+            return float(val)
+        except (TypeError, IndexError):
+            return default
 
     def _sma(self, arr, window):
         result = np.zeros_like(arr, dtype=float)
@@ -1572,7 +1464,9 @@ class SignalEngine:
         result[window-1:] = np.convolve(arr, np.ones(window)/window, mode='valid')
         return result
 
-    def _ema(self, arr, span):
+    @staticmethod
+    @njit
+    def _ema(arr, span):
         result = np.zeros_like(arr, dtype=float)
         result[0] = arr[0]
         alpha = 2 / (span + 1)

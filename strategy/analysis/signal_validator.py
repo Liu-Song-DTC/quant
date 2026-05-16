@@ -84,7 +84,7 @@ def calculate_future_returns(signals_df, stock_data):
             if date_str not in df.index:
                 continue
             idx_pos = df.index.get_loc(date_str)
-        except:
+        except Exception:
             continue
 
         if not isinstance(idx_pos, int):

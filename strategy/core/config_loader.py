@@ -50,27 +50,27 @@ class ConfigLoader:
     def get_portfolio_config(self) -> Dict[str, Any]:
         """获取组合配置"""
         return {
-            'target_volatility': self.get('portfolio.target_volatility', 0.25),
-            'entry_speed': self.get('portfolio.entry_speed', 0.5),
-            'exit_speed': self.get('portfolio.exit_speed', 0.5),
-            'position_stop_loss': self.get('portfolio.position_stop_loss', 0.15),
+            'target_volatility': self.get('portfolio.target_volatility', 0.15),
+            'entry_speed': self.get('portfolio.entry_speed', 0.8),
+            'exit_speed': self.get('portfolio.exit_speed', 1.0),
+            'position_stop_loss': self.get('portfolio.position_stop_loss', 0.07),
             'portfolio_stop_loss': self.get('portfolio.portfolio_stop_loss', 0.12),
-            'max_single_weight': self.get('portfolio.max_single_weight', 0.15),
+            'max_single_weight': self.get('portfolio.max_single_weight', 0.12),
             'enable_industry_weighting': self.get('portfolio.enable_industry_weighting', True),
-            'volatility_control_enabled': self.get('volatility_control.enabled', False),
+            'volatility_control_enabled': self.get('volatility_control.enabled', True),
             'volatility_control_lookback': self.get('volatility_control.lookback_period', 20),
-            'portfolio_stop_loss_enabled': self.get('portfolio_stop_loss.enabled', False),
-            'emergency_exposure': self.get('portfolio_stop_loss.emergency_exposure', 0.50),
+            'portfolio_stop_loss_enabled': self.get('portfolio_stop_loss.enabled', True),
+            'emergency_exposure': self.get('portfolio_stop_loss.emergency_exposure', 0.30),
             'fv_exposure_params': self.get('portfolio.fv_exposure_params', {
-                'fv_low': -0.03, 'fv_high': 0.05, 'exposure_min': 0.3, 'exposure_max': 1.0,
+                'fv_low': -0.01, 'fv_high': 0.02, 'exposure_min': 0.4, 'exposure_max': 1.0,
             }),
-            'turnover_bonus': self.get('portfolio.turnover_bonus', 0.02),
+            'turnover_bonus': self.get('portfolio.turnover_bonus', 0.05),
             # === 小说优化新增 ===
             'dynamic_min_positions': self.get('portfolio.dynamic_min_positions', {
                 'bull': 2, 'neutral': 1, 'bear': 0,
             }),
             'selection': self.get('portfolio.selection', {
-                'min_rank_pct': 0.3, 'min_absolute_score': 0.08, 'min_confidence': 0.70,
+                'min_rank_pct': 0.40, 'min_absolute_score': 0.0, 'min_confidence': 0.30,
             }),
         }
 
@@ -78,7 +78,7 @@ class ConfigLoader:
         """获取行业因子配置"""
         return self.get('industry_factor_config', {
             'enabled': True,
-            'lookback_days': 120,
+            'lookback_days': 250,
             'forward_days': 20,
         })
 

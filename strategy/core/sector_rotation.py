@@ -28,7 +28,7 @@ class SectorRotation:
                     industry = df.iloc[0].get('行业', None)
                     if industry:
                         industry_map[code] = industry
-            except:
+            except Exception:
                 continue
         return industry_map
 

@@ -29,7 +29,7 @@ import os
 import numpy as np
 import pandas as pd
 from scipy import stats
-from multiprocessing import Pool
+import multiprocessing
 from tqdm import tqdm
 import yaml
 from collections import defaultdict
@@ -102,7 +102,7 @@ def _calibrate_stock_worker(args):
                         if any(kw in str(raw_industry) for kw in keywords):
                             stock_industry = cat
                             break
-        except:
+        except Exception:
             pass
 
     # 批量获取基本面数据
@@ -124,7 +124,7 @@ def _calibrate_stock_worker(args):
                 profit = _worker_fd.get_profit(code, eval_date)
                 if operating_cf is not None and profit is not None and profit > 0:
                     fund_cache[eval_date]['cf_to_profit'] = operating_cf / profit
-            except:
+            except Exception:
                 fund_cache[eval_date] = {}
 
     results = []
@@ -260,9 +260,10 @@ def compute_factor_data(stock_data_dict, fundamental_data, regime_lookup, stock_
 
     # 并行计算
     all_factor_data = []
-    with Pool(num_workers,
-              initializer=_init_calib_worker,
-              initargs=(fundamental_path, stock_codes)) as pool:
+    ctx = multiprocessing.get_context('fork')
+    with ctx.Pool(num_workers,
+                  initializer=_init_calib_worker,
+                  initargs=(fundamental_path, stock_codes)) as pool:
         for res in tqdm(pool.imap(_calibrate_stock_worker, args_list, chunksize=10),
                        total=len(args_list), desc="计算因子"):
             all_factor_data.extend(res)
@@ -344,7 +345,7 @@ def calibrate_industry_regime(factor_df, candidate_factors):
 
                     ic_series = fn_rank.corrwith(ret_rank, axis=1)
                     ic_list = ic_series.dropna().tolist()
-                except:
+                except Exception:
                     ic_list = []
 
                 if len(ic_list) < 10:
@@ -424,7 +425,7 @@ def _compute_combined_factor_ic(regime_df, factor_names, weights):
         ret_rank = ret_pivot.rank(axis=1, na_option='keep')
         ic_series = fn_rank.corrwith(ret_rank, axis=1)
         ic_list = ic_series.dropna().tolist()
-    except:
+    except Exception:
         return None
 
     if len(ic_list) < 10:

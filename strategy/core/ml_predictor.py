@@ -17,8 +17,6 @@ XGBoost ML预测层 - 捕获因子间的非线性交互
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional
-import warnings
-warnings.filterwarnings('ignore')
 
 
 class MLFactorPredictor:

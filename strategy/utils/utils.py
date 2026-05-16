@@ -37,7 +37,7 @@ def compute_rolling_ic(df_subset, date_col='date', factor_col='factor_value',
                 ic, _ = spearmanr(valid[factor_col], valid[ret_col])
                 if not np.isnan(ic):
                     results.append({'period': str(period), 'ic': ic, 'n': len(valid)})
-            except:
+            except Exception:
                 pass
     return results
 

@@ -1,0 +1,35 @@
+[
+  {
+    "date": "2026-05-14",
+    "section": "signal",
+    "key": "buy_threshold",
+    "from": 0.06,
+    "to": 0.04,
+    "reason": "买点信号稀少(3.3%)，建议降低买入阈值以捕获更多机会",
+    "confidence": 0.7,
+    "urgency": "high",
+    "applied": false
+  },
+  {
+    "date": "2026-05-14",
+    "section": "signal",
+    "key": "buy_threshold",
+    "from": 0.06,
+    "to": 0.04,
+    "reason": "买点信号稀少(2.0%)，建议降低买入阈值以捕获更多机会",
+    "confidence": 0.7,
+    "urgency": "high",
+    "applied": false
+  },
+  {
+    "date": "2026-05-14",
+    "section": "signal",
+    "key": "buy_threshold",
+    "from": 0.06,
+    "to": 0.04,
+    "reason": "买点信号稀少(2.0%)，建议降低买入阈值以捕获更多机会",
+    "confidence": 0.7,
+    "urgency": "high",
+    "applied": false
+  }
+]

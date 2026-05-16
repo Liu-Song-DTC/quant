@@ -34,9 +34,23 @@ class Signal:
     signal_confidence: float = 0.0    # 四重确认综合信心度 [0, 1]
 
     # === 缠论信号 ===
-    chan_divergence_type: str = ""           # 'none'/'bottom'/'top'/'hidden_bottom'/'hidden_top'
+    chan_divergence_type: str = ""           # 'none'/'bottom'/'top'/'hidden_bottom'/'hidden_top'/'buy1'/'buy2'/'buy3'/'sell1'/'sell2'/'sell3'
     chan_divergence_strength: float = 0.0    # 背离强度 [0, 1]
     chan_structure_score: float = 0.0        # 结构对齐分数 [-1, 1]
+    chan_buy_point: int = 0                  # 买点类型: 0/1/2/3 (来自chan_theory)
+    chan_sell_point: int = 0                 # 卖点类型: 0/1/2/3 (来自chan_theory)
+    signal_level: int = 0                    # 多级别确认: 3=双级别, 2=线段级, 1=笔级, 0=无
+
+    # === 缠论走势类型与中枢 ===
+    trend_type: int = 0                     # 走势类型: 2=上涨趋势, -2=下跌趋势, 1=盘整, 0=无
+    chan_pivot_zg: float = float('nan')      # 中枢上沿
+    chan_pivot_zd: float = float('nan')      # 中枢下沿
+    chan_pivot_zz: float = float('nan')      # 中枢中轴
+
+    # === 三系统共振 ===
+    resonance_systems: int = 0               # 共振系统数: 0-3
+    capital_flow_score: float = 0.0          # 系统2: 资金流向 [0,1]
+    news_sentiment_score: float = 0.0        # 系统3: 资讯热点 [0,1]
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -57,6 +71,12 @@ class Signal:
             'chan_divergence_type': self.chan_divergence_type,
             'chan_divergence_strength': self.chan_divergence_strength,
             'chan_structure_score': self.chan_structure_score,
+            'chan_buy_point': self.chan_buy_point,
+            'chan_sell_point': self.chan_sell_point,
+            'trend_type': self.trend_type,
+            'resonance_systems': self.resonance_systems,
+            'capital_flow_score': self.capital_flow_score,
+            'news_sentiment_score': self.news_sentiment_score,
         }
 
     def get_risk_level(self) -> str:

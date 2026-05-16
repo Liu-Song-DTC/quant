@@ -126,7 +126,7 @@ class FundamentalData:
             if isinstance(growth, str):
                 return float(growth.strip('%')) / 100
             return float(growth)
-        except:
+        except Exception:
             return None
 
     def get_profit(self, code, current_date):
@@ -148,7 +148,7 @@ class FundamentalData:
             if isinstance(growth, str):
                 return float(growth.strip('%')) / 100
             return float(growth)
-        except:
+        except Exception:
             return None
 
     def get_roe(self, code, current_date):
@@ -163,7 +163,7 @@ class FundamentalData:
             if isinstance(roe, str):
                 return float(roe.strip('%')) / 100
             return float(roe)
-        except:
+        except Exception:
             return None
 
     def get_bps(self, code, current_date):
@@ -246,7 +246,7 @@ class FundamentalData:
             if isinstance(debt, str):
                 return float(debt.strip('%')) / 100
             return float(debt)
-        except:
+        except Exception:
             return None
 
     def get_gross_margin(self, code, current_date):
@@ -261,7 +261,7 @@ class FundamentalData:
             if isinstance(margin, str):
                 return float(margin.strip('%')) / 100
             return float(margin)
-        except:
+        except Exception:
             return None
 
     def get_operating_cash_flow(self, code, current_date):
@@ -320,7 +320,7 @@ class FundamentalData:
                 if isinstance(val, str):
                     return float(val.strip('%')) / 100
                 return float(val)
-            except:
+            except Exception:
                 return None
 
         cur_pg = _parse_growth(latest.get('净利润-同比增长'))
@@ -346,7 +346,7 @@ class FundamentalData:
                 if isinstance(val, str):
                     return float(val.strip('%')) / 100
                 return float(val)
-            except:
+            except Exception:
                 return None
 
         cur_rg = _parse_growth(latest.get('营业总收入-同比增长'))

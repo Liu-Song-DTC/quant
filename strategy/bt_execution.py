@@ -5,7 +5,7 @@ import os
 from tqdm import tqdm
 import math
 from collections import defaultdict
-from multiprocessing import Pool, Manager
+import multiprocessing
 from functools import partial
 
 from core.strategy import Strategy
@@ -16,7 +16,7 @@ from core.signal_store import SignalStore
 from core.config_loader import load_config
 from core.industry_mapping import INDUSTRY_KEYWORDS
 from core.market_regime_detector import MarketRegimeDetector
-from core.stock_pool import get_stock_pool
+from core.stock_pool import get_stock_pool, get_exclusion_set
 
 # 情绪分析集成
 try:
@@ -52,9 +52,13 @@ _worker_engine = None
 _worker_use_dynamic = False
 
 
-def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry_codes, factor_cache, all_dates, regime_df,
+def _init_worker(fundamental_path, stock_codes, use_dynamic, industry_codes, factor_cache, all_dates, regime_df,
                  ml_model_path=None, ml_preds=None):
-    """Worker 进程初始化函数"""
+    """Worker 进程初始化函数
+
+    注意: 不传递 factor_df (巨大DataFrame) 到每个worker，预计算的 factor_cache 已包含所有因子选择结果。
+    ml_preds 只传递当前股票相关的预测值（由调用方过滤），大幅减少内存占用。
+    """
     global _worker_engine, _worker_use_dynamic
     _worker_use_dynamic = use_dynamic
 
@@ -69,14 +73,10 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry
     if regime_df is not None:
         _worker_engine.set_market_regime(regime_df)
 
-    # 设置动态因子数据（只设置一次，避免重复清除缓存）
-    if use_dynamic and factor_df is not None:
-        _worker_engine.set_factor_data(factor_df)
+    # 使用预计算的因子选择缓存（不传递原始factor_df，节省 ~400MB/worker）
+    if use_dynamic and factor_cache is not None and all_dates is not None:
         _worker_engine.set_industry_mapping(industry_codes)
-
-        # 设置预计算的因子选择缓存（避免worker重复计算）
-        if factor_cache is not None and all_dates is not None:
-            _worker_engine.dynamic_factor_selector.set_factor_cache(factor_cache, all_dates)
+        _worker_engine.dynamic_factor_selector.set_factor_cache(factor_cache, all_dates)
 
     # 设置ML预测（每个worker加载模型副本）
     if ml_model_path is not None and os.path.exists(ml_model_path):
@@ -92,60 +92,78 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, factor_df, industry
 
 
 def _generate_stock_signal_worker(args):
-    """Worker 函数：为一个股票生成信号"""
+    """Worker 函数：为一个股票生成信号 — 直接从文件读取，避免 pickle 传大数据"""
     global _worker_engine, _worker_use_dynamic
-    code, data_dict = args
+    code, filepath = args
 
-    engine = _worker_engine
+    try:
+        engine = _worker_engine
 
-    if engine is None:
-        # Fallback: 创建新 engine
-        engine = SignalEngine()
-        if FUNDAMENTAL_PATH and os.path.exists(FUNDAMENTAL_PATH):
-            fd = FundamentalData(FUNDAMENTAL_PATH, [code])
-            engine.set_fundamental_data(fd)
+        if engine is None:
+            engine = SignalEngine()
+            if FUNDAMENTAL_PATH and os.path.exists(FUNDAMENTAL_PATH):
+                fd = FundamentalData(FUNDAMENTAL_PATH, [code])
+                engine.set_fundamental_data(fd)
 
-    store = SignalStore()
-    data = pd.DataFrame(data_dict)
-    engine.generate(code, data, store)
-    return (code, store._store)
+        store = SignalStore()
+        data = pd.read_csv(filepath, parse_dates=['datetime'])
+        engine.generate(code, data, store)
+        return (code, store._store)
+    except Exception as e:
+        # 返回异常信息，避免worker静默失败
+        print(f"[Worker Error] {code}: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return (code, {})
 
 
 def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     all_items = os.listdir(DATA_PATH)
     stock_codes = []  # 获取回测池中的股票列表
 
-    # 只读取一次CSV数据
+    # 只读取一次CSV数据，同时记录文件路径
     stock_data_dict = {}
+    stock_file_map = {}  # code → filepath，传给worker直接从文件读
     for item in tqdm(all_items, desc="loading data"):
-        # 根据后缀提取股票代码
+        if item.startswith('._'):
+            continue
+        filepath = DATA_PATH + item
         if item.endswith('_qfq.csv'):
-            name = item[:-8]  # 去掉 '_qfq.csv'
+            name = item[:-8]
         elif item.endswith('_hfq.csv'):
-            name = item[:-8]  # 去掉 '_hfq.csv'
+            name = item[:-8]
         else:
             continue
-        data = pd.read_csv(DATA_PATH + item, parse_dates=['datetime'])
+        data = pd.read_csv(filepath, parse_dates=['datetime'])
         stock_data_dict[name] = data
+        stock_file_map[name] = filepath
 
     # === 股票池过滤 ===
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     if stock_pool_enabled:
         stock_pool = get_stock_pool()
-        # 保留池内股票 + sh000001（指数）
         pool_codes = stock_pool | {'sh000001'}
         before_count = len(stock_data_dict)
         stock_data_dict = {k: v for k, v in stock_data_dict.items() if k in pool_codes}
+        stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
         after_count = len(stock_data_dict)
-        print(f"股票池过滤: {before_count} -> {after_count} 只 (CSI800 + CSI1000 top200)")
+        print(f"股票池过滤: {before_count} -> {after_count} 只 (全部通过质量筛选)")
     else:
         print(f"股票池过滤: 已关闭，使用全市场 {len(stock_data_dict)} 只股票")
+
+    # === 剔除科创板 ===
+    star_codes = {k for k in stock_data_dict if k.startswith('688')}
+    before_excl = len(stock_data_dict)
+    stock_data_dict = {k: v for k, v in stock_data_dict.items() if k not in star_codes}
+    stock_file_map = {k: v for k, v in stock_file_map.items() if k not in star_codes}
+    print(f"科创板过滤: {before_excl} -> {len(stock_data_dict)} 只")
 
     # 从任意一个DataFrame获取日期（所有股票数据共享日历）
     dates = set()
     for data in stock_data_dict.values():
         dates.update(data['datetime'])
     calendar_index = pd.DatetimeIndex(sorted(dates))
+    del dates
 
     # 处理指数数据 - 生成市场状态
     regime_df = None
@@ -187,9 +205,11 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             ml_predictor = MLFactorPredictor(config.config)
             val_ic = ml_predictor.train(factor_df)
             if val_ic is not None and val_ic > 0:
-                # 保存模型到临时文件（供worker进程加载）
-                import tempfile
-                _ml_model_path = os.path.join(tempfile.gettempdir(), 'xgb_strategy_model.json')
+                # 保存模型到项目目录（避免临时目录被清理）
+                strategy_dir = os.path.dirname(os.path.abspath(__file__))
+                model_dir = os.path.join(strategy_dir, 'models')
+                os.makedirs(model_dir, exist_ok=True)
+                _ml_model_path = os.path.join(model_dir, 'xgb_strategy_model.json')
                 ml_predictor.save_model(_ml_model_path)
                 print(f"ML模型已保存: {_ml_model_path}")
 
@@ -245,19 +265,37 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         # 提取预计算的缓存传递给workers
         precomputed_cache = main_engine.dynamic_factor_selector._factor_cache
         precomputed_all_dates = main_engine.dynamic_factor_selector._all_dates_cache
+
+        # === 释放 factor_df 以避免 fork 复制到 worker 进程 ===
+        # factor_df 约 2-3GB，fork 后每个 worker 复制一份 → 4 workers = 8-12GB
+        # 预计算完成后 factor_cache 已包含所有需要的因子选择结果，不再需要 factor_df
+        strategy.signal_engine.dynamic_factor_selector.factor_df = None
+        main_engine.dynamic_factor_selector.factor_df = None
+        del factor_df
+        factor_df = None
+        import gc
+        gc.collect()
+        print("已释放 factor_df 内存（避免 fork 复制到 worker 进程）")
     else:
         precomputed_cache = None
         precomputed_all_dates = None
 
-    # 准备参数：每只股票的数据
-    # 传递 (code, data_dict, factor_df, industry_codes) 给每个 worker
+    # 准备参数：传文件路径给worker（而非dict），避免内存翻倍
     stock_items = [
-        (name, data.to_dict())
-        for name, data in stock_data_dict.items() if name != "sh000001"
+        (name, stock_file_map[name])
+        for name in stock_data_dict if name != "sh000001"
     ]
 
-    # 保存信号数据用于验证
-    all_signals = []
+    # 增量写入信号CSV（而非内存中累积 ~1.3GB 的 all_signals 列表）
+    strategy_dir = os.path.dirname(os.path.abspath(__file__))
+    signals_output_path = os.path.join(strategy_dir, 'rolling_validation_results', 'backtest_signals.csv')
+    os.makedirs(os.path.dirname(signals_output_path), exist_ok=True)
+    signal_csv = open(signals_output_path, 'w', encoding='utf-8')
+    signal_csv.write('code,date,buy,sell,score,factor_value,factor_name,industry,factor_quality,'
+                     'chan_divergence_type,chan_divergence_strength,chan_structure_score,'
+                     'chan_buy_point,chan_sell_point,signal_level,trend_type,'
+                     'chan_pivot_zg,chan_pivot_zd\n')
+    signal_count = [0]  # 用list实现闭包写入计数
 
     # 多进程并行生成信号
     print(f"多进程生成信号 ({NUM_WORKERS} workers)...")
@@ -265,39 +303,44 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 动态因子统计
     dynamic_factor_stats = {'hit': 0, 'miss': 0, 'factor_names': {}}
 
-    # 使用 Pool + initializer 模式
-    # 注意：由于 FundamentalData 可能较大，每个 worker 创建自己的实例
-    with Pool(
+    ctx = multiprocessing.get_context('fork')
+    with ctx.Pool(
         processes=NUM_WORKERS,
         initializer=_init_worker,
-        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, factor_df, industry_codes, precomputed_cache, precomputed_all_dates, regime_df,
+        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes, precomputed_cache, precomputed_all_dates, regime_df,
                   _ml_model_path, _ml_preds)
     ) as pool:
-        # imap_unordered 比 map 更快，且结果顺序不影响
-        results = []
         for result in tqdm(
             pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=10),
             total=len(stock_items),
             desc="generating signals"
         ):
-            results.append(result)
-            # 收集信号数据用于保存（实时收集，避免最后遍历大列表）
             code, store_data = result
+            # 写入 signal_store
+            for (c, date), signal in store_data.items():
+                if hasattr(date, 'date'):
+                    date = date.date()
+                strategy.signal_store.set(c, date, signal)
+            # 增量写入CSV（避免内存中累积上千万条信号）
             for (c, date), sig in store_data.items():
                 if hasattr(date, 'date'):
                     date = date.date()
-                all_signals.append({
-                    'code': c,
-                    'date': date,
-                    'buy': sig.buy,
-                    'sell': sig.sell,
-                    'score': sig.score,
-                    'factor_value': sig.factor_value,
-                    'factor_name': sig.factor_name,
-                    'industry': sig.industry,
-                    'factor_quality': getattr(sig, 'factor_quality', 0.0),
-                })
-                # 统计动态因子命中情况
+                signal_csv.write(
+                    f'{c},{date},{sig.buy},{sig.sell},{sig.score},{sig.factor_value},'
+                    f'{sig.factor_name},{sig.industry},'
+                    f'{getattr(sig, "factor_quality", 0.0)},'
+                    f'{getattr(sig, "chan_divergence_type", "")},'
+                    f'{getattr(sig, "chan_divergence_strength", 0.0)},'
+                    f'{getattr(sig, "chan_structure_score", 0.0)},'
+                    f'{getattr(sig, "chan_buy_point", 0)},'
+                    f'{getattr(sig, "chan_sell_point", 0)},'
+                    f'{getattr(sig, "signal_level", 0)},'
+                    f'{getattr(sig, "trend_type", 0)},'
+                    f'{getattr(sig, "chan_pivot_zg", float("nan"))},'
+                    f'{getattr(sig, "chan_pivot_zd", float("nan"))}\n'
+                )
+                signal_count[0] += 1
+                # 动态因子统计
                 if sig.factor_name and sig.factor_name.startswith('DYN_'):
                     dynamic_factor_stats['hit'] += 1
                     fn = sig.factor_name.split('_')[1] if '_' in sig.factor_name else sig.factor_name
@@ -305,9 +348,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                 else:
                     dynamic_factor_stats['miss'] += 1
 
-                # 调试：每10000条打印一次进度
-                if (dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']) % 100000 == 0:
-                    pass  # 已禁用调试输出
+    signal_csv.close()
+    print(f"信号数据已保存: {signal_count[0]} 条 -> {signals_output_path}")
+
+    # 释放不再需要的大对象
+    del stock_items
+    import gc
+    gc.collect()
 
     # 打印动态因子统计
     total = dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']
@@ -320,23 +367,6 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             print("行业因子分布:")
             for fn, cnt in sorted(dynamic_factor_stats['factor_names'].items(), key=lambda x: -x[1])[:10]:
                 print(f"  {fn}: {cnt:,}")
-
-    # 保存信号数据到文件（供验证脚本使用）
-    strategy_dir = os.path.dirname(os.path.abspath(__file__))
-    signals_output_path = os.path.join(strategy_dir, 'rolling_validation_results', 'backtest_signals.csv')
-    os.makedirs(os.path.dirname(signals_output_path), exist_ok=True)
-    signals_df = pd.DataFrame(all_signals)
-    signals_df.to_csv(signals_output_path, index=False)
-    print(f"信号数据已保存: {len(signals_df)} 条 -> {signals_output_path}")
-
-    # 将结果写入 signal_store
-    # _store 的键是 (code, datetime.date) -> signal
-    for code, store_data in results:
-        for (c, date), signal in store_data.items():
-            # 确保 date 是 datetime.date 类型
-            if hasattr(date, 'date'):
-                date = date.date()
-            strategy.signal_store.set(c, date, signal)
 
     price_cols = ['open', 'high', 'low', 'close']
     for name, data in tqdm(stock_data_dict.items(), desc="preparing datafeeds"):
@@ -359,6 +389,14 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         )
         strategy.portfolio.fundamental_data = FundamentalData(fundamental_path + '/', stock_codes=stock_codes)
         print(f"基本面数据已限制为 {len(stock_codes)} 只股票")
+
+    # 释放 stock_data_dict 和 stock_file_map 的内存（cerebro 已持有数据副本）
+    stock_data_dict.clear()
+    stock_file_map.clear()
+    del stock_data_dict, stock_file_map
+    import gc
+    gc.collect()
+    print("已释放数据加载缓存")
 
 class BacktraderExecution(bt.Strategy):
     params = dict(
@@ -489,7 +527,7 @@ class BacktraderExecution(bt.Strategy):
 
             raw = diff_value / price / 100
             # A 股最小 100 股
-            size = math.floor(raw) * 100 if raw > 0 else math.ceil(raw) * 100
+            size = max(int(raw), 1) * 100 if raw > 0 else min(int(raw), -1) * 100
 
             if size > 0:
                 max_affordable = int(self.broker.getcash() / price / 100) * 100
@@ -542,6 +580,8 @@ if __name__ == "__main__":
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     stock_codes = []
     for f in os.listdir(DATA_PATH):
+        if f.startswith('._'):
+            continue
         if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv':
             stock_codes.append(f.replace('_qfq.csv', ''))
         elif f.endswith('_hfq.csv') and f != 'sh000001_hfq.csv':
@@ -554,6 +594,11 @@ if __name__ == "__main__":
         print(f"基本面数据加载(股票池): {len(stock_codes)} 只")
     else:
         print(f"基本面数据加载(全市场): {len(stock_codes)} 只")
+
+    # 剔除科创板
+    star_codes = {c for c in stock_codes if c.startswith('688')}
+    stock_codes = [c for c in stock_codes if c not in star_codes]
+    print(f"基本面数据(科创板过滤后): {len(stock_codes)} 只")
 
     fundamental_data = FundamentalData(FUNDAMENTAL_PATH, stock_codes)
 
@@ -590,7 +635,20 @@ if __name__ == "__main__":
         real_strategy=strategy,
     )
     # 启动回测
-    result = cerebro.run()
+    print("启动回测引擎...")
+    try:
+        result = cerebro.run()
+    except MemoryError:
+        print("\n[ERROR] 内存不足！尝试减少股票数量或增大WSL2内存限制")
+        import sys
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n[ERROR] 回测异常退出: {e}")
+        import traceback
+        traceback.print_exc()
+        import sys
+        sys.exit(1)
+
     # 从返回的 result 中提取回测结果
     strat = result[0]
     # 返回日度收益率序列

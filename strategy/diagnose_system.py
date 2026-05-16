@@ -12,8 +12,6 @@
 import os
 import sys
 import json
-import warnings
-warnings.filterwarnings('ignore')
 
 import numpy as np
 import pandas as pd
@@ -46,7 +44,7 @@ def load_stock_data(codes=None, ndays=300):
             df = df.sort_values('datetime').tail(ndays)
             if len(df) >= 60:
                 data_dict[code] = df
-        except:
+        except Exception:
             continue
     return data_dict
 
@@ -61,7 +59,7 @@ def get_industry(code):
         if '所处行业' in df.columns and len(df) > 0:
             ind = df.iloc[0]['所处行业']
             return str(ind).strip() if pd.notna(ind) else None
-    except:
+    except Exception:
         return None
 
 
@@ -76,7 +74,7 @@ def get_market_cap(code):
         if 'volume' in df.columns and len(df) >= 20:
             avg_volume = df['volume'].tail(20).mean()
             return avg_volume
-    except:
+    except Exception:
         return None
 
 
@@ -200,7 +198,7 @@ def calculate_factor_ic(data_dict, forward_returns=20):
                     'n': valid.sum(),
                     'ir': ic / df.loc[valid, fac].std() if df.loc[valid, fac].std() > 0 else 0
                 }
-            except:
+            except Exception:
                 pass
 
     return results, df

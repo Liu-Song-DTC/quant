@@ -8,8 +8,6 @@ import sys
 import numpy as np
 import pandas as pd
 from collections import defaultdict
-import warnings
-warnings.filterwarnings('ignore')
 
 BASE_DIR = '/Users/litiancheng01/code/ltc/quant'
 sys.path.insert(0, BASE_DIR)
@@ -30,7 +28,7 @@ def load_data(code, ndays=200):
         if len(df) < 100:
             return None
         return df
-    except:
+    except Exception:
         return None
 
 
@@ -43,7 +41,7 @@ def get_industry(code):
         if '所处行业' in df.columns and len(df) > 0:
             ind = df.iloc[0]['所处行业']
             return str(ind).strip() if pd.notna(ind) else None
-    except:
+    except Exception:
         return None
 
 
@@ -277,7 +275,7 @@ def analyze_group(group_name, all_data, forward=20, top_n=50):
             ic = np.corrcoef(df.loc[valid, c], df.loc[valid, 'fwd'])[0, 1]
             if not np.isnan(ic):
                 ics[c] = ic
-        except:
+        except Exception:
             continue
 
     # 排序

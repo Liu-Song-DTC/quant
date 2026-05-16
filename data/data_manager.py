@@ -27,20 +27,21 @@ import os
 import json
 import pickle
 from pathlib import Path
-import warnings
 import hashlib
 import shutil
 import time
 import random
 from tqdm import tqdm
 
-warnings.filterwarnings('ignore')
 
 INDEX = "sh000001"
 
 class StockDataManager:
-    def __init__(self, data_dir="./data/stock_data"):
+    def __init__(self, data_dir=None):
         """初始化数据管理器"""
+        if data_dir is None:
+            # 默认路径: 脚本所在目录的 stock_data/
+            data_dir = Path(__file__).parent / "stock_data"
         self.data_dir = Path(data_dir)
         self.raw_data_dir = self.data_dir / "raw_data"
         self.backtrader_data_dir = self.data_dir / "backtrader_data"
@@ -89,6 +90,7 @@ class StockDataManager:
             "max_stock_count": -1,  # 最大股票数量
             "exclude_st": True,    # 排除ST股票
             "exclude_suspended": True,  # 排除停牌股票
+            "exclude_star_board": False,  # 排除科创板(688xxx)
             "backtest_format": "backtrader",  # 回测格式
             "data_version": "1.0"
         }
@@ -180,8 +182,15 @@ class StockDataManager:
 
         except Exception as e:
             print(f"获取股票列表失败: {e}")
+            # 降级: 优先用全量缓存, 其次用过滤后缓存
+            if stock_full_list_file.exists():
+                print("使用缓存的股票全量列表")
+                data = pd.read_csv(stock_full_list_file, dtype={'symbol': str})
+                return _filter_stock(data)
             if stock_list_file.exists():
+                print("使用缓存的股票过滤列表")
                 return pd.read_csv(stock_list_file, dtype={'symbol': str})
+            print("无缓存可用，股票列表为空")
             return pd.DataFrame()
 
     def _apply_filters(self, df):
@@ -197,38 +206,64 @@ class StockDataManager:
             filtered_df = filtered_df[mask]
             print(f"排除ST股票后剩余: {len(filtered_df)}")
 
-        # 2. 排除停牌股票
+        # 2. 排除科创板 (688xxx)
+        if self.config.get("exclude_star_board", False):
+            mask = ~filtered_df['symbol'].str.startswith('688')
+            filtered_df = filtered_df[mask]
+            print(f"排除科创板后剩余: {len(filtered_df)}")
+
+        # 3. 排除停牌股票
         if self.config["exclude_suspended"]:
             # 假设停牌股票成交量为0
             mask = filtered_df['volume'] > 0
             filtered_df = filtered_df[mask]
             print(f"排除停牌股票后剩余: {len(filtered_df)}")
 
-        # 3. 按市值过滤
+        # 4. 按市值过滤
         if self.config["min_market_cap"] > 0:
             mask = filtered_df['total_market_cap'] >= self.config["min_market_cap"] * 1e8
             filtered_df = filtered_df[mask]
             print(f"按市值过滤后剩余: {len(filtered_df)}")
 
-        # 4. 按价格过滤
+        # 5. 按价格过滤
         if self.config["min_price"] > 0:
             mask = filtered_df['close'] >= self.config["min_price"]
             filtered_df = filtered_df[mask]
             print(f"按价格过滤后剩余: {len(filtered_df)}")
 
-        # 5. 按成交量过滤
+        # 6. 按成交量过滤
         if self.config["min_amount"] > 0:
             mask = filtered_df['volume'] * filtered_df['close'] >= self.config["min_amount"] * 1e4
             filtered_df = filtered_df[mask]
             print(f"按成交量过滤后剩余: {len(filtered_df)}")
 
-        # 6. 限制股票数量
+        # 7. 限制股票数量
         if self.config["max_stock_count"] > 0 and len(filtered_df) > self.config["max_stock_count"]:
             # 按市值排序，选择大市值股票
             filtered_df = filtered_df.nlargest(self.config["max_stock_count"], 'total_market_cap')
             print(f"限制数量后剩余: {len(filtered_df)}")
 
         return filtered_df
+
+    @staticmethod
+    def _retry_call(fn, fn_name, max_retries=3, base_delay=2.0):
+        """带指数退避的重试调用，仅针对连接类异常"""
+        last_err = None
+        for attempt in range(max_retries + 1):
+            try:
+                if attempt > 0:
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                    time.sleep(delay)
+                return fn()
+            except Exception as e:
+                last_err = e
+                err_str = str(e)
+                is_conn = any(k in type(e).__name__ or k in err_str
+                              for k in ('Connection', 'RemoteDisconnected', 'Protocol',
+                                        'Timeout', 'ReadTimeout', 'ConnectTimeout'))
+                if not is_conn or attempt == max_retries:
+                    raise
+        raise last_err  # unreachable
 
     def download_raw_data(self, symbol, start_time):
         """下载原始数据（不做任何处理）"""
@@ -242,10 +277,13 @@ class StockDataManager:
                 if start_date >= end_date:
                     return None
                 print(f"下载 {symbol} 数据: {start_date} 到 {end_date}")
-                sh_index_df = ak.stock_zh_index_daily_em(
-                    symbol=symbol,
-                    start_date=start_date,
-                    end_date=end_date,
+                sh_index_df = self._retry_call(
+                    lambda: ak.stock_zh_index_daily_em(
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                    ),
+                    fn_name="stock_zh_index_daily_em",
                 )
                 return {"qfq": sh_index_df}
 
@@ -272,46 +310,55 @@ class StockDataManager:
             # 不复权数据（原始数据）
             try:
                 time.sleep(random.uniform(0.0, 1.0))
-                df_none = ak.stock_zh_a_hist(
-                    symbol=symbol,
-                    period="daily",
-                    start_date=start_date,
-                    end_date=end_date,
-                    adjust=""
+                df_none = self._retry_call(
+                    lambda: ak.stock_zh_a_hist(
+                        symbol=symbol,
+                        period="daily",
+                        start_date=start_date,
+                        end_date=end_date,
+                        adjust=""
+                    ),
+                    fn_name=f"stock_zh_a_hist({symbol}, none)",
                 )
                 if not df_none.empty:
                     data_dict['none'] = df_none
-            except:
+            except Exception:
                 print(f"警告：无法获取 {symbol} 的不复权数据")
 
             # 前复权数据
             try:
                 time.sleep(random.uniform(0.0, 1.0))
-                df_qfq = ak.stock_zh_a_hist(
-                    symbol=symbol,
-                    period="daily",
-                    start_date=start_date,
-                    end_date=end_date,
-                    adjust="qfq"
+                df_qfq = self._retry_call(
+                    lambda: ak.stock_zh_a_hist(
+                        symbol=symbol,
+                        period="daily",
+                        start_date=start_date,
+                        end_date=end_date,
+                        adjust="qfq"
+                    ),
+                    fn_name=f"stock_zh_a_hist({symbol}, qfq)",
                 )
                 if not df_qfq.empty:
                     data_dict['qfq'] = df_qfq
-            except:
+            except Exception:
                 print(f"警告：无法获取 {symbol} 的前复权数据")
 
             # 后复权数据
             try:
                 time.sleep(random.uniform(0.0, 1.0))
-                df_hfq = ak.stock_zh_a_hist(
-                    symbol=symbol,
-                    period="daily",
-                    start_date=start_date,
-                    end_date=end_date,
-                    adjust="hfq"
+                df_hfq = self._retry_call(
+                    lambda: ak.stock_zh_a_hist(
+                        symbol=symbol,
+                        period="daily",
+                        start_date=start_date,
+                        end_date=end_date,
+                        adjust="hfq"
+                    ),
+                    fn_name=f"stock_zh_a_hist({symbol}, hfq)",
                 )
                 if not df_hfq.empty:
                     data_dict['hfq'] = df_hfq
-            except:
+            except Exception:
                 print(f"警告：无法获取 {symbol} 的后复权数据")
 
             if not data_dict:
@@ -324,9 +371,9 @@ class StockDataManager:
             return data_dict
 
         except Exception as e:
-            print(f"下载 {symbol} 原始数据失败: {e}")
-            import traceback
-            traceback.print_exc()
+            # 单行简略报错, 不打印完整traceback(避免批量下载时刷屏)
+            err_msg = str(e)[:100]
+            print(f"下载 {symbol} 失败: {err_msg}")
             return None
 
     def _get_ipo_date(self, symbol):
@@ -336,7 +383,7 @@ class StockDataManager:
             for _, row in stock_info.iterrows():
                 if '上市时间' in str(row['item']):
                     return str(row['value']).split()[0]
-        except:
+        except Exception:
             pass
 
         # 如果无法获取，使用默认值
@@ -495,6 +542,28 @@ class StockDataManager:
         import concurrent.futures
         from tqdm import tqdm
 
+        # 连接健康检查：挑2只普通股票测试（排除指数，API端点不同）
+        print("检查数据源连接...")
+        regular_symbols = [s for s in symbols if s != INDEX]
+        test_symbols = regular_symbols[:2] if len(regular_symbols) >= 2 else regular_symbols
+        if not test_symbols:
+            print("  无测试标可测，跳过在线更新\n")
+            return
+        test_failures = 0
+        for sym in test_symbols:
+            try:
+                test_result = self.download_raw_data(sym, start_time=pd.to_datetime('2026-05-01'))
+                if test_result is None:
+                    test_failures += 1
+            except Exception:
+                test_failures += 1
+
+        if test_failures == len(test_symbols):
+            print(f"⚠ 数据源不可用 (测试 {len(test_symbols)} 只全部失败)")
+            print("  跳过在线更新，使用本地缓存数据继续...\n")
+            return
+        print(f"  连接正常\n")
+
         def download_single(symbol):
             try:
                 self.incremental_update(symbol)
@@ -503,12 +572,24 @@ class StockDataManager:
                 return (symbol, f"error: {str(e)}")
 
         results = []
+        fail_count = [0]  # 共享计数器
+        fail_fast_threshold = min(50, len(symbols) // 10)  # 连续失败超过10%则退出
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(download_single, symbol): symbol for symbol in symbols}  # 限制前100只
+            futures = {executor.submit(download_single, symbol): symbol for symbol in symbols}
 
             for future in tqdm(concurrent.futures.as_completed(futures),
                              total=len(futures), desc="更新进度"):
-                results.append(future.result())
+                result = future.result()
+                results.append(result)
+                if "error" in str(result[1]):
+                    fail_count[0] += 1
+                    if fail_count[0] >= fail_fast_threshold:
+                        # 取消剩余任务
+                        for f in futures:
+                            f.cancel()
+                        print(f"\n⚠ 连续 {fail_count[0]} 次下载失败, API 不可用, 提前退出")
+                        break
 
         #  统计结果
         success = sum(1 for _, status in results if status == "success")
@@ -552,6 +633,9 @@ class StockDataManager:
 
             # 增量检查：bt文件已是最新的则跳过
             bt_file = self.backtrader_data_dir / f"{symbol}_{adj_type}.csv"
+            # 预检：跳过空文件/损坏文件（下载失败可能导致空文件）
+            if data_file.stat().st_size < 200:
+                continue
             if bt_file.exists():
                 try:
                     raw_last = pd.read_csv(data_file, usecols=[0], nrows=1)
@@ -802,10 +886,7 @@ class StockDataManager:
 
     def create_universe_for_backtest(self, symbols, start_date, end_date, adj_type='qfq', min_days=100):
         """创建回测股票池"""
-        # 获取股票列表
-
-        shutil.rmtree(self.backtrader_data_dir)
-        os.makedirs(self.backtrader_data_dir)
+        # 先检查有多少股票有足够数据
         universe = []
 
         for symbol in symbols:
@@ -813,7 +894,6 @@ class StockDataManager:
                 if symbol == INDEX:
                     universe.append(symbol)
                     continue
-                # 检查是否有足够的数据
                 raw_data_path = self.raw_data_dir / str(symbol).zfill(6) / (adj_type + ".csv")
                 if not raw_data_path.exists():
                     continue
@@ -821,14 +901,22 @@ class StockDataManager:
                 df = pd.read_csv(raw_data_path, parse_dates=['日期'])
                 df_filtered = df[(df['日期'] >= start_date) & (df['日期'] <= end_date)]
 
-                # 检查数据天数
                 if len(df_filtered) >= min_days:
-                    # 检查数据质量
                     if self.validate_data_quality(symbol):
                         universe.append(symbol)
 
             except Exception as e:
                 print(f"检查 {symbol} 时出错: {e}")
+
+        if len(universe) <= 1:  # 只有 index 或空
+            print(f"有效股票池太小 ({len(universe)}只)，跳过重建，保留现有回测数据")
+            return universe
+
+        # 只有在有足够股票时才清理+重建
+        print(f"重建回测数据目录 (股票池 {len(universe)} 只)...")
+        if self.backtrader_data_dir.exists():
+            shutil.rmtree(self.backtrader_data_dir)
+        os.makedirs(self.backtrader_data_dir, exist_ok=True)
 
         # 保存股票池
         self.create_backtrader_data(universe, start_date, end_date, adj_type=adj_type)
@@ -1056,19 +1144,30 @@ def main():
     stock_list = manager.get_stock_list()
     print(f"股票列表共 {len(stock_list)} 只股票")
 
-    #  批量更新数据
-    print("\n======> 批量更新数据...")
+    if len(stock_list) == 0:
+        print("股票列表为空，可能网络不可用且无缓存，退出")
+        return
+
     sample_symbols = stock_list['symbol'].tolist()
     sample_symbols.insert(0, INDEX)
-    manager.batch_download(symbols=sample_symbols, force=False)
 
-    #  创建回测股票池
+    #  批量更新数据 (增量, 网络失败时跳过)
+    print("\n======> 增量更新数据...")
+    from datetime import datetime as dt
+    yesterday = (dt.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+    try:
+        manager.batch_download(symbols=sample_symbols, force=False)
+    except Exception as e:
+        print(f"数据下载失败 (网络不可用): {e}")
+        print("将使用本地缓存数据继续...")
+
+    #  创建/更新回测格式数据
     print("\n======> 创建回测股票池...")
     universe = manager.create_universe_for_backtest(
         symbols=sample_symbols,
-        start_date='2015-01-01',
-        end_date='2025-12-31',
-        min_days=300
+        start_date='2024-01-01',
+        end_date=yesterday,
+        min_days=100,
     )
 
     print("\n" + "=" * 50)

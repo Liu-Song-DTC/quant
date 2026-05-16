@@ -34,7 +34,7 @@ def load_stock_data(max_stocks=None):
                 continue
             df['code'] = code
             all_data.append(df)
-        except:
+        except Exception:
             continue
 
     return pd.concat(all_data, ignore_index=True)

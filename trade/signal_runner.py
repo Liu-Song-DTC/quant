@@ -62,11 +62,6 @@ class SignalRunner:
             if peak_equity > 0:
                 self.strategy.portfolio.peak_equity = peak_equity
 
-    def set_sentiment_multipliers(self, multipliers: dict):
-        """注入行业情绪乘数到组合构建器"""
-        if hasattr(self.strategy, 'portfolio') and multipliers:
-            self.strategy.portfolio.set_sentiment_multipliers(multipliers)
-
         # 生成市场状态
         if "sh000001" in self.stock_data_dict:
             self.strategy.generate_market_regime(self.stock_data_dict["sh000001"])
@@ -79,6 +74,11 @@ class SignalRunner:
         # 生成信号
         self._generate_all_signals(self._stock_codes)
 
+    def set_sentiment_multipliers(self, multipliers: dict):
+        """注入行业情绪乘数到组合构建器"""
+        if hasattr(self.strategy, 'portfolio') and multipliers:
+            self.strategy.portfolio.set_sentiment_multipliers(multipliers)
+
     def _load_data(self):
         """加载股票数据"""
         print(f"加载数据: {self.bt_data_dir}")
@@ -88,12 +88,20 @@ class SignalRunner:
 
         min_date = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
 
+        load_errors = 0
         for item in os.listdir(self.bt_data_dir):
+            # 跳过 macOS 隐藏文件
+            if item.startswith('._'):
+                continue
             if item.endswith('_qfq.csv'):
                 name = item[:-8]
             elif item.endswith('_hfq.csv'):
                 name = item[:-8]
             else:
+                continue
+
+            # 剔除科创板 (688xxx)
+            if name.startswith('688'):
                 continue
 
             filepath = os.path.join(self.bt_data_dir, item)
@@ -105,8 +113,11 @@ class SignalRunner:
                     last_row = data.iloc[-1]
                     if last_row['close'] > 0 and last_row.get('volume', 0) > 0:
                         self.prices[name] = float(last_row['close'])
-            except Exception as e:
-                print(f"加载 {name} 失败: {e}")
+            except Exception:
+                load_errors += 1
+
+        if load_errors > 0:
+            print(f"数据加载: {load_errors} 个文件失败")
 
         print(f"已加载 {len(self.stock_data_dict)} 只股票数据，{len(self.prices)} 只有最新价格")
 
@@ -141,14 +152,18 @@ class SignalRunner:
             cache = self.strategy.signal_engine.dynamic_factor_selector._factor_cache
             print(f"\n因子选择预计算完成，共 {len(cache)} 个日期")
 
+            # 释放 factor_df（预计算后不再需要，避免 OOM）
+            self.strategy.signal_engine.dynamic_factor_selector.factor_df = None
+            import gc
+            gc.collect()
+            print("已释放 factor_df 内存")
+
     def _generate_all_signals(self, stock_codes):
         """为所有股票生成信号"""
-        from core.signal_store import SignalStore
+        from tqdm import tqdm
 
-        print(f"生成信号 ({len(stock_codes)} 只股票)...")
-        for code in stock_codes:
-            if code not in self.stock_data_dict:
-                continue
+        valid_codes = [c for c in stock_codes if c in self.stock_data_dict]
+        for code in tqdm(valid_codes, desc="生成信号", unit="只"):
             data = self.stock_data_dict[code]
             self.strategy.generate_signal(code, data)
 

@@ -277,7 +277,7 @@ def run_signal_diagnostic():
             df = pd.read_csv(DATA_PATH + code + '_qfq.csv', parse_dates=['datetime'])
             price_data[code] = df
             signal_engine.generate(code, df, signal_store)
-        except:
+        except Exception:
             pass
 
     # 诊断信号

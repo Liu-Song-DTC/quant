@@ -1,94 +1,52 @@
 factor_mode: both
 dynamic_factor:
-  train_window_days: 250       # 延长至1年，IC估计更稳健（+40%观测值）
-  forward_period: 10
-  top_n_factors: 3
-  min_train_samples: 120        # 提高最小样本数
-  min_ic_dates: 15              # 更多IC日期才可靠
-  ic_decay_factor: 0.95         # 更慢衰减，稳定选择
+  train_window_days: 180
+  forward_period: 20
+  top_n_factors: 5
+  min_train_samples: 50
+  min_ic_dates: 5
+  ic_decay_factor: 0.90
   fallback_to_static: true
-  min_factor_count: 2           # 必须≥2因子，消除单因子高方差
-  min_factor_families: 2        # 强制正交因子来源，防止单一家族霸榜
-  min_ic_1f: 0.05               # 单因子需要更高IC门槛
-  use_static_candidates: true   # 限定离线验证过的候选池，防止28因子多重检验
+  min_factor_count: 2
+  min_factor_families: 2
+  min_ic_1f: 0.04
+  use_static_candidates: true
   reweight_blend: 0.5
+  date_sample_step: 5
   extra_candidate_factors:
-  - skewness_20
-  - kurtosis_20
-  - max_ret_20
-  - tail_risk
-  - volatility_skew
-  - overnight_ret
-  - intraday_ret
-  - gap_ratio
-  - price_volume_corr_20
-  - illiq_20
-  - turnover_stability
-  # === 小说灵感因子 ===
-  - wash_sale_score
-  - vol_price_breakout
-  - volume_contraction
-  - relative_strength
-  - smart_money_flow
-  - consolidation_breakout
-  # === 新增Alpha因子 ===
-  - residual_momentum
-  - short_reversal
-  - earnings_quality
+    - smart_money_flow
+    - relative_strength
+    - rsi_vol_combo
+    - wash_sale_score
+    - low_downside
+    - vol_confirm
+# === 核心因子（3个）===
+# 2026-05-09 单因子IC分析收敛：15→3，聚焦真正有预测力的因子
+# 选择原则：ICIR>0.28 + 家族分散 + 低相关性(r<0.5)
+# 组合: fund_score + volatility + mom_x_lowvol_20_20
+#   组合IC=0.0832, 组合ICIR=0.545, 组合胜率=71.8%
 backtest_factors:
-- trend_mom_v41
-- trend_mom_v24
-- trend_mom_v46
-- mom_x_lowvol_20_20
-- mom_x_lowvol_20_10
-- mom_x_lowvol_10_20
-- mom_x_lowvol_10_10
-- mom_diff_5_20
-- mom_diff_10_20
-- rsi_factor
-- volatility
-- volume_ratio
-- bb_width_20
-- fund_score
-- fund_profit_growth
-- fund_revenue_growth
-- fund_roe
-- fund_cf_to_profit
-- fund_gross_margin
-- V41_RSI_915
-- tech_fund_combo
-- rsi_vol_combo
-- bb_rsi_combo
-- ret_vol_ratio_10
-- ret_vol_ratio_20
-- momentum_reversal
-- momentum_acceleration
-- trend_lowvol
-- illiq_20
-- turnover_stability
-- overnight_ret
-- intraday_ret
-- skewness_20
-- kurtosis_20
-- max_ret_20
-- tail_risk
-- price_volume_corr_20
-- volatility_skew
-- gap_ratio
-- vol_confirm
-- low_downside
-- inv_turnover
-- turnover_shrink
-# === 小说灵感因子 ===
-- wash_sale_score
-- vol_price_breakout
-- volume_contraction
-- relative_strength
-- smart_money_flow
-- consolidation_breakout
+  # 基本面（1个）
+  - fund_score           # IC=0.0578, ICIR=0.381, 胜率=64.6%, 家族:value
+
+  # 低波动（1个）
+  - volatility           # IC=0.0615, ICIR=0.313, 胜率=61.1%, 家族:lowvol
+
+  # 动量×低波（1个）- 与上面两者低相关，提供独立信号
+  - mom_x_lowvol_20_20   # IC=0.0498, ICIR=0.281, 胜率=62.7%
+
+# === 备选因子池（当核心因子IC衰减时替换）===
+# 排序依据: ICIR从高到低
+static_candidate_factors:
+  # 强但冗余（与fund_score r=0.778）
+  - fund_profit_growth   # IC=0.0541, ICIR=0.366 (备用: fund_score替代)
+  - fund_roe             # IC=0.0554, ICIR=0.292 (IC近期衰减中)
+
+  # 弱因子（仅作极端备用）
+  - trend_lowvol         # IC=0.0263, ICIR=0.131
 industry_factor_config:
-  lookback_days: 120
-  forward_period: 10
+  lookback_days: 250
+  forward_period: 20
 industry_factors:
   半导体/光伏:
     factors:
@@ -560,25 +518,23 @@ industry_factors:
     - 0.471
     bear_ic: 0.1081
     bear_combined_ic: 0.1276
-# ==================== LLM 行业情绪分析 ====================
 industry_sentiment:
   enabled: true
-  data_dir: "data/sentiment_data"
-  deepseek_api_key: ""
-  analysis_frequency: "daily"
+  data_dir: data/sentiment_data
+  deepseek_api_key: ''
+  analysis_frequency: daily
   max_news_batch: 50
   notify_on_completion: true
   weight_impact:
     enabled: true
-    max_multiplier: 1.10
-    min_multiplier: 0.90
+    max_multiplier: 1.1
+    min_multiplier: 0.9
     smoothing_halflife: 5
     smoothing_method: ema
     regime_adjustment: true
     negativity_bias: 1.2
   backtest:
-    precomputed_file: ""
-
+    precomputed_file: ''
 indicator_params:
   ema_periods:
   - 5
@@ -614,122 +570,135 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  # === 小说优化：确定性优先，宁缺毋滥 ===
-  buy_threshold: 0.5
-  sell_threshold: -0.15
+  buy_threshold: 0.06
+  sell_threshold: -0.08
+  buy_threshold_pct: 0.60
 regime_multiplier:
   bull: 1.0
-  neutral: 0.9
-  bear: 0.50    # 从0.40提升，避免熊市过度降仓
+  neutral: 0.90
+  bear: 0.80
 portfolio:
-  target_volatility: 0.25
-  # === 小说优化：分批进出，不一把梭 ===
-  # 核心逻辑："越涨越卖，越跌越买，分批操作"
-  # 每次调仓只执行50%的目标仓位变化，分两次完成
-  entry_speed: 0.5
-  exit_speed: 0.5
-  # 止损：稍微放宽避免被震荡洗出
-  position_stop_loss: 0.10    # 从7%放宽到10%，减少假止损
+  target_volatility: 0.15
+  entry_speed: 0.8
+  exit_speed: 1.0
+  position_stop_loss: 0.07
   portfolio_stop_loss: 0.12
-  max_single_weight: 0.30
-  # === 小说优化：动态最小持仓 ===
-  # 熊市/弱势允许空仓（"不会空仓的人永远长不大"）
-  # 牛市至少持有2只（"龙头洁癖"也不降标准）
+  max_single_weight: 0.12
   dynamic_min_positions:
     bull: 2
     neutral: 1
     bear: 0
-  # === 小说优化：绝对质量门槛 ===
-  # 核心逻辑："龙头洁癖"——不仅要比别人好，还要自己够格
-  # rank_pct<min_rank 直接淘汰，score<min_score 即使排名够也不选
   selection:
-    min_rank_pct: 0.55        # 截面相对排名（提高：仅选top 45%）
-    min_absolute_score: 0.10  # 绝对分数门槛（提高）
-    min_confidence: 0.75      # 信心分数门槛（提高）
+    min_rank_pct: 0.40
+    min_absolute_score: 0.10   # 龙头洁癖: 绝对质量门槛, 0=禁用
+    min_confidence: 0.30
   fv_exposure_params:
     fv_low: -0.01
     fv_high: 0.02
-    exposure_min: 0.6
+    exposure_min: 0.4
     exposure_max: 1.0
   turnover_bonus: 0.05
 portfolio_stop_loss:
   enabled: true
-  emergency_exposure: 0.50
+  emergency_exposure: 0.3
 volatility_control:
   enabled: true
-  lookback_period: 20
-# === 因子中性化 ===
+  lookback_period: 20          # 短期波动率窗口
+  long_lookback_period: 60    # 长期波动率窗口（市场风格切换参考）
+  blend_weight: 0.6          # 短期权重（长期=1-blend_weight）
 factor_neutralization:
   enabled: true
-  neutralize_industry: true
+  neutralize_industry: false  # 关闭行业中性化，保留行业轮动alpha
   neutralize_market_cap: true
   min_samples_per_industry: 3
-# === 增强止损（小说优化：更严格的时间+移动止损）===
 enhanced_stop_loss:
-  # 小说：持仓超20天无收益就离场
-  time_stop_days: 20
-  time_stop_min_return: -0.05
-  # 小说：控制回撤，移动止损从高点回撤12%即离场
-  trailing_stop_pct: 0.12
+  time_stop_days: 15
+  time_stop_min_return: -0.03
+  trailing_stop_pct: 0.08
   trailing_stop_enabled: true
   volatility_adaptive_mult: 1.5
-# === 风险平价 ===
 risk_parity:
-  enabled: true
-  target_risk_per_stock: 0.10
+  enabled: false
+  target_risk_per_stock: 0.1
   max_iterations: 50
-# === 小说优化：动态调仓周期 ===
-# 核心逻辑：牛市"捂股不动"延长周期，熊市"快进快出"缩短周期
 dynamic_rebalance:
   enabled: true
-  bull_period: 30       # 牛市长持，减少换手
-  neutral_period: 20    # 中性保持默认
-  bear_period: 15       # 熊市灵活，快进快出
-# === 缠论优化：背离检测 + 结构分析 ===
-# 核心来源：缠中说禅 + 股神：5万本金悟道 + 股道人生
-# MACD顶/底背离 → 买卖时机，中枢/级别 → 趋势确认，中阴 → 防假突破
+  bull_period: 15
+  neutral_period: 20
+  bear_period: 20
 chan_theory:
   enabled: true
-  # 背离检测参数
   divergence:
     enabled: true
-    lookback: 20                # 背离检测回看窗口
-    peak_trough_lookback: 5     # 局部极值检测半径
-    strength_threshold: 0.3     # 最小背离强度（0-1）
-    verify_trend: true          # "没有趋势，没有背驰" — 验证趋势结构
-  # 中枢/结构分析参数
+    lookback: 20
+    peak_trough_lookback: 5
+    strength_threshold: 0.3      # 背离强度阈值（可配置）
+    bottom_div_threshold: 0.3   # 底背离触发阈值（越高越严格）
+    top_div_threshold: 0.3      # 顶背离触发阈值
+    verify_trend: true
   structure:
     enabled: true
-    pivot_min_overlap: 3        # 中枢最少K线重叠数
-    pivot_zone_buffer: 0.02     # 中枢边界缓冲
-    min_trend_bars: 8           # 趋势确认最少K线数
-    zhongyin_threshold: 0.02    # EMA间距阈值（中阴判定）
-  # 信号增强参数
+    pivot_min_overlap: 3
+    pivot_zone_buffer: 0.02
+    min_trend_bars: 8
+    zhongyin_threshold: 0.02
   signal_boost:
-    bottom_divergence_mult: 1.25     # 底背离买入信号增强
-    top_divergence_mult: 0.70        # 顶背离买入信号抑制
-    alignment_boost: 0.10            # 多级别对齐额外加分
-    zhongyin_penalty: 0.85           # 中阴状态信号惩罚
-    pivot_breakout_buy_mult: 1.15    # 中枢突破买入乘数（3买）
-    pivot_breakout_sell_mult: 0.75   # 中枢跌破卖出乘数（3卖）
-  # 退出增强参数
+    bottom_divergence_mult: 1.25
+    top_divergence_mult: 0.7
+    alignment_boost: 0.1
+    zhongyin_penalty: 0.85
+    pivot_breakout_buy_mult: 1.15
+    pivot_breakout_sell_mult: 0.75
   exit:
-    top_divergence_exit: 0.4         # 顶背离退出强度阈值
-    trend_exhaustion_exit: -0.4      # 趋势耗尽退出阈值
-    buy_zone_stop_protection: 2.0    # 底背离买入点止损放宽倍数
-    volume_divergence_exit: true     # 启用量价背离退出
-# === 股票池配置 ===
-stock_pool:
-  enabled: true            # true=1000只(剔除科创板), false=全市场
-  size: 1000
-  source: "CSI800(剔除科创板) + CSI1000补足1000"
-
-# === ML预测层 ===
-ml:
+    top_divergence_exit: 0.30
+    trend_exhaustion_exit: -0.30
+    buy_zone_stop_protection: 1.5
+    volume_divergence_exit: true
+  # === 缠论止盈配置 ===
+  take_profit:
+    enabled: true                   # 启用缠论分层止盈
+    s1_reduce_pct: 1.0             # S1一卖→全清(1.0=清仓, 0.5=减半)
+    s2_reduce_pct: 0.5             # S2二卖→减半仓
+    s3_reduce_pct: 1.0             # S3三卖→全清
+    pivot_trailing_enabled: true   # 中枢移动止盈
+    profit_lock_pct: 0.15          # 盈利>15%启动移动止盈
+    bi_sell_exit: true             # 笔级卖点也参与退出
+# === 缠论增强配置 (czsc风格): 分型→笔→线段→中枢→买卖点 ===
+chan_theory_enhanced:
   enabled: true
-  blend_weight: 0.30           # ML预测与线性因子混合比例（0.3=30%ML+70%线性）
-  retrain_frequency: 20        # 每N个交易日重新训练
-  # XGBoost参数（浅树防过拟合）
+  # 笔检测参数
+  stroke:
+    min_stroke_bars: 4         # 顶底分型之间最少K线数
+  # 线段检测参数
+  segment:
+    min_strokes: 3             # 构成线段的最少笔数
+  # 中枢检测参数
+  pivot:
+    min_segments: 3            # 构成中枢的最少线段数
+    overlap_required: true     # 是否要求严格重叠
+  # 买卖点权重
+  buy_sell_points:
+    b1_buy_mult: 1.30          # 一买增强乘数
+    b2_buy_mult: 1.20          # 二买增强乘数
+    b3_buy_mult: 1.25          # 三买增强乘数
+    s1_sell_mult: 0.60         # 一卖削弱乘数
+    s2_sell_mult: 0.65         # 二卖削弱乘数
+    s3_sell_mult: 0.70         # 三卖削弱乘数
+  # 信号综合权重
+  signal:
+    trend_trend_follow: 1.08   # 顺势加成
+    trend_counter_trend: 0.92  # 逆势折扣
+    consolidation_discount: 0.7 # 盘整信号折扣
+    zhongyin_penalty: 0.85     # 中阴状态惩罚
+    pivot_bottom_boost: 1.10   # 中枢下方买入加成
+stock_pool:
+  enabled: false
+  size: 800
+  source: 复合评分Top800(流动性60%+稳定性25%+活跃度15%, 已排雷:次新/ST/科创/僵尸/低流动)
+ml:
+  enabled: false
+  blend_weight: 0.3
+  retrain_frequency: 20
   n_estimators: 200
   max_depth: 4
   learning_rate: 0.05
@@ -738,12 +707,11 @@ ml:
   reg_lambda: 2.0
   reg_alpha: 1.0
   min_child_weight: 5
-  use_cross_features: true     # top-8因子两两交互
-  use_regime_features: true    # 市场状态×因子交互
-
+  use_cross_features: true
+  use_regime_features: true
 backtest:
   cash: 150000.0
-  commission: 0.0015
-  slippage: 0.0015
+  commission: 0.00011
+  slippage: 0.0001
   rebalance_days: 20
   num_workers: 4

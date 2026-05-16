@@ -18,11 +18,13 @@ def detect_peak_trough(
     lookback: int = 5,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    检测一维数组中的局部峰值和谷值。
+    检测一维数组中的局部峰值和谷值（仅用历史数据，无前视偏差）。
+
+    使用右对齐窗口 [i-lookback, i]，确保在位置 i 只使用 i 及之前的数据。
 
     Args:
         arr: 输入数组（如价格或MACD柱状图）
-        lookback: 每侧检查的点数（窗口 = 2*lookback + 1）
+        lookback: 回看窗口大小（窗口 = lookback + 1）
 
     Returns:
         peaks: bool数组，峰值位置为 True
@@ -32,13 +34,13 @@ def detect_peak_trough(
     peaks = np.zeros(n, dtype=bool)
     troughs = np.zeros(n, dtype=bool)
 
-    if n < 2 * lookback + 1:
+    if n < lookback + 1:
         return peaks, troughs
 
-    for i in range(lookback, n - lookback):
+    for i in range(lookback, n):
         if np.isnan(arr[i]):
             continue
-        window = arr[i - lookback : i + lookback + 1]
+        window = arr[i - lookback : i + 1]
         if arr[i] == np.nanmax(window) and np.sum(~np.isnan(window)) >= 3:
             peaks[i] = True
         if arr[i] == np.nanmin(window) and np.sum(~np.isnan(window)) >= 3:

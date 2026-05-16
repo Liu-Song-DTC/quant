@@ -32,6 +32,98 @@ def _init_factor_worker(fundamental_path, stock_codes):
         _worker_fd = None
 
 
+def _preload_fundamental_cache(fd, code, dates):
+    """预加载股票基本面数据缓存 — 指针推进法，每季度只计算一次而非每个日期查询一次"""
+    cache = {}
+    if fd is None or code not in fd.stock_data:
+        return cache, None
+
+    df = fd.stock_data[code]
+    if '数据可用日期' not in df.columns or len(df) == 0:
+        return cache, None
+
+    df = df.copy()
+    df['数据可用日期_str'] = df['数据可用日期'].astype(str)
+    df = df.sort_values('数据可用日期_str').reset_index(drop=True)
+
+    sorted_dates = sorted(dates)
+    report_idx = -1
+    n_reports = len(df)
+    stock_industry = None
+
+    for d in sorted_dates:
+        d_ts = pd.Timestamp(d)
+        d_str = d_ts.strftime('%Y%m%d')
+
+        while report_idx + 1 < n_reports and df.iloc[report_idx + 1]['数据可用日期_str'] <= d_str:
+            report_idx += 1
+
+        if report_idx >= 0:
+            row = df.iloc[report_idx]
+            cache_key = d
+            if cache_key not in cache:
+                # 提取基本面值
+                roe = _parse_pct(row.get('净资产收益率'))
+                profit_growth = _parse_pct(row.get('净利润-同比增长'))
+                revenue_growth = _parse_pct(row.get('营业总收入-同比增长'))
+                gross_margin = _parse_pct(row.get('销售毛利率'))
+
+                # 综合评分
+                fund_score = 0.0
+                if roe is not None:
+                    fund_score += min(roe * 100, 30)
+                if profit_growth is not None:
+                    if profit_growth > 0.5: fund_score += 25
+                    elif profit_growth > 0.2: fund_score += 15
+                    elif profit_growth > 0: fund_score += 5
+                eps = row.get('每股收益')
+                if eps is not None:
+                    try:
+                        eps = float(eps)
+                        if eps > 0: fund_score += min(eps * 10, 20)
+                    except (ValueError, TypeError): pass
+                if revenue_growth is not None:
+                    if revenue_growth > 0.3: fund_score += 15
+                    elif revenue_growth > 0.1: fund_score += 10
+
+                # cf_to_profit
+                cf_to_profit = None
+                operating_cf = row.get('xjll_经营性现金流-现金流量净额')
+                profit = row.get('lrb_净利润')
+                if operating_cf is not None and profit is not None:
+                    try:
+                        if float(profit) > 0:
+                            cf_to_profit = float(operating_cf) / float(profit)
+                    except (ValueError, TypeError): pass
+
+                cache[cache_key] = {
+                    'roe': roe,
+                    'profit_growth': profit_growth,
+                    'revenue_growth': revenue_growth,
+                    'fund_score': fund_score,
+                    'gross_margin': gross_margin,
+                    'cf_to_profit': cf_to_profit,
+                    'industry': row.get('所处行业'),
+                }
+
+        if stock_industry is None and report_idx >= 0:
+            stock_industry = df.iloc[report_idx].get('所处行业')
+
+    return cache, stock_industry
+
+
+def _parse_pct(val):
+    """解析百分比值"""
+    if val is None:
+        return None
+    try:
+        if isinstance(val, str):
+            return float(val.strip('%')) / 100.0
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def _compute_stock_factors_worker(args):
     """多进程 worker: 计算单只股票的因子数据（使用统一的factor_calculator）"""
     global _worker_fd
@@ -61,34 +153,8 @@ def _compute_stock_factors_worker(args):
     # === 构建日期到索引的映射（O(1) 查找）===
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}
 
-    # 获取股票的行业分类
-    stock_industry = None
-    if _worker_fd is not None:
-        try:
-            if len(factor_dates) > 0:
-                stock_industry = _worker_fd.get_industry(code, factor_dates[0])
-        except:
-            pass
-
-    # === 批量获取基本面数据 ===
-    fund_cache = {}
-    if _worker_fd is not None:
-        for eval_date in factor_dates:
-            try:
-                fund_cache[eval_date] = {
-                    'roe': _worker_fd.get_roe(code, eval_date),
-                    'profit_growth': _worker_fd.get_profit_growth(code, eval_date),
-                    'revenue_growth': _worker_fd.get_revenue_growth(code, eval_date),
-                    'fund_score': _worker_fd.get_fundamental_score(code, eval_date),
-                    'gross_margin': _worker_fd.get_gross_margin(code, eval_date),
-                    'cf_to_profit': None
-                }
-                operating_cf = _worker_fd.get_operating_cash_flow(code, eval_date)
-                profit = _worker_fd.get_profit(code, eval_date)
-                if operating_cf is not None and profit is not None and profit > 0:
-                    fund_cache[eval_date]['cf_to_profit'] = operating_cf / profit
-            except:
-                fund_cache[eval_date] = {}
+    # === 预加载基本面缓存（指针推进法，避免每日期查询DataFrame）===
+    fund_cache, stock_industry = _preload_fundamental_cache(_worker_fd, code, factor_dates)
 
     # === 批量向量化构建结果 ===
     results = []
@@ -165,7 +231,7 @@ def prepare_factor_data(stock_data: dict, fd,
             - all_dates: 所有交易日期列表
     """
     config_loader = load_config()
-    lookback = config_loader.get('industry_factor_config.lookback_days', 120)
+    lookback = config_loader.get('industry_factor_config.lookback_days', 250)
     forward_period = config_loader.get('dynamic_factor.forward_period', 20)
 
     # 构建行业映射
@@ -198,14 +264,17 @@ def prepare_factor_data(stock_data: dict, fd,
                         industry_codes[cat].append(code)
                         matched = True
                         break
-        except:
+        except Exception:
             pass
         if not matched:
             unmatched_count += 1
 
-    # 使用所有日期（不采样，确保动态因子覆盖所有交易日）
-    factor_dates = all_dates[lookback:-forward_period]
-    print(f"预计算因子数据: {len(factor_dates)} 个时间点, {len(stock_data)} 只股票")
+    # 日期采样：每N个交易日采样1次（减少计算量）
+    date_step = config_loader.get('dynamic_factor.date_sample_step', 3)
+    all_factor_dates = all_dates[lookback:-forward_period]
+    factor_dates = all_factor_dates[::date_step]
+    del all_factor_dates  # 释放中间列表
+    print(f"预计算因子数据: {len(factor_dates)} 个时间点 (每{date_step}日采样), {len(stock_data)} 只股票")
     print(f"行业映射: 未匹配 {unmatched_count}/{len(stock_data)} 只股票")
     for cat, codes in industry_codes.items():
         if codes:
@@ -227,7 +296,10 @@ def prepare_factor_data(stock_data: dict, fd,
                        total=len(args_list), desc="计算因子"):
             all_factor_data.extend(res)
 
+    del args_list  # 释放参数列表（含DataFrame引用）
+
     factor_data = pd.DataFrame(all_factor_data) if all_factor_data else pd.DataFrame()
+    del all_factor_data  # 释放中间列表内存
 
     # 数据清洗：过滤极端未来收益
     if 'future_ret' in factor_data.columns:
@@ -239,12 +311,46 @@ def prepare_factor_data(stock_data: dict, fd,
         print(f"因子数据: {original_len} 条 -> {len(factor_data)} 条 (过滤极端值 {original_len - len(factor_data)} 条)")
 
     # 因子中性化（行业+市值剥离）
+    # 缠论/结构字段具有绝对含义（非截面相对值），不参与中性化
+    _CHAN_STRUCTURAL_FIELDS = {
+        # 中枢位置
+        'pivot_position', 'pivot_present', 'pivot_zg', 'pivot_zd', 'pivot_zz',
+        'pivot_level', 'pivot_count',
+        'chan_pivot_present', 'chan_pivot_zg', 'chan_pivot_zd', 'chan_pivot_zz', 'chan_pivot_level',
+        'breakout_above_pivot', 'breakout_below_pivot', 'consolidation_zone',
+        # 走势结构
+        'zhongyin', 'structure_complete', 'alignment_score',
+        'trend_type', 'trend_strength',
+        # 分型/笔/线段
+        'top_fractals', 'bottom_fractals', 'fractal_type',
+        'stroke_direction', 'stroke_id', 'stroke_count',
+        'segment_direction', 'segment_id', 'segment_count',
+        # 买卖点
+        'buy_point', 'sell_point', 'buy_confidence', 'sell_confidence',
+        'bi_buy_point', 'bi_sell_point', 'bi_buy_confidence', 'bi_sell_confidence', 'bi_td',
+        'confirmed_buy', 'confirmed_sell', 'signal_level', 'buy_strength', 'sell_strength',
+        'second_buy_point', 'second_buy_confidence', 'second_buy_b1_ref',
+        # 背离
+        'top_divergence', 'bottom_divergence', 'hidden_top_divergence',
+        'hidden_bottom_divergence', 'divergence_active',
+        # 分型质量
+        'bottom_fractal_quality', 'bottom_fractal_strength',
+        'bottom_fractal_vol_ratio', 'bottom_fractal_vol_spike', 'bottom_fractal_ema_dist',
+        # 缠论信号强度 + 结构止损
+        'chan_buy_score', 'chan_sell_score', 'structure_stop_price',
+        # 独立系统 (资金流/情绪)
+        'capital_flow_score', 'capital_flow_direction',
+        'news_sentiment_score', 'news_sentiment_direction',
+        'smart_money_flow',
+    }
     neu_config = config_loader.get('factor_neutralization', {})
     if neu_config.get('enabled', False) and len(factor_data) > 0:
         from .factor_neutralizer import neutralize_factor_df
         factor_cols = [c for c in factor_data.columns
-                       if c not in ('code', 'date', 'future_ret', 'industry')]
-        print(f"因子中性化: {len(factor_cols)} 个因子列, "
+                       if c not in ('code', 'date', 'future_ret', 'industry')
+                       and c not in _CHAN_STRUCTURAL_FIELDS]
+        skipped_chan = len([c for c in factor_data.columns if c in _CHAN_STRUCTURAL_FIELDS])
+        print(f"因子中性化: {len(factor_cols)} 个因子列 (跳过{skipped_chan}个缠论/结构字段), "
               f"行业={'✓' if neu_config.get('neutralize_industry') else '✗'}, "
               f"市值={'✓' if neu_config.get('neutralize_market_cap') else '✗'}")
         factor_data = neutralize_factor_df(

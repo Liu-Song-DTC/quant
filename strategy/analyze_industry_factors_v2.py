@@ -13,8 +13,6 @@ import sys
 import numpy as np
 import pandas as pd
 from collections import defaultdict
-import warnings
-warnings.filterwarnings('ignore')
 
 BASE_DIR = '/Users/litiancheng01/code/ltc/quant'
 sys.path.insert(0, BASE_DIR)
@@ -37,7 +35,7 @@ def load_stock_price_data(code, ndays=120):
         if len(df) < 60:
             return None
         return df
-    except:
+    except Exception:
         return None
 
 
@@ -53,7 +51,7 @@ def get_stock_industry(code):
             if pd.notna(industry):
                 return str(industry).strip()
         return None
-    except:
+    except Exception:
         return None
 
 
@@ -79,7 +77,7 @@ def get_stock_fundamental(code, date):
             roe = latest['净资产收益率']
             try:
                 result['roe'] = float(str(roe).strip('%')) / 100 if pd.notna(roe) else None
-            except:
+            except Exception:
                 result['roe'] = None
 
         # 净利润增长
@@ -87,7 +85,7 @@ def get_stock_fundamental(code, date):
             pg = latest['净利润-同比增长']
             try:
                 result['profit_growth'] = float(str(pg).strip('%')) / 100 if pd.notna(pg) else None
-            except:
+            except Exception:
                 result['profit_growth'] = None
 
         # 营收增长
@@ -95,11 +93,11 @@ def get_stock_fundamental(code, date):
             rg = latest['营业总收入-同比增长']
             try:
                 result['revenue_growth'] = float(str(rg).strip('%')) / 100 if pd.notna(rg) else None
-            except:
+            except Exception:
                 result['revenue_growth'] = None
 
         return result
-    except:
+    except Exception:
         return {}
 
 

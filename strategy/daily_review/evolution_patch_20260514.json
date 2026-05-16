@@ -1,0 +1,11 @@
+[
+  {
+    "section": "signal",
+    "key": "buy_threshold",
+    "current": 0.06,
+    "suggested": 0.04,
+    "reason": "买点信号稀少(2.0%)，建议降低买入阈值以捕获更多机会",
+    "confidence": 0.7,
+    "urgency": "high"
+  }
+]

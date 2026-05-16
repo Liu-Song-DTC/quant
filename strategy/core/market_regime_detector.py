@@ -56,13 +56,13 @@ class MarketRegimeDetector:
 
     def _init_params(self):
         """初始化参数"""
-        # 熊市阈值（改为更敏感：20日动量 < 0）
+        # 熊市阈值（调整后：阈值更对称）
         self.mom5_bear = -0.02    # 5日动量 < -2%
-        self.mom_bear = 0.00       # 20日动量 < 0（改为0以更敏感）
+        self.mom_bear = -0.02     # 20日动量 < -2%（调整：原0导致过度保守）
         self.mom_bear_sustained = -0.03  # 持续熊市：20日动量 < -3%
 
-        # 牛市阈值
-        self.mom_bull = 0.03      # 20日动量 > 3%
+        # 牛市阈值（调整后：与熊市对称）
+        self.mom_bull = 0.02      # 20日动量 > 2%（调整：原3%过高）
         self.mom60_bull = 0.02    # 60日动量 > 2%
 
         # 极端波动阈值
@@ -315,7 +315,7 @@ class MarketRegimeDetector:
             if pd.isna(val):
                 return default
             return val
-        except:
+        except Exception:
             return default
 
     # 兼容旧接口

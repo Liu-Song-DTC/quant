@@ -85,7 +85,7 @@ if __name__ == "__main__":
                             if abs(ret) < 1.0:  # 过滤异常收益
                                 tech_signals.append(sig.factor_value)
                                 tech_returns.append(ret)
-        except:
+        except Exception:
             continue
 
     # 打印分数分布
@@ -142,7 +142,7 @@ if __name__ == "__main__":
                         future_price = df.iloc[i+20]['close'] if i+20 < len(df) else row['close']
                         ret = future_price / row['close'] - 1
                         combined_returns.append(ret)
-        except:
+        except Exception:
             continue
 
     if len(combined_signals) > 100:

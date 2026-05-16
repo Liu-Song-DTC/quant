@@ -10,8 +10,6 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from collections import defaultdict
-import warnings
-warnings.filterwarnings('ignore')
 
 # 添加项目路径
 BASE_DIR = '/Users/litiancheng01/code/ltc/quant'
@@ -61,7 +59,7 @@ def get_stock_industry(code):
             if pd.notna(industry):
                 return str(industry).strip()
         return None
-    except:
+    except Exception:
         return None
 
 
