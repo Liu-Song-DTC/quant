@@ -92,6 +92,167 @@ def load_stock_name_map():
     return {}
 
 
+# ══════════════════════════════════════════════════════════════
+#  选股理由生成 — 缠论逐步推理 + 课文引用
+#  面向他人阅读的报告格式：假设→验证→结论
+# ══════════════════════════════════════════════════════════════
+
+# 缠论买卖点 → 课文出处与推理链条
+CHAN_BUY_REASONING = {
+    1: {
+        'lesson': '第21课',
+        'premise': '下跌趋势末端出现底背驰 → 空头力竭',
+        'verification': '底背驰强度{strength}，MACD柱面积缩小(第24课)',
+        'conclusion': '符合第一类买点定义：趋势背驰终结下跌走势',
+    },
+    2: {
+        'lesson': '第21/49课',
+        'premise': '一买后回踩不破前低 → 空头无力继续打压',
+        'verification': '回踩确认强度{strength}，第49课"最安全的买点"',
+        'conclusion': '符合第二类买点定义：次级别回踩确认',
+    },
+    3: {
+        'lesson': '第21/54课',
+        'premise': '突破中枢上沿后回踩不破 → 多头主导',
+        'verification': '中枢突破力度{strength}，第54课"走势加速确认"',
+        'conclusion': '符合第三类买点定义：中枢突破后回踩确认',
+    },
+}
+
+
+def generate_selection_reason(s, rank_pct_str=""):
+    """
+    面向报告的逐步推理格式 (用于CSV历史记录，简明版)
+    """
+    buy_pt = s.get("chan_buy_point", 0)
+    buy_strength = s.get("chan_buy_strength", 0.0)
+    signal_level = s.get("signal_level", 0)
+    trend = s.get("trend_type", 0)
+    chan_bonus = s.get("chan_bonus", 0)
+    fn = s.get("factor_name", "")
+
+    if buy_pt <= 0:
+        return f'因子评分驱动·无缠论买点确认, 综合评分{s.get("score", 0):.3f}'
+
+    reasoning = CHAN_BUY_REASONING.get(buy_pt, {})
+    lesson = reasoning.get('lesson', '')
+    premise = reasoning.get('premise', '')
+
+    # 趋势背景 (第15课:没有趋势没有背驰)
+    trend_words = {2: '上涨趋势延续·顺势做多(第16课)', 1: '盘整中·等待方向(第18课)', -2: '下跌末端·左侧转折(第21课)', 0: ''}
+    trend_str = trend_words.get(trend, '')
+
+    # 信号级别 (第35课:多级别联立)
+    lvl_words = {3: '笔线段双级共振(第35课)', 2: '线段级确认(第35课)', 1: '', 0: ''}
+    lvl_str = lvl_words.get(signal_level, '')
+
+    parts = [premise]
+    if trend_str:
+        parts.append(trend_str)
+    if lvl_str:
+        parts.append(lvl_str)
+    if chan_bonus >= 0.06:
+        parts.append('缠论增强')
+    if fn and fn.startswith('DYN_'):
+        parts.append('动态IC因子验证有效')
+    if rank_pct_str:
+        parts.append(f'截面{rank_pct_str}')
+
+    return f'{lesson}: ' + '; '.join(parts)
+
+
+def generate_selection_report(s, rank_pct_str="", stock_name=""):
+    """
+    生成完整的选股分析段落 — 面向他人阅读的报告格式
+    结构: 背景 → 缠论逐步分析 → 验证 → 结论
+    """
+    buy_pt = s.get("chan_buy_point", 0)
+    buy_strength = s.get("chan_buy_strength", 0.0)
+    signal_level = s.get("signal_level", 0)
+    trend = s.get("trend_type", 0)
+    chan_bonus = s.get("chan_bonus", 0)
+    fn = s.get("factor_name", "")
+    score = s.get("score", 0)
+    code = s.get("code", "")
+    industry = s.get("industry", "")
+    name = stock_name or code
+
+    if buy_pt <= 0:
+        return (f'{name}({code}) 以综合评分{score:.3f}入选，'
+                f'主要依赖因子面驱动，无明确缠论买点确认。'
+                f'建议关注后续走势结构演化。')
+
+    reasoning = CHAN_BUY_REASONING.get(buy_pt, {})
+    lesson = reasoning.get('lesson', '')
+    premise = reasoning.get('premise', '')
+    verification_tpl = reasoning.get('verification', '')
+    conclusion = reasoning.get('conclusion', '')
+
+    verification = verification_tpl.format(strength=f'{buy_strength:.2f}')
+
+    # 趋势
+    trend_analysis = {2: '个股处于上涨趋势中，EMA多头排列(第11课)，顺势环境有利于买点成功。',
+                      1: '个股处于盘整状态，中枢震荡中(第18课)，需关注突破方向。',
+                      -2: '个股处于下跌趋势末端，走势终完美(第17课)，转折信号需进一步确认。',
+                      0: '趋势尚不明确，需等待方向选择。'}.get(trend, '')
+
+    # 信号级别
+    lvl_analysis = {3: '笔级别与线段级别同时发出买入信号(第35课)，双周期共振显著提高可靠性。',
+                    2: '信号已获线段级别确认(第35课)，中期趋势转折概率较高。',
+                    1: '当前为笔级别信号，需等待线段级别确认以获得更安全的入场时机。',
+                    0: ''}.get(signal_level, '')
+
+    # Chan增强
+    chan_analysis = ''
+    if chan_bonus >= 0.12:
+        chan_analysis = '缠论增强系数显著(+0.12以上)，技术面与资金面形成共振。'
+    elif chan_bonus >= 0.06:
+        chan_analysis = '缠论增强系数中等(+0.06以上)，技术面提供一定支撑。'
+
+    # 因子面
+    factor_analysis = ''
+    if fn and fn.startswith('DYN_'):
+        factor_analysis = '因子面经Walk-Forward IC验证有效，动态因子选择机制确认该因子在当前市场环境中的有效性。'
+    elif fn:
+        factor_analysis = f'因子面({fn})提供量化支撑，与缠论技术信号形成多维度验证。'
+    else:
+        factor_analysis = '综合评分体系中各项技术指标协同作用。'
+
+    # 组装段落
+    lines = [
+        f'【{name}({code})】{industry} | 综合评分: {score:.3f} | {rank_pct_str}',
+        '',
+        f'  {lesson}分析: {premise}',
+        f'  验证: {verification}',
+        f'  趋势: {trend_analysis}',
+    ]
+    if lvl_analysis:
+        lines.append(f'  级别: {lvl_analysis}')
+    if chan_analysis:
+        lines.append(f'  增强: {chan_analysis}')
+    lines.append(f'  因子: {factor_analysis}')
+    lines.append(f'  结论: {conclusion}，建议纳入候选池。')
+    return '\n'.join(lines)
+
+
+def generate_signal_summary(s):
+    """信号强度摘要"""
+    buy_pt = s.get("chan_buy_point", 0)
+    strength = s.get("chan_buy_strength", 0)
+    signal_level = s.get("signal_level", 0)
+
+    if buy_pt > 0 and strength > 0.3:
+        lvl_tag = {3: "双级", 2: "段级", 1: "笔级"}.get(signal_level, "")
+        return f"Chan{buy_pt}买({lvl_tag}·{strength:.2f})"
+    elif buy_pt > 0:
+        return f"Chan{buy_pt}买(待确认)"
+    else:
+        score = s.get("score", 0)
+        if score > 0.15: return f"强因子({score:.3f})"
+        elif score > 0.05: return f"中因子({score:.3f})"
+        else: return f"弱因子({score:.3f})"
+
+
 def load_portfolio():
     state_file = ROOT / "trade" / "portfolio_state.json"
     if state_file.exists():
@@ -130,13 +291,16 @@ def refresh_data():
         print(f"数据更新异常: {e}")
         print("跳过在线更新，使用本地缓存数据继续...")
 
-    # 3. 只更新缺失的回测数据（不重建全部，避免耗时过长）
-    # batch_download 内部的 incremental_update 已更新原始数据
-    # 对于缺失 backtrader 数据的股票，单独创建
+    # 3. 同步回测数据: 将 raw 新增日期增量追加到 backtrader 文件
+    # create_backtrader_data 内部有增量逻辑，只处理 raw_last_date > bt_last_date 的股票
+    from datetime import datetime as dt
+    today_str = dt.today().strftime('%Y-%m-%d')
+    print("同步回测数据 (仅更新有新增日期的股票)...")
+    manager.create_backtrader_data(symbols, start_date='2024-01-01', end_date=today_str, adj_type='qfq')
     print("回测数据已就绪\n")
 
 
-def run_selection():
+def run_selection(skip_data_refresh=False):
     """执行选股 — 使用动态因子模式保证精度"""
     cfg = TradeConfig()
     today_str = datetime.today().strftime("%Y-%m-%d")
@@ -146,7 +310,10 @@ def run_selection():
     print("=" * 60)
 
     # ── 先刷新数据 ──
-    refresh_data()
+    if skip_data_refresh:
+        print("  跳过数据刷新 (已由上游完成)")
+    else:
+        refresh_data()
 
     ps = load_portfolio()
     cash = ps.get("cash", 150000.0)
@@ -183,6 +350,58 @@ def run_selection():
 #  Excel 构建
 # ══════════════════════════════════════════════════════════════
 
+def calc_stop_take_profit(s, price):
+    """计算缠论结构的止损价和止盈价
+
+    Returns: (stop_price, take_profit_price, risk_reward_ratio)
+    """
+    sig = s.get("sig")
+    buy_pt = s.get("chan_buy_point", 0)
+
+    zg = float(sig.chan_pivot_zg) if sig and not np.isnan(sig.chan_pivot_zg) else 0
+    zd = float(sig.chan_pivot_zd) if sig and not np.isnan(sig.chan_pivot_zd) else 0
+    zz = float(sig.chan_pivot_zz) if sig and not np.isnan(sig.chan_pivot_zz) else 0
+    trend = s.get("trend_type", 0)
+
+    pivot_height = zg - zd if zg > 0 and zd > 0 and zg > zd else price * 0.05
+
+    if buy_pt == 3 and zg > 0:
+        # B3: 止损=中枢上沿下方0.5%, 止盈=ZG + 1.5倍中枢高度
+        stop = zg * 0.995
+        take = zg + pivot_height * 1.5
+    elif buy_pt == 2 and zg > 0:
+        # B2: 止损=中枢下沿下方0.5%, 止盈=中枢上沿
+        stop = zd * 0.995 if zd > 0 else price * 0.95
+        take = zg if zg > price else price + pivot_height
+    elif buy_pt == 1:
+        # B1: 底部反转, 止损宽(8%), 止盈=最近中枢下沿或+12%
+        stop = price * 0.92
+        take = zd * 1.0 if zd > price else price * 1.12
+    elif trend == 2:
+        # 上涨趋势无明确买点: 止损=MA20附近(-5%), 止盈=+8%
+        stop = price * 0.95
+        take = price * 1.08
+    elif trend == -2:
+        # 下跌趋势: 保守
+        stop = price * 0.93
+        take = price * 1.06
+    else:
+        # 默认: 7%止损, 10%止盈
+        stop = price * 0.93
+        take = price * 1.10
+
+    # 确保止盈>当前价>止损
+    stop = min(stop, price * 0.98)
+    take = max(take, price * 1.03)
+
+    if price > stop > 0:
+        rr = (take - price) / (price - stop)
+    else:
+        rr = 0
+
+    return round(stop, 2), round(take, 2), round(rr, 2)
+
+
 def build_excel(result, prices, cash, today_str, stock_names):
     wb = Workbook()
     selections = result.get("selections", [])
@@ -197,13 +416,13 @@ def build_excel(result, prices, cash, today_str, stock_names):
     ws1 = wb.active
     ws1.title = "本次选股"
 
-    ws1.merge_cells("A1:L1")
+    ws1.merge_cells("A1:O1")
     c = ws1.cell(row=1, column=1, value=f"选股结果 — {today_str}")
     c.font = Font(name="微软雅黑", size=14, bold=True, color="1F4E79")
     c.alignment = Alignment(horizontal="center", vertical="center")
     ws1.row_dimensions[1].height = 30
 
-    ws1.merge_cells("A2:L2")
+    ws1.merge_cells("A2:O2")
     summary = (f"市场状态: {regime_str} | 动量: {momentum:.2f} | "
                f"熊市风险: {bear_risk_str} | 趋势: {regime.get('trend_score', 0):.2f} | "
                f"日期: {today_str}")
@@ -215,7 +434,7 @@ def build_excel(result, prices, cash, today_str, stock_names):
     headers1 = [
         "序号", "股票代码", "股票名称", "行业", "综合评分",
         "权重(%)", "目标仓位(元)", "当前价格(元)", "目标股数(手)",
-        "因子名称", "信号强度", "备注"
+        "因子名称", "信号强度", "止损价(元)", "止盈价(元)", "盈亏比", "选股理由"
     ]
     hr = 4
     style_header(ws1, headers1, hr)
@@ -225,6 +444,9 @@ def build_excel(result, prices, cash, today_str, stock_names):
         for i, s in enumerate(selections):
             code = s.get("code", "")
             row = hr + 1 + i
+            rank_pct = s.get("rank_pct", 0)
+            rank_str = f"排名前{rank_pct*100:.0f}%" if rank_pct > 0 else ""
+
             ws1.cell(row=row, column=1, value=i + 1)
             ws1.cell(row=row, column=2, value=code)
             ws1.cell(row=row, column=3, value=stock_names.get(code, ""))
@@ -237,21 +459,29 @@ def build_excel(result, prices, cash, today_str, stock_names):
             ws1.cell(row=row, column=8, value=round(price, 2))
             lots = int(target_val / price / 100) if price > 0 else 0
             ws1.cell(row=row, column=9, value=lots)
-            ws1.cell(row=row, column=10, value="")
-            ws1.cell(row=row, column=11, value="")
-            ws1.cell(row=row, column=12, value="")
+            # 因子名称
+            fn = s.get("factor_name", "")
+            ws1.cell(row=row, column=10, value=fn if fn else "综合因子")
+            # 信号强度
+            ws1.cell(row=row, column=11, value=generate_signal_summary(s))
+            # 止损/止盈/盈亏比
+            stop_p, take_p, rr = calc_stop_take_profit(s, price)
+            ws1.cell(row=row, column=12, value=stop_p)
+            ws1.cell(row=row, column=13, value=take_p)
+            ws1.cell(row=row, column=14, value=rr)
+            # 选股理由
+            ws1.cell(row=row, column=15, value=generate_selection_reason(s, rank_str))
 
         data_end = hr + len(selections)
         style_data_rows(ws1, hr + 1, data_end, len(headers1))
 
         total_row = data_end + 1
-        ws1.merge_cells(f"A{total_row}:F{total_row}")
-        c = ws1.cell(row=total_row, column=1, value=f"共 {len(selections)} 只股票入选")
+        total_target = sum(target_positions.get(s.get("code", ""), 0) for s in selections)
+
+        ws1.merge_cells(f"A{total_row}:I{total_row}")
+        c = ws1.cell(row=total_row, column=1, value=f"共 {len(selections)} 只股票入选  总仓位: ¥{total_target:,.0f}")
         c.font = Font(name="微软雅黑", size=10, bold=True, color="1F4E79")
         c.alignment = Alignment(horizontal="right", vertical="center")
-        total_target = sum(target_positions.get(s.get("code", ""), 0) for s in selections)
-        c = ws1.cell(row=total_row, column=7, value=round(total_target, 0))
-        c.font = Font(name="微软雅黑", size=10, bold=True)
 
         for row in range(hr + 1, data_end + 1):
             ws1.cell(row=row, column=5).number_format = "0.0000"
@@ -259,6 +489,9 @@ def build_excel(result, prices, cash, today_str, stock_names):
             ws1.cell(row=row, column=7).number_format = "#,##0"
             ws1.cell(row=row, column=8).number_format = "0.00"
             ws1.cell(row=row, column=9).number_format = "#,##0"
+            ws1.cell(row=row, column=12).number_format = "0.00"
+            ws1.cell(row=row, column=13).number_format = "0.00"
+            ws1.cell(row=row, column=14).number_format = "0.00"
     else:
         ws1.cell(row=hr + 1, column=1, value="(无选股结果 — 可能筛选条件过严)")
 
@@ -412,31 +645,29 @@ def build_excel(result, prices, cash, today_str, stock_names):
 
     headers5 = [
         "排名", "股票代码", "股票名称", "行业", "综合评分",
-        "信号方向", "因子名称", "当前价格(元)", "备注"
+        "信号方向", "因子名称", "当前价格(元)", "选股理由"
     ]
     hr5 = 3
     style_header(ws5, headers5, hr5)
 
-    # 从 signal_store 获取最新日期的信号排名
-    if hasattr(runner if 'runner' in dir() else None, 'strategy'):
-        pass  # will use runner from outer scope
-
-    # 从 result 获取的 selections 已经包含 top 选股，直接展示
     if selections:
         sorted_sels = sorted(selections, key=lambda x: x.get("score", 0), reverse=True)
         top50 = sorted_sels[:50]
         for i, s in enumerate(top50):
             row = hr5 + 1 + i
             code = s.get("code", "")
+            rank_pct = s.get("rank_pct", 0)
+            rank_str = f"排名前{rank_pct*100:.0f}%" if rank_pct > 0 else ""
             ws5.cell(row=row, column=1, value=i + 1)
             ws5.cell(row=row, column=2, value=code)
             ws5.cell(row=row, column=3, value=stock_names.get(code, ""))
             ws5.cell(row=row, column=4, value=s.get("industry", ""))
             ws5.cell(row=row, column=5, value=round(s.get("score", 0), 4))
             ws5.cell(row=row, column=6, value="买入")
-            ws5.cell(row=row, column=7, value="")
+            fn = s.get("factor_name", "")
+            ws5.cell(row=row, column=7, value=fn if fn else "综合因子")
             ws5.cell(row=row, column=8, value=round(prices.get(code, 0), 2))
-            ws5.cell(row=row, column=9, value="")
+            ws5.cell(row=row, column=9, value=generate_selection_reason(s, rank_str))
 
         if len(top50) > 0:
             style_data_rows(ws5, hr5 + 1, hr5 + len(top50), len(headers5))
@@ -446,9 +677,50 @@ def build_excel(result, prices, cash, today_str, stock_names):
     auto_width(ws5)
 
     # ── 保存 ──
-    output_path = "/mnt/c/Users/admin/Desktop/选股数据.xlsx"
+    # ── 按日期保存Excel（不覆盖历史） ──
+    date_tag = today_str.replace('-', '')
+    output_dir = ROOT / "output"
+    output_dir.mkdir(exist_ok=True)
+    output_path = str(output_dir / f"选股数据_{date_tag}.xlsx")
     wb.save(output_path)
     print(f"\nExcel 已保存: {output_path}")
+
+    # ── 追加到选股历史CSV（增量记录，不覆盖） ──
+    history_path = output_dir / "选股历史.csv"
+    history_rows = []
+    for s in selections:
+        code = s.get("code", "")
+        price = prices.get(code, 0)
+        target_val = target_positions.get(code, 0)
+        stop_p, take_p, rr = calc_stop_take_profit(s, price)
+        history_rows.append({
+            "选股日期": today_str,
+            "股票代码": code,
+            "股票名称": stock_names.get(code, ""),
+            "行业": s.get("industry", ""),
+            "综合评分": round(s.get("score", 0), 4),
+            "权重": round(s.get("weight", 0), 4),
+            "目标仓位": round(target_val, 0),
+            "当前价格": round(price, 2),
+            "因子名称": s.get("factor_name", ""),
+            "信号强度": generate_signal_summary(s),
+            "止损价": stop_p,
+            "止盈价": take_p,
+            "盈亏比": rr,
+            "选股理由": generate_selection_reason(s, f"前{s.get('rank_pct',0)*100:.0f}%" if s.get('rank_pct', 0) > 0 else ""),
+        })
+    if history_rows:
+        df_hist = pd.DataFrame(history_rows)
+        if history_path.exists():
+            # 增量追加，去重同一天同一股票的记录
+            df_old = pd.read_csv(history_path, dtype={"股票代码": str})
+            df_combined = pd.concat([df_old, df_hist], ignore_index=True)
+            df_combined = df_combined.drop_duplicates(subset=["选股日期", "股票代码"], keep="last")
+        else:
+            df_combined = df_hist
+        df_combined.to_csv(history_path, index=False, encoding="utf-8-sig")
+        print(f"选股历史已更新: {history_path} (累计{len(df_combined)}条)")
+
     return output_path
 
 
@@ -457,11 +729,17 @@ def build_excel(result, prices, cash, today_str, stock_names):
 # ══════════════════════════════════════════════════════════════
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='选股结果导出到 Excel')
+    parser.add_argument('--skip-data-refresh', action='store_true', default=False,
+                        help='跳过数据刷新（当上游已执行数据更新时使用）')
+    args = parser.parse_args()
+
     print("加载股票名称...")
     stock_names = load_stock_name_map()
     print(f"股票名称映射: {len(stock_names)} 条")
 
-    result = run_selection()
+    result = run_selection(skip_data_refresh=args.skip_data_refresh)
     if result is None:
         return
 

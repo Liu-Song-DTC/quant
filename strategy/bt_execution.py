@@ -294,7 +294,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     signal_csv.write('code,date,buy,sell,score,factor_value,factor_name,industry,factor_quality,'
                      'chan_divergence_type,chan_divergence_strength,chan_structure_score,'
                      'chan_buy_point,chan_sell_point,signal_level,trend_type,'
-                     'chan_pivot_zg,chan_pivot_zd\n')
+                     'chan_pivot_zg,chan_pivot_zd,mom_60d,dist_ma60,max_dd_20d,vol_regime\n')
     signal_count = [0]  # 用list实现闭包写入计数
 
     # 多进程并行生成信号
@@ -337,7 +337,11 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     f'{getattr(sig, "signal_level", 0)},'
                     f'{getattr(sig, "trend_type", 0)},'
                     f'{getattr(sig, "chan_pivot_zg", float("nan"))},'
-                    f'{getattr(sig, "chan_pivot_zd", float("nan"))}\n'
+                    f'{getattr(sig, "chan_pivot_zd", float("nan"))},'
+                    f'{getattr(sig, "mom_60d", 0.0)},'
+                    f'{getattr(sig, "dist_ma60", 0.0)},'
+                    f'{getattr(sig, "max_dd_20d", 0.0)},'
+                    f'{getattr(sig, "vol_regime", 1.0)}\n'
                 )
                 signal_count[0] += 1
                 # 动态因子统计

@@ -28,6 +28,8 @@ try:
 except ImportError:
     _HAS_NUMBA = False
     def njit(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
         def wrapper(fn):
             return fn
         return wrapper
@@ -696,6 +698,7 @@ def detect_buy_sell_points(
     strokes: List[Stroke],
     n_bars: int,
     close: np.ndarray,
+    volume: np.ndarray = None,
 ) -> Dict[str, np.ndarray]:
     """
     识别三类买卖点（缠论第12-21课）。
@@ -722,6 +725,23 @@ def detect_buy_sell_points(
     buy_confidence = np.zeros(n_bars)
     sell_confidence = np.zeros(n_bars)
     pivot_position = np.zeros(n_bars, dtype=int)
+    b3_trend_rank = np.zeros(n_bars, dtype=int)       # B3所处趋势的中枢序号: 1=底部首个, 2=第二个, ...
+    b3_trend_confirmed = np.zeros(n_bars, dtype=bool)  # 是否满足"2个以上同向向上不重叠中枢"
+    # B3质量增强指标 (量在价先 + 回调质量)
+    b3_breakout_vol_ratio = np.zeros(n_bars)     # 突破段量比 (vs 20日均量), >2.0=强
+    b3_pullback_vol_ratio = np.zeros(n_bars)      # 回调段量比 (vs 突破段量), <0.5=强缩量
+    b3_pullback_shallowness = np.zeros(n_bars)    # 回调深度 (1.0=刚触碰ZG, 0=深跌)
+
+    # 预计算每个中枢在上涨趋势中的序号（从底部数起，1=首个上涨中枢）
+    pivot_upward_rank = {}  # pivot index -> rank
+    upward_pivots = [p for p in pivots if p.trend_dir == 1]
+    # 筛选非重叠的上涨中枢：每个中枢的 ZD > 前一个中枢的 ZG
+    non_overlap_up = []
+    for p in upward_pivots:
+        if not non_overlap_up or p.zd > non_overlap_up[-1].zg:
+            non_overlap_up.append(p)
+    for rank, p in enumerate(non_overlap_up, 1):
+        pivot_upward_rank[id(p)] = rank
 
     if not pivots or not segments:
         return {
@@ -730,6 +750,11 @@ def detect_buy_sell_points(
             'buy_confidence': buy_confidence,
             'sell_confidence': sell_confidence,
             'pivot_position': pivot_position,
+            'b3_trend_rank': b3_trend_rank,
+            'b3_trend_confirmed': b3_trend_confirmed,
+            'b3_breakout_vol_ratio': b3_breakout_vol_ratio,
+            'b3_pullback_vol_ratio': b3_pullback_vol_ratio,
+            'b3_pullback_shallowness': b3_pullback_shallowness,
         }
 
     # 为每个位置计算相对最近中枢的状态
@@ -785,6 +810,9 @@ def detect_buy_sell_points(
         #   1. 有效突破: 价格显著突破ZG (>ZG*1.02), 且非单根影线
         #   2. 回调确认: 价格回落到ZG附近 (ZG*0.97 ~ ZG*1.03)
         #   3. 不进中枢: 回调最低点 > ZG (不跌回中枢内部)
+        # 趋势要求: 至少2个同向向上不重叠中枢 → 仅已成趋势时B3才可靠
+        p_rank = pivot_upward_rank.get(id(p), 0)
+        p_trend_ok = len(non_overlap_up) >= 2 and p_rank >= 2
         for idx in range(p_end + 1, min(p_end + 30, n_bars)):
             if pivot_position[idx] == 1 and close[idx] > p.zg * 1.02:
                 # 有效突破ZG → 找后续回调
@@ -800,10 +828,30 @@ def detect_buy_sell_points(
                     if near_zg and above_zg and j >= idx + 3:
                         if buy_point[j] == 0:
                             buy_point[j] = 3
+                            b3_trend_rank[j] = p_rank
+                            b3_trend_confirmed[j] = p_trend_ok
                             # 置信度: 突破幅度 + 回调幅度
                             breakout_pct = (close[idx] - p.zg) / p.zg
                             pullback_pct = (close[j] - p.zg) / p.zg
                             buy_confidence[j] = min(0.85, 0.4 + breakout_pct * 8 + pullback_pct * 5)
+
+                            # === B3 质量增强: 量能分析 ===
+                            if volume is not None:
+                                # 突破段量比: 突破bar量 / 20日均量
+                                vol_20_start = max(0, idx - 20)
+                                avg_vol_20 = np.mean(volume[vol_20_start:idx + 1]) if idx >= vol_20_start else volume[idx]
+                                if avg_vol_20 > 0:
+                                    b3_breakout_vol_ratio[j] = volume[idx] / avg_vol_20
+                                # 回调段量比: 回调期均量 / 突破期均量 (<0.5=强缩量洗盘)
+                                breakout_zone_vol = np.mean(volume[idx:min(idx + 3, j + 1)])
+                                pullback_zone_vol = np.mean(volume[max(idx + 1, j - 3):j + 1])
+                                if breakout_zone_vol > 0:
+                                    b3_pullback_vol_ratio[j] = pullback_zone_vol / breakout_zone_vol
+                                # 回调浅度: 距ZG的距离 (1.0=刚触碰ZG未破, 0=深跌)
+                                zg_to_low = pullback_low - p.zg
+                                zg_range = p.zg * 0.03  # ZG的3%作为参考区间
+                                if zg_range > 0:
+                                    b3_pullback_shallowness[j] = float(np.clip(1.0 - abs(zg_to_low) / zg_range, 0.0, 1.0))
                         break
 
         # === 三卖 (S3): 向下跌破中枢后反弹不回中枢 ===
@@ -888,6 +936,11 @@ def detect_buy_sell_points(
         'buy_confidence': buy_confidence,
         'sell_confidence': sell_confidence,
         'pivot_position': pivot_position,
+        'b3_trend_rank': b3_trend_rank,
+        'b3_trend_confirmed': b3_trend_confirmed,
+        'b3_breakout_vol_ratio': b3_breakout_vol_ratio,
+        'b3_pullback_vol_ratio': b3_pullback_vol_ratio,
+        'b3_pullback_shallowness': b3_pullback_shallowness,
     }
 
 
@@ -901,6 +954,7 @@ def compute_chan_signal(
     ema60: Optional[np.ndarray] = None,
     ema120: Optional[np.ndarray] = None,
     macd_hist: Optional[np.ndarray] = None,
+    volume: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """
     统一Chan理论信号计算 — 模拟czsc的核心输出。
@@ -942,7 +996,7 @@ def compute_chan_signal(
     trend_info = classify_trend_type(pivots, segments, n)
 
     # Layer 6: 买卖点
-    bsp_info = detect_buy_sell_points(pivots, segments, strokes, n, close)
+    bsp_info = detect_buy_sell_points(pivots, segments, strokes, n, close, volume)
 
     # === 多级别对齐 ===
     alignment = np.zeros(n)
@@ -1025,6 +1079,11 @@ def compute_chan_signal(
         'buy_confidence': bsp_info['buy_confidence'],
         'sell_confidence': bsp_info['sell_confidence'],
         'pivot_position': bsp_info['pivot_position'],
+        'b3_trend_rank': bsp_info['b3_trend_rank'],
+        'b3_trend_confirmed': bsp_info['b3_trend_confirmed'],
+        'b3_breakout_vol_ratio': bsp_info['b3_breakout_vol_ratio'],
+        'b3_pullback_vol_ratio': bsp_info['b3_pullback_vol_ratio'],
+        'b3_pullback_shallowness': bsp_info['b3_pullback_shallowness'],
 
         # 信号
         'buy_signal': buy_signal,
@@ -1756,7 +1815,7 @@ def compute_enhanced_chan_output(
     4. 底部分型质量分析
     """
     # 基础计算
-    base = compute_chan_signal(close, high, low, ema20, ema60, ema120, macd_hist)
+    base = compute_chan_signal(close, high, low, ema20, ema60, ema120, macd_hist, volume)
 
     # 笔趋势耗尽 — 复用 base 中已计算的 strokes，避免重复调用 detect_strokes
     strokes = base.get('strokes', [])

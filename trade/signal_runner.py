@@ -121,6 +121,15 @@ class SignalRunner:
 
         print(f"已加载 {len(self.stock_data_dict)} 只股票数据，{len(self.prices)} 只有最新价格")
 
+        # 应用股票池过滤（与回测对齐）
+        from core.stock_pool import get_stock_pool
+        pool = get_stock_pool(data_dir=self.bt_data_dir)
+        pool.discard('sh000001')
+        before = len(self.stock_data_dict)
+        self.stock_data_dict = {k: v for k, v in self.stock_data_dict.items() if k in pool}
+        self.prices = {k: v for k, v in self.prices.items() if k in pool}
+        print(f"股票池过滤: {before} -> {len(self.stock_data_dict)} 只 (质量筛选)")
+
     def _setup_dynamic_factors(self, stock_codes, fundamental_data):
         """设置动态因子（如果启用）"""
         factor_mode = self.config.config.get('factor_mode', 'fixed')
@@ -243,7 +252,7 @@ class SignalRunner:
             rebalance=rebalance,
         )
 
-        # 获取选股明细
+        # 获取选股明细（含缠论+因子详情）
         selections = []
         if hasattr(self.strategy.portfolio, 'last_selection'):
             for s in self.strategy.portfolio.last_selection:
@@ -252,6 +261,18 @@ class SignalRunner:
                     "score": s["score"],
                     "weight": s["weight"],
                     "industry": s.get("industry", ""),
+                    # 选股理由字段
+                    "factor_name": s.get("factor_name", ""),
+                    "factor_value": s.get("factor_value", 0),
+                    "chan_buy_point": s.get("chan_buy_point", 0),
+                    "chan_sell_point": s.get("chan_sell_point", 0),
+                    "chan_buy_strength": s.get("chan_buy_strength", 0.0),
+                    "trend_type": s.get("trend_type", 0),
+                    "signal_level": s.get("signal_level", 0),
+                    "chan_bonus": s.get("chan_bonus", 0.0),
+                    "effective_score": s.get("effective_score", s["score"]),
+                    "rank_pct": s.get("rank_pct", 0),
+                    "confidence": s.get("confidence", 1.0),
                 })
 
         regime_names = {1: "牛市", 0: "震荡", -1: "熊市"}

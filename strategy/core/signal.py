@@ -52,6 +52,28 @@ class Signal:
     capital_flow_score: float = 0.0          # 系统2: 资金流向 [0,1]
     news_sentiment_score: float = 0.0        # 系统3: 资讯热点 [0,1]
 
+    # === 当日数据 ===
+    daily_return: float = 0.0               # 当日收益率 (选股日当天)
+    volume_ratio: float = 1.0               # 当日量比 (vs 20日均量, 压缩值)
+
+    # === 新因子：笔阶段+力竭+跳空+顶分型量能 ===
+    exhaustion_risk: float = 0.0             # 力竭风险 [0, 1]
+    gap_breakout_confirm: float = 0.0        # 跳空突破确认 [-1, 1]
+    stroke_phase: float = 0.0                # 笔阶段 [-1, 1]
+    top_fractal_volume: float = 0.0          # 顶分型量能背离 [-1, 1]
+
+    # === 均线趋势（缠论买点的方向前提）===
+    ma_trend_up: bool = False                # EMA20 > EMA60 均线多头排列
+
+    # === 基本面排雷 ===
+    profit_declining: bool = False            # 近两季度净利润同比持续下滑
+
+    # === 预信号价格特征（用于均值回归过滤）===
+    mom_60d: float = 0.0                     # 60日动量 (price vs 60d ago, %)
+    dist_ma60: float = 0.0                   # 距MA60偏离 (%)
+    max_dd_20d: float = 0.0                  # 20日最大回撤 (%, 负值)
+    vol_regime: float = 1.0                  # 波动率区间 (短期vol/长期vol)
+
     def to_dict(self) -> dict:
         """转换为字典"""
         return {
@@ -77,6 +99,10 @@ class Signal:
             'resonance_systems': self.resonance_systems,
             'capital_flow_score': self.capital_flow_score,
             'news_sentiment_score': self.news_sentiment_score,
+            'mom_60d': self.mom_60d,
+            'dist_ma60': self.dist_ma60,
+            'max_dd_20d': self.max_dd_20d,
+            'vol_regime': self.vol_regime,
         }
 
     def get_risk_level(self) -> str:

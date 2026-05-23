@@ -23,6 +23,8 @@ try:
 except ImportError:
     _HAS_NUMBA = False
     def njit(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
         def wrapper(fn):
             return fn
         return wrapper

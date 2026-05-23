@@ -265,14 +265,27 @@ class StockDataManager:
                     raise
         raise last_err  # unreachable
 
-    def download_raw_data(self, symbol, start_time):
-        """下载原始数据（不做任何处理）"""
+    def download_raw_data(self, symbol, start_time, adj_types=None, start_times=None):
+        """下载原始数据（不做任何处理）
+
+        adj_types: 需要下载的复权类型列表, 默认全部 ['none','qfq','hfq']
+                   增量更新时可只传 ['qfq'] 以减少API调用
+        start_times: dict[adj_type -> datetime], 按类型指定起始日期, 避免重复下载
+        """
         symbol = str(symbol).zfill(6)
+        if adj_types is None:
+            adj_types = ['none', 'qfq', 'hfq']
+
+        def _type_start(adj_type):
+            """获取某类型的起始日期"""
+            if start_times and adj_type in start_times:
+                return start_times[adj_type]
+            return start_time
 
         try:
-            # 获取上市日期
             if symbol == INDEX:
-                start_date = start_time.strftime("%Y%m%d")
+                st = _type_start('qfq')
+                start_date = st.strftime("%Y%m%d")
                 end_date = datetime.today().strftime("%Y%m%d")
                 if start_date >= end_date:
                     return None
@@ -287,79 +300,109 @@ class StockDataManager:
                 )
                 return {"qfq": sh_index_df}
 
-            ipo_date = self._get_ipo_date(symbol)
-            if not ipo_date:
-                print(f"无法获取 {symbol} 的上市日期")
-                return None
-
-            # 计算开始日期（上市日期或配置的起始日期）
-            start_date = max(
-                pd.to_datetime(ipo_date),
-                start_time
-            ).strftime("%Y%m%d")
+            # 用所有请求类型的最大起始日期来判断是否需要IPO查询
+            effective_start = start_time
+            if start_times:
+                effective_start = min(start_times.values())
+            if effective_start >= pd.to_datetime('2020-01-01'):
+                pass  # 增量场景, 跳过IPO查询
+            else:
+                ipo_date = self._get_ipo_date(symbol)
+                if not ipo_date:
+                    print(f"无法获取 {symbol} 的上市日期")
+                    return None
+                # 确保各类型的起始日期不早于IPO日期
+                ipo_dt = pd.to_datetime(ipo_date)
+                if start_times:
+                    for k in start_times:
+                        start_times[k] = max(start_times[k], ipo_dt)
+                else:
+                    start_time = max(start_time, ipo_dt)
 
             end_date = datetime.today().strftime("%Y%m%d")
-            if start_date >= end_date:
-                return None
 
-            print(f"下载 {symbol} 数据: {start_date} 到 {end_date}")
+            # 紧凑日志: 按类型显示各自下载区间
+            if start_times:
+                parts = sorted(start_times.keys())  # none, qfq 固定顺序
+                ranges = " ".join(f"{t}:{start_times[t].strftime('%Y%m%d')}→{end_date}" for t in parts)
+                print(f"下载 {symbol}: {ranges}")
+            else:
+                print(f"下载 {symbol}: {start_time.strftime('%Y%m%d')} → {end_date}")
 
-            # 获取不同复权类型的数据
             data_dict = {}
+            # range_days 用最短的请求区间来估算sleep
+            if start_times:
+                min_start = min(start_times.values())
+            else:
+                min_start = start_time
+            range_days = (pd.to_datetime(end_date) - min_start).days
+            base_sleep = 0.05 if range_days < 30 else 0.5
 
             # 不复权数据（原始数据）
-            try:
-                time.sleep(random.uniform(0.0, 1.0))
-                df_none = self._retry_call(
-                    lambda: ak.stock_zh_a_hist(
-                        symbol=symbol,
-                        period="daily",
-                        start_date=start_date,
-                        end_date=end_date,
-                        adjust=""
-                    ),
-                    fn_name=f"stock_zh_a_hist({symbol}, none)",
-                )
-                if not df_none.empty:
-                    data_dict['none'] = df_none
-            except Exception:
-                print(f"警告：无法获取 {symbol} 的不复权数据")
+            if 'none' in adj_types:
+                try:
+                    type_start = _type_start('none')
+                    start_date = type_start.strftime("%Y%m%d")
+                    if start_date < end_date:
+                        time.sleep(random.uniform(0, base_sleep))
+                        df_none = self._retry_call(
+                            lambda: ak.stock_zh_a_hist(
+                                symbol=symbol,
+                                period="daily",
+                                start_date=start_date,
+                                end_date=end_date,
+                                adjust=""
+                            ),
+                            fn_name=f"stock_zh_a_hist({symbol}, none)",
+                        )
+                        if not df_none.empty:
+                            data_dict['none'] = df_none
+                except Exception:
+                    print(f"警告：无法获取 {symbol} 的不复权数据")
 
             # 前复权数据
-            try:
-                time.sleep(random.uniform(0.0, 1.0))
-                df_qfq = self._retry_call(
-                    lambda: ak.stock_zh_a_hist(
-                        symbol=symbol,
-                        period="daily",
-                        start_date=start_date,
-                        end_date=end_date,
-                        adjust="qfq"
-                    ),
-                    fn_name=f"stock_zh_a_hist({symbol}, qfq)",
-                )
-                if not df_qfq.empty:
-                    data_dict['qfq'] = df_qfq
-            except Exception:
-                print(f"警告：无法获取 {symbol} 的前复权数据")
+            if 'qfq' in adj_types:
+                try:
+                    type_start = _type_start('qfq')
+                    start_date = type_start.strftime("%Y%m%d")
+                    if start_date < end_date:
+                        time.sleep(random.uniform(0, base_sleep))
+                        df_qfq = self._retry_call(
+                            lambda: ak.stock_zh_a_hist(
+                                symbol=symbol,
+                                period="daily",
+                                start_date=start_date,
+                                end_date=end_date,
+                                adjust="qfq"
+                            ),
+                            fn_name=f"stock_zh_a_hist({symbol}, qfq)",
+                        )
+                        if not df_qfq.empty:
+                            data_dict['qfq'] = df_qfq
+                except Exception:
+                    print(f"警告：无法获取 {symbol} 的前复权数据")
 
             # 后复权数据
-            try:
-                time.sleep(random.uniform(0.0, 1.0))
-                df_hfq = self._retry_call(
-                    lambda: ak.stock_zh_a_hist(
-                        symbol=symbol,
-                        period="daily",
-                        start_date=start_date,
-                        end_date=end_date,
-                        adjust="hfq"
-                    ),
-                    fn_name=f"stock_zh_a_hist({symbol}, hfq)",
-                )
-                if not df_hfq.empty:
-                    data_dict['hfq'] = df_hfq
-            except Exception:
-                print(f"警告：无法获取 {symbol} 的后复权数据")
+            if 'hfq' in adj_types:
+                try:
+                    type_start = _type_start('hfq')
+                    start_date = type_start.strftime("%Y%m%d")
+                    if start_date < end_date:
+                        time.sleep(random.uniform(0, base_sleep))
+                        df_hfq = self._retry_call(
+                            lambda: ak.stock_zh_a_hist(
+                                symbol=symbol,
+                                period="daily",
+                                start_date=start_date,
+                                end_date=end_date,
+                                adjust="hfq"
+                            ),
+                            fn_name=f"stock_zh_a_hist({symbol}, hfq)",
+                        )
+                        if not df_hfq.empty:
+                            data_dict['hfq'] = df_hfq
+                except Exception:
+                    print(f"警告：无法获取 {symbol} 的后复权数据")
 
             if not data_dict:
                 print(f"{symbol}: 所有复权类型数据都为空")
@@ -435,20 +478,68 @@ class StockDataManager:
         except Exception as e:
             print(f"计算复权因子失败 {symbol}: {e}")
 
+    def _update_fq_factors_incremental(self, symbol, existing_data, new_data, date_col, raw_data_path):
+        """增量追加 fq_factors: 用已下载的 none+qfq 计算新日期的复权因子"""
+        try:
+            # 取合并后的最新 qfq 和 none 数据
+            if 'qfq' not in existing_data or 'none' not in existing_data:
+                return
+            qfq = existing_data['qfq'].copy()
+            none = existing_data['none'].copy()
+            qfq[date_col] = pd.to_datetime(qfq[date_col])
+            none[date_col] = pd.to_datetime(none[date_col])
+
+            # 只计算 qfq_factor（hfq 需要单独下载，不常用，沿用上期值或跳过）
+            merged = pd.merge(
+                none[['日期', '收盘']].rename(columns={'收盘': '收盘_none'}),
+                qfq[['日期', '收盘']].rename(columns={'收盘': '收盘_qfq'}),
+                on='日期', how='inner')
+            merged['qfq_factor'] = merged['收盘_qfq'] / merged['收盘_none']
+
+            # hfq_factor: 从已有 fq_factors 取最后一个值沿用
+            fq_path = raw_data_path / 'fq_factors.csv'
+            last_hfq_factor = 1.0
+            if fq_path.exists():
+                old_fq = pd.read_csv(fq_path, parse_dates=['日期'])
+                if 'hfq_factor' in old_fq.columns and not old_fq.empty:
+                    last_hfq_factor = old_fq['hfq_factor'].iloc[-1]
+
+            new_fq = pd.DataFrame({
+                '日期': merged['日期'].dt.date,
+                'symbol': symbol,
+                'qfq_factor': merged['qfq_factor'],
+                'hfq_factor': last_hfq_factor,
+            })
+
+            # 合并已有 fq_factors，去重保存
+            if fq_path.exists():
+                old_fq = pd.read_csv(fq_path, parse_dates=['日期'])
+                existing_dates = set(old_fq['日期'].astype(str))
+                new_fq = new_fq[~new_fq['日期'].astype(str).isin(existing_dates)]
+                if new_fq.empty:
+                    return
+                combined_fq = pd.concat([old_fq, new_fq], ignore_index=True)
+                combined_fq = combined_fq.sort_values('日期')
+            else:
+                combined_fq = new_fq
+            combined_fq.to_csv(fq_path, index=False, encoding='utf-8')
+        except Exception:
+            pass  # fq_factors 非关键路径，失败不影响主流程
+
     def incremental_update(self, symbol):
-        """增量更新数据
+        """增量更新数据(自适应)
 
         逻辑:
-        1. 如果数据已是最新(最后日期 >= 昨天), 跳过
-        2. 否则下载新数据(带5天重叠), 校验复权
-        3. 如果复权因子变了, 全量重新下载qfq/hfq
-        4. 合并保存
+        1. 只读日期列快速判断新鲜度(周末看周五, 工作日看今天)
+        2. 已是最新则跳过(无I/O浪费); 否则下载增量(起始=最后日期)
+        3. 复权校验检测分红/送转, 触发全量重载
+        4. 合并保存, 日志只显示实际新增天数
         """
         symbol = str(symbol).zfill(6)
         raw_data_path = self.raw_data_dir / symbol
         raw_data_path.mkdir(exist_ok=True)
 
-        # 检查是否有现有数据
+        # 快速读取: 只读日期列判断新鲜度(避免读全文件后跳过浪费I/O)
         existing_data = {}
         last_dates = {}
         types = ['none', 'qfq', 'hfq', 'fq_factors']
@@ -459,24 +550,56 @@ class StockDataManager:
             for adj_type in types:
                 file_path = raw_data_path / f"{adj_type}.csv"
                 if file_path.exists():
-                    existing_data[adj_type] = pd.read_csv(file_path, parse_dates=[date_col])
-                    last_dates[adj_type] = existing_data[adj_type][date_col].max()
+                    # 只读日期列取最大值, 比读全文件快10x
+                    date_series = pd.read_csv(file_path, usecols=[date_col])[date_col]
+                    last_dates[adj_type] = pd.to_datetime(date_series).max()
 
-        # 如果所有类型的数据都已最新(>=昨天), 跳过
-        yesterday = (datetime.today() - timedelta(days=1)).date()
-        if last_dates and all(v.date() >= yesterday for v in last_dates.values()):
-            return
+        # 智能判断是否需要更新：考虑周末
+        today = datetime.today().date()
+        weekday = today.weekday()
+        if weekday >= 5:  # Sat=5, Sun=6: 无新交易数据，到周五即跳过
+            friday = today - timedelta(days=weekday - 4)
+            if last_dates and all(v.date() >= friday for v in last_dates.values()):
+                return "skip"
+        else:
+            # 工作日：数据到「今天」才跳过 (盘后更新场景)
+            if last_dates and all(v.date() >= today for v in last_dates.values()):
+                return "skip"
 
-        # 确定下载起始日(带5天重叠用于复权校验)
+        # 计算落后天数（用于统计）
         if last_dates:
-            last_date = min(last_dates.values())
-            download_start = last_date - timedelta(days=5)
+            gap_days = (today - min(last_dates.values()).date()).days
+        else:
+            gap_days = None  # 新股，无历史数据
+
+        # 确定下载起始日: 每种类型用自己的最后日期, 避免已最新的类型重复下载浪费API
+        if last_dates:
+            download_start = min(last_dates.values())
+            per_type_start = {t: last_dates[t] for t in ['qfq', 'none'] if t in last_dates}
+            new_data = self.download_raw_data(symbol, start_time=download_start,
+                                              adj_types=['qfq', 'none'], start_times=per_type_start)
         else:
             download_start = pd.to_datetime('1990-01-01')
+            # 新股: 全量下载所有复权类型
+            new_data = self.download_raw_data(symbol, start_time=download_start)
 
-        new_data = self.download_raw_data(symbol, start_time=download_start)
         if new_data is None:
-            return
+            return "fail"
+
+        # 生成状态标签
+        if gap_days is None:
+            status = "new"
+        elif gap_days <= 3:
+            status = "ok"
+        else:
+            status = f"behind:{gap_days}"
+
+        # 确认需要更新后, 再加载全量已有数据(合并用)
+        if raw_data_path.exists():
+            for adj_type in types:
+                file_path = raw_data_path / f"{adj_type}.csv"
+                if file_path.exists() and adj_type not in existing_data:
+                    existing_data[adj_type] = pd.read_csv(file_path, parse_dates=[date_col])
 
         # 检测复权变化: 对比重叠日期的qfq收盘价（仅非指数股票）
         fq_changed = False
@@ -497,38 +620,61 @@ class StockDataManager:
                         if diff > 0.01:
                             fq_changed = True
 
-        # 复权变了, 全量重新下载
+        # 复权变了, 全量重新下载所有类型
         if fq_changed:
             full_data = self.download_raw_data(symbol, start_time=pd.to_datetime('1990-01-01'))
             if full_data is not None:
                 new_data = full_data
 
-        # 合并数据
-        for adj_type in types:
+        # 合并数据(仅处理有数据的类型)
+        merge_types = [t for t in types if t in existing_data or t in new_data]
+        new_dates_count = 0
+        for adj_type in merge_types:
+            changed = True
             if adj_type not in existing_data:
                 combined = new_data[adj_type]
+                if adj_type == 'qfq' and not combined.empty:
+                    new_dates_count = len(combined)
             elif adj_type not in new_data:
-                combined = existing_data[adj_type]
+                # 该类型本次未下载, 文件不变, 跳过保存
+                continue
             elif adj_type in ('qfq', 'hfq') and fq_changed:
                 combined = new_data[adj_type]
+                if adj_type == 'qfq':
+                    new_dates_count = len(combined)
             else:
                 old_df = existing_data[adj_type]
                 new_df = new_data[adj_type]
                 # 确保日期列类型一致
                 old_df[date_col] = pd.to_datetime(old_df[date_col])
                 new_df[date_col] = pd.to_datetime(new_df[date_col])
+                old_count = len(old_df)
                 combined = pd.concat([old_df, new_df], ignore_index=True)
                 combined = combined.drop_duplicates(subset=[date_col], keep='last')
                 combined = combined.sort_values(date_col)
+                if len(combined) == old_count:
+                    changed = False  # 无新数据, 跳过写入
+                elif adj_type == 'qfq':
+                    new_dates_count = len(combined) - old_count
 
-            # 保存
-            raw_data_path.mkdir(exist_ok=True)
-            combined.to_csv(raw_data_path / f"{adj_type}.csv",
-                          index=False, encoding="utf-8")
+            if changed:
+                raw_data_path.mkdir(exist_ok=True)
+                combined.to_csv(raw_data_path / f"{adj_type}.csv",
+                              index=False, encoding="utf-8")
 
-        return
+        # 增量更新 fq_factors: 用新下载的 none+qfq 计算复权因子追加
+        if symbol != INDEX and new_dates_count > 0 and 'none' in new_data and 'qfq' in new_data:
+            self._update_fq_factors_incremental(
+                symbol, existing_data, new_data, date_col, raw_data_path)
 
-    def batch_download(self, symbols=None, force=False, max_workers=5):
+        # 精简日志: 只显示实际新增天数
+        if new_dates_count > 0:
+            new_last = combined[date_col].max()
+            print(f"  {symbol}: +{new_dates_count}天 → {new_last.date()}")
+
+        return status
+
+    def batch_download(self, symbols=None, force=False, max_workers=30):
         """批量下载数据"""
         if symbols is None:
             stock_list = self.get_stock_list()
@@ -564,16 +710,21 @@ class StockDataManager:
             return
         print(f"  连接正常\n")
 
+        # 统计计数器(线程安全用共享list)
+        stats = {"skip": 0, "ok": 0, "new": 0, "fail": 0, "behind": []}
+
         def download_single(symbol):
             try:
-                self.incremental_update(symbol)
-                return (symbol, "success")
+                status = self.incremental_update(symbol)
+                if status is None:
+                    status = "fail"
+                return (symbol, status)
             except Exception as e:
                 return (symbol, f"error: {str(e)}")
 
         results = []
-        fail_count = [0]  # 共享计数器
-        fail_fast_threshold = min(50, len(symbols) // 10)  # 连续失败超过10%则退出
+        fail_count = [0]
+        fail_fast_threshold = min(50, len(symbols) // 10)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(download_single, symbol): symbol for symbol in symbols}
@@ -582,27 +733,99 @@ class StockDataManager:
                              total=len(futures), desc="更新进度"):
                 result = future.result()
                 results.append(result)
-                if "error" in str(result[1]):
+                status = str(result[1])
+                if "error" in status:
                     fail_count[0] += 1
                     if fail_count[0] >= fail_fast_threshold:
-                        # 取消剩余任务
                         for f in futures:
                             f.cancel()
                         print(f"\n⚠ 连续 {fail_count[0]} 次下载失败, API 不可用, 提前退出")
                         break
 
-        #  统计结果
-        success = sum(1 for _, status in results if status == "success")
-        exists = sum(1 for _, status in results if status == "already_exists")
-        errors = sum(1 for _, status in results if "error" in status)
+        # 汇总统计
+        behind_list = []
+        for _, status in results:
+            s = str(status)
+            if s == "skip":
+                stats["skip"] += 1
+            elif s == "ok":
+                stats["ok"] += 1
+            elif s == "new":
+                stats["new"] += 1
+            elif s == "fail":
+                stats["fail"] += 1
+            elif s.startswith("behind:"):
+                days = int(s.split(":")[1])
+                behind_list.append(days)
+            # error:xxx 归入 fail
 
-        print(f"批量更新完成: 成功 {success}, 已存在 {exists}, 失败 {errors}")
+        n_behind = len(behind_list)
+        behind_detail = ""
+        if behind_list:
+            behind_list.sort(reverse=True)
+            max_gap = behind_list[0]
+            avg_gap = sum(behind_list) // n_behind
+            behind_detail = f", 落后补数据 {n_behind} 只 (最大 {max_gap} 天, 平均 {avg_gap} 天)"
+
+        print(f"批量更新完成: 已最新 {stats['skip']}, 增量 {stats['ok']}, "
+              f"新股 {stats['new']}, 失败 {stats['fail']}{behind_detail}")
 
         # 保存下载日志
         log_df = pd.DataFrame(results, columns=['symbol', 'status'])
         log_df.to_csv(self.stock_metadata_dir / "download_log.csv", index=False)
 
+        # 数据新鲜度终检
+        self._check_data_freshness(symbols)
+
         return results
+
+    def _check_data_freshness(self, symbols: list):
+        """数据新鲜度终检 — 确认所有股票数据到最新交易日"""
+        today = datetime.today().date()
+        wd = today.weekday()
+        if wd == 5:
+            expected = today - timedelta(days=1)
+        elif wd == 6:
+            expected = today - timedelta(days=2)
+        else:
+            expected = today  # 工作日：盘后更新，预期数据到今天
+
+        current_count = 0
+        stale = []
+
+        for sym in symbols:
+            sym = str(sym).zfill(6)
+            qfq_file = self.raw_data_dir / sym / 'qfq.csv'
+            if not qfq_file.exists():
+                continue
+            try:
+                # 指数数据用 'date' 列, 个股用 '日期' 列
+                date_col = 'date' if sym == INDEX else '日期'
+                date_series = pd.read_csv(qfq_file, usecols=[date_col])[date_col]
+                last = pd.to_datetime(date_series.iloc[-1]).date()
+                gap = (expected - last).days
+                if gap <= 1:
+                    current_count += 1
+                else:
+                    stale.append((sym, last, gap))
+            except Exception:
+                pass
+
+        total = current_count + len(stale)
+        if total == 0:
+            return
+
+        pct = current_count / total * 100
+        print(f"\n数据新鲜度终检 (预期={expected}): {current_count}/{total} 只 ({pct:.1f}%)")
+        if stale:
+            stale.sort(key=lambda x: -x[2])
+            print(f"  ⚠ 落后>1交易日: {len(stale)} 只")
+            for sym, last, gap in stale[:10]:
+                print(f"    {sym}: 最后数据 {last} (落后{gap}个交易日)")
+            if len(stale) > 10:
+                print(f"    ... 共 {len(stale)} 只")
+        else:
+            print(f"  ✓ 全部数据已到最新交易日")
 
     def _has_data(self, symbol):
         """检查是否有数据"""
@@ -619,7 +842,7 @@ class StockDataManager:
         return False
 
     def create_backtrader_data(self, symbols, start_date, end_date, adj_type='qfq'):
-        """创建Backtrader格式数据（增量：跳过已是最新数据的股票）"""
+        """创建Backtrader格式数据（增量追加：仅有新增日期时才更新bt文件）"""
         skipped = 0
         updated = 0
         for symbol in symbols:
@@ -630,32 +853,34 @@ class StockDataManager:
             data_file = raw_data_path / f"{adj_type}.csv"
             if not data_file.exists():
                 continue
-
-            # 增量检查：bt文件已是最新的则跳过
-            bt_file = self.backtrader_data_dir / f"{symbol}_{adj_type}.csv"
-            # 预检：跳过空文件/损坏文件（下载失败可能导致空文件）
             if data_file.stat().st_size < 200:
                 continue
+
+            bt_file = self.backtrader_data_dir / f"{symbol}_{adj_type}.csv"
+            date_col = 'date' if symbol == INDEX else '日期'
+            bt_last_date = None
+            bt_tail = None
+
+            # ── 快速判断是否需要更新：只读raw和bt的尾部 ──
             if bt_file.exists():
                 try:
-                    raw_last = pd.read_csv(data_file, usecols=[0], nrows=1)
-                    # 读取raw文件最后日期
-                    raw_df_tail = pd.read_csv(data_file)
-                    raw_last_date = raw_df_tail.iloc[-1].iloc[0]
-                    del raw_df_tail
-                    # 读取bt文件最后日期
-                    bt_df_tail = pd.read_csv(bt_file)
-                    bt_last_date = bt_df_tail.iloc[-1]['datetime']
-                    del bt_df_tail
-                    if str(raw_last_date) == str(bt_last_date):
+                    # 读raw最后几行取最后日期
+                    raw_tail = pd.read_csv(data_file, nrows=5)
+                    raw_last_date = pd.to_datetime(raw_tail.iloc[-1].iloc[0])
+                    # 读bt最后几行取最后日期
+                    bt_tail = pd.read_csv(bt_file)
+                    bt_tail['datetime'] = pd.to_datetime(bt_tail['datetime'])
+                    bt_last_date = bt_tail['datetime'].max()
+                    # 无新增 → 跳过
+                    if raw_last_date == bt_last_date or raw_last_date == pd.NaT:
                         skipped += 1
                         continue
                 except Exception:
-                    pass
+                    pass  # 读尾部失败，做全量重建
 
             try:
-                # 读取数据
                 if symbol == INDEX:
+                    # 指数: 逻辑简单, 保持全量读写
                     df = pd.read_csv(data_file, parse_dates=['date'])
                     df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
                     bt_df = pd.DataFrame({
@@ -669,44 +894,66 @@ class StockDataManager:
                         'amount': df['amount'].astype(float),
                     })
                 else:
-                    df = pd.read_csv(data_file, parse_dates=['日期'])
-                    df = df[(df['日期'] >= start_date) & (df['日期'] <= end_date)]
-
-                    # 标准化列名
-                    df.columns = [col.strip() for col in df.columns]
-
-                    # 确保有必要的列
-                    required_cols = ['日期', '开盘', '最高', '最低', '收盘', '成交量']
-                    for col in required_cols:
-                        if col not in df.columns:
-                            print(f"{symbol} 数据缺少必要列: {col}")
+                    if bt_file.exists() and bt_last_date is not None and raw_last_date is not None and raw_last_date > bt_last_date:
+                        # ── 增量追加: 只读新增日期 + 追加到已有bt文件 ──
+                        new_raw = pd.read_csv(data_file, parse_dates=[date_col])
+                        new_raw = new_raw[new_raw[date_col] > bt_last_date]
+                        if new_raw.empty:
+                            skipped += 1
                             continue
 
-                    # 准备Backtrader格式
-                    bt_df = pd.DataFrame({
-                        'datetime': pd.to_datetime(df['日期']),
-                        'open': df['开盘'].astype(float),
-                        'high': df['最高'].astype(float),
-                        'low': df['最低'].astype(float),
-                        'close': df['收盘'].astype(float),
-                        'volume': df['成交量'].astype(float),
-                        'openinterest': 0,
-                        'amount': df['成交额'].astype(float),
-                        'amplitude': df['振幅'].astype(float),
-                        'change_percent': df['涨跌幅'].astype(float),
-                        'change_amount': df['涨跌额'].astype(float),
-                        'turnover_rate': df['换手率'].astype(float)
-                    })
+                        new_raw.columns = [col.strip() for col in new_raw.columns]
+                        required_cols = ['日期', '开盘', '最高', '最低', '收盘', '成交量']
+                        if not all(c in new_raw.columns for c in required_cols):
+                            continue
 
-                # 处理异常值
-                bt_df = self._clean_backtrader_data(bt_df, symbol)
+                        new_bt = pd.DataFrame({
+                            'datetime': pd.to_datetime(new_raw['日期']),
+                            'open': new_raw['开盘'].astype(float),
+                            'high': new_raw['最高'].astype(float),
+                            'low': new_raw['最低'].astype(float),
+                            'close': new_raw['收盘'].astype(float),
+                            'volume': new_raw['成交量'].astype(float),
+                            'openinterest': 0,
+                            'amount': new_raw['成交额'].astype(float),
+                            'amplitude': new_raw['振幅'].astype(float),
+                            'change_percent': new_raw['涨跌幅'].astype(float),
+                            'change_amount': new_raw['涨跌额'].astype(float),
+                            'turnover_rate': new_raw['换手率'].astype(float)
+                        })
+                        # 对新增行做简化清洗（跳过quantile，行太少无意义）
+                        new_bt = new_bt[(new_bt['open'] > 0) & (new_bt['high'] >= new_bt['low'])]
+                        # 拼接已有 + 新增
+                        bt_df = pd.concat([bt_tail, new_bt], ignore_index=True)
+                    else:
+                        # ── 全量构建(新股或尾部读取失败) ──
+                        df = pd.read_csv(data_file, parse_dates=[date_col])
+                        df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
+                        df.columns = [col.strip() for col in df.columns]
+                        required_cols = ['日期', '开盘', '最高', '最低', '收盘', '成交量']
+                        if not all(c in df.columns for c in required_cols):
+                            continue
+                        bt_df = pd.DataFrame({
+                            'datetime': pd.to_datetime(df['日期']),
+                            'open': df['开盘'].astype(float),
+                            'high': df['最高'].astype(float),
+                            'low': df['最低'].astype(float),
+                            'close': df['收盘'].astype(float),
+                            'volume': df['成交量'].astype(float),
+                            'openinterest': 0,
+                            'amount': df['成交额'].astype(float),
+                            'amplitude': df['振幅'].astype(float),
+                            'change_percent': df['涨跌幅'].astype(float),
+                            'change_amount': df['涨跌额'].astype(float),
+                            'turnover_rate': df['换手率'].astype(float)
+                        })
+                        bt_df = self._clean_backtrader_data(bt_df, symbol)
 
                 # 创建完整的日期序列（处理停牌）
                 bt_df = self._create_complete_series(bt_df)
 
-                # 保存处理后的数据
-                output_file = self.backtrader_data_dir/ f"{symbol}_{adj_type}.csv"
-                bt_df.to_csv(output_file, index=False)
+                # 保存
+                bt_df.to_csv(bt_file, index=False)
                 updated += 1
 
             except Exception as e:
@@ -912,10 +1159,8 @@ class StockDataManager:
             print(f"有效股票池太小 ({len(universe)}只)，跳过重建，保留现有回测数据")
             return universe
 
-        # 只有在有足够股票时才清理+重建
-        print(f"重建回测数据目录 (股票池 {len(universe)} 只)...")
-        if self.backtrader_data_dir.exists():
-            shutil.rmtree(self.backtrader_data_dir)
+        # 只有在有足够股票时才更新
+        print(f"增量更新回测数据目录 (股票池 {len(universe)} 只)...")
         os.makedirs(self.backtrader_data_dir, exist_ok=True)
 
         # 保存股票池
@@ -1154,7 +1399,7 @@ def main():
     #  批量更新数据 (增量, 网络失败时跳过)
     print("\n======> 增量更新数据...")
     from datetime import datetime as dt
-    yesterday = (dt.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+    today = dt.today().strftime('%Y-%m-%d')
     try:
         manager.batch_download(symbols=sample_symbols, force=False)
     except Exception as e:
@@ -1166,7 +1411,7 @@ def main():
     universe = manager.create_universe_for_backtest(
         symbols=sample_symbols,
         start_date='2024-01-01',
-        end_date=yesterday,
+        end_date=today,
         min_days=100,
     )
 

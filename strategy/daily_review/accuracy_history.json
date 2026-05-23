@@ -1,0 +1,24 @@
+[
+  {
+    "date": "2026-05-18",
+    "prev_date": "20260517",
+    "direction_accuracy": 0.0,
+    "avg_return": 0.0,
+    "market_return": 0.0,
+    "excess_return": 0.0,
+    "total_signals": 79,
+    "hits": 0,
+    "by_type": {}
+  },
+  {
+    "date": "2026-05-19",
+    "prev_date": "20260518",
+    "direction_accuracy": 0.0,
+    "avg_return": 0.0,
+    "market_return": 0.0,
+    "excess_return": 0.0,
+    "total_signals": 79,
+    "hits": 0,
+    "by_type": {}
+  }
+]

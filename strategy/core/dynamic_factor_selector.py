@@ -185,7 +185,7 @@ def _compute_date_chunk(args):
                 if ic_stability < 0.48:
                     continue
                 ic_variance = ic_std / (abs(ic_mean) + 1e-10) if abs(ic_mean) > 1e-10 else 999
-                if ic_variance > 10.0:
+                if ic_variance > 5.0:   # 收紧: IC噪音>5x信号 → 拒绝 (原10.0太松)
                     continue
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
                 if abs(t_statistic) < 0.4:
@@ -256,6 +256,10 @@ def _compute_date_chunk(args):
                 avg_quality = np.mean([f['combined_ir'] for f in top_factors])
 
                 if n_selected < min_factor_count:
+                    continue
+
+                # 质量底线: IC太弱或选出的因子太少 → 回退到固定因子
+                if avg_quality < 0.03 or n_selected < 2:
                     continue
 
                 total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10

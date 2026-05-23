@@ -1,0 +1,38 @@
+[
+  {
+    "section": "signal",
+    "key": "buy_threshold",
+    "current": 0.06,
+    "suggested": 0.1,
+    "reason": "[20260517]预测方向准确率仅0%(0/79)，远低于50%随机基准，急需收紧买入阈值以过滤噪音信号",
+    "confidence": 0.95,
+    "urgency": "urgent"
+  },
+  {
+    "section": "industry_factors.半导体/光伏",
+    "key": "enabled",
+    "current": 1,
+    "suggested": 1,
+    "reason": "强主线行业(1): ★ 强主线，梯队完整，可积极操作，建议确保该行业因子配置充足",
+    "confidence": 0.5,
+    "urgency": "low"
+  },
+  {
+    "section": "industry_factors.自动化/制造",
+    "key": "enabled",
+    "current": 1,
+    "suggested": 1,
+    "reason": "强主线行业(2): ★ 强主线，梯队完整，可积极操作，建议确保该行业因子配置充足",
+    "confidence": 0.5,
+    "urgency": "low"
+  },
+  {
+    "section": "industry_factors.新能源车/风电",
+    "key": "enabled",
+    "current": 1,
+    "suggested": 1,
+    "reason": "强主线行业(3): ★ 强主线，梯队完整，可积极操作，建议确保该行业因子配置充足",
+    "confidence": 0.5,
+    "urgency": "low"
+  }
+]

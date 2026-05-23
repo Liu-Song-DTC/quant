@@ -21,6 +21,8 @@ try:
 except ImportError:
     _HAS_NUMBA = False
     def njit(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
         def wrapper(fn):
             return fn
         return wrapper
@@ -246,6 +248,23 @@ class SignalEngine:
         # ATR比率
         result['atr_ratio_20'] = result['atr_20'] / (close + 1e-10)
 
+        # ── 预信号价格特征（均值回归过滤） ──
+        # 1. 60日动量
+        result['mom_60d'] = close / self._shift(close, 60) - 1
+
+        # 2. 距MA60偏离
+        ma60 = self._rolling_mean(close, 60)
+        result['dist_ma60'] = (close - ma60) / (ma60 + 1e-10)
+
+        # 3. 20日最大回撤
+        result['max_dd_20d'] = self._compute_max_dd(close, 20)
+
+        # 4. 波动率区间 (10日vol / 60日vol)
+        ret_1d = close / self._shift(close, 1) - 1
+        vol_10d = self._rolling_std(ret_1d, 10)
+        vol_60d = self._rolling_std(ret_1d, 60)
+        result['vol_regime'] = vol_10d / (vol_60d + 1e-10)
+
         return result
 
     def _get_market_info(self, date) -> Dict[str, Any]:
@@ -283,7 +302,7 @@ class SignalEngine:
             'bear_risk': False,
         }
 
-    def _get_chan_boost(self, ind: dict, idx: int) -> dict:
+    def _get_chan_boost(self, ind: dict, idx: int, market_info: dict = None, industry: str = '') -> dict:
         """
         缠论增强 (czsc风格 v2): 使用分型→笔→线段→中枢→买卖点的完整层级。
 
@@ -425,20 +444,46 @@ class SignalEngine:
                 div_quality = max(div_quality, second_buy_conf * 0.75)
 
         # 回退到旧的三类买卖点 (无多级别确认时)
+        # B3/B2/B1 各自独立评估，不做内部递补
+        # 递补是选股层面的逻辑：优先选B3股票，没有则选B2，再没有选B1
         if not is_buy_boost and not is_sell_boost:
-            if buy_point == 1 and buy_conf > 0.3:
-                mult *= 1.25
-                div_quality = max(div_quality, buy_conf)
-                is_buy_boost = True
+            if buy_point == 3 and buy_conf > 0.2:
+                # B3: 趋势加速买点 — 牛市最强，但需要质量门控
+                chan_pivot_zg_b3 = self._safe_get(ind, 'chan_pivot_zg', idx, np.nan)
+                if not np.isnan(chan_pivot_zg_b3) and chan_pivot_zg_b3 > 0:
+                    current_close = self._safe_get(ind, 'close', idx, np.nan)
+                    if not np.isnan(current_close) and current_close < chan_pivot_zg_b3 * 0.995:
+                        is_sell_boost = True
+                        mult *= 0.60
+                        div_quality = buy_conf * 0.5
+                    else:
+                        b3_mult = self._calc_b3_multiplier(ind, idx, market_info, industry)
+                        if b3_mult is not None:
+                            mult *= b3_mult
+                            div_quality = max(div_quality, buy_conf * 0.90)
+                            is_buy_boost = True
+                else:
+                    b3_mult = self._calc_b3_multiplier(ind, idx, market_info, industry)
+                    if b3_mult is not None:
+                        mult *= b3_mult
+                        div_quality = max(div_quality, buy_conf * 0.90)
+                        is_buy_boost = True
+
             elif buy_point == 2 and buy_conf > 0.2:
-                mult *= 1.15
-                div_quality = max(div_quality, buy_conf * 0.8)
-                is_buy_boost = True
-            elif buy_point == 3 and buy_conf > 0.2:
-                # B3=突破中枢后回调确认，缠论最可靠的趋势加速买点
-                mult *= 1.30
-                div_quality = max(div_quality, buy_conf * 0.90)
-                is_buy_boost = True
+                # B2: 回调确认买点 — 最安全
+                b2_mult = self._calc_b2_multiplier(ind, idx, market_info)
+                if b2_mult is not None:
+                    mult *= b2_mult
+                    div_quality = max(div_quality, buy_conf * 0.85)
+                    is_buy_boost = True
+
+            elif buy_point == 1 and buy_conf > 0.3:
+                # B1: 底部反转买点 — 熊市最佳
+                b1_mult = self._calc_b1_multiplier(ind, idx, market_info)
+                if b1_mult is not None:
+                    mult *= b1_mult
+                    div_quality = max(div_quality, buy_conf * 0.80)
+                    is_buy_boost = True
 
             if sell_point == 1 and sell_conf > 0.3:
                 mult *= 0.65
@@ -518,12 +563,355 @@ class SignalEngine:
         if chan_pivot_present > 0 and bottom_div > 0.15:
             mult *= 1.06
 
+        # === Layer 8: 大级别趋势保护 (周线代理: EMA60 vs EMA120) ===
+        # 周线空头排列时，日线买点可靠性大幅下降
+        ema60_v = self._safe_get(ind, 'ema60', idx, 0.0)
+        ema120_v = self._safe_get(ind, 'ema120', idx, 0.0)
+        if ema60_v > 0 and ema120_v > 0:
+            if ema60_v <= ema120_v:
+                if is_buy_boost:
+                    mult *= 0.75   # 大级别空头 → 日线B3/B2/B1均打75折
+                elif not is_sell_boost:
+                    mult *= 0.85
+
+        # 均线乖离检查已移至 portfolio.py 均值回归调整（统一处理）
+
         return {
             'boost_multiplier': float(np.clip(mult, 0.5, 1.5)),
             'is_chan_buy_boost': is_buy_boost,
             'is_chan_sell_boost': is_sell_boost,
             'divergence_quality': div_quality,
         }
+
+    def _calc_b3_multiplier(self, ind: dict, idx: int,
+                            market_info: dict = None, industry: str = '') -> float:
+        """B3 动态乘数: 大盘环境 × 趋势结构 × 背离共振 × 量能确认 × 回调质量
+
+        返回 None 表示不产生B3信号 (大盘下跌时禁用)
+        返回 float 为最终乘数 (1.0 基准)
+
+        5层过滤体系 (由粗到细):
+          Layer 1 - 大盘环境: 熊市禁用, 震荡仅强板块可做
+          Layer 2 - 趋势结构: 首中枢最优, 第三中枢后大幅折扣
+          Layer 3 - 背离共振: 底背离+放量底分型确认
+          Layer 4 - 量能确认: 突破放量+回调缩量 (量在价先)
+          Layer 5 - 回调质量: 浅回踩=强控盘, 深回踩=弱势
+        """
+        if market_info is None:
+            market_info = {}
+        regime = market_info.get('regime', 0)  # -1=bear, 0=neutral, 1=bull
+
+        # ── Layer 0: B3 硬门控 (四条件至少满足两个，否则拒收) ──
+        # 条件a: 突破放量 (≥1.3x 均量)
+        b3_bo_vol = self._safe_get(ind, 'b3_breakout_vol_ratio', idx, 0.0)
+        breakout_pass = (b3_bo_vol >= 1.3)
+
+        # 条件b: 回调缩量 (≤0.85x 突破量)
+        b3_pb_vol = self._safe_get(ind, 'b3_pullback_vol_ratio', idx, 1.0)
+        contraction_pass = (b3_pb_vol <= 0.85)
+
+        # 条件c: 结构确认 (趋势确认 或 背离 或 底分型)
+        b3_tc = bool(self._safe_get(ind, 'b3_trend_confirmed', idx, False))
+        bd = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
+        fx_q = self._safe_get(ind, 'bottom_fractal_quality', idx, 0.0)
+        confirm_pass = (b3_tc or bd > 0.3 or fx_q > 0.25)
+
+        # 条件d: 回调质量 (浅回踩 ≥ 0.5)
+        pb_shallow = self._safe_get(ind, 'b3_pullback_shallowness', idx, 0.5)
+        shallow_pass = (pb_shallow >= 0.5)
+
+        n_pass = sum([breakout_pass, contraction_pass, confirm_pass, shallow_pass])
+        if n_pass < 2:
+            return None
+
+        # ── Layer 1: 大盘环境 ──
+        if regime == -1:
+            # 大盘下跌: 检测逆势抗跌基因后才允许
+            anti_market_strength = self._safe_get(ind, 'relative_strength', idx, 0.0)
+            pivot_count = int(self._safe_get(ind, 'pivot_count', idx, 0))
+            # 仅当个股强于大盘(RS>0.3)且正在构筑第一个上涨中枢时才允许B3
+            if anti_market_strength < 0.3 or pivot_count > 1:
+                return None
+            # 熊市B3仅给70%基准，需极强证据才能盈利
+            regime_mult = 0.65
+        elif regime == 0:
+            # 大盘震荡: 仅强势板块允许B3
+            if not self._is_industry_strong(industry):
+                return None
+            regime_mult = 0.85
+        else:
+            # 大盘上涨: B3最适合的环境
+            regime_mult = 1.0
+
+        # ── Layer 2: 趋势结构 (中枢"段位"和"地基") ──
+        b3_trend_confirmed = bool(self._safe_get(ind, 'b3_trend_confirmed', idx, False))
+        b3_trend_rank = int(self._safe_get(ind, 'b3_trend_rank', idx, 0))
+        if not b3_trend_confirmed:
+            # 趋势未确认 (<2个非重叠上涨中枢): 大幅折扣
+            trend_mult = 0.7
+        elif b3_trend_rank <= 1:
+            # 底部第一个上涨中枢的B3: "首中枢最佳" — 最优位置
+            trend_mult = 1.0
+        elif b3_trend_rank == 2:
+            # 第二个中枢B3: 尚可
+            trend_mult = 0.85
+        else:
+            # 第三中枢及以上B3: "中枢末段易背驰见顶"
+            trend_mult = 0.6
+
+        # ── Layer 3: 背离共振 ──
+        bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
+        has_div_resonance = bottom_div > 0.3
+        # 底分型+放量确认
+        bottom_fx_qual = self._safe_get(ind, 'bottom_fractal_quality', idx, 0.0)
+        bottom_fx_vol = self._safe_get(ind, 'bottom_fractal_vol_ratio', idx, 1.0)
+        has_fx_vol = bottom_fx_qual > 0.25 and bottom_fx_vol > 1.2
+
+        if has_div_resonance and has_fx_vol:
+            # 背离 + 放量底分型 共振 → B3入场确认
+            div_mult = 1.0
+        elif has_div_resonance or has_fx_vol:
+            # 仅一项满足
+            div_mult = 0.8
+        else:
+            # 无背离无放量底分型 → B3可能回调未结束
+            div_mult = 0.6
+
+        # ── Layer 4: 量能确认 (过滤器二: 突破放量+回调缩量) ──
+        b3_breakout_vol = self._safe_get(ind, 'b3_breakout_vol_ratio', idx, 0.0)
+        b3_pullback_vol = self._safe_get(ind, 'b3_pullback_vol_ratio', idx, 1.0)
+
+        if b3_breakout_vol > 1.5 and b3_pullback_vol < 0.7:
+            # 突破放量(>1.5x均量) + 回调缩量(<0.7x突破量) = 标准量价配合
+            vol_mult = 1.0
+        elif b3_breakout_vol > 2.0 and b3_pullback_vol < 0.5:
+            # 强突破(>2x均量) + 强缩量(<0.5x) = "一脚踹开"+"抛压衰竭"
+            vol_mult = 1.15
+        elif b3_breakout_vol > 1.0 and b3_pullback_vol < 0.8:
+            # 及格线
+            vol_mult = 0.85
+        elif b3_breakout_vol > 0:
+            # 有量数据但不达标 → 需打折
+            vol_mult = 0.65
+        else:
+            # 无量数据(老股/无volume字段) → 中性，不影响
+            vol_mult = 0.9
+
+        # ── Layer 5: 回调质量 (过滤器四: 极限浅回踩) ──
+        b3_pullback_shallow = self._safe_get(ind, 'b3_pullback_shallowness', idx, 0.5)
+
+        if b3_pullback_shallow > 0.8:
+            # 极浅回踩: 不破5日线, 主力控盘度高 → 爆发力强
+            pullback_mult = 1.15
+        elif b3_pullback_shallow > 0.6:
+            # 标准浅回踩: 正常回调到位
+            pullback_mult = 1.0
+        elif b3_pullback_shallow > 0.35:
+            # 较深回踩: 多头防守偏弱
+            pullback_mult = 0.8
+        elif b3_pullback_shallow > 0:
+            # 深回踩: 几乎跌回中枢, 空头势能大
+            pullback_mult = 0.6
+        else:
+            # 无数据 → 中性
+            pullback_mult = 0.9
+
+        # ── 合成 ──
+        # 5层乘数相乘: 每层独立判断，任一层弱则整体大幅折扣
+        combined = regime_mult * trend_mult * div_mult * vol_mult * pullback_mult
+        final_mult = (1.0 + (1.30 - 1.0) * combined)
+        return max(1.0, min(final_mult, 1.50))
+
+    def _calc_b2_multiplier(self, ind: dict, idx: int, market_info: dict = None) -> float:
+        """B2 质量乘数: 大盘环境 × B1质量 × 回调深度 × MACD改善 × 量能
+
+        B2 = 一买后回调不破前低 → 缠论最安全的买点
+        支持增强版B2(second_buy_confidence>0)和简易版B2(buy_point=2)
+        返回 None 表示B2质量不足，应递补到B1
+        """
+        if market_info is None:
+            market_info = {}
+        regime = market_info.get('regime', 0)
+
+        # ── Layer 1: 大盘环境 ──
+        if regime == -1:
+            regime_mult = 1.10   # 熊市B2性价比高
+        elif regime == 0:
+            regime_mult = 1.05   # 震荡市B2最佳
+        else:
+            regime_mult = 0.95   # 牛市B2稍弱于B3
+
+        b2_confidence = self._safe_get(ind, 'second_buy_confidence', idx, 0.0)
+
+        # ── 增强版B2 (有second_buy数据) ──
+        if b2_confidence > 0.01:
+            b1_ref_idx = int(self._safe_get(ind, 'second_buy_b1_ref', idx, -1))
+
+            # Layer 2: 引用B1质量
+            if b2_confidence > 0.7:
+                b1_qual_mult = 1.10
+            elif b2_confidence > 0.5:
+                b1_qual_mult = 1.0
+            elif b2_confidence > 0.3:
+                b1_qual_mult = 0.85
+            else:
+                b1_qual_mult = 0.70
+
+            # Layer 3: B1后反弹幅度
+            close_arr = ind.get('close', None)
+            if close_arr is not None and b1_ref_idx >= 0 and b1_ref_idx < idx:
+                b1_price = close_arr[b1_ref_idx]
+                post_high = np.max(close_arr[b1_ref_idx:idx + 1])
+                bounce_pct = (post_high - b1_price) / (b1_price + 1e-10)
+                if bounce_pct > 0.05:
+                    bounce_mult = 1.10
+                elif bounce_pct > 0.02:
+                    bounce_mult = 1.0
+                else:
+                    bounce_mult = 0.8
+            else:
+                bounce_mult = 0.95
+
+            # Layer 4: MACD改善
+            macd_improved = False
+            macd = ind.get('macd', None)
+            if macd is not None and b1_ref_idx >= 0:
+                macd_b2 = float(macd[idx]) if idx < len(macd) and not np.isnan(macd[idx]) else 0
+                macd_b1 = float(macd[b1_ref_idx]) if b1_ref_idx < len(macd) and not np.isnan(macd[b1_ref_idx]) else 0
+                macd_improved = macd_b2 > macd_b1
+            macd_mult = 1.08 if macd_improved else 0.90
+
+            # Layer 5: 回调缩量
+            b3_pb_vol = self._safe_get(ind, 'b3_pullback_vol_ratio', idx, 1.0)
+            if 0 < b3_pb_vol < 0.6:
+                vol_mult = 1.10
+            elif 0 < b3_pb_vol < 0.8:
+                vol_mult = 1.0
+            elif b3_pb_vol > 0:
+                vol_mult = 0.85
+            else:
+                vol_mult = 0.95
+
+            # 硬门控: B2需要至少b2_confidence>0.3
+            if b2_confidence < 0.30:
+                return None
+
+            combined = regime_mult * b1_qual_mult * bounce_mult * macd_mult * vol_mult
+            final_mult = (1.0 + (1.25 - 1.0) * combined)
+            return max(1.0, min(final_mult, 1.40))
+
+        # ── 简易版B2 (buy_point=2但无增强数据) ──
+        else:
+            buy_conf_simple = self._safe_get(ind, 'buy_confidence', idx, 0.0)
+            if buy_conf_simple < 0.2:
+                return None
+
+            # 简易评估: buy_confidence + MACD + 量能 + 底分型
+            conf_mult = 0.7 + buy_conf_simple * 0.6
+
+            macd = ind.get('macd', None)
+            macd_ok = False
+            if macd is not None and idx >= 10:
+                macd_now = float(macd[idx]) if not np.isnan(macd[idx]) else 0
+                macd_prev = float(np.mean(macd[max(0,idx-10):idx]))
+                macd_ok = macd_now > macd_prev
+            macd_mult_s = 1.05 if macd_ok else 0.92
+
+            pullback_vol = self._safe_get(ind, 'b3_pullback_vol_ratio', idx, 1.0)
+            if 0 < pullback_vol < 0.7:
+                vol_mult_s = 1.08
+            elif pullback_vol > 0:
+                vol_mult_s = 0.90
+            else:
+                vol_mult_s = 0.95
+
+            bottom_fx = self._safe_get(ind, 'bottom_fractal_quality', idx, 0.0)
+            fx_mult_s = 1.06 if bottom_fx > 0.25 else 1.0
+
+            combined = regime_mult * conf_mult * macd_mult_s * vol_mult_s * fx_mult_s
+            final_mult = (1.0 + (1.20 - 1.0) * combined)
+            return max(1.0, min(final_mult, 1.30))
+
+    def _calc_b1_multiplier(self, ind: dict, idx: int, market_info: dict = None) -> float:
+        """B1 质量乘数: 大盘环境 × 背离强度 × 恐慌量能 × 超卖深度 × 趋势耗尽
+
+        B1 = 下跌趋势末端底背离 → 反转买点，熊市最佳
+        返回 None 表示B1质量不足
+        """
+        if market_info is None:
+            market_info = {}
+        regime = market_info.get('regime', 0)
+
+        # ── Layer 1: 大盘环境 ──
+        if regime == -1:
+            regime_mult = 1.10   # 熊市B1: 抄底正当时
+        elif regime == 0:
+            regime_mult = 1.0    # 震荡: B1中性
+        else:
+            regime_mult = 0.85   # 牛市B1: 逆势抄底需谨慎
+
+        # ── Layer 2: 背离强度 ──
+        bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
+        if bottom_div > 0.5:
+            div_mult = 1.15      # 强背离 → 高概率反转
+        elif bottom_div > 0.3:
+            div_mult = 1.0
+        elif bottom_div > 0.15:
+            div_mult = 0.80
+        else:
+            div_mult = 0.60
+
+        # ── Layer 3: 恐慌抛售量 ──
+        fx_vol_spike = self._safe_get(ind, 'bottom_fractal_vol_spike', idx, 1.0)
+        if fx_vol_spike >= 3.0:
+            vol_mult = 1.20      # 3x放量恐慌 = 强反转信号(量在价先)
+        elif fx_vol_spike >= 2.0:
+            vol_mult = 1.10
+        elif fx_vol_spike >= 1.5:
+            vol_mult = 1.0
+        elif fx_vol_spike >= 1.0:
+            vol_mult = 0.85
+        else:
+            vol_mult = 0.90
+
+        # ── Layer 4: 超卖深度 (价格低于MA60的幅度) ──
+        ema60 = ind.get('ema60', None)
+        close_arr = ind.get('close', None)
+        if ema60 is not None and close_arr is not None:
+            dist_from_ma60 = (ema60[idx] - close_arr[idx]) / (ema60[idx] + 1e-10)
+            if dist_from_ma60 > 0.10:
+                oversold_mult = 1.15    # 深度超卖 → 反弹空间大
+            elif dist_from_ma60 > 0.05:
+                oversold_mult = 1.05
+            elif dist_from_ma60 > 0:
+                oversold_mult = 1.0
+            else:
+                oversold_mult = 0.85    # 价格在MA60之上 → 不是真正B1
+        else:
+            oversold_mult = 0.95
+
+        # ── Layer 5: 笔趋势耗尽 ──
+        bi_td = bool(self._safe_get(ind, 'bi_td', idx, 0))
+        td_mult = 1.10 if bi_td else 0.90
+
+        # ── 硬门控: B1需要至少背离+恐慌量能之一达标 ──
+        if bottom_div < 0.15 and fx_vol_spike < 1.5:
+            return None
+
+        combined = regime_mult * div_mult * vol_mult * oversold_mult * td_mult
+        final_mult = (1.0 + (1.30 - 1.0) * combined)
+        return max(1.0, min(final_mult, 1.45))
+
+    def _is_industry_strong(self, industry: str) -> bool:
+        """判断行业是否强势 (IC > 0.06 或 配置中标注为主线)"""
+        if not industry:
+            return False
+        cfg = INDUSTRY_FACTOR_CONFIG.get(industry, {})
+        if not cfg:
+            return False
+        combined_ic = cfg.get('combined_ic', 0)
+        base_ic = cfg.get('ic', 0)
+        return combined_ic > 0.06 or base_ic > 0.06
 
     def _generate_signal(self, ind: dict, idx: int, last_sig, current_date=None, code=None) -> Signal:
         """生成信号"""
@@ -532,7 +920,11 @@ class SignalEngine:
                 buy=False, sell=False, score=0.0, factor_value=0.0,
                 factor_name='V41', risk_vol=0.03, risk_regime=0,
                 risk_confidence=0.0, risk_extreme=False, adjusted_score=0.0,
-                industry=self._get_specific_industry(code, current_date) if code else ''
+                industry=self._get_specific_industry(code, current_date) if code else '',
+                exhaustion_risk=0.0, gap_breakout_confirm=0.0,
+                stroke_phase=0.0, top_fractal_volume=0.0,
+                ma_trend_up=False, profit_declining=False,
+                mom_60d=0.0, dist_ma60=0.0, max_dd_20d=0.0, vol_regime=1.0,
             )
 
         # 市场状态
@@ -557,7 +949,11 @@ class SignalEngine:
                 buy=False, sell=False, score=0.0, factor_value=0.0,
                 factor_name='NONE', risk_vol=0.03, risk_regime=risk_regime,
                 risk_confidence=0.0, risk_extreme=risk_extreme, adjusted_score=0.0,
-                industry=self._get_specific_industry(code, current_date) if code else ''
+                industry=self._get_specific_industry(code, current_date) if code else '',
+                exhaustion_risk=0.0, gap_breakout_confirm=0.0,
+                stroke_phase=0.0, top_fractal_volume=0.0,
+                ma_trend_up=False, profit_declining=False,
+                mom_60d=0.0, dist_ma60=0.0, max_dd_20d=0.0, vol_regime=1.0,
             )
 
         factor_name, factor_value, risk_info, is_industry = factor_result
@@ -568,6 +964,11 @@ class SignalEngine:
         if self.fundamental_enabled and code:
             fundamental_score = self._get_fundamental_score(code, current_date)
             has_fundamental = fundamental_score > 0
+
+        # 基本面排雷: 近两季度利润同比持续下滑
+        profit_declining = False
+        if self.fundamental_enabled and code:
+            profit_declining = self._check_profit_decline(code, current_date)
 
         # 风格因子
         style_factor_score = self._get_style_score(ind, idx, market_info)
@@ -590,7 +991,8 @@ class SignalEngine:
         score = base_score
 
         # === 缠论增强（czsc风格 7层融合）===
-        chan_boost = self._get_chan_boost(ind, idx)
+        chan_boost = self._get_chan_boost(ind, idx, market_info,
+                                          specific_industry if code else '')
         chan_sl = int(self._safe_get(ind, 'signal_level', idx, 0))
 
         # === 缠论门控：强结构信号时缠论主导，弱信号时因子主导 ===
@@ -612,6 +1014,33 @@ class SignalEngine:
         smart_money = self._safe_get(ind, 'smart_money_flow', idx, 0)
         bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
         top_div = self._safe_get(ind, 'top_divergence', idx, 0.0)
+
+        # === P0-P2: 因子-缠论冲突解决 (兜底检查，仅对无质量过滤的信号生效) ===
+        buy_point_raw = int(self._safe_get(ind, 'buy_point', idx, 0))
+        sell_point_raw = int(self._safe_get(ind, 'sell_point', idx, 0))
+        trend_type_raw = int(self._safe_get(ind, 'trend_type', idx, 0))
+        bottom_fx_q = self._safe_get(ind, 'bottom_fractal_quality', idx, 0.0)
+
+        # B3/B2/B1质量系统是否已介入 (chan_mult > 1.0 表示通过了某级质量门控)
+        chan_quality_applied = chan_boost.get('is_chan_buy_boost', False)
+
+        # P0: 纯因子信号 — 无Chan结构确认 → 大幅降分
+        has_chan_structure = (buy_point_raw > 0 or chan_sl >= 1 or
+                              bottom_div > 0.3 or bottom_fx_q > 0.25)
+        if not has_chan_structure and not chan_quality_applied and score > 0:
+            score = score * 0.45  # 无缠论结构 → 因子信号不可靠
+
+        # P1: Chan内部冲突 — 买卖点同时存在 → 信任卖点
+        if buy_point_raw > 0 and sell_point_raw > 0:
+            score = score * 0.45
+
+        # P2: 无趋势的Chan买点 — 仅当没有其他质量确认时才处罚
+        # (B3/B2/B1质量门控已通过的，不再重复处罚)
+        if buy_point_raw > 0 and trend_type_raw == 0 and not chan_quality_applied:
+            if bottom_div > 0.3 or bottom_fx_q > 0.35:
+                pass
+            else:
+                score = score * 0.65
 
         # === ML预测混合（非线性因子交互） ===
         if self.ml_enabled and self.ml_predictor is not None and \
@@ -745,19 +1174,24 @@ class SignalEngine:
         effective_buy_threshold = self._cached_buy_threshold
         effective_sell_threshold = self._cached_sell_threshold
 
+        # 缠论买点信号: 强结构买点直接触发（与卖出逻辑对称）
+        chan_buy_signal = chan_boost.get('is_chan_buy_boost', False)
+        sl_buy = int(self._safe_get(ind, 'signal_level', idx, 0))
+        bp_buy = int(self._safe_get(ind, 'buy_point', idx, 0))
+        chan_force_buy = chan_buy_signal and (sl_buy >= 2 or bp_buy == 1)
         buy = (score is not None and
                not np.isnan(score) and
-               score > effective_buy_threshold and
+               (score > effective_buy_threshold or chan_force_buy) and
                abs(score) < 5.0)
 
-        # 缠论止盈: 强卖点信号直接触发sell=True，不依赖分数阈值
+        # 缠论卖点: 强卖点直接触发sell（与买入逻辑对称）
         chan_sell_signal = chan_boost.get('is_chan_sell_boost', False)
         sl_for_sell = int(self._safe_get(ind, 'signal_level', idx, 0))
         sp_for_sell = int(self._safe_get(ind, 'sell_point', idx, 0))
+        chan_force_sell = chan_sell_signal and (sl_for_sell <= -2 or sp_for_sell >= 1)
         sell = (score is not None and
                 not np.isnan(score) and
-                (score < effective_sell_threshold or
-                 (chan_sell_signal and (sl_for_sell <= -2 or sp_for_sell >= 1))))
+                (score < effective_sell_threshold or chan_force_sell))
 
         # 提取因子质量（用于组合层权重调整）
         factor_quality = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
@@ -826,6 +1260,18 @@ class SignalEngine:
             chan_pivot_zg=float(self._safe_get(ind, 'chan_pivot_zg', idx, np.nan)),
             chan_pivot_zd=float(self._safe_get(ind, 'chan_pivot_zd', idx, np.nan)),
             chan_pivot_zz=float(self._safe_get(ind, 'chan_pivot_zz', idx, np.nan)),
+            daily_return=float(self._safe_get(ind, 'ret', idx, 0.0)),
+            volume_ratio=float(self._safe_get(ind, 'volume_ratio', idx, 1.0)),
+            exhaustion_risk=float(self._safe_get(ind, 'exhaustion_risk', idx, 0.0)),
+            gap_breakout_confirm=float(self._safe_get(ind, 'gap_breakout_confirm', idx, 0.0)),
+            stroke_phase=float(self._safe_get(ind, 'stroke_phase', idx, 0.0)),
+            top_fractal_volume=float(self._safe_get(ind, 'top_fractal_volume', idx, 0.0)),
+            ma_trend_up=bool(self._safe_get(ind, 'ema20_above_60', idx, False)),
+            profit_declining=profit_declining,
+            mom_60d=float(self._safe_get(ind, 'mom_60d', idx, 0.0)),
+            dist_ma60=float(self._safe_get(ind, 'dist_ma60', idx, 0.0)),
+            max_dd_20d=float(self._safe_get(ind, 'max_dd_20d', idx, 0.0)),
+            vol_regime=float(self._safe_get(ind, 'vol_regime', idx, 1.0)),
         )
 
     def _select_factor(self, ind: dict, idx: int, regime: int, industry_category: str = 'default',
@@ -1048,6 +1494,57 @@ class SignalEngine:
         if raw_value is None or (isinstance(raw_value, float) and np.isnan(raw_value)):
             return None
         return compress_fundamental_factor(raw_value, factor_name)
+
+    def _check_profit_decline(self, code, current_date) -> bool:
+        """基本面排雷: 利润下滑且降幅在扩大(恶化), 而非收窄(拐点)
+
+        国茂股份案例: 利润同比 -33%→-27%→-11%, 降幅收窄+营收转正=拐点, 不应过滤
+        真正该过滤的是: -10%→-20%→-35%, 降幅扩大=基本面加速恶化
+        """
+        try:
+            if not hasattr(self, 'fundamental_data') or not self.fundamental_data:
+                return False
+            if hasattr(self, '_fund_cache') and self._has_fund_data_cache:
+                cache_key = str(current_date)[:10]
+                entry = self._fund_cache.get(cache_key)
+                if entry and entry.get('history') is not None:
+                    hist = entry['history']
+                    # 取最近三个报告期的净利润同比增长
+                    pg_values = []
+                    rg_values = []
+                    for report_date in sorted(hist.keys(), reverse=True)[:3]:
+                        row = hist[report_date]
+                        pg = row.get('净利润-同比增长')
+                        rg = row.get('营业总收入-同比增长')
+                        if pg is not None:
+                            try:
+                                pg_values.append(float(pg))
+                            except (ValueError, TypeError):
+                                pass
+                        if rg is not None:
+                            try:
+                                rg_values.append(float(rg))
+                            except (ValueError, TypeError):
+                                pass
+
+                    if len(pg_values) >= 3:
+                        # 三个季度利润同比均为负 → 持续下滑
+                        if all(v < 0 for v in pg_values):
+                            # 检查趋势: 降幅扩大(恶化) or 收窄(拐点)
+                            # pg_values[0]=最新, pg_values[-1]=最早
+                            trend = pg_values[0] - pg_values[-1]
+                            if trend < -5:
+                                # 降幅扩大超过5个百分点 → 加速恶化 → 过滤
+                                return True
+                            # 降幅收窄或持平 → 可能是拐点 → 再看看营收
+                            if trend > 5 and all(v < 0 for v in rg_values):
+                                # 利润改善但营收仍在下滑 → 利润改善不可持续 → 过滤
+                                return True
+                            # 利润+营收都在改善 → 拐点确认, 不过滤
+                            return False
+            return False
+        except Exception:
+            return False
 
     def _get_raw_fundamental_value(self, code, current_date, factor_name: str) -> Optional[float]:
         """获取基本面因子原始值（使用预加载缓存）"""
@@ -1542,6 +2039,43 @@ class SignalEngine:
         sw = sliding_window_view(arr, window)
         result = np.full(n, np.nan)
         result[window:] = sw.std(axis=1)[:n-window]
+        return result
+
+    def _rolling_mean(self, arr, window):
+        """滚动均值 - 不包含当天，避免数据泄露"""
+        n = len(arr)
+        if n < window:
+            return np.full(n, np.nan)
+        from numpy.lib.stride_tricks import sliding_window_view
+        sw = sliding_window_view(arr, window)
+        result = np.full(n, np.nan)
+        result[window:] = sw.mean(axis=1)[:n-window]
+        return result
+
+    def _compute_max_dd(self, close, window):
+        """计算滚动窗口内的最大回撤（负值，如-0.15表示-15%）
+
+        向量化实现：对每个 i，计算 [i-window, i) 内的最大回撤
+        max_dd = min over j in [i-window, i) of (price[j] - peak[j]) / peak[j]
+        """
+        n = len(close)
+        result = np.full(n, np.nan)
+        if n < window + 1:
+            return result
+
+        # 向量化：对每个起点，计算窗口内的回撤
+        from numpy.lib.stride_tricks import sliding_window_view
+        # 取 [window-1, n-1) 的窗口视图，每个窗口有 window 个元素
+        sw = sliding_window_view(close, window)
+        # sw.shape = (n - window + 1, window)
+        # sw[i] = close[i : i+window]
+
+        # 对每个窗口计算：当前价格/累计最大值 - 1
+        peak = np.maximum.accumulate(sw, axis=1)
+        dd = (sw - peak) / np.where(peak > 0, peak, 1)
+        min_dd = dd.min(axis=1)  # shape = (n - window + 1,)
+
+        result[window:] = min_dd[:n - window]
         return result
 
     def _macd(self, close, fast=12, slow=26, signal=9):

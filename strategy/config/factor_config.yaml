@@ -5,7 +5,7 @@ dynamic_factor:
   top_n_factors: 5
   min_train_samples: 50
   min_ic_dates: 5
-  ic_decay_factor: 0.90
+  ic_decay_factor: 0.9
   fallback_to_static: true
   min_factor_count: 2
   min_factor_families: 2
@@ -14,36 +14,38 @@ dynamic_factor:
   reweight_blend: 0.5
   date_sample_step: 5
   extra_candidate_factors:
-    - smart_money_flow
-    - relative_strength
-    - rsi_vol_combo
-    - wash_sale_score
-    - low_downside
-    - vol_confirm
-# === 核心因子（3个）===
-# 2026-05-09 单因子IC分析收敛：15→3，聚焦真正有预测力的因子
-# 选择原则：ICIR>0.28 + 家族分散 + 低相关性(r<0.5)
-# 组合: fund_score + volatility + mom_x_lowvol_20_20
-#   组合IC=0.0832, 组合ICIR=0.545, 组合胜率=71.8%
+  - smart_money_flow
+  - relative_strength
+  - rsi_vol_combo
+  - wash_sale_score
+  - low_downside
+  - vol_confirm
+  - gap_breakout_confirm
+  - stroke_phase
+  - exhaustion_risk
+  - top_fractal_volume
 backtest_factors:
-  # 基本面（1个）
-  - fund_score           # IC=0.0578, ICIR=0.381, 胜率=64.6%, 家族:value
-
-  # 低波动（1个）
-  - volatility           # IC=0.0615, ICIR=0.313, 胜率=61.1%, 家族:lowvol
-
-  # 动量×低波（1个）- 与上面两者低相关，提供独立信号
-  - mom_x_lowvol_20_20   # IC=0.0498, ICIR=0.281, 胜率=62.7%
-
-# === 备选因子池（当核心因子IC衰减时替换）===
-# 排序依据: ICIR从高到低
+- fund_score
+- volatility
+- mom_x_lowvol_20_20
+- fund_roe
+- fund_profit_growth
+- fund_revenue_growth
+- fund_gross_margin
+- momentum_reversal
+- trend_lowvol
+- bb_width_20
+- turnover_stability
+- smart_money_flow
+- relative_strength
+- rsi_vol_combo
+- wash_sale_score
+- low_downside
+- vol_confirm
 static_candidate_factors:
-  # 强但冗余（与fund_score r=0.778）
-  - fund_profit_growth   # IC=0.0541, ICIR=0.366 (备用: fund_score替代)
-  - fund_roe             # IC=0.0554, ICIR=0.292 (IC近期衰减中)
-
-  # 弱因子（仅作极端备用）
-  - trend_lowvol         # IC=0.0263, ICIR=0.131
+- fund_profit_growth
+- fund_roe
+- trend_lowvol
 industry_factor_config:
   lookback_days: 250
   forward_period: 20
@@ -521,7 +523,7 @@ industry_factors:
 industry_sentiment:
   enabled: true
   data_dir: data/sentiment_data
-  deepseek_api_key: ''
+  deepseek_api_key: sk-75e900d8661c4760af9aeb2504c0c764
   analysis_frequency: daily
   max_news_batch: 50
   notify_on_completion: true
@@ -570,13 +572,13 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.06
+  buy_threshold: 0.2
   sell_threshold: -0.08
-  buy_threshold_pct: 0.60
+  buy_threshold_pct: 0.6
 regime_multiplier:
   bull: 1.0
-  neutral: 0.90
-  bear: 0.80
+  neutral: 0.9
+  bear: 0.8
 portfolio:
   target_volatility: 0.15
   entry_speed: 0.8
@@ -589,9 +591,16 @@ portfolio:
     neutral: 1
     bear: 0
   selection:
-    min_rank_pct: 0.40
-    min_absolute_score: 0.10   # 龙头洁癖: 绝对质量门槛, 0=禁用
-    min_confidence: 0.30
+    min_rank_pct: 0.4
+    min_absolute_score: 0.3
+    min_confidence: 0.3
+    chan_gate_enabled: true            # Chan买点门控: 开启后必须有Chan信号才能入选
+    chan_gate_min_count: 3             # Chan信号少于此时启用因子fallback
+    chan_fallback_score: 0.5           # fallback时纯因子的最低评分
+    exhaustion_max_weight: 0.03        # 力竭风险股票的仓位上限
+    exhaustion_reduce_mult: 0.5        # 力竭时仓位乘数
+    industry_max_weight: 0.20          # 单行业总权重上限
+    max_single_weight: 0.12
   fv_exposure_params:
     fv_low: -0.01
     fv_high: 0.02
@@ -603,12 +612,12 @@ portfolio_stop_loss:
   emergency_exposure: 0.3
 volatility_control:
   enabled: true
-  lookback_period: 20          # 短期波动率窗口
-  long_lookback_period: 60    # 长期波动率窗口（市场风格切换参考）
-  blend_weight: 0.6          # 短期权重（长期=1-blend_weight）
+  lookback_period: 20
+  long_lookback_period: 60
+  blend_weight: 0.6
 factor_neutralization:
   enabled: true
-  neutralize_industry: false  # 关闭行业中性化，保留行业轮动alpha
+  neutralize_industry: false
   neutralize_market_cap: true
   min_samples_per_industry: 3
 enhanced_stop_loss:
@@ -632,9 +641,9 @@ chan_theory:
     enabled: true
     lookback: 20
     peak_trough_lookback: 5
-    strength_threshold: 0.3      # 背离强度阈值（可配置）
-    bottom_div_threshold: 0.3   # 底背离触发阈值（越高越严格）
-    top_div_threshold: 0.3      # 顶背离触发阈值
+    strength_threshold: 0.3
+    bottom_div_threshold: 0.3
+    top_div_threshold: 0.3
     verify_trend: true
   structure:
     enabled: true
@@ -650,51 +659,79 @@ chan_theory:
     pivot_breakout_buy_mult: 1.15
     pivot_breakout_sell_mult: 0.75
   exit:
-    top_divergence_exit: 0.30
-    trend_exhaustion_exit: -0.30
+    top_divergence_exit: 0.3
+    trend_exhaustion_exit: -0.3
     buy_zone_stop_protection: 1.5
     volume_divergence_exit: true
-  # === 缠论止盈配置 ===
   take_profit:
-    enabled: true                   # 启用缠论分层止盈
-    s1_reduce_pct: 1.0             # S1一卖→全清(1.0=清仓, 0.5=减半)
-    s2_reduce_pct: 0.5             # S2二卖→减半仓
-    s3_reduce_pct: 1.0             # S3三卖→全清
-    pivot_trailing_enabled: true   # 中枢移动止盈
-    profit_lock_pct: 0.15          # 盈利>15%启动移动止盈
-    bi_sell_exit: true             # 笔级卖点也参与退出
-# === 缠论增强配置 (czsc风格): 分型→笔→线段→中枢→买卖点 ===
+    enabled: true
+    s1_reduce_pct: 1.0
+    s2_reduce_pct: 0.5
+    s3_reduce_pct: 1.0
+    pivot_trailing_enabled: true
+    profit_lock_pct: 0.15
+    bi_sell_exit: true
 chan_theory_enhanced:
   enabled: true
-  # 笔检测参数
   stroke:
-    min_stroke_bars: 4         # 顶底分型之间最少K线数
-  # 线段检测参数
+    min_stroke_bars: 4
   segment:
-    min_strokes: 3             # 构成线段的最少笔数
-  # 中枢检测参数
+    min_strokes: 3
   pivot:
-    min_segments: 3            # 构成中枢的最少线段数
-    overlap_required: true     # 是否要求严格重叠
-  # 买卖点权重
+    min_segments: 3
+    overlap_required: true
   buy_sell_points:
-    b1_buy_mult: 1.30          # 一买增强乘数
-    b2_buy_mult: 1.20          # 二买增强乘数
-    b3_buy_mult: 1.25          # 三买增强乘数
-    s1_sell_mult: 0.60         # 一卖削弱乘数
-    s2_sell_mult: 0.65         # 二卖削弱乘数
-    s3_sell_mult: 0.70         # 三卖削弱乘数
-  # 信号综合权重
+    b1_buy_mult: 1.3
+    b2_buy_mult: 1.2
+    b3_buy_mult: 1.25
+    s1_sell_mult: 0.6
+    s2_sell_mult: 0.65
+    s3_sell_mult: 0.7
   signal:
-    trend_trend_follow: 1.08   # 顺势加成
-    trend_counter_trend: 0.92  # 逆势折扣
-    consolidation_discount: 0.7 # 盘整信号折扣
-    zhongyin_penalty: 0.85     # 中阴状态惩罚
-    pivot_bottom_boost: 1.10   # 中枢下方买入加成
+    trend_trend_follow: 1.08
+    trend_counter_trend: 0.92
+    consolidation_discount: 0.7
+    zhongyin_penalty: 0.85
+    pivot_bottom_boost: 1.1
+  # B3 五层过滤体系 (提高三买准确率)
+  b3_filter:
+    enabled: true
+    # Layer 0: 硬门控 (三条件至少满足两个)
+    gate_min_conditions: 2                  # 需要至少满足的条件数
+    gate_vol_breakout_min: 1.3              # 条件1: 突破放量 ≥ 1.3x 均量
+    gate_vol_pullback_max: 0.85             # 条件1: 回调缩量 ≤ 0.85x 突破量
+    gate_confirm_require_trend_or_div: true # 条件2: 趋势确认 或 背离 或 底分型
+    gate_shallow_min: 0.5                   # 条件3: 回调浅度 ≥ 0.5
+    # Layer 1: 大盘环境
+    bear_require_anti_market_strength: 0.3
+    bear_require_first_pivot: true
+    neutral_require_strong_sector: true
+    # Layer 2: 趋势结构 (中枢"段位")
+    first_pivot_mult: 1.0
+    second_pivot_mult: 0.85
+    third_plus_pivot_mult: 0.6
+    unconfirmed_trend_mult: 0.7
+    # Layer 3: 背离共振
+    bottom_div_threshold: 0.3
+    fx_quality_min: 0.25
+    fx_vol_ratio_min: 1.2
+    # Layer 4: 量能确认 (量在价先)
+    vol_breakout_min_ratio: 1.5
+    vol_pullback_max_ratio: 0.7
+    vol_strong_breakout_ratio: 2.0
+    vol_strong_pullback_ratio: 0.5
+    vol_marginal_pass_ratio: 1.0
+    # Layer 5: 回调质量
+    shallow_pullback_threshold: 0.8
+    normal_pullback_threshold: 0.6
+    deep_pullback_threshold: 0.35
+    # ZG 硬止损
+    zg_hard_stop_enabled: true
+    zg_hard_stop_threshold: 0.995
 stock_pool:
-  enabled: false
-  size: 800
-  source: 复合评分Top800(流动性60%+稳定性25%+活跃度15%, 已排雷:次新/ST/科创/僵尸/低流动)
+  enabled: true
+  size: 4600
+  source: 全市场(除科创板688xxx, 价格>2元, 数据>60日)
 ml:
   enabled: false
   blend_weight: 0.3
@@ -714,4 +751,4 @@ backtest:
   commission: 0.00011
   slippage: 0.0001
   rebalance_days: 20
-  num_workers: 4
+  num_workers: 1

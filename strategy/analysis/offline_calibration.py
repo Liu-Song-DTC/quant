@@ -26,6 +26,7 @@
 
 import sys
 import os
+import gc
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -52,6 +53,16 @@ _worker_fd = None
 _worker_regime_data = None
 
 
+def _log_memory(tag=""):
+    """记录当前进程内存使用（仅Linux）"""
+    try:
+        import resource
+        rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        print(f"  [MEM:{tag}] {rss_mb:.0f} MB")
+    except Exception:
+        pass
+
+
 def _init_calib_worker(fundamental_path, stock_codes):
     """Worker进程初始化"""
     global _worker_fd
@@ -64,11 +75,15 @@ def _init_calib_worker(fundamental_path, stock_codes):
 def _calibrate_stock_worker(args):
     """计算单只股票的因子数据（用于标定）
 
-    与factor_preparer逻辑完全一致，使用统一的压缩函数
+    与factor_preparer逻辑完全一致，使用统一的压缩函数。
+    每个worker自行加载CSV，避免通过fork传递大数据。
     """
     global _worker_fd, _worker_regime_data
 
-    code, df, factor_dates, lookback, forward_period = args
+    code, file_path, factor_dates, lookback, forward_period = args
+
+    # 每个worker自行加载股票CSV（避免主进程预加载全部数据）
+    df = pd.read_csv(file_path, parse_dates=['datetime'])
 
     if 'datetime' in df.columns:
         stock_dates = sorted(df['datetime'].tolist())
@@ -187,39 +202,56 @@ def _calibrate_stock_worker(args):
     return results
 
 
-def load_data():
-    """加载股票数据"""
+def prepare_calibration_data():
+    """准备标定所需的元数据（不预加载全部股票数据，节省内存）
+
+    只加载：
+    1. 文件路径映射 (code → file_path)
+    2. 所有日期的并集（通过只读datetime列轻量扫描）
+    3. 指数数据用于市场状态检测
+    4. 基本面数据（FundamentalData内部加载）
+    """
     config = load_config()
     data_path = config.get('paths.data', '../data/stock_data/backtrader_data/')
     fundamental_path = config.get('paths.fundamental', '../data/stock_data/fundamental_data/')
 
-    # 加载股票数据
-    stock_data_dict = {}
+    # ---- 扫描文件路径 + 轻量收集日期（只读datetime列） ----
+    stock_file_map = {}  # {code: file_path}
+    all_dates = set()
+    index_df = None
     all_items = os.listdir(data_path)
-    for item in tqdm(all_items, desc="loading data"):
+
+    for item in tqdm(all_items, desc="scanning files"):
         if item.endswith('_qfq.csv'):
             name = item[:-8]
         elif item.endswith('_hfq.csv'):
             name = item[:-8]
         else:
             continue
-        data = pd.read_csv(os.path.join(data_path, item), parse_dates=['datetime'])
-        stock_data_dict[name] = data
 
-    # 加载基本面数据
+        file_path = os.path.join(data_path, item)
+        stock_file_map[name] = file_path
+
+        # 轻量扫描：只读datetime列收集日期
+        try:
+            dates = pd.read_csv(file_path, usecols=['datetime'], parse_dates=['datetime'])
+            all_dates.update(dates['datetime'].tolist())
+        except Exception:
+            continue
+
+    stock_codes = [c for c in stock_file_map.keys() if c != "sh000001"]
+
+    # ---- 加载基本面数据 ----
     fundamental_data = None
-    stock_codes = [name for name in stock_data_dict.keys() if name != "sh000001"]
     if fundamental_path and os.path.exists(fundamental_path):
         fundamental_data = FundamentalData(fundamental_path, stock_codes)
 
-    # 生成市场状态
+    # ---- 生成市场状态（需要完整指数数据） ----
     regime_lookup = None
-    if "sh000001" in stock_data_dict:
+    if "sh000001" in stock_file_map:
+        index_df = pd.read_csv(stock_file_map["sh000001"], parse_dates=['datetime'])
         detector = MarketRegimeDetector()
-        index_df = stock_data_dict["sh000001"]
-        # 使用与bt_execution一致的逻辑
         regime_result = detector.generate(index_df)
-        # 构建日期->regime的查找表
         regime_lookup = {}
         if regime_result is not None and 'datetime' in regime_result.columns:
             for _, row in regime_result.iterrows():
@@ -229,36 +261,32 @@ def load_data():
               f"牛市={sum(1 for v in regime_lookup.values() if v == 1)}, "
               f"震荡={sum(1 for v in regime_lookup.values() if v == 0)}, "
               f"熊市={sum(1 for v in regime_lookup.values() if v == -1)}")
+        del index_df, regime_result
 
-    return stock_data_dict, fundamental_data, regime_lookup, stock_codes
+    _log_memory("after prepare")
+
+    return stock_file_map, fundamental_data, regime_lookup, stock_codes, sorted(all_dates)
 
 
-def compute_factor_data(stock_data_dict, fundamental_data, regime_lookup, stock_codes, num_workers=8):
-    """计算所有股票的因子数据，然后合并市场状态"""
+def compute_factor_data(stock_file_map, fundamental_data, regime_lookup, stock_codes, all_dates):
+    """计算所有股票的因子数据（流式加载，不预存全部股票数据）"""
     config = load_config()
     lookback = config.get('industry_factor_config.lookback_days', 120)
     forward_period = config.get('dynamic_factor.forward_period', 20)
+    num_workers = config.get('backtest.num_workers', 4)
 
-    # 收集所有日期
-    all_dates = set()
-    for df in stock_data_dict.values():
-        if 'datetime' in df.columns:
-            all_dates.update(df['datetime'].tolist())
-        else:
-            all_dates.update(df.index.tolist())
-    all_dates = sorted(all_dates)
     factor_dates = all_dates[lookback:-forward_period]
 
-    print(f"标定范围: {len(factor_dates)} 个时间点, {len(stock_codes)} 只股票")
+    print(f"标定范围: {len(factor_dates)} 个时间点, {len(stock_codes)} 只股票, {num_workers} workers")
 
-    # 准备worker参数
+    # 准备worker参数：传文件路径而非DataFrame，worker自行加载
     fundamental_path = fundamental_data.data_path if fundamental_data else None
     args_list = [
-        (code, stock_data_dict[code], factor_dates, lookback, forward_period)
-        for code in stock_codes
+        (code, stock_file_map[code], factor_dates, lookback, forward_period)
+        for code in stock_codes if code in stock_file_map
     ]
 
-    # 并行计算
+    # 流式并行计算
     all_factor_data = []
     ctx = multiprocessing.get_context('fork')
     with ctx.Pool(num_workers,
@@ -268,7 +296,22 @@ def compute_factor_data(stock_data_dict, fundamental_data, regime_lookup, stock_
                        total=len(args_list), desc="计算因子"):
             all_factor_data.extend(res)
 
-    factor_df = pd.DataFrame(all_factor_data) if all_factor_data else pd.DataFrame()
+    _log_memory("after workers")
+
+    # 构建factor_df，使用float32减少内存
+    if not all_factor_data:
+        return pd.DataFrame()
+
+    factor_df = pd.DataFrame(all_factor_data)
+    del all_factor_data
+    gc.collect()
+
+    # 数值列转float32（字符串列code/date/industry不转）
+    numeric_cols = factor_df.select_dtypes(include=['float64']).columns
+    for col in numeric_cols:
+        factor_df[col] = factor_df[col].astype(np.float32)
+
+    _log_memory("after df build")
 
     # 过滤极端未来收益
     if 'future_ret' in factor_df.columns:
@@ -278,18 +321,21 @@ def compute_factor_data(stock_data_dict, fundamental_data, regime_lookup, stock_
         ]
         print(f"因子数据: {original_len} -> {len(factor_df)} (过滤极端值 {original_len - len(factor_df)})")
 
-    # 合并市场状态（在主进程中，避免序列化大字典）
+    # 合并市场状态
     if regime_lookup and not factor_df.empty and 'date' in factor_df.columns:
         factor_df['date'] = pd.to_datetime(factor_df['date'])
-        # 构建regime DataFrame用于merge
         regime_df = pd.DataFrame([
-            {'date': dt, 'regime': regime}
+            {'date': dt, 'regime': np.int8(regime)}
             for dt, regime in regime_lookup.items()
         ])
         factor_df = factor_df.merge(regime_df, on='date', how='left')
-        factor_df['regime'] = factor_df['regime'].fillna(0).astype(int)
+        factor_df['regime'] = factor_df['regime'].fillna(0).astype(np.int8)
         regime_counts = factor_df['regime'].value_counts().to_dict()
         print(f"市场状态分布: {regime_counts}")
+        del regime_df
+
+    gc.collect()
+    _log_memory("after factor_df done")
 
     return factor_df
 
@@ -331,6 +377,13 @@ def calibrate_industry_regime(factor_df, candidate_factors):
 
             factor_metrics = {}
 
+            # 预计算future_ret的pivot（所有因子共用）
+            try:
+                ret_pivot = regime_df.pivot(index='date', columns='code', values='future_ret')
+                ret_rank = ret_pivot.rank(axis=1, na_option='keep').astype(np.float32)
+            except Exception:
+                continue
+
             for factor_name in candidate_factors:
                 if factor_name not in regime_df.columns:
                     continue
@@ -338,13 +391,12 @@ def calibrate_industry_regime(factor_df, candidate_factors):
                 # 截面IC计算：每天对截面做Spearman rank corr
                 try:
                     fn_pivot = regime_df.pivot(index='date', columns='code', values=factor_name)
-                    ret_pivot = regime_df.pivot(index='date', columns='code', values='future_ret')
-
-                    fn_rank = fn_pivot.rank(axis=1, na_option='keep')
-                    ret_rank = ret_pivot.rank(axis=1, na_option='keep')
+                    fn_rank = fn_pivot.rank(axis=1, na_option='keep').astype(np.float32)
+                    del fn_pivot
 
                     ic_series = fn_rank.corrwith(ret_rank, axis=1)
                     ic_list = ic_series.dropna().tolist()
+                    del fn_rank, ic_series
                 except Exception:
                     ic_list = []
 
@@ -385,6 +437,9 @@ def calibrate_industry_regime(factor_df, candidate_factors):
             if factor_metrics:
                 calibration_results[industry][regime_name] = factor_metrics
 
+            del ret_pivot, ret_rank
+            gc.collect()
+
     return calibration_results
 
 
@@ -421,10 +476,12 @@ def _compute_combined_factor_ic(regime_df, factor_names, weights):
     try:
         fn_pivot = regime_df_copy.pivot(index='date', columns='code', values='_combined')
         ret_pivot = regime_df_copy.pivot(index='date', columns='code', values='future_ret')
-        fn_rank = fn_pivot.rank(axis=1, na_option='keep')
-        ret_rank = ret_pivot.rank(axis=1, na_option='keep')
+        fn_rank = fn_pivot.rank(axis=1, na_option='keep').astype(np.float32)
+        ret_rank = ret_pivot.rank(axis=1, na_option='keep').astype(np.float32)
+        del fn_pivot, ret_pivot
         ic_series = fn_rank.corrwith(ret_rank, axis=1)
         ic_list = ic_series.dropna().tolist()
+        del fn_rank, ret_rank, ic_series
     except Exception:
         return None
 
@@ -663,13 +720,18 @@ def main():
     print(f"候选因子: {len(candidate_factors)} 个")
     print(f"因子列表: {candidate_factors}")
 
-    # Step 1: 加载数据
-    print("\n=== Step 1: 加载数据 ===")
-    stock_data_dict, fundamental_data, regime_lookup, stock_codes = load_data()
+    # Step 1: 扫描元数据（不预加载全部股票数据）
+    print("\n=== Step 1: 扫描数据 ===")
+    stock_file_map, fundamental_data, regime_lookup, stock_codes, all_dates = prepare_calibration_data()
 
-    # Step 2: 计算因子数据
+    # Step 2: 流式计算因子数据（worker自行加载CSV）
     print("\n=== Step 2: 计算因子数据 ===")
-    factor_df = compute_factor_data(stock_data_dict, fundamental_data, regime_lookup, stock_codes)
+    factor_df = compute_factor_data(stock_file_map, fundamental_data, regime_lookup, stock_codes, all_dates)
+
+    # 释放不再需要的中间数据
+    del stock_file_map, all_dates
+    gc.collect()
+    _log_memory("after cleanup")
 
     if factor_df.empty:
         print("错误: 无因子数据")

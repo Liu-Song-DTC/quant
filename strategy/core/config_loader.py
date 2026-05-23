@@ -47,6 +47,25 @@ class ConfigLoader:
 
         return value
 
+    def set(self, key: str, value: Any) -> bool:
+        """设置配置项（仅内存，不持久化）"""
+        if self._config is None:
+            return False
+        keys = key.split('.')
+        target = self._config
+        for k in keys[:-1]:
+            if k not in target:
+                target[k] = {}
+            target = target[k]
+        target[keys[-1]] = value
+        return True
+
+    @classmethod
+    def clear_cache(cls):
+        """重置单例缓存（测试/验证用）"""
+        cls._instance = None
+        cls._config = None
+
     def get_portfolio_config(self) -> Dict[str, Any]:
         """获取组合配置"""
         return {

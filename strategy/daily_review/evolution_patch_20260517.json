@@ -1,0 +1,38 @@
+[
+  {
+    "section": "signal",
+    "key": "buy_threshold",
+    "current": 0.06,
+    "suggested": 0.04,
+    "reason": "买点信号稀少(1.5%)，建议降低买入阈值以捕获更多机会",
+    "confidence": 0.7,
+    "urgency": "high"
+  },
+  {
+    "section": "industry_factors.半导体/光伏",
+    "key": "enabled",
+    "current": 1,
+    "suggested": 1,
+    "reason": "强主线行业(1): ★ 强主线，梯队完整，可积极操作，建议确保该行业因子配置充足",
+    "confidence": 0.5,
+    "urgency": "low"
+  },
+  {
+    "section": "industry_factors.自动化/制造",
+    "key": "enabled",
+    "current": 1,
+    "suggested": 1,
+    "reason": "强主线行业(2): ★ 强主线，梯队完整，可积极操作，建议确保该行业因子配置充足",
+    "confidence": 0.5,
+    "urgency": "low"
+  },
+  {
+    "section": "industry_factors.新能源车/风电",
+    "key": "enabled",
+    "current": 1,
+    "suggested": 1,
+    "reason": "强主线行业(3): ★ 强主线，梯队完整，可积极操作，建议确保该行业因子配置充足",
+    "confidence": 0.5,
+    "urgency": "low"
+  }
+]

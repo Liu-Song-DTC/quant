@@ -72,6 +72,214 @@ def _get_latest_prices(bt_data_dir: str, codes: list = None) -> dict:
     return prices
 
 
+def _check_holdings_daily(cfg, ps):
+    """每日持仓深度诊断：价格止损 + 缠论结构 + 趋势/MA/背离"""
+    codes = list(ps.positions.keys())
+    if not codes:
+        print("\n当前空仓，无需检查")
+        return
+
+    prices = _get_latest_prices(str(cfg.bt_data_dir), codes)
+    if not prices:
+        print("\n无法获取最新价格，跳过持仓检查")
+        return
+
+    print(f"\n{'=' * 50}")
+    print(f"  每日持仓诊断 ({datetime.today().strftime('%Y-%m-%d')})")
+    print(f"{'=' * 50}")
+
+    # ---- 读取最新缠论分析数据 ----
+    chan_data = {}
+    chan_csv = ROOT / 'strategy' / 'daily_review' / f'缠论全量分析_{datetime.today().strftime("%Y%m%d")}.csv'
+    if chan_csv.exists():
+        try:
+            df = pd.read_csv(chan_csv, dtype={'股票代码': str})
+            for _, row in df.iterrows():
+                code = str(row.get('股票代码', ''))
+                if code in codes:
+                    chan_data[code] = {
+                        'trend_type': row.get('trend_type', 0),
+                        'buy_point': row.get('buy_point', 0),
+                        'sell_point': row.get('sell_point', 0),
+                        'confirmed_buy': row.get('confirmed_buy', False),
+                        'confirmed_sell': row.get('confirmed_sell', False),
+                        'composite_score': row.get('composite_score', 0),
+                        'top_divergence': row.get('top_divergence', False),
+                        'bottom_divergence': row.get('bottom_divergence', False),
+                        'stop_loss_price': row.get('stop_loss_price', 0),
+                        'pivot_breakdown': row.get('pivot_breakdown', False),
+                        'buy_strength': row.get('buy_strength', 0),
+                        'sell_strength': row.get('sell_strength', 0),
+                        'close': row.get('收盘', 0),
+                        'change_pct': row.get('涨跌幅', 0),
+                    }
+        except Exception as e:
+            print(f"  (读取缠论数据失败: {e})")
+
+    # ---- 逐只诊断 ----
+    warnings = []
+    for code, pos_info in ps.positions.items():
+        shares = pos_info.get('shares', 0) if isinstance(pos_info, dict) else pos_info
+        cost = pos_info.get('cost_price', 0) if isinstance(pos_info, dict) else 0
+        price = prices.get(code, 0)
+        if not price:
+            continue
+
+        pnl_pct = (price / cost - 1) * 100 if cost > 0 else 0
+        cd = chan_data.get(code, {})
+
+        issues = []
+        severity = 'normal'  # normal / warning / danger
+
+        # 1. 价格硬止损 (-12%)
+        if pnl_pct <= -12:
+            issues.append(f'触及硬止损线 ({pnl_pct:+.1f}%)')
+            severity = 'danger'
+
+        # 2. 缠论卖点出现
+        if cd.get('confirmed_sell'):
+            sp = cd.get('sell_point', 0)
+            issues.append(f'缠论卖点已确认 (S{sp})')
+            severity = 'danger'
+        elif cd.get('sell_point', 0) >= 2:
+            issues.append(f'潜在卖点信号 (S{cd["sell_point"]})，需密切关注')
+            severity = max(severity, 'warning')
+
+        # 3. 顶背驰
+        if cd.get('top_divergence'):
+            issues.append('出现顶背驰 — 上涨力竭信号')
+            severity = max(severity, 'warning')
+
+        # 4. 趋势反转
+        trend = cd.get('trend_type', 0)
+        if trend == -2:
+            issues.append('趋势已转为下跌')
+            severity = max(severity, 'danger')
+        elif trend == 0:
+            issues.append('趋势不明朗（盘整/无方向）')
+            severity = max(severity, 'warning')
+
+        # 5. 中枢破位
+        if cd.get('pivot_breakdown'):
+            issues.append('跌破中枢下沿 — 结构破坏')
+            severity = max(severity, 'danger')
+
+        # 6. 综合评分为负
+        score = cd.get('composite_score', 0)
+        if score < -0.2:
+            issues.append(f'综合评分偏低 ({score:+.2f})')
+            severity = max(severity, 'warning')
+
+        # 7. 买点失效
+        if cd.get('buy_point', 0) > 0 and not cd.get('confirmed_buy'):
+            if cd.get('sell_point', 0) > 0 or trend == -2:
+                issues.append('原有买点已被破坏（卖点出现/趋势反转）')
+                severity = max(severity, 'danger')
+
+        # 输出诊断
+        sev_icon = {'normal': '✓', 'warning': '⚠', 'danger': '🔴'}[severity]
+        print(f"\n  {sev_icon} {code} | 成本¥{cost:.2f} → ¥{price:.2f} ({pnl_pct:+.1f}%)")
+
+        if cd:
+            trend_label = {2: '上涨', 1: '盘整', 0: '-', -2: '下跌'}.get(trend, '?')
+            bp = cd.get('buy_point', 0)
+            sp = cd.get('sell_point', 0)
+            print(f"    走势:{trend_label} | 买点:B{bp if bp>0 else '-'} | "
+                  f"卖点:S{sp if sp>0 else '-'} | 评分:{score:+.2f} | "
+                  f"止损价:{cd.get('stop_loss_price', 0):.2f}")
+
+        if issues:
+            for issue in issues:
+                print(f"    → {issue}")
+            warnings.append({'code': code, 'severity': severity, 'issues': issues,
+                           'cost': cost, 'price': price, 'pnl_pct': pnl_pct})
+        else:
+            print(f"    结构健康，继续持有")
+
+    # ---- 汇总 ----
+    if warnings:
+        danger = [w for w in warnings if w['severity'] == 'danger']
+        warn = [w for w in warnings if w['severity'] == 'warning']
+        print(f"\n{'=' * 50}")
+        print(f"  诊断汇总: 🔴 {len(danger)} 只危险, ⚠ {len(warn)} 只警告")
+        if danger:
+            print(f"  建议立即处理: {', '.join(w['code'] for w in danger)}")
+        if warn:
+            print(f"  需要密切关注: {', '.join(w['code'] for w in warn)}")
+        print(f"{'=' * 50}")
+
+        # 通知
+        if cfg.notification_enabled and cfg.notification_sckey:
+            from .notifier import Notifier
+            lines = [f"**持仓诊断 ({datetime.today().strftime('%Y-%m-%d')})**", ""]
+            for w in warnings:
+                icon = '🔴' if w['severity'] == 'danger' else '⚠'
+                lines.append(f"{icon} {w['code']}: {', '.join(w['issues'])}")
+            Notifier(cfg.notification_sckey).send("持仓诊断警告", "\n".join(lines))
+    else:
+        print(f"\n  全部持仓结构健康 ✓")
+
+    # ---- 调仓替换建议 ----
+    danger_codes = {w['code'] for w in warnings if w['severity'] == 'danger'}
+    warn_codes = {w['code'] for w in warnings if w['severity'] == 'warning'}
+    replace_candidates = danger_codes | warn_codes
+
+    if replace_candidates:
+        today_str = datetime.today().strftime('%Y-%m-%d')
+        sel_csv = ROOT / 'output' / '选股历史.csv'
+        selections = []
+        if sel_csv.exists():
+            try:
+                df = pd.read_csv(sel_csv, dtype={'股票代码': str})
+                today_sel = df[df['选股日期'] == today_str]
+                selections = today_sel.to_dict('records')
+            except Exception:
+                pass
+
+        if selections:
+            hold_codes = {p['code'] for p in warnings} | set(ps.positions.keys())
+            # 候补: 不在当前持仓中的选股, 按评分降序
+            available = [s for s in selections
+                        if str(s.get('股票代码', '')) not in hold_codes]
+            available.sort(key=lambda x: float(x.get('综合评分', 0)), reverse=True)
+
+            print(f"\n{'=' * 50}")
+            print(f"  调仓替换建议")
+            print(f"{'=' * 50}")
+
+            for code in sorted(danger_codes):
+                if not available:
+                    break
+                replacement = available.pop(0)
+                r_code = replacement.get('股票代码', '')
+                r_name = replacement.get('股票名称', '')
+                r_score = float(replacement.get('综合评分', 0))
+                r_price = float(replacement.get('当前价格', 0))
+                print(f"\n  🔴 {code} → {r_code} {r_name}")
+                print(f"     卖出原因: 结构恶化(趋势走坏/卖点/破位)")
+                print(f"     替换标的: 评分{r_score:.3f}, 现价{r_price:.2f}, "
+                      f"信号:{replacement.get('信号强度', '')}")
+
+            for code in sorted(warn_codes):
+                if not available:
+                    break
+                replacement = available.pop(0)
+                r_code = replacement.get('股票代码', '')
+                r_name = replacement.get('股票名称', '')
+                r_score = float(replacement.get('综合评分', 0))
+                print(f"\n  ⚠ {code} → {r_code} {r_name} (预备)")
+                print(f"     关注: 暂不卖出，若明日继续恶化则替换")
+                print(f"     备选标的: 评分{r_score:.3f}")
+
+            print(f"\n  替换后持仓建议: 卖出{len(danger_codes)}只, 买入{len(danger_codes)}只")
+            if not danger_codes:
+                print(f"  当前无危险持仓，警告标的继续观察")
+        else:
+            today_str = datetime.today().strftime('%Y-%m-%d')
+            print(f"\n  (当日选股数据未生成, 无法提供替换建议)")
+            print(f"  请先运行: python export_selection.py")
+
+
 def run_daily(skip_update: bool = False, force: bool = False):
     cfg = TradeConfig()
 
@@ -89,26 +297,7 @@ def run_daily(skip_update: bool = False, force: bool = False):
         if last_empty:
             print("\n上次建议为空（买入/卖出均为0），自动重新生成...")
         else:
-            # 轻量止损检查
-            prices = _get_latest_prices(str(cfg.bt_data_dir), list(ps.positions.keys()))
-            if not prices:
-                print("\n今日非调仓日，无需生成建议")
-                print("如需强制运行: python main.py run --force")
-                return
-
-            triggered = ps.check_stop_loss(prices)
-            if triggered:
-                print(f"\n⚠ 止损警告: {len(triggered)} 只股票触及止损线")
-                for t in triggered:
-                    print(f"  {t['code']}: 成本¥{t['cost_price']:.2f} → ¥{t['current_price']:.2f} ({t['pnl_pct']:.1%})")
-                if cfg.notification_enabled and cfg.notification_sckey:
-                    from .notifier import Notifier
-                    lines = ["**⚠ 止损警告**", ""]
-                    for t in triggered:
-                        lines.append(f"- {t['code']}: 成本¥{t['cost_price']:.2f} → ¥{t['current_price']:.2f} ({t['pnl_pct']:.1%})")
-                    Notifier(cfg.notification_sckey).send("⚠ 止损警告", "\n".join(lines))
-            else:
-                print("\n今日非调仓日，持仓正常，无需操作")
+            _check_holdings_daily(cfg, ps)
             return
 
     # Step 1: 数据更新

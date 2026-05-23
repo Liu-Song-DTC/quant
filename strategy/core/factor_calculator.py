@@ -20,6 +20,8 @@ try:
 except ImportError:
     _HAS_NUMBA = False
     def njit(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
         def wrapper(fn):
             return fn
         return wrapper
@@ -521,7 +523,7 @@ def calculate_indicators(
     result['bottom_fractal_vol_spike'] = chan_result.get('bottom_fractal_vol_spike', np.zeros(n))
     result['bottom_fractal_ema_dist'] = chan_result.get('bottom_fractal_ema_dist', np.zeros(n))
 
-    # === 买卖点（三类买卖点 + 二买）===
+    # === 买卖点（三类买卖点 + 二买 + B3趋势元数据）===
     result['buy_point'] = chan_result['buy_point']
     result['sell_point'] = chan_result['sell_point']
     result['buy_confidence'] = chan_result['buy_confidence']
@@ -529,6 +531,11 @@ def calculate_indicators(
     result['second_buy_point'] = chan_result.get('second_buy_point', np.zeros(n, dtype=bool))
     result['second_buy_confidence'] = chan_result.get('second_buy_confidence', np.zeros(n))
     result['second_buy_b1_ref'] = chan_result.get('second_buy_b1_ref', np.full(n, -1, dtype=int))
+    result['b3_trend_rank'] = chan_result.get('b3_trend_rank', np.zeros(n, dtype=int))
+    result['b3_trend_confirmed'] = chan_result.get('b3_trend_confirmed', np.zeros(n, dtype=bool))
+    result['b3_breakout_vol_ratio'] = chan_result.get('b3_breakout_vol_ratio', np.zeros(n))
+    result['b3_pullback_vol_ratio'] = chan_result.get('b3_pullback_vol_ratio', np.zeros(n))
+    result['b3_pullback_shallowness'] = chan_result.get('b3_pullback_shallowness', np.zeros(n))
 
     # === 统一信号强度 ===
     result['chan_buy_score'] = chan_result['chan_buy_score']
@@ -560,7 +567,290 @@ def calculate_indicators(
         result['news_sentiment_score'] = np.zeros(n)
         result['news_sentiment_direction'] = np.zeros(n, dtype=int)
 
+    # ==================== 新因子：跳空+量能+笔阶段+力竭风险+顶分型量能 ====================
+
+    # --- 1. gap_breakout_confirm: 跳空缺口B3确认因子 ---
+    # 原理: 向上跳空+放量=中枢突破强确认(B3加分)；跳空+缩量=假突破(扣分)
+    gap_breakout = np.zeros(n)
+    if open_arr is not None and n > 0:
+        for i in range(1, n):
+            gap = (open_arr[i] - close_arr[i-1]) / (close_arr[i-1] + 1e-10)
+            vol_ratio_i = result['volume_ratio'][i] if abs(result['volume_ratio'][i]) < 1 else np.sign(result['volume_ratio'][i]) * 0.99
+            # 还原到原始vol_ratio近似值
+            raw_vr = np.tan(vol_ratio_i * np.pi / 2) + 1  # 反tanh近似
+            if gap > 0.02:
+                if raw_vr > 2.0:
+                    gap_breakout[i] = 0.9  # 高开+爆量=强突破
+                elif raw_vr > 1.3:
+                    gap_breakout[i] = 0.5  # 高开+温和放量=中等突破
+                elif raw_vr < 0.7:
+                    gap_breakout[i] = -0.5  # 高开+缩量=假突破
+                else:
+                    gap_breakout[i] = 0.2
+            elif gap < -0.02:
+                if raw_vr > 2.0:
+                    gap_breakout[i] = -0.9  # 低开+放量=恐慌抛售
+                elif raw_vr < 0.5:
+                    gap_breakout[i] = 0.1  # 低开+缩量=洗盘嫌疑
+                else:
+                    gap_breakout[i] = -0.4
+            # 与前一日连续跳空: 强化信号
+            if i >= 2 and abs(gap) > 0.01:
+                prev_gap = (open_arr[i-1] - close_arr[i-2]) / (close_arr[i-2] + 1e-10)
+                if gap * prev_gap > 0:  # 同向跳空
+                    gap_breakout[i] *= 1.3
+    result['gap_breakout_confirm'] = np.clip(gap_breakout, -1, 1)
+
+    # --- 2. stroke_phase: 笔阶段识别因子 ---
+    # 原理: 价格位置+量能趋势+振幅+趋势方向=判断笔处于形成/加速/力竭阶段
+    # 上涨趋势: 正值=笔早期(可买), 负值=笔晚期(风险高)
+    # 下跌趋势: 正值=下跌早期(可卖), 负值=下跌晚期(潜在B1)
+    stroke_phase = np.zeros(n)
+    if n >= 20:
+        pp20 = result.get('price_position_20', np.full(n, 0.5))
+        ma20 = result.get('ma20', close_arr)
+        ma60 = result.get('ma60', close_arr)
+        amp_arr = np.zeros(n)
+        if high is not None and low is not None:
+            amp_arr[1:] = (high_arr[1:] - low_arr[1:]) / (close_arr[1:] + 1e-10)
+
+        for i in range(20, n):
+            pp = pp20[i]
+            # 趋势方向: 上涨趋势=True, 下跌/横盘=False
+            is_uptrend = close_arr[i] > ma20[i] and ma20[i] > ma60[i]
+
+            if is_uptrend:
+                # 上涨笔阶段
+                if pp < 0.25:
+                    pp_score = 0.8  # 低位=笔起点, 买入时机好
+                elif pp < 0.60:
+                    pp_score = 0.4  # 中位=笔加速, 顺势
+                elif pp < 0.85:
+                    pp_score = -0.2  # 偏高位=需谨慎
+                else:
+                    pp_score = -0.7  # 极高位=笔末端风险
+
+                # 量能趋势
+                vol_trend = np.mean(vol_arr[i-5:i+1]) / (np.mean(vol_arr[i-15:i-5]) + 1e-10)
+                ret_5 = (close_arr[i] - close_arr[i-5]) / (close_arr[i-5] + 1e-10)
+                if ret_5 > 0.03 and vol_trend > 1.3:
+                    vol_score = 0.3
+                elif ret_5 > 0.03 and vol_trend < 0.7:
+                    vol_score = -0.5  # 量价背离=力竭
+                else:
+                    vol_score = 0.0
+
+                # 振幅趋势
+                amp_recent = np.mean(amp_arr[i-5:i+1])
+                amp_base = np.mean(amp_arr[i-15:i-5]) + 1e-10
+                amp_ratio = amp_recent / amp_base
+                if amp_ratio > 2.5:
+                    amp_score = -0.4
+                elif amp_ratio > 1.5:
+                    amp_score = 0.3
+                else:
+                    amp_score = 0.0
+            else:
+                # 下跌笔阶段: 方向相反
+                if pp > 0.75:
+                    pp_score = 0.8  # 高位=下跌笔起点, 卖出时机
+                elif pp > 0.40:
+                    pp_score = 0.4  # 中高位=下跌加速
+                elif pp > 0.15:
+                    pp_score = -0.2  # 偏低=下跌末端
+                else:
+                    pp_score = -0.7  # 极低位=超跌, 潜在B1
+
+                # 量能趋势: 下跌放量=加速, 下跌缩量=衰竭
+                vol_trend = np.mean(vol_arr[i-5:i+1]) / (np.mean(vol_arr[i-15:i-5]) + 1e-10)
+                ret_5 = (close_arr[i] - close_arr[i-5]) / (close_arr[i-5] + 1e-10)
+                if ret_5 < -0.03 and vol_trend > 1.3:
+                    vol_score = 0.3  # 放量下跌=加速
+                elif ret_5 < -0.03 and vol_trend < 0.7:
+                    vol_score = -0.5  # 缩量下跌=衰竭
+                else:
+                    vol_score = 0.0
+
+                # 振幅趋势
+                amp_recent = np.mean(amp_arr[i-5:i+1])
+                amp_base = np.mean(amp_arr[i-15:i-5]) + 1e-10
+                amp_ratio = amp_recent / amp_base
+                if amp_ratio > 2.5:
+                    amp_score = -0.4  # 振幅极值+下跌=恐慌底
+                elif amp_ratio > 1.5:
+                    amp_score = 0.3   # 振幅放大+下跌=加速
+                else:
+                    amp_score = 0.0
+
+            stroke_phase[i] = pp_score + vol_score + amp_score
+
+    result['stroke_phase'] = np.clip(stroke_phase, -1, 1)
+
+    # --- 3. exhaustion_risk: 力竭风险因子 ---
+    # 原理: 高位+量能背离+高振幅+动量减速 = S2/S3卖出预警
+    exhaustion = np.zeros(n)
+    if n >= 20:
+        for i in range(20, n):
+            pp = pp20[i]
+            if pp < 0.7:
+                continue  # 非高位, 无力竭风险
+
+            risk = 0.0
+
+            # 信号1: 价格在新高但量能萎缩(量价背离)
+            if close_arr[i] >= np.max(close_arr[i-10:i]):
+                vol_now = np.mean(vol_arr[i-3:i+1])
+                vol_peak = np.max(vol_arr[i-15:i-5])
+                if vol_peak > 0 and vol_now / vol_peak < 0.5:
+                    risk += 0.4
+
+            # 信号2: 振幅异常放大(近期振幅超历史2倍)
+            amp_now = np.mean(amp_arr[i-3:i+1]) if i >= 3 else amp_arr[i]
+            amp_hist = np.mean(amp_arr[i-20:i-5]) + 1e-10
+            if amp_now / amp_hist > 2.0:
+                risk += 0.3
+
+            # 信号3: 价格连涨但MACD柱缩短(顶背离)
+            if i >= 8 and result.get('macd_hist') is not None:
+                macd_hist_arr = result['macd_hist']
+                if close_arr[i] > close_arr[i-8] and macd_hist_arr[i] < macd_hist_arr[i-8]:
+                    risk += 0.3
+
+            # 信号4: 跳空高开后回落(高位衰竭缺口)
+            if i >= 1 and open_arr is not None:
+                gap_i = (close_arr[i] - close_arr[i-1]) / (close_arr[i-1] + 1e-10)
+                intra_ret = (close_arr[i] - open_arr[i]) / (open_arr[i] + 1e-10) if open_arr[i] > 0 else 0
+                if gap_i > 0.02 and intra_ret < -0.02:
+                    risk += 0.2  # 高开后低走=衰竭缺口
+
+            exhaustion[i] = min(risk, 1.0)
+
+    result['exhaustion_risk'] = exhaustion
+
+    # --- 4. top_fractal_volume: 顶分型量能背离因子 ---
+    # 原理: 顶分型形成时, 对比本次高点量能与前次高点量能
+    # 量能递减=背离=高概率反转 (缠论: "量在价先")
+    tf_volume = np.zeros(n)
+    if n >= 30:
+        top_fx = result.get('top_fractals', np.zeros(n, dtype=bool))
+        for i in range(30, n):
+            if not top_fx[i]:
+                continue
+            # 找到前两个顶分型的位置
+            prev_tops = []
+            for j in range(i-1, max(0, i-60), -1):
+                if top_fx[j]:
+                    prev_tops.append(j)
+                    if len(prev_tops) >= 2:
+                        break
+            if len(prev_tops) < 1:
+                continue
+
+            cur_start = max(0, i-3)
+            cur_vol = np.max(vol_arr[cur_start:i+1])  # 当前分型附近的最大量
+            prev_start = max(0, prev_tops[0]-3)
+            prev_vol = np.max(vol_arr[prev_start:prev_tops[0]+1])  # 前一个分型的量
+
+            if prev_vol > 0:
+                vol_ratio_vs_prev = cur_vol / prev_vol
+                # 量能递减+价格新高=顶背离
+                if vol_ratio_vs_prev < 0.7:
+                    if len(prev_tops) >= 2 and close_arr[i] > close_arr[prev_tops[0]]:
+                        tf_volume[i] = -0.8  # 强顶背离: 价创新高量递减
+                    else:
+                        tf_volume[i] = -0.4
+                elif vol_ratio_vs_prev > 2.0:
+                    tf_volume[i] = 0.5  # 放量过前高=突破有效, 顶分型可能失败
+
+    result['top_fractal_volume'] = tf_volume
+
+    # === 新因子增强缠论买卖信号 ===
+    # Apply boosts/reductions to chan_buy_score and chan_sell_score
+    _apply_chan_signal_boosts(result, n)
+
     return result
+
+
+def _apply_chan_signal_boosts(result: Dict[str, np.ndarray], n: int) -> None:
+    """用新因子增强/削弱缠论买卖信号强度
+
+    gap_breakout_confirm: 跳空放量=中枢突破确认 → B3加分
+    stroke_phase: 笔早期=买点质量高, 笔晚期=风险大
+    exhaustion_risk: 高位力竭 → 削弱买入, 增强卖出
+    top_fractal_volume: 顶分型量能背离 → 增强卖出
+    """
+    chan_buy = result.get('chan_buy_score')
+    chan_sell = result.get('chan_sell_score')
+    if chan_buy is None or chan_sell is None:
+        return
+
+    gbc = result.get('gap_breakout_confirm', np.zeros(n))
+    sp = result.get('stroke_phase', np.zeros(n))
+    er = result.get('exhaustion_risk', np.zeros(n))
+    tfv = result.get('top_fractal_volume', np.zeros(n))
+
+    for i in range(n):
+        # --- 买入信号调整 ---
+        if chan_buy[i] > 0.05:
+            multiplier = 1.0
+
+            # gap_breakout_confirm: 跳空放量=强突破, B3加分; 假突破=减分
+            g = gbc[i]
+            if g > 0.3:
+                multiplier += g * 0.25
+            elif g < -0.3:
+                multiplier += g * 0.15  # 跳空下跌=买入风险
+
+            # stroke_phase: 上涨笔早期(>0.3)=买点质量高; 笔晚期(< -0.3)=追高风险
+            s = sp[i]
+            if s > 0.3:
+                multiplier += s * 0.15
+            elif s < -0.3:
+                multiplier += s * 0.15  # s为负, 减少乘数
+
+            # exhaustion_risk: 高位力竭=买入风险大
+            e = er[i]
+            if e > 0.3:
+                multiplier -= e * 0.4
+
+            # top_fractal_volume: 量能背离=顶部信号
+            t = tfv[i]
+            if t < -0.3:
+                multiplier += t * 0.25  # t为负, 相当于减分
+
+            result['chan_buy_score'][i] = float(np.clip(
+                chan_buy[i] * max(multiplier, 0.25), 0.0, 1.0))
+
+        # --- 卖出信号调整 ---
+        if chan_sell[i] > 0.05:
+            multiplier = 1.0
+
+            # exhaustion_risk: 力竭信号强烈=卖出加分
+            e = er[i]
+            if e > 0.3:
+                multiplier += e * 0.35
+
+            # top_fractal_volume: 顶背离=强烈卖出信号
+            t = tfv[i]
+            if t < -0.5:
+                multiplier += abs(t) * 0.3
+            elif t < -0.2:
+                multiplier += abs(t) * 0.15
+
+            # gap_breakout_confirm: 向下跳空放量=恐慌抛售, 卖出加分
+            g = gbc[i]
+            if g < -0.3:
+                multiplier += abs(g) * 0.2
+
+            # stroke_phase: 下跌笔早期(>0.3)=卖出时机好; 笔晚期(< -0.3)=超跌可能反弹
+            s = sp[i]
+            if s > 0.3:
+                multiplier += s * 0.15   # 下跌早期+卖出=正确方向
+            elif s < -0.3:
+                multiplier += s * 0.15   # s为负, 减少卖出强度(底部不杀跌)
+
+            result['chan_sell_score'][i] = float(np.clip(
+                chan_sell[i] * min(multiplier, 1.6), 0.0, 1.0))
 
 
 def get_default_params() -> Dict:
@@ -1280,5 +1570,15 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['short_reversal'] = ind['short_reversal'][idx] if not np.isnan(ind['short_reversal'][idx]) else 0.0
     if 'earnings_quality' in ind:
         result['earnings_quality'] = ind['earnings_quality'][idx] if not np.isnan(ind['earnings_quality'][idx]) else 0.0
+
+    # === 新增缠论增强因子 ===
+    if 'gap_breakout_confirm' in ind:
+        result['gap_breakout_confirm'] = ind['gap_breakout_confirm'][idx] if not np.isnan(ind['gap_breakout_confirm'][idx]) else 0.0
+    if 'stroke_phase' in ind:
+        result['stroke_phase'] = ind['stroke_phase'][idx] if not np.isnan(ind['stroke_phase'][idx]) else 0.0
+    if 'exhaustion_risk' in ind:
+        result['exhaustion_risk'] = ind['exhaustion_risk'][idx] if not np.isnan(ind['exhaustion_risk'][idx]) else 0.0
+    if 'top_fractal_volume' in ind:
+        result['top_fractal_volume'] = ind['top_fractal_volume'][idx] if not np.isnan(ind['top_fractal_volume'][idx]) else 0.0
 
     return result
