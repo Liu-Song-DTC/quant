@@ -1,10 +1,11 @@
 {
   "cash": 150000.0,
   "positions": {
-    "002021": {"shares": 14300, "cost_price": 2.986},
-    "603915": {"shares": 1600, "cost_price": 17.643},
-    "603386": {"shares": 1400, "cost_price": 16.144},
-    "301167": {"shares": 800, "cost_price": 17.246},
-    "600159": {"shares": 14000, "cost_price": 14000}
+    "002021": {"shares": 9200, "cost_price": 2.987},
+    "600052": {"shares": 3600, "cost_price": 4.501},
+    "600310": {"shares": 3500, "cost_price": 5.122},
+    "603386": {"shares": 2100, "cost_price": 16.096}
+    "603915": {"shares": 1800, "cost_price": 17.812}
+    "002240": {"shares": 500, "cost_price": 49.13}
   }
 }

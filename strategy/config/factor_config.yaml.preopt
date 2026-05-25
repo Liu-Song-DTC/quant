@@ -1,0 +1,743 @@
+factor_mode: dynamic
+dynamic_factor:
+  train_window_days: 180
+  forward_period: 20
+  top_n_factors: 3
+  min_train_samples: 50
+  min_ic_dates: 5
+  ic_decay_factor: 0.9
+  fallback_to_static: true
+  min_factor_count: 2
+  min_factor_families: 2
+  min_ic_1f: 0.03
+  use_static_candidates: true
+  reweight_blend: 0.5
+  date_sample_step: 5
+  extra_candidate_factors:
+  - smart_money_flow
+  - relative_strength
+  - rsi_vol_combo
+  - wash_sale_score
+  - low_downside
+  - vol_confirm
+  - gap_breakout_confirm
+  - stroke_phase
+  - exhaustion_risk
+  - top_fractal_volume
+backtest_factors:
+- fund_score
+- volatility
+- mom_x_lowvol_20_20
+- fund_roe
+- fund_profit_growth
+- fund_revenue_growth
+- fund_gross_margin
+- momentum_reversal
+- trend_lowvol
+- bb_width_20
+- turnover_stability
+- smart_money_flow
+- relative_strength
+- rsi_vol_combo
+- wash_sale_score
+- low_downside
+- vol_confirm
+static_candidate_factors:
+- fund_profit_growth
+- fund_roe
+- trend_lowvol
+industry_factor_config:
+  lookback_days: 250
+  forward_period: 20
+industry_factors:
+  金融:
+    factors:
+    - fund_roe
+    weights:
+    - 1.0
+    ic: 0.162
+    combined_ic: 0.162
+    bull_factors:
+    - low_downside
+    - fund_score
+    - volatility
+    bull_weights:
+    - 0.4541
+    - 0.3222
+    - 0.2237
+    bull_ic: 0.1395
+    bull_combined_ic: 0.1876
+    bear_factors:
+    - fund_gross_margin
+    - fund_profit_growth
+    bear_weights:
+    - 0.5357
+    - 0.4643
+    bear_ic: 0.1538
+    bear_combined_ic: 0.1887
+  基建/地产/石油石化:
+    factors:
+    - trend_lowvol
+    weights:
+    - 1.0
+    ic: 0.1003
+    combined_ic: 0.1003
+    bull_factors:
+    - fund_profit_growth
+    - volatility
+    bull_weights:
+    - 0.5309
+    - 0.4691
+    bull_ic: 0.103
+    bull_combined_ic: 0.1319
+    bear_factors:
+    - trend_lowvol
+    bear_weights:
+    - 1.0
+    bear_ic: 0.2024
+    bear_combined_ic: 0.2024
+  消费:
+    factors:
+    - trend_lowvol
+    weights:
+    - 1.0
+    ic: 0.1062
+    combined_ic: 0.1062
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1273
+    bull_combined_ic: 0.1273
+    bear_factors:
+    - bb_width_20
+    - mom_x_lowvol_20_20
+    - momentum_reversal
+    bear_weights:
+    - 0.3668
+    - 0.347
+    - 0.2862
+    bear_ic: 0.188
+    bear_combined_ic: 0.22
+  自动化/制造:
+    factors:
+    - trend_lowvol
+    - mom_x_lowvol_20_20
+    weights:
+    - 0.5027
+    - 0.4973
+    ic: 0.0623
+    combined_ic: 0.0735
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1487
+    bull_combined_ic: 0.1487
+    bear_factors:
+    - fund_gross_margin
+    - bb_width_20
+    - fund_revenue_growth
+    bear_weights:
+    - 0.373
+    - 0.3642
+    - 0.2628
+    bear_ic: 0.113
+    bear_combined_ic: 0.1381
+  建材:
+    factors:
+    - trend_lowvol
+    weights:
+    - 1.0
+    ic: 0.0906
+    combined_ic: 0.0906
+    bull_factors:
+    - fund_gross_margin
+    - volatility
+    - fund_roe
+    bull_weights:
+    - 0.4094
+    - 0.2984
+    - 0.2923
+    bull_ic: 0.108
+    bull_combined_ic: 0.1474
+    bear_factors:
+    - bb_width_20
+    - mom_x_lowvol_20_20
+    bear_weights:
+    - 0.605
+    - 0.395
+    bear_ic: 0.2562
+    bear_combined_ic: 0.2806
+  电子:
+    factors:
+    - fund_profit_growth
+    - fund_revenue_growth
+    - trend_lowvol
+    weights:
+    - 0.3955
+    - 0.3206
+    - 0.2839
+    ic: 0.0648
+    combined_ic: 0.0931
+    bull_factors:
+    - low_downside
+    - volatility
+    bull_weights:
+    - 0.5433
+    - 0.4567
+    bull_ic: 0.1071
+    bull_combined_ic: 0.118
+    bear_factors:
+    - fund_revenue_growth
+    - fund_score
+    - bb_width_20
+    bear_weights:
+    - 0.5455
+    - 0.2449
+    - 0.2096
+    bear_ic: 0.1465
+    bear_combined_ic: 0.2046
+  电力设备:
+    factors:
+    - trend_lowvol
+    - mom_x_lowvol_20_20
+    weights:
+    - 0.5412
+    - 0.4588
+    ic: 0.1054
+    combined_ic: 0.1246
+    bull_factors:
+    - fund_score
+    - low_downside
+    bull_weights:
+    - 0.5507
+    - 0.4493
+    bull_ic: 0.0788
+    bull_combined_ic: 0.0913
+    bear_factors:
+    - fund_revenue_growth
+    - bb_width_20
+    - mom_x_lowvol_20_20
+    bear_weights:
+    - 0.3466
+    - 0.3289
+    - 0.3245
+    bear_ic: 0.1734
+    bear_combined_ic: 0.2084
+  医药:
+    factors:
+    - trend_lowvol
+    weights:
+    - 1.0
+    ic: 0.1245
+    combined_ic: 0.1245
+    bull_factors:
+    - volatility
+    - trend_lowvol
+    bull_weights:
+    - 0.5091
+    - 0.4909
+    bull_ic: 0.0994
+    bull_combined_ic: 0.1187
+    bear_factors:
+    - mom_x_lowvol_20_20
+    bear_weights:
+    - 1.0
+    bear_ic: 0.2493
+    bear_combined_ic: 0.2493
+  新能源车/风电:
+    factors:
+    - fund_revenue_growth
+    - fund_profit_growth
+    - trend_lowvol
+    weights:
+    - 0.411
+    - 0.3589
+    - 0.2301
+    ic: 0.0677
+    combined_ic: 0.0964
+    bull_factors:
+    - trend_lowvol
+    - volatility
+    bull_weights:
+    - 0.5092
+    - 0.4908
+    bull_ic: 0.0978
+    bull_combined_ic: 0.1082
+    bear_factors:
+    - fund_revenue_growth
+    - bb_width_20
+    - fund_gross_margin
+    bear_weights:
+    - 0.3781
+    - 0.3301
+    - 0.2918
+    bear_ic: 0.1277
+    bear_combined_ic: 0.1765
+  互联网/软件:
+    factors:
+    - trend_lowvol
+    weights:
+    - 1.0
+    ic: 0.1477
+    combined_ic: 0.1477
+    bull_factors:
+    - volatility
+    - trend_lowvol
+    bull_weights:
+    - 0.5403
+    - 0.4597
+    bull_ic: 0.1465
+    bull_combined_ic: 0.1635
+    bear_factors:
+    - mom_x_lowvol_20_20
+    - momentum_reversal
+    bear_weights:
+    - 0.5209
+    - 0.4791
+    bear_ic: 0.1894
+    bear_combined_ic: 0.1926
+  环保/公用:
+    factors:
+    - fund_profit_growth
+    - trend_lowvol
+    - rsi_vol_combo
+    weights:
+    - 0.3818
+    - 0.3588
+    - 0.2594
+    ic: 0.0703
+    combined_ic: 0.1084
+    bull_factors:
+    - fund_profit_growth
+    - fund_score
+    - volatility
+    bull_weights:
+    - 0.4001
+    - 0.3235
+    - 0.2763
+    bull_ic: 0.0694
+    bull_combined_ic: 0.079
+    bear_factors:
+    - bb_width_20
+    - mom_x_lowvol_20_20
+    bear_weights:
+    - 0.6481
+    - 0.3519
+    bear_ic: 0.2281
+    bear_combined_ic: 0.2507
+  农业:
+    factors:
+    - momentum_reversal
+    - mom_x_lowvol_20_20
+    - trend_lowvol
+    weights:
+    - 0.3669
+    - 0.3488
+    - 0.2842
+    ic: 0.0693
+    combined_ic: 0.0766
+    bull_factors:
+    - fund_profit_growth
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0964
+    bull_combined_ic: 0.0964
+    bear_factors:
+    - fund_revenue_growth
+    - wash_sale_score
+    - momentum_reversal
+    bear_weights:
+    - 0.4215
+    - 0.3551
+    - 0.2234
+    bear_ic: 0.127
+    bear_combined_ic: 0.1873
+  有色/钢铁/煤炭:
+    factors:
+    - trend_lowvol
+    - fund_revenue_growth
+    - mom_x_lowvol_20_20
+    weights:
+    - 0.5066
+    - 0.252
+    - 0.2414
+    ic: 0.0582
+    combined_ic: 0.0791
+    bull_factors:
+    - fund_gross_margin
+    - fund_roe
+    - fund_score
+    bull_weights:
+    - 0.4019
+    - 0.328
+    - 0.2702
+    bull_ic: 0.1354
+    bull_combined_ic: 0.1629
+    bear_factors:
+    - fund_revenue_growth
+    bear_weights:
+    - 1.0
+    bear_ic: 0.2751
+    bear_combined_ic: 0.2751
+  通信/计算机:
+    factors:
+    - fund_profit_growth
+    - fund_revenue_growth
+    - fund_score
+    weights:
+    - 0.3892
+    - 0.3468
+    - 0.2641
+    ic: 0.0643
+    combined_ic: 0.0772
+    bull_factors:
+    - low_downside
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0988
+    bull_combined_ic: 0.0988
+    bear_factors:
+    - fund_revenue_growth
+    - fund_score
+    bear_weights:
+    - 0.5897
+    - 0.4103
+    bear_ic: 0.1512
+    bear_combined_ic: 0.1746
+  交运:
+    factors:
+    - trend_lowvol
+    weights:
+    - 1.0
+    ic: 0.0989
+    combined_ic: 0.0989
+    bull_factors:
+    - low_downside
+    - fund_roe
+    bull_weights:
+    - 0.5209
+    - 0.4791
+    bull_ic: 0.064
+    bull_combined_ic: 0.0729
+    bear_factors:
+    - mom_x_lowvol_20_20
+    bear_weights:
+    - 1.0
+    bear_ic: 0.2713
+    bear_combined_ic: 0.2713
+  传媒:
+    factors:
+    - trend_lowvol
+    weights:
+    - 1.0
+    ic: 0.202
+    combined_ic: 0.202
+    bull_factors:
+    - trend_lowvol
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1392
+    bull_combined_ic: 0.1392
+    bear_factors:
+    - mom_x_lowvol_20_20
+    bear_weights:
+    - 1.0
+    bear_ic: 0.3009
+    bear_combined_ic: 0.3009
+  化工:
+    factors:
+    - trend_lowvol
+    weights:
+    - 1.0
+    ic: 0.0947
+    combined_ic: 0.0947
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1334
+    bull_combined_ic: 0.1334
+    bear_factors:
+    - mom_x_lowvol_20_20
+    bear_weights:
+    - 1.0
+    bear_ic: 0.2167
+    bear_combined_ic: 0.2167
+  军工:
+    factors:
+    - mom_x_lowvol_20_20
+    - momentum_reversal
+    weights:
+    - 0.5061
+    - 0.4939
+    ic: 0.1157
+    combined_ic: 0.1161
+    bull_factors:
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.5493
+    - 0.4507
+    bull_ic: 0.0487
+    bull_combined_ic: 0.0549
+    bear_factors:
+    - fund_revenue_growth
+    - fund_profit_growth
+    bear_weights:
+    - 0.5711
+    - 0.4289
+    bear_ic: 0.1711
+    bear_combined_ic: 0.2065
+  半导体/光伏:
+    factors:
+    - mom_x_lowvol_20_20
+    weights:
+    - 1.0
+    ic: 0.1077
+    combined_ic: 0.1077
+    bull_factors:
+    - trend_lowvol
+    - volatility
+    - mom_x_lowvol_20_20
+    bull_weights:
+    - 0.3863
+    - 0.3253
+    - 0.2884
+    bull_ic: 0.0922
+    bull_combined_ic: 0.1077
+    bear_factors:
+    - fund_gross_margin
+    - fund_revenue_growth
+    - bb_width_20
+    bear_weights:
+    - 0.4211
+    - 0.4122
+    - 0.1667
+    bear_ic: 0.2021
+    bear_combined_ic: 0.2681
+industry_sentiment:
+  enabled: true
+  data_dir: data/sentiment_data
+  deepseek_api_key: sk-75e900d8661c4760af9aeb2504c0c764
+  analysis_frequency: daily
+  max_news_batch: 50
+  notify_on_completion: true
+  weight_impact:
+    enabled: true
+    max_multiplier: 1.1
+    min_multiplier: 0.9
+    smoothing_halflife: 5
+    smoothing_method: ema
+    regime_adjustment: true
+    negativity_bias: 1.2
+  backtest:
+    precomputed_file: ''
+indicator_params:
+  ema_periods:
+  - 5
+  - 10
+  - 20
+  - 60
+  ma_periods:
+  - 5
+  - 10
+  - 20
+  - 30
+  - 60
+  rsi_periods:
+  - 6
+  - 8
+  - 10
+  - 14
+  bb_window: 20
+  bb_std: 2
+  momentum_periods:
+  - 3
+  - 5
+  - 10
+  - 20
+  - 30
+  volatility_periods:
+  - 5
+  - 10
+  - 20
+  atr_periods:
+  - 10
+  - 14
+  - 20
+  volume_ma_period: 20
+signal:
+  buy_threshold: 0.12
+  sell_threshold: -0.04
+  buy_threshold_pct: 0.45
+regime_multiplier:
+  bull: 1.0
+  neutral: 0.95
+  bear: 0.9
+portfolio:
+  target_volatility: 0.25
+  entry_speed: 1.0
+  exit_speed: 1.0
+  position_stop_loss: 0.1
+  portfolio_stop_loss: 0.18
+  max_single_weight: 0.25
+  dynamic_min_positions:
+    bull: 3
+    neutral: 2
+    bear: 0
+  selection:
+    min_rank_pct: 0.3
+    min_absolute_score: 0.2
+    min_confidence: 0.2
+    chan_gate_enabled: true
+    chan_gate_min_count: 2
+    chan_fallback_score: 0.4
+    exhaustion_max_weight: 0.05
+    exhaustion_reduce_mult: 0.6
+    industry_max_weight: 0.35
+    max_single_weight: 0.25
+  fv_exposure_params:
+    fv_low: -0.02
+    fv_high: 0.03
+    exposure_min: 0.6
+    exposure_max: 1.0
+  turnover_bonus: 0.02
+portfolio_stop_loss:
+  enabled: true
+  emergency_exposure: 0.5
+volatility_control:
+  enabled: true
+  lookback_period: 20
+  long_lookback_period: 60
+  blend_weight: 0.6
+factor_neutralization:
+  enabled: true
+  neutralize_industry: true
+  neutralize_market_cap: true
+  min_samples_per_industry: 3
+enhanced_stop_loss:
+  time_stop_days: 20
+  time_stop_min_return: -0.04
+  trailing_stop_pct: 0.12
+  trailing_stop_enabled: true
+  volatility_adaptive_mult: 1.2
+risk_parity:
+  enabled: true
+  target_risk_per_stock: 0.1
+  max_iterations: 50
+dynamic_rebalance:
+  enabled: true
+  bull_period: 10
+  neutral_period: 10
+  bear_period: 10
+chan_theory:
+  enabled: true
+  divergence:
+    enabled: true
+    lookback: 20
+    peak_trough_lookback: 5
+    strength_threshold: 0.3
+    bottom_div_threshold: 0.3
+    top_div_threshold: 0.3
+    verify_trend: true
+  structure:
+    enabled: true
+    pivot_min_overlap: 3
+    pivot_zone_buffer: 0.02
+    min_trend_bars: 8
+    zhongyin_threshold: 0.02
+  signal_boost:
+    bottom_divergence_mult: 1.15
+    top_divergence_mult: 0.78
+    alignment_boost: 0.06
+    zhongyin_penalty: 0.9
+    pivot_breakout_buy_mult: 1.08
+    pivot_breakout_sell_mult: 0.82
+  exit:
+    top_divergence_exit: 0.3
+    trend_exhaustion_exit: -0.3
+    buy_zone_stop_protection: 1.5
+    volume_divergence_exit: true
+  take_profit:
+    enabled: true
+    s1_reduce_pct: 1.0
+    s2_reduce_pct: 0.5
+    s3_reduce_pct: 1.0
+    pivot_trailing_enabled: true
+    profit_lock_pct: 0.15
+    bi_sell_exit: true
+chan_theory_enhanced:
+  enabled: true
+  stroke:
+    min_stroke_bars: 4
+  segment:
+    min_strokes: 3
+  pivot:
+    min_segments: 3
+    overlap_required: true
+  buy_sell_points:
+    b1_buy_mult: 1.2
+    b2_buy_mult: 1.12
+    b3_buy_mult: 1.15
+    s1_sell_mult: 0.75
+    s2_sell_mult: 0.78
+    s3_sell_mult: 0.82
+  signal:
+    trend_trend_follow: 1.06
+    trend_counter_trend: 0.94
+    consolidation_discount: 0.8
+    zhongyin_penalty: 0.9
+    pivot_bottom_boost: 1.06
+  b3_filter:
+    enabled: true
+    gate_min_conditions: 2
+    gate_vol_breakout_min: 1.3
+    gate_vol_pullback_max: 0.85
+    gate_confirm_require_trend_or_div: true
+    gate_shallow_min: 0.5
+    bear_require_anti_market_strength: 0.3
+    bear_require_first_pivot: true
+    neutral_require_strong_sector: true
+    first_pivot_mult: 1.0
+    second_pivot_mult: 0.85
+    third_plus_pivot_mult: 0.6
+    unconfirmed_trend_mult: 0.7
+    bottom_div_threshold: 0.3
+    fx_quality_min: 0.25
+    fx_vol_ratio_min: 1.2
+    vol_breakout_min_ratio: 1.5
+    vol_pullback_max_ratio: 0.7
+    vol_strong_breakout_ratio: 2.0
+    vol_strong_pullback_ratio: 0.5
+    vol_marginal_pass_ratio: 1.0
+    shallow_pullback_threshold: 0.8
+    normal_pullback_threshold: 0.6
+    deep_pullback_threshold: 0.35
+    zg_hard_stop_enabled: true
+    zg_hard_stop_threshold: 0.995
+stock_pool:
+  enabled: true
+  size: 4600
+  source: 全市场(除科创板688xxx, 价格>2元, 数据>60日)
+ml:
+  enabled: true
+  blend_weight: 0.25
+  retrain_frequency: 20
+  n_estimators: 200
+  max_depth: 4
+  learning_rate: 0.05
+  subsample: 0.7
+  colsample_bytree: 0.6
+  reg_lambda: 2.0
+  reg_alpha: 1.0
+  min_child_weight: 5
+  use_cross_features: true
+  use_regime_features: true
+backtest:
+  cash: 150000.0
+  commission: 0.00011
+  slippage: 0.0001
+  rebalance_days: 20
+  num_workers: 8

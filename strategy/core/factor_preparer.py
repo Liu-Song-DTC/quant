@@ -23,13 +23,14 @@ from .factor_calculator import calculate_indicators, compute_composite_factors, 
 _worker_fd = None
 
 
-def _init_factor_worker(fundamental_path, stock_codes):
-    """Worker 进程初始化函数 - 每个 worker 只创建一次 FundamentalData"""
+def _init_factor_worker(fd):
+    """Worker 进程初始化函数 - 共享父进程已加载的 FundamentalData
+
+    使用 fork 后 COW 共享父进程的 FundamentalData，避免每个 worker 从磁盘重新加载
+    4000+ 只股票的基本面数据（~8 workers × 4000 CSVs = 32000+ 次文件读取）。
+    """
     global _worker_fd
-    if fundamental_path and os.path.exists(fundamental_path):
-        _worker_fd = FundamentalData(fundamental_path, stock_codes)
-    else:
-        _worker_fd = None
+    _worker_fd = fd
 
 
 def _preload_fundamental_cache(fd, code, dates):
@@ -280,26 +281,53 @@ def prepare_factor_data(stock_data: dict, fd,
         if codes:
             print(f"  {cat}: {len(codes)} 只")
 
-    # 并行计算因子 - 使用 initializer 让每个 worker 只创建一次 FundamentalData
-    fundamental_path = fd.data_path if fd is not None else None
-    stock_codes = list(stock_data.keys())
+    # 并行计算因子 - 使用 initializer 共享父进程已加载的 FundamentalData
+    # fork + COW: 每个 worker 通过 _worker_fd 访问父进程已加载的基本面数据，无需重新从磁盘读取
     args_list = [
         (code, stock_data[code], factor_dates, lookback, forward_period)
         for code in stock_data.keys()
     ]
 
-    all_factor_data = []
-    # 使用 initializer，每个 worker 创建一个 FundamentalData 实例供所有股票复用
+    # 分批构建 DataFrame：避免 list-of-dicts（~2GB 峰值内存）与 DataFrame 同时存在导致 OOM
+    # chunksize=50 减少 IPC RPC 次数（4000只 / 50 = 80次，vs 10=400次）
+    BATCH_SIZE = 50000
+    batch_data = []
+    df_chunks = []
+    total_results = 0
+
     ctx = multiprocessing.get_context('fork')
-    with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fundamental_path, stock_codes)) as pool:
-        for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=10),
+    with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fd,)) as pool:
+        for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=50),
                        total=len(args_list), desc="计算因子"):
-            all_factor_data.extend(res)
+            batch_data.extend(res)
+            total_results += len(res)
+            if len(batch_data) >= BATCH_SIZE:
+                df_chunks.append(pd.DataFrame(batch_data))
+                batch_data.clear()
 
-    del args_list  # 释放参数列表（含DataFrame引用）
+    # 最后一批
+    if batch_data:
+        df_chunks.append(pd.DataFrame(batch_data))
+        batch_data.clear()
 
-    factor_data = pd.DataFrame(all_factor_data) if all_factor_data else pd.DataFrame()
-    del all_factor_data  # 释放中间列表内存
+    del args_list, batch_data  # 释放参数列表和临时数据
+
+    # 合并所有 batch DataFrame
+    factor_data = pd.concat(df_chunks, ignore_index=True) if df_chunks else pd.DataFrame()
+    del df_chunks  # 释放 chunk 列表
+    print(f"因子数据: {total_results} 条原始记录 → {len(factor_data)} 行")
+
+    # === 内存优化：float64 → float32 (精度足够，内存减半) ===
+    if len(factor_data) > 0:
+        for col in factor_data.columns:
+            if col in ('code', 'date', 'industry'):
+                continue
+            if factor_data[col].dtype == 'float64':
+                factor_data[col] = pd.to_numeric(factor_data[col], downcast='float')
+            elif factor_data[col].dtype == 'int64':
+                factor_data[col] = pd.to_numeric(factor_data[col], downcast='integer')
+    import gc
+    gc.collect()
 
     # 数据清洗：过滤极端未来收益
     if 'future_ret' in factor_data.columns:

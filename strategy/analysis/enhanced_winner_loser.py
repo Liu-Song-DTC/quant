@@ -53,9 +53,9 @@ def compute_pre_signal_features(price_df: pd.DataFrame, signal_dates: list) -> p
     close = df["close"].values.astype(float)
     volume = df["volume"].values.astype(float) if "volume" in df.columns else None
     amount = df["amount"].values.astype(float) if "amount" in df.columns else None
-    turnover = df["换手率"].values.astype(float) if "换手率" in df.columns else None
-    amplitude = df["振幅"].values.astype(float) if "振幅" in df.columns else None
-    change_pct = df["涨跌幅"].values.astype(float) if "涨跌幅" in df.columns else None
+    turnover = df["turnover"].values.astype(float) if "turnover" in df.columns else None
+    amplitude = df["amplitude"].values.astype(float) if "amplitude" in df.columns else None
+    change_pct = df["change_pct"].values.astype(float) if "change_pct" in df.columns else None
 
     if change_pct is None:
         change_pct = np.diff(close, prepend=close[0]) / np.where(close > 0, close, np.nan) * 100

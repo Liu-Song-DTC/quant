@@ -619,10 +619,119 @@ class AnalysisFramework:
         # 6. 优化建议
         all_results['recommendations'] = self.generate_recommendations()
 
+        # 7. 因子衰减监控
+        all_results['factor_decay'] = self.monitor_factor_decay()
+
         # 打印汇总
         self._print_summary(all_results)
 
         return all_results
+
+    def monitor_factor_decay(self) -> Dict:
+        """因子衰减监控：对比回测IC与标定基线，检测显著退化
+
+        Returns:
+            {'alerts': [...], 'summary': str, 'need_recalibration': bool}
+            其中每个alert包含 factor/industry/regime 及退化程度
+        """
+        import yaml
+
+        # 1. 读取标定基线IC
+        config_path = os.path.join(STRATEGY_DIR, 'config', 'factor_config.yaml')
+        baseline = {}
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = yaml.safe_load(f)
+            for industry, ind_cfg in cfg.get('industry_factors', {}).items():
+                base_ic = ind_cfg.get('ic', ind_cfg.get('combined_ic'))
+                bull_ic = ind_cfg.get('bull_ic', ind_cfg.get('bull_combined_ic', base_ic))
+                bear_ic = ind_cfg.get('bear_ic', ind_cfg.get('bear_combined_ic', base_ic))
+                baseline[industry] = {'neutral': base_ic, 'bull': bull_ic, 'bear': bear_ic}
+        except Exception as e:
+            return {'alerts': [], 'summary': f'基线加载失败: {e}', 'need_recalibration': False}
+
+        if not baseline:
+            return {'alerts': [], 'summary': '无标定基线数据', 'need_recalibration': False}
+
+        # 2. 从validation_results计算近期因子IC
+        val_path = os.path.join(STRATEGY_DIR, 'rolling_validation_results', 'validation_results.csv')
+        if not os.path.exists(val_path):
+            return {'alerts': [], 'summary': '无validation_results数据，跳过衰减检测', 'need_recalibration': False}
+
+        try:
+            val_df = pd.read_csv(val_path, parse_dates=['date'])
+        except Exception:
+            return {'alerts': [], 'summary': 'validation_results读取失败', 'need_recalibration': False}
+
+        # 按行业累计IC（限于backtest_factors中的因子）
+        cfg_path2 = os.path.join(STRATEGY_DIR, 'config', 'factor_config.yaml')
+        with open(cfg_path2, 'r', encoding='utf-8') as f:
+            raw_cfg = yaml.safe_load(f)
+        backtest_factors = raw_cfg.get('backtest_factors', [])
+
+        alerts = []
+        regime_map = {0: 'neutral', 1: 'bull', -1: 'bear'}
+
+        for industry in baseline:
+            ind_data = val_df[val_df['industry'] == industry] if 'industry' in val_df.columns else pd.DataFrame()
+            if ind_data.empty:
+                continue
+
+            for regime_val, regime_name in regime_map.items():
+                regime_data = ind_data[ind_data['regime'] == regime_val] if 'regime' in ind_data.columns else ind_data
+                if len(regime_data) < 30:
+                    continue
+
+                base_ic = baseline[industry].get(regime_name)
+                if base_ic is None:
+                    continue
+
+                # 计算backtest_factors中所有因子在最近期的平均IC
+                current_ics = []
+                for fn in backtest_factors:
+                    if fn in regime_data.columns:
+                        ic_s = safe_spearmanr(regime_data[fn], regime_data['future_ret'])
+                        if ic_s is not None and not np.isnan(ic_s):
+                            current_ics.append(abs(ic_s))
+
+                if not current_ics:
+                    continue
+
+                avg_current_ic = np.mean(current_ics)
+                base_abs_ic = abs(base_ic) if base_ic else 0.01
+
+                # 退化检测：当前IC相对基线下降>20%
+                decay_pct = (base_abs_ic - avg_current_ic) / max(base_abs_ic, 0.01)
+                if decay_pct > 0.20:
+                    alerts.append({
+                        'industry': industry,
+                        'regime': regime_name,
+                        'baseline_ic': round(base_abs_ic, 4),
+                        'current_ic': round(avg_current_ic, 4),
+                        'decay_pct': round(decay_pct * 100, 1),
+                    })
+
+        need_recal = len(alerts) > 3  # 超过3个行业-状态组合退化 → 建议重标定
+
+        if alerts:
+            summary = (
+                f"发现 {len(alerts)} 个行业-状态组合因子IC退化>20%。"
+                f"{'建议重新运行offline_calibration.py重标定。' if need_recal else '暂可接受，继续监控。'}"
+            )
+        else:
+            summary = "所有行业-状态组合因子IC在基线±20%范围内，无显著退化。"
+
+        print(f"\n{'='*70}")
+        print("【模块7: 因子衰减监控】")
+        print(f"{'='*70}")
+        print(f"基线行业数: {len(baseline)}, 检测到退化: {len(alerts)} 个")
+        if alerts:
+            for a in sorted(alerts, key=lambda x: -x['decay_pct'])[:10]:
+                print(f"  {a['industry']}/{a['regime']}: IC {a['baseline_ic']:.4f}→{a['current_ic']:.4f} "
+                      f"({a['decay_pct']:.0f}%退化)")
+        print(f"结论: {summary}")
+
+        return {'alerts': alerts, 'summary': summary, 'need_recalibration': need_recal}
 
     def _print_summary(self, results: Dict):
         """打印分析汇总"""

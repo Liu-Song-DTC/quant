@@ -4,7 +4,7 @@
 - 只加载最近2年数据（不需要全历史）
 - 只为最新日期生成目标持仓
 - 不需要Backtrader框架
-- 不需要多进程（股票池~500只，单进程足够）
+- 信号生成使用单进程（factor_preparer 已使用 fork Pool, 避免嵌套 fork）
 """
 import os
 import sys
@@ -168,10 +168,23 @@ class SignalRunner:
             print("已释放 factor_df 内存")
 
     def _generate_all_signals(self, stock_codes):
-        """为所有股票生成信号"""
+        """为所有股票生成信号 — 单进程模式（稳定可靠）
+
+        注意: 不在此处使用 multiprocessing，因为:
+        1. factor_preparer 已使用 fork Pool（8 workers），再嵌套 fork 会
+           导致内存 COW 爆炸，WSL2 上 OOM-kill
+        2. 实盘场景只需为最新日期生成信号，单进程 ~4600 只股票约 30-60s
+        3. 如需加速回测，应在 bt_execution 层面做多日期批处理
+        """
         from tqdm import tqdm
 
         valid_codes = [c for c in stock_codes if c in self.stock_data_dict]
+        if len(valid_codes) == 0:
+            print("无有效股票，跳过信号生成")
+            return
+
+        print(f"信号生成: {len(valid_codes)} 只 (单进程)")
+
         for code in tqdm(valid_codes, desc="生成信号", unit="只"):
             data = self.stock_data_dict[code]
             self.strategy.generate_signal(code, data)

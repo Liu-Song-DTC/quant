@@ -1,0 +1,416 @@
+{
+  "consensus": {
+    "signal.buy_threshold": {
+      "best_value": 0.12,
+      "stability": 0.6666666666666666
+    },
+    "signal.sell_threshold": {
+      "best_value": -0.2,
+      "stability": 1.0
+    },
+    "portfolio.max_single_weight": {
+      "best_value": 0.12,
+      "stability": 0.6666666666666666
+    },
+    "portfolio.position_stop_loss": {
+      "best_value": 0.15,
+      "stability": 0.6666666666666666
+    },
+    "portfolio.trailing_stop_pct": {
+      "best_value": 0.1,
+      "stability": 0.6666666666666666
+    },
+    "portfolio.entry_speed": {
+      "best_value": 0.8,
+      "stability": 0.6666666666666666
+    },
+    "selection.min_rank_pct": {
+      "best_value": 0.6,
+      "stability": 1.0
+    },
+    "selection.min_absolute_score": {
+      "best_value": 0.1,
+      "stability": 1.0
+    },
+    "selection.min_confidence": {
+      "best_value": 0.7,
+      "stability": 1.0
+    },
+    "backtest.rebalance_days": {
+      "best_value": 25.0,
+      "stability": 0.6666666666666666
+    },
+    "fv_exposure.exposure_min": {
+      "best_value": 0.25,
+      "stability": 0.6666666666666666
+    },
+    "fv_exposure.exposure_max": {
+      "best_value": 1.0,
+      "stability": 1.0
+    },
+    "volatility_control.enabled": {
+      "best_value": 1.0,
+      "stability": 0.6666666666666666
+    },
+    "portfolio.target_volatility": {
+      "best_value": 0.18,
+      "stability": 1.0
+    }
+  },
+  "windows": [
+    {
+      "window": 1,
+      "train_period": "2024-01-02→2024-11-25",
+      "test_period": "2024-11-26→2025-05-25",
+      "top5_stage1": [
+        {
+          "params": {
+            "signal.buy_threshold": 0.22,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.18,
+            "portfolio.position_stop_loss": 0.12,
+            "portfolio.trailing_stop_pct": 0.25,
+            "portfolio.entry_speed": 1.0,
+            "selection.min_rank_pct": 0.55,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 30,
+            "fv_exposure.exposure_min": 0.4,
+            "fv_exposure.exposure_max": 1.0,
+            "volatility_control.enabled": false,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.39569330970241257
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.22,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.15,
+            "portfolio.position_stop_loss": 0.05,
+            "portfolio.trailing_stop_pct": 0.1,
+            "portfolio.entry_speed": 0.6,
+            "selection.min_rank_pct": 0.5,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.8,
+            "backtest.rebalance_days": 20,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 0.9,
+            "volatility_control.enabled": true,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.39569330970241257
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.22,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.18,
+            "portfolio.position_stop_loss": 0.15,
+            "portfolio.trailing_stop_pct": 0.15,
+            "portfolio.entry_speed": 1.0,
+            "selection.min_rank_pct": 0.4,
+            "selection.min_absolute_score": 0.2,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 15,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 0.95,
+            "volatility_control.enabled": false,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.39569330970241257
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.22,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.15,
+            "portfolio.position_stop_loss": 0.05,
+            "portfolio.trailing_stop_pct": 0.25,
+            "portfolio.entry_speed": 1.0,
+            "selection.min_rank_pct": 0.4,
+            "selection.min_absolute_score": 0.15,
+            "selection.min_confidence": 0.8,
+            "backtest.rebalance_days": 30,
+            "fv_exposure.exposure_min": 0.3,
+            "fv_exposure.exposure_max": 0.9,
+            "volatility_control.enabled": false,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.39569330970241257
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.22,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.18,
+            "portfolio.position_stop_loss": 0.05,
+            "portfolio.trailing_stop_pct": 0.1,
+            "portfolio.entry_speed": 0.6,
+            "selection.min_rank_pct": 0.55,
+            "selection.min_absolute_score": 0.2,
+            "selection.min_confidence": 0.8,
+            "backtest.rebalance_days": 25,
+            "fv_exposure.exposure_min": 0.4,
+            "fv_exposure.exposure_max": 0.95,
+            "volatility_control.enabled": true,
+            "portfolio.target_volatility": 0.12
+          },
+          "score": 0.39569330970241257
+        }
+      ],
+      "best_params": {
+        "signal.buy_threshold": 0.22,
+        "signal.sell_threshold": -0.2,
+        "portfolio.max_single_weight": 0.18,
+        "portfolio.position_stop_loss": 0.12,
+        "portfolio.trailing_stop_pct": 0.25,
+        "portfolio.entry_speed": 1.0,
+        "selection.min_rank_pct": 0.55,
+        "selection.min_absolute_score": 0.1,
+        "selection.min_confidence": 0.7,
+        "backtest.rebalance_days": 30,
+        "fv_exposure.exposure_min": 0.4,
+        "fv_exposure.exposure_max": 1.0,
+        "volatility_control.enabled": false,
+        "portfolio.target_volatility": 0.18
+      }
+    },
+    {
+      "window": 2,
+      "train_period": "2024-01-02→2025-05-25",
+      "test_period": "2025-05-26→2025-11-22",
+      "top5_stage1": [
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.12,
+            "portfolio.position_stop_loss": 0.15,
+            "portfolio.trailing_stop_pct": 0.1,
+            "portfolio.entry_speed": 0.8,
+            "selection.min_rank_pct": 0.6,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 25,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 1.0,
+            "volatility_control.enabled": true,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.4136698354683582
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.08,
+            "portfolio.position_stop_loss": 0.12,
+            "portfolio.trailing_stop_pct": 0.25,
+            "portfolio.entry_speed": 1.0,
+            "selection.min_rank_pct": 0.5,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 15,
+            "fv_exposure.exposure_min": 0.4,
+            "fv_exposure.exposure_max": 0.95,
+            "volatility_control.enabled": true,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.4136698354683582
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.17,
+            "portfolio.max_single_weight": 0.15,
+            "portfolio.position_stop_loss": 0.05,
+            "portfolio.trailing_stop_pct": 0.1,
+            "portfolio.entry_speed": 0.6,
+            "selection.min_rank_pct": 0.6,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.8,
+            "backtest.rebalance_days": 25,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 0.9,
+            "volatility_control.enabled": false,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.4133915099486206
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.15,
+            "portfolio.max_single_weight": 0.08,
+            "portfolio.position_stop_loss": 0.05,
+            "portfolio.trailing_stop_pct": 0.25,
+            "portfolio.entry_speed": 0.8,
+            "selection.min_rank_pct": 0.55,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 25,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 0.9,
+            "volatility_control.enabled": true,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.413192222503441
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.15,
+            "portfolio.max_single_weight": 0.18,
+            "portfolio.position_stop_loss": 0.07,
+            "portfolio.trailing_stop_pct": 0.25,
+            "portfolio.entry_speed": 0.8,
+            "selection.min_rank_pct": 0.5,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 20,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 0.9,
+            "volatility_control.enabled": false,
+            "portfolio.target_volatility": 0.12
+          },
+          "score": 0.413192222503441
+        }
+      ],
+      "best_params": {
+        "signal.buy_threshold": 0.12,
+        "signal.sell_threshold": -0.2,
+        "portfolio.max_single_weight": 0.12,
+        "portfolio.position_stop_loss": 0.15,
+        "portfolio.trailing_stop_pct": 0.1,
+        "portfolio.entry_speed": 0.8,
+        "selection.min_rank_pct": 0.6,
+        "selection.min_absolute_score": 0.1,
+        "selection.min_confidence": 0.7,
+        "backtest.rebalance_days": 25,
+        "fv_exposure.exposure_min": 0.25,
+        "fv_exposure.exposure_max": 1.0,
+        "volatility_control.enabled": true,
+        "portfolio.target_volatility": 0.18
+      }
+    },
+    {
+      "window": 3,
+      "train_period": "2024-01-02→2025-11-22",
+      "test_period": "2025-11-23→2026-05-22",
+      "top5_stage1": [
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.12,
+            "portfolio.position_stop_loss": 0.15,
+            "portfolio.trailing_stop_pct": 0.1,
+            "portfolio.entry_speed": 0.8,
+            "selection.min_rank_pct": 0.6,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 25,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 1.0,
+            "volatility_control.enabled": true,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.4110197068415191
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.2,
+            "portfolio.max_single_weight": 0.08,
+            "portfolio.position_stop_loss": 0.12,
+            "portfolio.trailing_stop_pct": 0.25,
+            "portfolio.entry_speed": 1.0,
+            "selection.min_rank_pct": 0.5,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 15,
+            "fv_exposure.exposure_min": 0.4,
+            "fv_exposure.exposure_max": 0.95,
+            "volatility_control.enabled": true,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.4110197068415191
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.17,
+            "portfolio.max_single_weight": 0.15,
+            "portfolio.position_stop_loss": 0.05,
+            "portfolio.trailing_stop_pct": 0.1,
+            "portfolio.entry_speed": 0.6,
+            "selection.min_rank_pct": 0.6,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.8,
+            "backtest.rebalance_days": 25,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 0.9,
+            "volatility_control.enabled": false,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.4107507747649535
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.15,
+            "portfolio.max_single_weight": 0.08,
+            "portfolio.position_stop_loss": 0.05,
+            "portfolio.trailing_stop_pct": 0.25,
+            "portfolio.entry_speed": 0.8,
+            "selection.min_rank_pct": 0.55,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 25,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 0.9,
+            "volatility_control.enabled": true,
+            "portfolio.target_volatility": 0.18
+          },
+          "score": 0.4105366698331159
+        },
+        {
+          "params": {
+            "signal.buy_threshold": 0.12,
+            "signal.sell_threshold": -0.15,
+            "portfolio.max_single_weight": 0.18,
+            "portfolio.position_stop_loss": 0.07,
+            "portfolio.trailing_stop_pct": 0.25,
+            "portfolio.entry_speed": 0.8,
+            "selection.min_rank_pct": 0.5,
+            "selection.min_absolute_score": 0.1,
+            "selection.min_confidence": 0.7,
+            "backtest.rebalance_days": 20,
+            "fv_exposure.exposure_min": 0.25,
+            "fv_exposure.exposure_max": 0.9,
+            "volatility_control.enabled": false,
+            "portfolio.target_volatility": 0.12
+          },
+          "score": 0.4105366698331159
+        }
+      ],
+      "best_params": {
+        "signal.buy_threshold": 0.12,
+        "signal.sell_threshold": -0.2,
+        "portfolio.max_single_weight": 0.12,
+        "portfolio.position_stop_loss": 0.15,
+        "portfolio.trailing_stop_pct": 0.1,
+        "portfolio.entry_speed": 0.8,
+        "selection.min_rank_pct": 0.6,
+        "selection.min_absolute_score": 0.1,
+        "selection.min_confidence": 0.7,
+        "backtest.rebalance_days": 25,
+        "fv_exposure.exposure_min": 0.25,
+        "fv_exposure.exposure_max": 1.0,
+        "volatility_control.enabled": true,
+        "portfolio.target_volatility": 0.18
+      }
+    }
+  ]
+}

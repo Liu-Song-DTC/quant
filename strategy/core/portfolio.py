@@ -39,7 +39,7 @@ def _load_industry_ic_weights():
 class PortfolioConstructor:
     """仓位管理器 - 基于因子排名选股"""
 
-    MAX_POSITIONS = 12
+    MAX_POSITIONS = 8
 
     def __init__(
         self,
@@ -100,7 +100,7 @@ class PortfolioConstructor:
 
         # === 风险平价 ===
         rp_config = config.get('risk_parity', {}) if hasattr(config, 'get') else portfolio_config.get('risk_parity', {})
-        self.risk_parity_enabled = rp_config.get('enabled', False)
+        self.risk_parity_enabled = rp_config.get('enabled', False)  # Fix#13: 若启用风险平价，应去掉手动权重上限，让算法自由分配
         self.rp_target_risk = rp_config.get('target_risk_per_stock', 0.10)
         self.rp_max_iterations = rp_config.get('max_iterations', 50)
 
@@ -120,13 +120,15 @@ class PortfolioConstructor:
         self.chan_tp_s2_reduce = tp.get('s2_reduce_pct', 0.5)      # S2→减半
         self.chan_tp_s3_reduce = tp.get('s3_reduce_pct', 1.0)      # S3→全清
         self.chan_tp_pivot_trailing = tp.get('pivot_trailing_enabled', True)
-        self.chan_tp_profit_lock = tp.get('profit_lock_pct', 0.15) # 盈利>15%启动移动止盈
+        self.chan_tp_profit_lock = tp.get('profit_lock_pct', 0.20)  # Fix#11: 从15%提高到20% # 盈利>15%启动移动止盈
         self.chan_tp_bi_sell_exit = tp.get('bi_sell_exit', True)
 
         # 追踪每个持仓的入场时间和峰值价格
         self._entry_dates: dict = {}  # {code: date}
         self._peak_prices: dict = {}  # {code: peak_price_since_entry}
         self._entry_reasons: dict = {}  # {code: {buy_point, signal_level, trend_type}}
+        self._entry_reason_lost_count: dict = {}  # Fix#10: 买入理由消失确认期计数
+        self._post_sell_tracking: dict = {}  # {code: {'trigger_price': float, 'reason': str}}  S1/S2减仓后跟踪
 
         self.peak_equity = None
         self.industry_ic = _load_industry_ic_weights()
@@ -138,9 +140,8 @@ class PortfolioConstructor:
         self.current_exposure = 1.0
         self._stop_loss_triggered = False
         self._stop_loss_recovery_days = 0
-        # 小说优化：延长最短持仓至7天，防止被洗盘震出
-        # 核心逻辑："主力洗盘时缩量回调，不要被吓出去"
-        self._min_hold_days = 5  # 最短持仓天数（降低以允许快速止损）
+        # 最短持仓保护：防止在再平衡日被立即换出
+        self._min_hold_days = 5
 
     def set_sentiment_multipliers(self, multipliers: dict):
         """设置行业情绪乘数（含小说逆向投资调整）
@@ -179,8 +180,8 @@ class PortfolioConstructor:
 
         每10000资金支持1个仓位, 范围[5, 12]
         """
-        n = int(total_equity / 10000)
-        return max(5, min(n, PortfolioConstructor.MAX_POSITIONS))
+        n = int(total_equity / 20000)
+        return max(3, min(n, PortfolioConstructor.MAX_POSITIONS))
 
     def _get_min_positions(self, market_regime: int) -> int:
         """动态最小持仓数（小说：熊市允许空仓）
@@ -337,11 +338,12 @@ class PortfolioConstructor:
                     continue
                 # 均值回归时机过滤: 有缠论买点但严重追高也不入场
                 # Chan确认结构，均值回归确认时机
+                # 阈值与评分层对齐: >0.50/-999, >0.45/-999
                 mom_60d = getattr(sig, 'mom_60d', 0.0) or 0.0
                 dist_ma60 = getattr(sig, 'dist_ma60', 0.0) or 0.0
-                if mom_60d > 0.30:
+                if mom_60d > 0.50:
                     continue
-                if dist_ma60 > 0.30:
+                if dist_ma60 > 0.45:
                     continue
 
             candidates.append({
@@ -361,6 +363,7 @@ class PortfolioConstructor:
             })
 
         if not candidates:
+            print(f" [选股] 无候选股票通过初筛 (universe={len(universe)}, 门控/价格/趋势过滤全部淘汰)")
             return {}
 
         # === 截面排名（全市场 + 行业内混合） ===
@@ -394,19 +397,19 @@ class PortfolioConstructor:
         # 消除之前在 trend_score=0 和 -0.5 处的仓位悬崖
         if trend_score > 0.5:
             market_signal = 1.0
-            floor, ceiling = 0.8, 1.0
+            floor, ceiling = 0.85, 1.0
         elif trend_score > -0.5:
             t = (trend_score + 0.5)  # [-0.5, 0.5] → [0, 1.0]
-            market_signal = float(0.3 + t * 0.7)  # [0.3, 1.0]
-            floor = float(max(0.2, market_signal - 0.2))
-            ceiling = float(min(1.0, market_signal + 0.2))
+            market_signal = float(0.4 + t * 0.6)  # [0.4, 1.0]
+            floor = float(max(0.3, market_signal - 0.15))
+            ceiling = float(min(1.0, market_signal + 0.15))
         else:
-            market_signal = 0.3
-            floor, ceiling = 0.2, 0.5
+            market_signal = 0.4
+            floor, ceiling = 0.3, 0.55
 
-        # 叠加熊市风险（适度防御）
-        if bear_risk and drawdown > 0.10:
-            market_signal = min(market_signal, 0.6)
+        # 叠加熊市风险（适度防御，降低防御强度）
+        if bear_risk and drawdown > 0.15:
+            market_signal = min(market_signal, 0.7)
 
         target_exposure = float(np.clip(market_signal, floor, ceiling))
 
@@ -425,10 +428,10 @@ class PortfolioConstructor:
         # === 卖点聚合预警: 大量卖点出现 → 市场可能转向 ===
         chan_sell_count = sum(1 for c in candidates if c.get('chan_sell_point', 0) > 0)
         sell_ratio = chan_sell_count / max(len(candidates), 1)
-        if sell_ratio > 0.30:
-            target_exposure *= 0.65   # 超30%候选出现Chan卖点 → 大盘可能转向
-        elif sell_ratio > 0.20:
-            target_exposure *= 0.80   # 超20% → 温和降仓
+        if sell_ratio > 0.35:
+            target_exposure *= 0.75   # 超35%候选出现Chan卖点 → 大盘可能转向
+        elif sell_ratio > 0.25:
+            target_exposure *= 0.88   # 超25% → 温和降仓
 
         # === 市场广度门控: 候选股平均当日收益为负 → 市场偏弱 ===
         candidate_rets = []
@@ -440,12 +443,12 @@ class PortfolioConstructor:
         if candidate_rets:
             avg_cand_ret = np.mean(candidate_rets)
             up_ratio = sum(1 for r in candidate_rets if r > 0) / len(candidate_rets)
-            if up_ratio < 0.35:                    # 不到35%候选上涨 → 弱势市场
-                target_exposure *= 0.60
-            elif up_ratio < 0.45:                  # 不到45% → 偏弱
-                target_exposure *= 0.80
-            elif up_ratio > 0.65:                  # 超65%上涨 → 强势市场, 可以更积极
-                target_exposure = min(1.0, target_exposure * 1.10)
+            if up_ratio < 0.30:                    # 不到30%候选上涨 → 弱势市场
+                target_exposure *= 0.70
+            elif up_ratio < 0.40:                  # 不到40% → 偏弱
+                target_exposure *= 0.88
+            elif up_ratio > 0.60:                  # 超60%上涨 → 强势市场, 可以更积极
+                target_exposure = min(1.0, target_exposure * 1.15)
 
         # === 波动率控制: 实现波动率超过目标时降仓 ===
         if self.vol_control_enabled and len(self._daily_returns) >= self.vol_lookback:
@@ -453,7 +456,7 @@ class PortfolioConstructor:
             realized_vol = float(np.std(recent_rets) * np.sqrt(252))  # 年化
             if realized_vol > 0.01:
                 vol_scale = self.target_volatility / realized_vol
-                target_exposure *= float(np.clip(vol_scale, 0.65, 1.0))
+                target_exposure *= float(np.clip(vol_scale, 0.75, 1.0))
 
         # === 组合止损: 回撤超过阈值时强制降仓至紧急敞口（含恢复冷却期） ===
         if self.stop_loss_enabled and drawdown > self.portfolio_stop_loss:
@@ -533,9 +536,11 @@ class PortfolioConstructor:
                 short_term_rejects.append(c)
                 continue
             # 条件2: 下跌趋势中加速下行
+            # B3+线段级是结构反转信号，下跌笔接近衰竭时不应拒绝
             if trend_type == -2 and stroke_phase > 0.2:
-                short_term_rejects.append(c)
-                continue
+                if not (buy_point == 3 and signal_level >= 2):
+                    short_term_rejects.append(c)
+                    continue
             # 条件3: 非上升趋势 + 弱势阴跌
             if trend_type != 2 and stroke_phase > 0.2 and daily_ret < 0:
                 short_term_rejects.append(c)
@@ -586,13 +591,15 @@ class PortfolioConstructor:
             qualified = [c for c in qualified if c not in new_rejects]
 
         # === Chan买点门控: 结构确认是入场前提 ===
-        # 均值回归调整在评分阶段生效，不在门控阶段过滤
+        # 已持仓的结构消退 → 豁免门控，给入场理由消失确认期恢复机会
+        # 能否留任取决于 effective_score 排名，不靠门控保送
         chan_passed = []
         for c in qualified:
             bp = c.get('chan_buy_point', 0)
             sl = c.get('signal_level', 0)
             if sl < 1 and bp <= 0:
-                continue
+                if c['code'] not in current_codes:
+                    continue
             # 均线趋势检查: EMA20 > EMA60 是缠论买点的方向前提
             sig = c.get('sig')
             ma_up = getattr(sig, 'ma_trend_up', False) if sig else False
@@ -603,6 +610,7 @@ class PortfolioConstructor:
                 continue  # B2在下跌趋势中不可靠
             chan_passed.append(c)
         if len(chan_passed) == 0:
+            print(f" [选股] Chan门控全部淘汰: {len(qualified)}只候选均无结构确认 (没有买点/背离/底分型), 无法入场")
             return {}
 
         # === 板块共振: 计算行业集中度, 用于后续排序惩罚 ===
@@ -614,9 +622,11 @@ class PortfolioConstructor:
         qualified = chan_passed
 
         # 换手控制：现有持仓给予换手惩罚加分，需超过交易成本才能被替换
-        hold_threshold = 0.4  # 已持仓股票，rank_pct>0.4即可保留
+        hold_threshold = 0.3  # 已持仓股票，rank_pct>0.3即可保留 (更宽松)
 
         # 计算有效得分: 截面排名(score) + 均值回归调整
+        # TODO Fix#12: 信号层应只做评分(因子值+缠论质量分)，组合层做所有决策
+        # 当前两层仍有职责重叠(信号层做了P0/P1/P2冲突修正、周线过滤等决策)
         # score已包含因子+Chan boost+P0/P1/P2, 无需再算一次Chan加成
         scores = np.array([c['score'] for c in qualified])
         score_rank = pd.Series(scores).rank(pct=True).values  # score截面排名
@@ -646,19 +656,19 @@ class PortfolioConstructor:
             if industry_chan_count.get(c.get('industry', '其他'), 0) < 2:
                 c['effective_score'] -= 0.08
 
-            # 弱势行业惩罚: 历史胜率比<0.85的行业系统性降权
+            # 弱势行业惩罚: 历史胜率比<0.85的行业系统性降权 (降低惩罚)
             ind = c.get('industry', '')
             if '医药' in str(ind):
-                c['effective_score'] -= 0.10  # W/L=0.79, 最弱行业
+                c['effective_score'] -= 0.05  # W/L=0.79, 最弱行业
             elif '化工' in str(ind):
-                c['effective_score'] -= 0.06  # W/L=0.80
+                c['effective_score'] -= 0.03  # W/L=0.80
             elif '传媒' in str(ind):
-                c['effective_score'] -= 0.06  # W/L=0.83
+                c['effective_score'] -= 0.03  # W/L=0.83
 
-            # DYN因子惩罚: 动态因子avg_score为负, 系统性降权
+            # DYN因子惩罚: 动态因子系统性降权 (降低惩罚)
             fn = getattr(sig, 'factor_name', '') if sig else ''
             if fn and fn.startswith('DYN_'):
-                c['effective_score'] -= 0.08
+                c['effective_score'] -= 0.04
 
             # ── 均值回归调整（基于历史赢家/输家特征分析） ──
             # 分析发现: 高60日动量的股票未来收益显著更差 (IC=-0.060)
@@ -669,21 +679,23 @@ class PortfolioConstructor:
             max_dd_20d = getattr(sig, 'max_dd_20d', 0.0) or 0.0
             vol_regime = getattr(sig, 'vol_regime', 1.0) or 1.0
 
-            # 1. 高动量惩罚: 60日涨幅>20%→未来均值回归风险大
-            if mom_60d > 0.25:
-                c['effective_score'] -= 0.12   # 严重追高
-            elif mom_60d > 0.15:
-                c['effective_score'] -= 0.06   # 温和追高
+            # 1. 高动量惩罚: Fix#4 (修正) 分层降权 — 避免零选股
+            if mom_60d > 0.50:
+                c['effective_score'] = -999  # 极端追高直接拒绝
+            elif mom_60d > 0.30:
+                c['effective_score'] *= 0.30  # 追高区域：仓位降到30%
+            elif mom_60d > 0.20:
+                c['effective_score'] -= 0.08  # 温和追高：加重惩罚(原0.04)
             elif -0.05 <= mom_60d <= 0.05:
-                c['effective_score'] += 0.02   # 横盘整理后突破,最佳买点
+                c['effective_score'] += 0.03   # 横盘整理后突破,最佳买点
 
-            # 2. 远离MA60惩罚: 价格远超60日均线→回归压力
-            if dist_ma60 > 0.25:
-                c['effective_score'] -= 0.10
-            elif dist_ma60 > 0.12:
-                c['effective_score'] -= 0.05
+            # 2. 远离MA60惩罚: Fix#4b (修正) 分层降权
+            if dist_ma60 > 0.45:
+                c['effective_score'] = -999  # 极端偏离直接拒绝
+            elif dist_ma60 > 0.30:
+                c['effective_score'] *= 0.40  # 偏离区域：仓位降到40%
             elif dist_ma60 < -0.05:
-                c['effective_score'] += 0.03   # 低于MA60,超跌反弹机会
+                c['effective_score'] += 0.04   # 低于MA60,超跌反弹机会
 
             # 3. 波动率扩张奖励: 低波动转高波动→趋势启动信号
             if vol_regime > 1.3:
@@ -696,6 +708,15 @@ class PortfolioConstructor:
                 c['effective_score'] += 0.04   # 深度回调,反弹空间大
             elif max_dd_20d < -0.06:
                 c['effective_score'] += 0.02   # 温和回调
+
+            # 5. B3突破量能软降权: 缩量日入场可靠性下降（非硬拒绝）
+            bp = c.get('chan_buy_point', 0)
+            if bp == 3:
+                vol_ratio = getattr(sig, 'volume_ratio', 0.0) or 0.0
+                if -0.20 < vol_ratio <= -0.05:
+                    c['effective_score'] -= 0.03  # 量能不足(69%-92%均量), 轻微降权
+                elif -0.30 < vol_ratio <= -0.20:
+                    c['effective_score'] -= 0.06  # 明显缩量(50%-69%均量), 中度降权
 
             # 换手加分 (已持仓不易被替换)
             turnover = self.turnover_bonus if (c['is_held'] and c['rank_pct'] > hold_threshold) else 0.0
@@ -719,11 +740,13 @@ class PortfolioConstructor:
             if c not in selected:
                 selected.append(c)
 
-        # === 动态最小持仓（小说：熊市允许空仓）===
+        # === 动态最小持仓 ===
         min_pos = self._get_min_positions(market_regime)
+        regime_labels = {1: "牛市", 0: "震荡", -1: "熊市"}
         if len(selected) < min_pos:
-            # 候选不足 → 宁愿空仓，不降低标准
-            # "不会空仓的人永远长不大"
+            print(f" [选股] 数量不足: 选中{len(selected)}只 < 最低{min_pos}只"
+                  f" ({regime_labels.get(market_regime, '未知')}模式)"
+                  f" → 不降低标准，空仓")
             return {}
 
         if not selected:
@@ -900,25 +923,18 @@ class PortfolioConstructor:
                     self._entry_dates.pop(code, None)
                     self._peak_prices.pop(code, None)
                     self._entry_reasons.pop(code, None)
-                # S1 (一卖) → 全清或按配置减仓
+                # S1 (一卖) → 按配置减仓（默认50%），保留底仓观察趋势
                 elif cs == 1:
-                    if self.chan_tp_s1_reduce >= 1.0:
-                        chan_force_sells[code] = 0.0
-                        self._entry_dates.pop(code, None)
-                        self._entry_reasons.pop(code, None)
-                        self._peak_prices.pop(code, None)
-                    else:
-                        if code not in profit_reduce:
-                            profit_reduce[code] = self.chan_tp_s1_reduce
-                # S2 (二卖) → 按配置减仓
+                    if code not in profit_reduce:
+                        profit_reduce[code] = min(self.chan_tp_s1_reduce, 1.0)
+                # S2 (二卖) → 按配置减仓，记录触发价用于跟踪止损
                 elif cs == 2:
-                    if self.chan_tp_s2_reduce >= 1.0:
-                        chan_force_sells[code] = 0.0
-                        self._entry_dates.pop(code, None)
-                        self._entry_reasons.pop(code, None)
-                        self._peak_prices.pop(code, None)
-                    elif code not in profit_reduce:
-                        profit_reduce[code] = self.chan_tp_s2_reduce
+                    if code not in profit_reduce:
+                        profit_reduce[code] = min(self.chan_tp_s2_reduce, 1.0)
+                    self._post_sell_tracking[code] = {
+                        'trigger_price': prices[code],
+                        'reason': 'S2'
+                    }
                 # S3 (三卖) → 强制清仓
                 elif cs == 3:
                     chan_force_sells[code] = 0.0
@@ -982,26 +998,26 @@ class PortfolioConstructor:
                 continue
             mom_60d = getattr(sig, 'mom_60d', 0.0) or 0.0
             dist_ma60 = getattr(sig, 'dist_ma60', 0.0) or 0.0
-            # 60日涨幅>50% → 均值回归压力极大 → 清仓锁定利润
-            if mom_60d > 0.50:
+            # 60日涨幅>60% → 均值回归压力极大 → 清仓锁定利润
+            if mom_60d > 0.60:
                 chan_force_sells[code] = 0.0
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
-            # 距MA60>40% → 严重乖离 → 清仓
-            elif dist_ma60 > 0.40:
+            # 距MA60>50% → 严重乖离 → 清仓
+            elif dist_ma60 > 0.50:
                 chan_force_sells[code] = 0.0
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
-            # 60日涨幅>30% → 温和超买 → 减仓50%
-            elif mom_60d > 0.30:
-                if code not in profit_reduce:
-                    profit_reduce[code] = 0.5
-            # 距MA60>25% → 乖离偏大 → 减仓30%
-            elif dist_ma60 > 0.25:
+            # 60日涨幅>40% → 温和超买 → 减仓30%
+            elif mom_60d > 0.40:
                 if code not in profit_reduce:
                     profit_reduce[code] = 0.3
+            # 距MA60>35% → 乖离偏大 → 减仓20%
+            elif dist_ma60 > 0.35:
+                if code not in profit_reduce:
+                    profit_reduce[code] = 0.2
 
         # 个股止损检查 - 成本止损 + 时间止损 + 移动止损
         for code, current_value in current_positions.items():
@@ -1022,22 +1038,17 @@ class PortfolioConstructor:
             sl = getattr(sig, 'signal_level', 0) if sig else 0
             # B2/B3：趋势已确认，放宽止损防洗盘
             # B1：抄底信号，反转可能失败，不放宽
-            if chan_buy_point in (2, 3) and chan_div_strength > 0.2:
-                chan_protection = True
-                chan_protection_mult = 1.5  # B2/B3适度放宽
-            elif sl >= 2 and chan_div_strength > 0.2:
-                chan_protection = True
-                chan_protection_mult = 1.5  # 线段级买入适度放宽
-            elif chan_div_type in ('bottom', 'hidden_bottom') and chan_div_strength > 0.3:
-                chan_protection = True
-                chan_protection_mult = 1.3  # 底背离温和放宽
-            else:
-                chan_protection = False
-                chan_protection_mult = 1.0
+            # Fix#6: 取消Chan保护止损放宽 - 结构信号不能替代风险管理
+            # 退出路径优先级: 硬止损 > 缠论结构卖出 > 移动止盈 > 时间止损
+            # 所有买点类型统一止损线，不再因缠论信号放宽
+            chan_protection = False
+            chan_protection_mult = 1.0  # 统一为1.0，不放宽
 
             # 1. 成本止损: 亏损超过position_stop_loss
+            avg_cost_check = 0.0  # Fix#7: 供分级移动止损使用
             if cost and code in cost and len(cost[code]) >= 2 and cost[code][0] > 0:
                 avg_cost = cost[code][1]
+                avg_cost_check = avg_cost  # Fix#7: 保存供后续使用
                 pnl_pct = (current_price - avg_cost) / avg_cost
 
                 # 波动率自适应调整：高波动股票放宽止损线
@@ -1054,19 +1065,24 @@ class PortfolioConstructor:
                     stopped = True
                     stop_reason = "cost_stop"
 
-            # 2. 时间止损: 持仓超N天且微亏/微赚
+            # 2. 时间止损: Fix#8 按买点类型分设天数 B1:40/B2:30/B3:20
             if not stopped and code in self._entry_dates:
                 if isinstance(date, date_type):
                     days_held = (date - self._entry_dates[code]).days
                 else:
                     days_held = 0
-                if days_held > self.time_stop_days:
+                # 根据入场买点类型动态设置时间止损天数
+                entry_reason = self._entry_reasons.get(code, {})
+                entry_bp = entry_reason.get('buy_point', 0)
+                time_stop_days_map = {1: 40, 2: 30, 3: 20}
+                effective_time_stop_days = time_stop_days_map.get(entry_bp, self.time_stop_days)
+                if days_held > effective_time_stop_days:
                     if cost and code in cost and len(cost[code]) >= 2 and cost[code][0] > 0:
                         avg_cost = cost[code][1]
                         pnl_pct = (current_price - avg_cost) / avg_cost
                         if pnl_pct < self.time_stop_min_return:
                             stopped = True
-                            stop_reason = "time_stop"
+                            stop_reason = f"time_stop_bp{entry_bp}"
 
             # 3. 移动止损: 从最高点回撤超过阈值
             # 注意: 若已被中枢移动止盈标记为 profit_reduce (减半), 则不再全平,
@@ -1075,7 +1091,31 @@ class PortfolioConstructor:
                and code not in profit_reduce:
                 peak = self._peak_prices[code]
                 drawdown_from_peak = (peak - current_price) / peak
-                if drawdown_from_peak > self.trailing_stop_pct:
+                # Fix#7 (修正#6冲突): B3给宽移动止损(15%)而非完全禁用
+                # 避免0-20%利润区间无保护裸奔
+                entry_bp_ts = self._entry_reasons.get(code, {}).get('buy_point', 0)
+                is_b3_position = (entry_bp_ts == 3)
+
+                # 分级移动止损 - 根据盈利水平和买点类型动态调整回撤容忍度
+                if avg_cost_check > 0:
+                    profit_from_peak = (peak - avg_cost_check) / avg_cost_check
+                else:
+                    profit_from_peak = 0.10  # 无成本数据时假设中等盈利，使用中间档
+                if is_b3_position:
+                    # B3: 宽止损防洗盘，但也按利润分层
+                    if profit_from_peak < 0.05:
+                        tiered_trailing_pct = 0.15   # 微利→宽止损
+                    elif profit_from_peak < 0.20:
+                        tiered_trailing_pct = 0.12   # 中等盈利→适度收紧
+                    else:
+                        tiered_trailing_pct = 0.10   # 高盈利→常规保护
+                elif profit_from_peak < 0.05:
+                    tiered_trailing_pct = 0.08  # <5%也保护，不留真空
+                elif profit_from_peak < 0.15:
+                    tiered_trailing_pct = 0.12
+                else:
+                    tiered_trailing_pct = 0.08
+                if drawdown_from_peak > tiered_trailing_pct:
                     stopped = True
                     stop_reason = "trailing_stop"
 
@@ -1125,12 +1165,23 @@ class PortfolioConstructor:
                     stopped = True
                     stop_reason = "chan_sell1_reversal"
 
+            # === S2减仓后跟踪止损: 价格继续下跌5%+ → 清仓剩余 ===
+            if not stopped and code in self._post_sell_tracking:
+                track = self._post_sell_tracking[code]
+                if current_price < track['trigger_price'] * 0.95:
+                    stopped = True
+                    stop_reason = f"{track['reason']}_deterioration"
+                elif (isinstance(date, date_type) and code in self._entry_dates and
+                      (date - self._entry_dates[code]).days > 15):
+                    self._post_sell_tracking.pop(code, None)
+
             # === 买入理由消失检查：入场时依赖的结构条件不再满足 ===
             if not stopped and code in self._entry_reasons:
                 reason = self._entry_reasons[code]
                 entry_bp = reason.get('buy_point', 0)
                 entry_sl = reason.get('signal_level', 0)
-                entry_trend = reason.get('trend_type', 0)
+                # 当前个股趋势（从最新信号读取，非入场时存储值）
+                curr_trend = getattr(sig, 'trend_type', 0) if sig else 0
 
                 # B3入场: 价格跌破中枢下沿 → 三买失败
                 if entry_bp == 3:
@@ -1141,7 +1192,7 @@ class PortfolioConstructor:
                             stop_reason = "b3_zg_break"
                 # B2入场: 趋势转为下跌 → 二买失效
                 elif entry_bp == 2:
-                    if trend_type == -2:
+                    if curr_trend == -2:
                         stopped = True
                         stop_reason = "b2_trend_broken"
                 # B1入场: 底背离消失 + 信号级别归零 → 一买失效
@@ -1152,15 +1203,35 @@ class PortfolioConstructor:
                         stopped = True
                         stop_reason = "b1_divergence_lost"
                 # 通用: 买入时有的Chan结构完全消失
+                # Fix#10 (修正): 3天确认期 + 结构破位/深度亏损立即退出
                 if not stopped:
                     curr_bp = getattr(sig, 'chan_buy_point', 0) if sig else 0
                     curr_sl = getattr(sig, 'signal_level', 0) if sig else 0
                     curr_div = getattr(sig, 'chan_divergence_strength', 0.0) if sig else 0.0
                     if curr_bp == 0 and curr_sl == 0 and curr_div < 0.1:
                         if entry_bp > 0 or entry_sl >= 1:
-                            # 入场理由完全消失 → 不管盈亏退出
-                            stopped = True
-                            stop_reason = "entry_reason_lost"
+                            # 结构破位: 价格跌破中枢下沿 → 立即确认退出
+                            pivot_zd = getattr(sig, 'chan_pivot_zd', float('nan')) if sig else float('nan')
+                            structure_broken = (not np.isnan(pivot_zd) and pivot_zd > 0
+                                              and current_price < pivot_zd * 0.995)
+                            # 深度亏损: PnL<-12% → 不管结构直接走
+                            deep_loss = (avg_cost_check > 0 and current_price < avg_cost_check * 0.88)
+                            if structure_broken or deep_loss:
+                                stopped = True
+                                stop_reason = "entry_lost_structure" if structure_broken else "entry_lost_deep"
+                                self._entry_reason_lost_count.pop(code, None)
+                            else:
+                                # 温和走弱 → 给3天观察期
+                                if code not in self._entry_reason_lost_count:
+                                    self._entry_reason_lost_count[code] = 0
+                                self._entry_reason_lost_count[code] += 1
+                                if self._entry_reason_lost_count[code] >= 3:
+                                    stopped = True
+                                    stop_reason = "entry_reason_lost"
+                        else:
+                            self._entry_reason_lost_count.pop(code, None)
+                    else:
+                        self._entry_reason_lost_count.pop(code, None)
 
             if stopped:
                 stop_loss_sells[code] = 0.0
@@ -1168,6 +1239,8 @@ class PortfolioConstructor:
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
+                self._entry_reason_lost_count.pop(code, None)
+                self._post_sell_tracking.pop(code, None)
 
             # 更新峰值价格
             if code in self._entry_dates:
@@ -1191,8 +1264,10 @@ class PortfolioConstructor:
         # 强制卖出 (止损 + Chan卖出)
         for code in stop_loss_sells:
             desired_value[code] = 0.0
+            self._post_sell_tracking.pop(code, None)
         for code in chan_force_sells:
             desired_value[code] = 0.0
+            self._post_sell_tracking.pop(code, None)
 
         # 止盈减仓
         for code, reduce_pct in profit_reduce.items():

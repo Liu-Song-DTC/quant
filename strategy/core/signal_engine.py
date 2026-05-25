@@ -87,12 +87,18 @@ class SignalEngine:
             'ic_values': [],
         }
 
-        # 动态买入阈值：滚动缓冲区（最近1000个因子值）
-        self._factor_value_buffer = deque(maxlen=2000)
+        # 动态买入阈值：滚动缓冲区（最近800个score值，约半年数据，提高市场风格切换响应速度）
+        self._factor_value_buffer = deque(maxlen=800)
         # 行业内因子值缓存：{industry: deque(maxlen=500)}
         self._industry_factor_cache = {}
-        # 动态阈值基准百分位
-        self._buy_threshold_pct = self.config.get('signal', {}).get('buy_threshold_pct', 0.60)
+        # 动态阈值基准百分位（按市场状态分设，提高风格切换响应）
+        # 牛市0.50(更宽松)/震荡0.60(默认)/熊市0.70(更严格)
+        self._buy_threshold_pct_map = {
+            1: self.config.get('signal', {}).get('buy_threshold_pct_bull', 0.50),
+            0: self.config.get('signal', {}).get('buy_threshold_pct', 0.60),
+            -1: self.config.get('signal', {}).get('buy_threshold_pct_bear', 0.70),
+        }
+        self._buy_threshold_pct = self._buy_threshold_pct_map[0]  # 默认
 
     def _load_config(self):
         """从配置文件加载参数"""
@@ -265,6 +271,49 @@ class SignalEngine:
         vol_60d = self._rolling_std(ret_1d, 60)
         result['vol_regime'] = vol_10d / (vol_60d + 1e-10)
 
+        # 5. 周线趋势确认（多时间框架：周线EMA20 vs EMA60）
+        result['weekly_trend_up'] = self._compute_weekly_trend(close)
+
+        return result
+
+    @staticmethod
+    def _compute_weekly_trend(close_daily: np.ndarray) -> np.ndarray:
+        """计算周线EMA趋势方向（日线→周线降采样后计算EMA20/EMA60交叉）
+
+        返回与close_daily等长的bool数组，True=周线多头(EMA20>EMA60)。
+        周线数据不足时返回全False。
+        """
+        n = len(close_daily)
+        result = np.zeros(n, dtype=bool)
+        if n < 60:  # 至少需要60个交易日≈12周
+            return result
+
+        # 日线→周线降采样（取每周最后一个交易日的收盘价）
+        weekly_close = close_daily[4::5]  # 每5个交易日取1个，近似周线
+        if len(weekly_close) < 60:
+            return result
+
+        # 周线EMA20和EMA60
+        alpha_20 = 2.0 / (20 + 1)
+        alpha_60 = 2.0 / (60 + 1)
+        ema20_w = np.zeros(len(weekly_close))
+        ema60_w = np.zeros(len(weekly_close))
+        ema20_w[0] = weekly_close[0]
+        ema60_w[0] = weekly_close[0]
+        for i in range(1, len(weekly_close)):
+            ema20_w[i] = alpha_20 * weekly_close[i] + (1 - alpha_20) * ema20_w[i - 1]
+            ema60_w[i] = alpha_60 * weekly_close[i] + (1 - alpha_60) * ema60_w[i - 1]
+
+        # 周线趋势：EMA20 > EMA60 为多头
+        weekly_trend = ema20_w > ema60_w
+
+        # 映射回日线：每个周线bar对应5个日线bar
+        for wi in range(len(weekly_trend)):
+            di_start = wi * 5 + 4  # 每周最后一个交易日
+            di_end = min(di_start + 5, n)
+            if di_start < n:
+                result[di_start:di_end] = weekly_trend[wi]
+
         return result
 
     def _get_market_info(self, date) -> Dict[str, Any]:
@@ -353,32 +402,34 @@ class SignalEngine:
         # === Layer 1: 多级别确认 (chanlun-pro最高优先级) ===
 
         # 双级别确认 (笔+线段同时) → 最强信号
+        # v8: IC分析显示chan_buy_point IC≈0, chan_sell_point IC=+0.027(反号)
+        # 买卖点预测力弱, 降低boost幅度; 卖点惩罚大幅缩小
         if signal_level == 3 and confirmed_buy:
-            mult *= 1.35  # 双级别确认买点 → 最强买入
+            mult *= 1.18  # 双级别确认买点 → 降幅(原1.35)
             div_quality = max(div_quality, buy_strength)
             is_buy_boost = True
         elif signal_level == -3 and confirmed_sell:
-            mult *= 0.55  # 双级别确认卖点 → 最强卖出
+            mult *= 0.70  # 双级别确认卖点 → 减罚(原0.55)
             div_quality = max(div_quality, sell_strength)
             is_sell_boost = True
 
         # 线段级别信号
         elif signal_level == 2 and confirmed_buy:
-            mult *= 1.25
+            mult *= 1.12
             div_quality = max(div_quality, buy_strength)
             is_buy_boost = True
         elif signal_level == -2 and confirmed_sell:
-            mult *= 0.65
+            mult *= 0.75
             div_quality = max(div_quality, sell_strength)
             is_sell_boost = True
 
         # 笔级别信号
         elif signal_level == 1 and confirmed_buy:
-            mult *= 1.15
+            mult *= 1.08
             div_quality = max(div_quality, buy_strength * 0.7)
             is_buy_boost = True
         elif signal_level == -1 and confirmed_sell:
-            mult *= 0.75
+            mult *= 0.82
             div_quality = max(div_quality, sell_strength * 0.7)
             is_sell_boost = True
 
@@ -394,7 +445,7 @@ class SignalEngine:
         if bottom_fx_quality > 0.25:  # 降低最低门槛（原来0.35），让量在价先有机会进入
             if is_buy_boost:
                 # 已有买点信号 + 强底分型 → 增强确认
-                base_boost = 0.12 * bottom_fx_quality
+                base_boost = 0.08 * bottom_fx_quality
                 if is_volume_spike_3x:
                     base_boost += 0.08  # 量在价先额外增强
                 mult *= 1.0 + base_boost
@@ -406,7 +457,7 @@ class SignalEngine:
 
                 if bottom_fx_quality > standalone_threshold:
                     # 高质量底分型 → 独立买信号
-                    boost = 0.14 * bottom_fx_quality
+                    boost = 0.10 * bottom_fx_quality
                     if is_volume_spike_3x:
                         boost += 0.10  # 量在价先显著增强
                     mult *= 1.0 + boost
@@ -414,7 +465,7 @@ class SignalEngine:
                     div_quality = max(div_quality, bottom_fx_quality * 0.55)
                 elif bottom_fx_quality > mild_threshold:
                     # 温和买倾向
-                    mult *= 1.0 + 0.07 * bottom_fx_quality
+                    mult *= 1.0 + 0.05 * bottom_fx_quality
                     if is_volume_spike_3x:
                         mult *= 1.06  # 3x放量翻倍温和信号
                     elif bottom_fx_vol > 1.3:
@@ -433,7 +484,7 @@ class SignalEngine:
 
         if second_buy and second_buy_conf >= 0.45:
             # B2是缠论中最可靠的买点 — 趋势已反转 + 回调确认
-            b2_boost = 0.18 * second_buy_conf  # 最高约 +17%
+            b2_boost = 0.12 * second_buy_conf  # 最高约 +12% (原0.18, IC分析显示买点预测力弱)
             if not is_sell_boost:
                 mult *= 1.0 + b2_boost
                 is_buy_boost = True
@@ -444,9 +495,10 @@ class SignalEngine:
                 div_quality = max(div_quality, second_buy_conf * 0.75)
 
         # 回退到旧的三类买卖点 (无多级别确认时)
-        # B3/B2/B1 各自独立评估，不做内部递补
-        # 递补是选股层面的逻辑：优先选B3股票，没有则选B2，再没有选B1
+        # B3/B2/B1 互斥优先级：一个时间点只能处于一种买点状态
+        # 优先级：B3 > B2 > B1（趋势加速 > 回调确认 > 底部反转）
         if not is_buy_boost and not is_sell_boost:
+            # === 买点互斥选择 ===
             if buy_point == 3 and buy_conf > 0.2:
                 # B3: 趋势加速买点 — 牛市最强，但需要质量门控
                 chan_pivot_zg_b3 = self._safe_get(ind, 'chan_pivot_zg', idx, np.nan)
@@ -454,7 +506,7 @@ class SignalEngine:
                     current_close = self._safe_get(ind, 'close', idx, np.nan)
                     if not np.isnan(current_close) and current_close < chan_pivot_zg_b3 * 0.995:
                         is_sell_boost = True
-                        mult *= 0.60
+                        mult *= 0.72  # ZG硬止损减罚(原0.60), 卖点IC反号
                         div_quality = buy_conf * 0.5
                     else:
                         b3_mult = self._calc_b3_multiplier(ind, idx, market_info, industry)
@@ -485,27 +537,29 @@ class SignalEngine:
                     div_quality = max(div_quality, buy_conf * 0.80)
                     is_buy_boost = True
 
-            if sell_point == 1 and sell_conf > 0.3:
-                mult *= 0.65
-                div_quality = max(div_quality, sell_conf)
-                is_sell_boost = True
-            elif sell_point == 2 and sell_conf > 0.2:
-                mult *= 0.70
-                div_quality = max(div_quality, sell_conf * 0.8)
-                is_sell_boost = True
-            elif sell_point == 3 and sell_conf > 0.2:
-                mult *= 0.75
-                div_quality = max(div_quality, sell_conf * 0.85)
-                is_sell_boost = True
+            # === 卖点互斥选择（买点与卖点也互斥，买点优先） ===
+            if not is_buy_boost:
+                if sell_point == 1 and sell_conf > 0.3:
+                    mult *= 0.78  # IC分析: 卖点预测正向收益, 大幅减罚(原0.65)
+                    div_quality = max(div_quality, sell_conf)
+                    is_sell_boost = True
+                elif sell_point == 2 and sell_conf > 0.2:
+                    mult *= 0.82  # 减罚(原0.70)
+                    div_quality = max(div_quality, sell_conf * 0.8)
+                    is_sell_boost = True
+                elif sell_point == 3 and sell_conf > 0.2:
+                    mult *= 0.85  # 减罚(原0.75)
+                    div_quality = max(div_quality, sell_conf * 0.85)
+                    is_sell_boost = True
 
         # === Layer 2: 统一Chan信号 (当买卖点不明显时使用) ===
         if buy_point == 0 and sell_point == 0:
             if chan_buy > 0.5:
-                mult *= 1.0 + 0.15 * chan_buy
+                mult *= 1.0 + 0.10 * chan_buy  # 降幅(原0.15)
                 is_buy_boost = True
                 div_quality = max(div_quality, chan_buy * 0.6)
             if chan_sell > 0.5:
-                mult *= 1.0 - 0.25 * chan_sell
+                mult *= 1.0 - 0.15 * chan_sell  # 减罚(原0.25)
                 is_sell_boost = True
                 div_quality = max(div_quality, chan_sell * 0.6)
 
@@ -514,13 +568,13 @@ class SignalEngine:
             if bottom_div > top_div and bottom_div > self.chan_bottom_div_threshold:
                 # 底背离仅在下跌趋势中有意义（盘整中的背离无效）
                 if trend_type != 0:  # 有趋势才启用背离
-                    mult *= 1.20
+                    mult *= 1.14  # 降幅(原1.20), divergence_strength IC仅+0.009
                     div_quality = bottom_div
                     is_buy_boost = True
             elif top_div > bottom_div and top_div > self.chan_top_div_threshold:
                 # 顶背离仅在上涨趋势中有意义
                 if trend_type != 0:
-                    mult *= 0.70
+                    mult *= 0.78  # 减罚(原0.70), 卖点预测力弱
                     div_quality = top_div
                     is_sell_boost = True
 
@@ -537,7 +591,7 @@ class SignalEngine:
                 mult *= 0.92  # 逆势抄底需谨慎
         elif trend_type == 1:  # 盘整
             if abs(mult - 1.0) > 0.1:
-                mult = 1.0 + (mult - 1.0) * 0.7  # 盘整时信号打7折
+                mult = 1.0 + (mult - 1.0) * 0.80  # 盘整时信号打8折(原7折), 更宽松
 
         # === Layer 5: 中枢位置调整 ===
         if pivot_pos == -1 and trend_type >= 1:  # 中枢下方+非下跌趋势
@@ -577,7 +631,7 @@ class SignalEngine:
         # 均线乖离检查已移至 portfolio.py 均值回归调整（统一处理）
 
         return {
-            'boost_multiplier': float(np.clip(mult, 0.5, 1.5)),
+            'boost_multiplier': float(np.clip(mult, 0.5, 1.3)),
             'is_chan_buy_boost': is_buy_boost,
             'is_chan_sell_boost': is_sell_boost,
             'divergence_quality': div_quality,
@@ -995,21 +1049,48 @@ class SignalEngine:
                                           specific_industry if code else '')
         chan_sl = int(self._safe_get(ind, 'signal_level', idx, 0))
 
-        # === 缠论门控：强结构信号时缠论主导，弱信号时因子主导 ===
-        # 门控公式保留 chan_boost['boost_multiplier'] 的7层调整 (趋势/中枢/中阴等)
+        # === 缠论+因子 加法融合 (替代乘法叠加，提高可解释性) ===
+        # 将缠论信号转为独立加法项，每层贡献独立可追溯
+        # score = α × factor_score + β × chan_score
         chan_mult = chan_boost['boost_multiplier']
-        if chan_sl >= 2 and chan_boost.get('is_chan_buy_boost'):
-            # 线段级/双级别买入 → 缠论主导，因子辅助，7层调整保留
-            chan_score = 0.5 + 0.5 * chan_boost.get('divergence_quality', 0.5)
-            score = chan_score * 1.5 * max(1.0, chan_mult) + base_score * 0.2
-        elif chan_sl <= -2 and chan_boost.get('is_chan_sell_boost'):
-            # 线段级/双级别卖出 → 缠论主导，7层调整保留 (sell_mult<1转为负分强度)
-            chan_score = 0.5 + 0.5 * chan_boost.get('divergence_quality', 0.5)
+        chan_div_quality = chan_boost.get('divergence_quality', 0.0)
+        is_chan_buy = chan_boost.get('is_chan_buy_boost', False)
+        is_chan_sell = chan_boost.get('is_chan_sell_boost', False)
+
+        # 计算缠论得分：基于信号层级和背离质量
+        if chan_sl >= 2 and is_chan_buy:
+            # 线段级/双级别买入 → 缠论强信号
+            chan_score = (0.3 + 0.4 * chan_div_quality) * max(1.0, chan_mult)
+        elif chan_sl <= -2 and is_chan_sell:
+            # 线段级/双级别卖出 → 缠论强卖出
             sell_intensity = max(0.3, (1.0 - chan_mult) * 3.0)
-            score = -chan_score * sell_intensity + base_score * 0.2
+            chan_score = -(0.3 + 0.4 * chan_div_quality) * sell_intensity
+        elif is_chan_buy:
+            # 笔级买入 → 缠论辅助信号
+            chan_score = 0.15 * chan_div_quality * max(1.0, chan_mult)
+        elif is_chan_sell:
+            # 笔级卖出 → 缠论辅助信号
+            chan_score = -0.15 * chan_div_quality * max(0.5, chan_mult)
         else:
-            # 无强结构信号或仅笔级 → 因子主导，缠论乘法增强（原行为）
-            score = score * chan_mult
+            # 无缠论信号 → 缠论调整仍以温和乘法作用于因子分
+            chan_score = 0.0
+            score = score * max(0.7, min(chan_mult, 1.3))  # 无信号时保留温和调整
+
+        if chan_score != 0.0:
+            # Fix#1: 标准化加法融合 — 两分量纲不同，必须归一化到[0,1]后再融合
+            # base_score ∈ [-10, 10] → [0, 1]
+            base_norm = (base_score + 10) / 20.0
+            base_norm = float(np.clip(base_norm, 0.0, 1.0))
+            # chan_score ∈ [-0.65, 0.65] → [0, 1] (中性点=0.5)
+            # 正值信号映射到(0.5, 1.0]，负值映射到[0.0, 0.5)
+            if chan_score >= 0:
+                chan_norm = 0.5 + 0.5 * float(np.clip(chan_score / 0.65, 0.0, 1.0))
+            else:
+                chan_norm = 0.5 - 0.5 * float(np.clip(abs(chan_score) / 0.65, 0.0, 1.0))
+            chan_norm = float(np.clip(chan_norm, 0.0, 1.0))
+            # 归一化后加权融合，再还原到合理分数范围
+            fused_norm = 0.65 * base_norm + 0.35 * chan_norm  # ∈ [0, 1]
+            score = fused_norm * 2.0 - 1.0  # 还原到 [-1, 1]，贴近因子分分布
 
         smart_money = self._safe_get(ind, 'smart_money_flow', idx, 0)
         bottom_div = self._safe_get(ind, 'bottom_divergence', idx, 0.0)
@@ -1024,15 +1105,16 @@ class SignalEngine:
         # B3/B2/B1质量系统是否已介入 (chan_mult > 1.0 表示通过了某级质量门控)
         chan_quality_applied = chan_boost.get('is_chan_buy_boost', False)
 
-        # P0: 纯因子信号 — 无Chan结构确认 → 大幅降分
+        # P0: 纯因子信号 — 无Chan结构确认 → 温和降分
+        # v8: IC分析显示chan_buy_point IC≈0, 无Chan结构的纯因子信号不应过度惩罚
         has_chan_structure = (buy_point_raw > 0 or chan_sl >= 1 or
                               bottom_div > 0.3 or bottom_fx_q > 0.25)
         if not has_chan_structure and not chan_quality_applied and score > 0:
-            score = score * 0.45  # 无缠论结构 → 因子信号不可靠
+            score = score * 0.70  # 无缠论结构 → 温和降分(原0.55)
 
-        # P1: Chan内部冲突 — 买卖点同时存在 → 信任卖点
+        # P1: Chan内部冲突 — 买卖点同时存在 → 卖点IC反号, 不信任卖点
         if buy_point_raw > 0 and sell_point_raw > 0:
-            score = score * 0.45
+            score = score * 0.65  # 减罚(原0.45), 卖点预测正向收益
 
         # P2: 无趋势的Chan买点 — 仅当没有其他质量确认时才处罚
         # (B3/B2/B1质量门控已通过的，不再重复处罚)
@@ -1040,7 +1122,7 @@ class SignalEngine:
             if bottom_div > 0.3 or bottom_fx_q > 0.35:
                 pass
             else:
-                score = score * 0.65
+                score = score * 0.72  # 减罚(原0.65)
 
         # === ML预测混合（非线性因子交互） ===
         if self.ml_enabled and self.ml_predictor is not None and \
@@ -1056,9 +1138,9 @@ class SignalEngine:
 
         # 5. 市场状态调整（portfolio层管理敞口，信号层仅温和折扣）
         if risk_regime == -1:
-            score = score * 0.85  # 熊市温和降分（给portfolio层留空间）
+            score = score * 0.92  # 熊市温和降分（给portfolio层留空间）
         elif risk_regime == 0:
-            score = score * 0.95  # 中性市场轻微折扣
+            score = score * 0.97  # 中性市场轻微折扣
         # 牛市不调整
 
         regime_weight = 0.85 if risk_extreme else 1.0
@@ -1084,6 +1166,19 @@ class SignalEngine:
 
         n_buy_systems = sum([sys1_buy, sys2_buy, sys3_buy])
         n_sell_systems = sum([sys1_sell, sys2_sell, sys3_sell])
+
+        # === 周线多时间框架确认 ===
+        # 日线信号方向与周线趋势不一致时降低信号强度
+        # "顺大势、逆小势"：周线空头下弱化买入，周线多头下弱化卖出
+        weekly_trend_up = bool(self._safe_get(ind, 'weekly_trend_up', idx, False))
+        if score > 0 and not weekly_trend_up:
+            # 日线看多但周线空头 → 买入信号打折
+            score *= 0.70
+            adjusted_score *= 0.70
+        elif score < 0 and weekly_trend_up:
+            # 日线看空但周线多头 → 卖出信号打折（乘以>1使score不那么负）
+            score *= 0.70  # score是负数，乘以0.7 → 更接近0，减弱卖出
+            adjusted_score *= 0.70
 
         # 共振逻辑: 只有多系统同向时才放大信号
         if n_buy_systems >= 3:
@@ -1159,10 +1254,13 @@ class SignalEngine:
             self._factor_value_buffer.append(float(score))
 
         # 动态阈值：每20根K线重算一次（百分位计算很贵，阈值变化缓慢）
+        # Fix#3b: 按市场状态选择不同的百分位基准，提高风格切换响应
         self._pct_counter += 1
         if len(self._factor_value_buffer) > 100 and self._pct_counter % 20 == 0:
             buf = list(self._factor_value_buffer)
-            pct = self._buy_threshold_pct * 100
+            # 根据当前市场状态选择百分位基准
+            current_pct = self._buy_threshold_pct_map.get(risk_regime, self._buy_threshold_pct_map[0])
+            pct = current_pct * 100
             self._cached_buy_threshold = max(
                 float(np.percentile(buf, pct)),
                 self.buy_threshold * 0.6
@@ -1175,6 +1273,8 @@ class SignalEngine:
         effective_sell_threshold = self._cached_sell_threshold
 
         # 缠论买点信号: 强结构买点直接触发（与卖出逻辑对称）
+        # Fix#5: 成交量门控已移除 — 2.0x/1.5x双重确认在当前市场中几乎无信号通过
+        # 量能枯竭由 portfolio.py 短期趋势过滤#1 (vol_ratio<-0.30) 处理
         chan_buy_signal = chan_boost.get('is_chan_buy_boost', False)
         sl_buy = int(self._safe_get(ind, 'signal_level', idx, 0))
         bp_buy = int(self._safe_get(ind, 'buy_point', idx, 0))

@@ -30,9 +30,14 @@ config = load_config()
 
 # 回测参数 - 从配置文件读取
 CASH = config.get('backtest.cash', 100000.0)
-COMMISSION = config.get('backtest.commission', 0.0015)
-PERC = config.get('backtest.slippage', 0.0015)
+COMMISSION = config.get('backtest.commission', 0.0001)  # 万1佣金
+PERC = config.get('backtest.slippage', 0.001)
 REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
+
+# A股涨跌停限制数据（预计算，供BacktraderExecution使用）
+_LIMIT_DATA = {}   # {(code, date): 'up' | 'down'}
+_ST_CODES = set()  # ST股票代码集合
+_ST_DATE_RANGES = {}  # {code: [(start_date, end_date), ...]} ST期间
 
 # === 小说优化：动态调仓周期 ===
 DYNAMIC_REBALANCE_CONFIG = config.get('dynamic_rebalance', {})
@@ -52,22 +57,21 @@ _worker_engine = None
 _worker_use_dynamic = False
 
 
-def _init_worker(fundamental_path, stock_codes, use_dynamic, industry_codes, factor_cache, all_dates, regime_df,
+def _init_worker(fundamental_data, stock_codes, use_dynamic, industry_codes, factor_cache, all_dates, regime_df,
                  ml_model_path=None, ml_preds=None):
     """Worker 进程初始化函数
 
     注意: 不传递 factor_df (巨大DataFrame) 到每个worker，预计算的 factor_cache 已包含所有因子选择结果。
-    ml_preds 只传递当前股票相关的预测值（由调用方过滤），大幅减少内存占用。
+    fundamental_data 直接从父进程继承（fork COW共享），避免每个 worker 重新从磁盘加载。
     """
     global _worker_engine, _worker_use_dynamic
     _worker_use_dynamic = use_dynamic
 
-    # 每个 worker 创建自己的 engine 和 fundamental_data
+    # 每个 worker 创建自己的 engine，复用父进程的 fundamental_data（fork 后 COW 共享）
     _worker_engine = SignalEngine()
 
-    if fundamental_path and os.path.exists(fundamental_path):
-        fd = FundamentalData(fundamental_path, stock_codes)
-        _worker_engine.set_fundamental_data(fd)
+    if fundamental_data is not None:
+        _worker_engine.set_fundamental_data(fundamental_data)
 
     # 设置市场状态数据（关键：用于牛市优化）
     if regime_df is not None:
@@ -101,9 +105,6 @@ def _generate_stock_signal_worker(args):
 
         if engine is None:
             engine = SignalEngine()
-            if FUNDAMENTAL_PATH and os.path.exists(FUNDAMENTAL_PATH):
-                fd = FundamentalData(FUNDAMENTAL_PATH, [code])
-                engine.set_fundamental_data(fd)
 
         store = SignalStore()
         data = pd.read_csv(filepath, parse_dates=['datetime'])
@@ -118,12 +119,17 @@ def _generate_stock_signal_worker(args):
 
 
 def add_data_and_signal(cerebro, strategy, fundamental_data=None):
+    """加载数据、生成信号、添加到cerebro。
+    同时预计算涨跌停数据和ST股票集合。
+    """
+    global _LIMIT_DATA, _ST_CODES, _ST_DATE_RANGES
     all_items = os.listdir(DATA_PATH)
     stock_codes = []  # 获取回测池中的股票列表
 
-    # 只读取一次CSV数据，同时记录文件路径
+    # 只读取一次CSV数据，同时记录文件路径和涨跌停数据
     stock_data_dict = {}
     stock_file_map = {}  # code → filepath，传给worker直接从文件读
+    _LIMIT_DATA = {}     # 重置涨跌停数据
     for item in tqdm(all_items, desc="loading data"):
         if item.startswith('._'):
             continue
@@ -137,6 +143,30 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         data = pd.read_csv(filepath, parse_dates=['datetime'])
         stock_data_dict[name] = data
         stock_file_map[name] = filepath
+
+        # 预计算涨跌停日期（基于change_percent列）
+        if 'change_percent' in data.columns and name != 'sh000001':
+            chg = data['change_percent'].values
+            amp = data['amplitude'].values if 'amplitude' in data.columns else np.ones(len(data)) * 99
+            dates = data['datetime'].values
+            for i in range(len(data)):
+                cp = chg[i]
+                if pd.isna(cp):
+                    continue
+                ap = amp[i] if not pd.isna(amp[i]) else 99
+                # 涨停: change_percent >= 9.5% (主板±10%)，且振幅很小（封死涨停）
+                if cp >= 9.5 and ap < 3.0:
+                    _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'up'
+                # 跌停: change_percent <= -9.5%
+                elif cp <= -9.5 and ap < 3.0:
+                    _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'down'
+                # ST股票5%限制: change_percent在4.5-5.5%之间且振幅<2%
+                elif 4.5 <= cp <= 5.5 and ap < 2.0:
+                    _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'up'
+                elif -5.5 <= cp <= -4.5 and ap < 2.0:
+                    _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'down'
+    print(f"涨跌停数据: {len(_LIMIT_DATA)} 条 (涨停={sum(1 for v in _LIMIT_DATA.values() if v=='up')}, "
+          f"跌停={sum(1 for v in _LIMIT_DATA.values() if v=='down')})")
 
     # === 股票池过滤 ===
     stock_pool_enabled = config.get('stock_pool.enabled', True)
@@ -157,6 +187,32 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     stock_data_dict = {k: v for k, v in stock_data_dict.items() if k not in star_codes}
     stock_file_map = {k: v for k, v in stock_file_map.items() if k not in star_codes}
     print(f"科创板过滤: {before_excl} -> {len(stock_data_dict)} 只")
+
+    # === ST股票识别（基于基本面数据） ===
+    _ST_CODES = set()
+    _ST_DATE_RANGES = {}
+    if fundamental_data is not None:
+        try:
+            # 对所有回测池中的股票检查ST状态
+            for code in tqdm(list(stock_data_dict.keys()), desc="ST detection"):
+                if code == 'sh000001':
+                    continue
+                # 取股票数据日期范围的中间点查询ST状态
+                stock_dates = stock_data_dict[code]['datetime'].values
+                if len(stock_dates) == 0:
+                    continue
+                mid_date = pd.Timestamp(stock_dates[len(stock_dates) // 2])
+                if fundamental_data.is_st(code, mid_date):
+                    _ST_CODES.add(code)
+            print(f"ST股票: {len(_ST_CODES)} 只")
+            if _ST_CODES:
+                # 存入strategy供BacktraderExecution使用
+                strategy.st_codes = _ST_CODES
+        except Exception as e:
+            print(f"ST检测跳过: {e}")
+            strategy.st_codes = set()
+    else:
+        strategy.st_codes = set()
 
     # 从任意一个DataFrame获取日期（所有股票数据共享日历）
     dates = set()
@@ -236,7 +292,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 生成信号（多进程并行）
     # use_dynamic 表示是否使用动态因子选择器
     use_dynamic = factor_mode != 'fixed'
-    stock_codes = [name for name in stock_data_dict.keys() if name != "sh000001"]
+    stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
 
     # 创建带动态因子的 SignalEngine（如果启用）
     main_engine = None
@@ -283,8 +339,17 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 准备参数：传文件路径给worker（而非dict），避免内存翻倍
     stock_items = [
         (name, stock_file_map[name])
-        for name in stock_data_dict if name != "sh000001"
+        for name in stock_codes
     ]
+
+    # === 释放 stock_data_dict (避免 fork 复制 ~3-5GB 到每个 worker) ===
+    # Signal workers 直接从 CSV 文件读取数据，不需要内存中的 DataFrame
+    # 在 fork 前释放可节省 NUM_WORKERS × 3-5GB 的内存
+    stock_data_dict.clear()
+    del stock_data_dict
+    import gc
+    gc.collect()
+    print("已释放 stock_data_dict 内存（避免 fork 复制到 worker 进程）")
 
     # 增量写入信号CSV（而非内存中累积 ~1.3GB 的 all_signals 列表）
     strategy_dir = os.path.dirname(os.path.abspath(__file__))
@@ -307,7 +372,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     with ctx.Pool(
         processes=NUM_WORKERS,
         initializer=_init_worker,
-        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes, precomputed_cache, precomputed_all_dates, regime_df,
+        initargs=(fundamental_data, stock_codes, use_dynamic, industry_codes, precomputed_cache, precomputed_all_dates, regime_df,
                   _ml_model_path, _ml_preds)
     ) as pool:
         for result in tqdm(
@@ -373,9 +438,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                 print(f"  {fn}: {cnt:,}")
 
     price_cols = ['open', 'high', 'low', 'close']
-    for name, data in tqdm(stock_data_dict.items(), desc="preparing datafeeds"):
-        if name == "sh000001":
+    # 从文件逐个加载股票数据（stock_data_dict 已在 fork 前释放）
+    for name in tqdm(stock_codes, desc="preparing datafeeds"):
+        filepath = stock_file_map.get(name)
+        if not filepath:
             continue
+        data = pd.read_csv(filepath, parse_dates=['datetime'])
         data = data.set_index('datetime')
         data = data.reindex(calendar_index)
         data[price_cols] = data[price_cols].ffill()
@@ -394,10 +462,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         strategy.portfolio.fundamental_data = FundamentalData(fundamental_path + '/', stock_codes=stock_codes)
         print(f"基本面数据已限制为 {len(stock_codes)} 只股票")
 
-    # 释放 stock_data_dict 和 stock_file_map 的内存（cerebro 已持有数据副本）
-    stock_data_dict.clear()
+    # 释放 stock_file_map 内存
     stock_file_map.clear()
-    del stock_data_dict, stock_file_map
+    del stock_file_map
     import gc
     gc.collect()
     print("已释放数据加载缓存")
@@ -420,9 +487,15 @@ class BacktraderExecution(bt.Strategy):
         self.cost = defaultdict(list)
         self.portfolio_selections = []  # 记录每期选股结果
         self._prev_total_value = None  # 用于计算每日收益率
+        # ST/涨跌停配置
+        st_config = config.get('stock_pool', {})
+        self._filter_st = st_config.get('filter_st', True)  # 默认过滤ST
+        self._st_codes = getattr(self.p.real_strategy, 'st_codes', set()) if self.p.real_strategy else set()
+        # 涨跌停数据
+        self._limit_data = _LIMIT_DATA  # 引用全局预计算数据
 
     def _is_tradable(self, d):
-        """检查股票是否可交易（非停牌、价格正常）"""
+        """检查股票是否可交易（非停牌、价格正常、非ST/科创板）"""
         price = d.close[0]
         volume = d.volume[0] if hasattr(d, 'volume') else 1
 
@@ -438,7 +511,23 @@ class BacktraderExecution(bt.Strategy):
         if volume is None or math.isnan(volume) or volume < self.MIN_VOLUME:
             return False
 
+        # 4. ST股票过滤（默认从strategy获取，可通过配置关闭）
+        if self._filter_st and d._name in self._st_codes:
+            return False
+
         return True
+
+    def _is_limit_up(self, code, date):
+        """检查股票当日是否涨停（无法买入）"""
+        if hasattr(date, 'date'):
+            date = date.date()
+        return _LIMIT_DATA.get((code, date)) == 'up'
+
+    def _is_limit_down(self, code, date):
+        """检查股票当日是否跌停（无法卖出）"""
+        if hasattr(date, 'date'):
+            date = date.date()
+        return _LIMIT_DATA.get((code, date)) == 'down'
 
     def next(self):
         if self.last_date is not None and self.last_date in self.orders_list:
@@ -534,12 +623,18 @@ class BacktraderExecution(bt.Strategy):
             size = max(int(raw), 1) * 100 if raw > 0 else min(int(raw), -1) * 100
 
             if size > 0:
+                # 涨停检查：无法买入（封死涨停板时没有卖盘）
+                if self._is_limit_up(code, date):
+                    continue
                 max_affordable = int(self.broker.getcash() / price / 100) * 100
                 size = min(size, max_affordable)
                 if size > 0:
                     order = self.buy(data=d, size=size)
                     self.orders_list[date].append(order)
             elif size < 0:
+                # 跌停检查：无法卖出（封死跌停板时没有买盘）
+                if self._is_limit_down(code, date):
+                    continue
                 order = self.sell(data=d, size=size)
                 self.orders_list[date].append(order)
 

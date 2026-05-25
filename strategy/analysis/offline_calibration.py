@@ -27,6 +27,7 @@
 import sys
 import os
 import gc
+import tempfile
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -34,6 +35,11 @@ import multiprocessing
 from tqdm import tqdm
 import yaml
 from collections import defaultdict
+
+# 防止numpy在worker进程中开启多线程导致内存膨胀
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -50,7 +56,9 @@ from core.industry_mapping import INDUSTRY_KEYWORDS
 
 # ========== 全局变量用于worker进程 ==========
 _worker_fd = None
-_worker_regime_data = None
+_worker_factor_dates = None
+_worker_lookback = 120
+_worker_forward_period = 20
 
 
 def _log_memory(tag=""):
@@ -63,24 +71,30 @@ def _log_memory(tag=""):
         pass
 
 
-def _init_calib_worker(fundamental_path, stock_codes):
-    """Worker进程初始化"""
-    global _worker_fd
+def _init_calib_worker(fundamental_path, stock_codes, factor_dates, lookback, forward_period):
+    """Worker进程初始化（spawn模式：每个worker独立加载FundamentalData）"""
+    global _worker_fd, _worker_factor_dates, _worker_lookback, _worker_forward_period
     if fundamental_path and os.path.exists(fundamental_path):
         _worker_fd = FundamentalData(fundamental_path, stock_codes)
     else:
         _worker_fd = None
+    _worker_factor_dates = factor_dates
+    _worker_lookback = lookback
+    _worker_forward_period = forward_period
 
 
 def _calibrate_stock_worker(args):
     """计算单只股票的因子数据（用于标定）
 
     与factor_preparer逻辑完全一致，使用统一的压缩函数。
-    每个worker自行加载CSV，避免通过fork传递大数据。
+    每个worker自行加载CSV，通过共享全局变量获取参数。
     """
-    global _worker_fd, _worker_regime_data
+    global _worker_fd, _worker_factor_dates, _worker_lookback, _worker_forward_period
 
-    code, file_path, factor_dates, lookback, forward_period = args
+    code, file_path = args
+    factor_dates = _worker_factor_dates
+    lookback = _worker_lookback
+    forward_period = _worker_forward_period
 
     # 每个worker自行加载股票CSV（避免主进程预加载全部数据）
     df = pd.read_csv(file_path, parse_dates=['datetime'])
@@ -120,25 +134,81 @@ def _calibrate_stock_worker(args):
         except Exception:
             pass
 
-    # 批量获取基本面数据
+    # 批量获取基本面数据（优化：每个日期只调用1次_get_latest + 1次_get_nth_latest，
+    # 替代原来每个日期15+次独立方法调用，大幅减少DataFrame filter+sort操作）
     fund_cache = {}
     if _worker_fd is not None:
         for eval_date in factor_dates:
             try:
-                fund_cache[eval_date] = {
-                    'roe': _worker_fd.get_roe(code, eval_date),
-                    'profit_growth': _worker_fd.get_profit_growth(code, eval_date),
-                    'revenue_growth': _worker_fd.get_revenue_growth(code, eval_date),
-                    'fund_score': _worker_fd.get_fundamental_score(code, eval_date),
-                    'gross_margin': _worker_fd.get_gross_margin(code, eval_date),
-                    'pg_improve': _worker_fd.get_profit_growth_improve(code, eval_date),
-                    'rg_improve': _worker_fd.get_revenue_growth_improve(code, eval_date),
-                    'cf_to_profit': None
-                }
-                operating_cf = _worker_fd.get_operating_cash_flow(code, eval_date)
-                profit = _worker_fd.get_profit(code, eval_date)
+                latest = _worker_fd._get_latest(code, eval_date)
+                if latest is None:
+                    fund_cache[eval_date] = {}
+                    continue
+
+                def _pct(v):
+                    """解析百分比字符串"""
+                    if v is None:
+                        return None
+                    try:
+                        if isinstance(v, str):
+                            return float(v.strip('%')) / 100
+                        return float(v)
+                    except Exception:
+                        return None
+
+                roe = _pct(latest.get('净资产收益率'))
+                pg = _pct(latest.get('净利润-同比增长'))
+                rg = _pct(latest.get('营业总收入-同比增长'))
+                eps = latest.get('每股收益')
+                gm = _pct(latest.get('销售毛利率'))
+                operating_cf = latest.get('xjll_经营性现金流-现金流量净额')
+                profit = latest.get('净利润-净利润')
+
+                # fund_score inline计算（与原get_fundamental_score逻辑一致）
+                fund_score = 0.0
+                if roe is not None:
+                    fund_score += min(roe * 100, 30)
+                if pg is not None:
+                    if pg > 0.5:
+                        fund_score += 25
+                    elif pg > 0.2:
+                        fund_score += 15
+                    elif pg > 0:
+                        fund_score += 5
+                if eps is not None and eps > 0:
+                    fund_score += min(eps * 10, 20)
+                if rg is not None:
+                    if rg > 0.3:
+                        fund_score += 15
+                    elif rg > 0.1:
+                        fund_score += 10
+
+                # pg_improve / rg_improve（需上一季度数据）
+                pg_improve = None
+                rg_improve = None
+                prev = _worker_fd._get_nth_latest(code, eval_date, n=1)
+                if prev is not None:
+                    prev_pg = _pct(prev.get('净利润-同比增长'))
+                    prev_rg = _pct(prev.get('营业总收入-同比增长'))
+                    if pg is not None and prev_pg is not None:
+                        pg_improve = pg - prev_pg
+                    if rg is not None and prev_rg is not None:
+                        rg_improve = rg - prev_rg
+
+                cf_to_profit = None
                 if operating_cf is not None and profit is not None and profit > 0:
-                    fund_cache[eval_date]['cf_to_profit'] = operating_cf / profit
+                    cf_to_profit = operating_cf / profit
+
+                fund_cache[eval_date] = {
+                    'roe': roe,
+                    'profit_growth': pg,
+                    'revenue_growth': rg,
+                    'fund_score': fund_score,
+                    'gross_margin': gm,
+                    'pg_improve': pg_improve,
+                    'rg_improve': rg_improve,
+                    'cf_to_profit': cf_to_profit,
+                }
             except Exception:
                 fund_cache[eval_date] = {}
 
@@ -161,42 +231,29 @@ def _calibrate_stock_worker(args):
         combo_factors = compute_composite_factors(ind, idx, fund_score=compressed_fund_score)
 
         row = {'code': code, 'date': sample_date, 'industry': stock_industry}
-        row.update(combo_factors)
+        # combo_factors values already float, cast to float32 to save memory
+        for k, v in combo_factors.items():
+            row[k] = np.float32(v) if isinstance(v, (int, float)) else v
 
-        # 基本面因子 - 使用统一压缩
+        # 基本面因子 - 使用统一压缩（结果转float32）
         if fund_data:
-            raw_roe = fund_data.get('roe')
-            raw_profit_growth = fund_data.get('profit_growth')
-            raw_revenue_growth = fund_data.get('revenue_growth')
-            raw_fund_score = fund_data.get('fund_score')
-            raw_gross_margin = fund_data.get('gross_margin')
-            raw_cf_to_profit = fund_data.get('cf_to_profit')
-            raw_pg_improve = fund_data.get('pg_improve')
-            raw_rg_improve = fund_data.get('rg_improve')
-
-            if raw_roe is not None and isinstance(raw_roe, (int, float)):
-                row['fund_roe'] = compress_fundamental_factor(raw_roe, 'fund_roe')
-            if raw_profit_growth is not None and isinstance(raw_profit_growth, (int, float)):
-                row['fund_profit_growth'] = compress_fundamental_factor(raw_profit_growth, 'fund_profit_growth')
-            if raw_revenue_growth is not None and isinstance(raw_revenue_growth, (int, float)):
-                row['fund_revenue_growth'] = compress_fundamental_factor(raw_revenue_growth, 'fund_revenue_growth')
-            if raw_fund_score is not None and isinstance(raw_fund_score, (int, float)):
-                row['fund_score'] = compress_fundamental_factor(raw_fund_score, 'fund_score')
-            if raw_gross_margin is not None and isinstance(raw_gross_margin, (int, float)):
-                row['fund_gross_margin'] = compress_fundamental_factor(raw_gross_margin, 'fund_gross_margin')
-            if raw_cf_to_profit is not None and isinstance(raw_cf_to_profit, (int, float)):
-                row['fund_cf_to_profit'] = compress_fundamental_factor(raw_cf_to_profit, 'fund_cf_to_profit')
-            if raw_pg_improve is not None and isinstance(raw_pg_improve, (int, float)):
-                row['fund_pg_improve'] = compress_fundamental_factor(raw_pg_improve, 'fund_pg_improve')
-            if raw_rg_improve is not None and isinstance(raw_rg_improve, (int, float)):
-                row['fund_rg_improve'] = compress_fundamental_factor(raw_rg_improve, 'fund_rg_improve')
+            fund_fields = [
+                ('roe', 'fund_roe'), ('profit_growth', 'fund_profit_growth'),
+                ('revenue_growth', 'fund_revenue_growth'), ('fund_score', 'fund_score'),
+                ('gross_margin', 'fund_gross_margin'), ('cf_to_profit', 'fund_cf_to_profit'),
+                ('pg_improve', 'fund_pg_improve'), ('rg_improve', 'fund_rg_improve'),
+            ]
+            for raw_key, row_key in fund_fields:
+                val = fund_data.get(raw_key)
+                if val is not None and isinstance(val, (int, float)):
+                    row[row_key] = np.float32(compress_fundamental_factor(val, row_key))
 
         # 计算未来收益
         if idx + forward_period < n:
             future_price = close_arr[idx + forward_period]
             current_price = close_arr[idx]
             if current_price > 0:
-                row['future_ret'] = (future_price - current_price) / current_price
+                row['future_ret'] = np.float32((future_price - current_price) / current_price)
                 results.append(row)
 
     return results
@@ -241,10 +298,12 @@ def prepare_calibration_data():
 
     stock_codes = [c for c in stock_file_map.keys() if c != "sh000001"]
 
-    # ---- 加载基本面数据 ----
-    fundamental_data = None
-    if fundamental_path and os.path.exists(fundamental_path):
-        fundamental_data = FundamentalData(fundamental_path, stock_codes)
+    # ---- 只验证基本面数据路径存在（worker各自加载） ----
+    fund_path_ok = fundamental_path and os.path.exists(fundamental_path)
+    if not fund_path_ok:
+        print("警告: 基本面数据路径不存在，将仅使用技术因子")
+    else:
+        print(f"基本面数据路径: {fundamental_path}（各worker独立加载）")
 
     # ---- 生成市场状态（需要完整指数数据） ----
     regime_lookup = None
@@ -265,51 +324,92 @@ def prepare_calibration_data():
 
     _log_memory("after prepare")
 
-    return stock_file_map, fundamental_data, regime_lookup, stock_codes, sorted(all_dates)
+    return stock_file_map, fundamental_path if fund_path_ok else None, regime_lookup, stock_codes, sorted(all_dates)
 
 
-def compute_factor_data(stock_file_map, fundamental_data, regime_lookup, stock_codes, all_dates):
-    """计算所有股票的因子数据（流式加载，不预存全部股票数据）"""
+def _calc_max_workers():
+    """根据可用内存估算最大worker数，硬上限4（WSL 8GB安全余量）"""
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    avail_kb = int(line.split()[1])
+                    avail_gb = avail_kb / (1024 * 1024)
+                    # 每worker保守估计1.2GB（FundamentalData加载全部基本面CSV约500-800MB）
+                    max_w = max(1, int(avail_gb / 1.2))
+                    # 硬上限：WSL 8GB机器最多4个worker
+                    max_w = min(max_w, 4)
+                    print(f"可用内存: {avail_gb:.1f} GB → 最大workers: {max_w}")
+                    return max_w
+    except Exception:
+        pass
+    return 2
+
+
+def compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates):
+    """计算所有股票的因子数据（spawn模式，避免fork内存复制）
+
+    核心优化：
+    1. spawn上下文：每个worker独立启动，不继承父进程内存（避免COW复制导致OOM）
+    2. 共享参数(factor_dates等)通过initargs传递，per-stock arg仅(code, file_path)
+    3. 结果流式写入磁盘分块，避免内存中同时持有全部结果
+    4. auto-cap workers基于可用内存
+    """
     config = load_config()
     lookback = config.get('industry_factor_config.lookback_days', 120)
     forward_period = config.get('dynamic_factor.forward_period', 20)
-    num_workers = config.get('backtest.num_workers', 4)
+    configured_workers = config.get('backtest.num_workers', 4)
 
     factor_dates = all_dates[lookback:-forward_period]
 
+    # 根据可用内存自动限制worker数（每个worker加载FundamentalData约需300-500MB）
+    max_workers_by_mem = _calc_max_workers()
+    num_workers = min(configured_workers, max_workers_by_mem)
+    print(f"workers: {num_workers} (配置={configured_workers}, 内存限制={max_workers_by_mem})")
+
     print(f"标定范围: {len(factor_dates)} 个时间点, {len(stock_codes)} 只股票, {num_workers} workers")
 
-    # 准备worker参数：传文件路径而非DataFrame，worker自行加载
-    fundamental_path = fundamental_data.data_path if fundamental_data else None
+    # 精简参数列表：共享参数通过initargs传递，每stock仅传(code, file_path)
     args_list = [
-        (code, stock_file_map[code], factor_dates, lookback, forward_period)
+        (code, stock_file_map[code])
         for code in stock_codes if code in stock_file_map
     ]
 
-    # 流式并行计算
-    all_factor_data = []
-    ctx = multiprocessing.get_context('fork')
+    # 流式并行计算 + 分块写入磁盘
+    temp_dir = tempfile.mkdtemp(prefix='calib_factors_')
+    temp_files = []
+    chunk_buffer = []
+    chunk_size = 300000  # 每30万行写入一次（降低峰值内存）
+    total_rows = 0
+
+    ctx = multiprocessing.get_context('spawn')
     with ctx.Pool(num_workers,
                   initializer=_init_calib_worker,
-                  initargs=(fundamental_path, stock_codes)) as pool:
+                  initargs=(fundamental_path, stock_codes, factor_dates, lookback, forward_period)) as pool:
         for res in tqdm(pool.imap(_calibrate_stock_worker, args_list, chunksize=10),
                        total=len(args_list), desc="计算因子"):
-            all_factor_data.extend(res)
+            chunk_buffer.extend(res)
+            total_rows += len(res)
+            if len(chunk_buffer) >= chunk_size:
+                _flush_buffer(chunk_buffer, temp_dir, temp_files)
+                gc.collect()
 
-    _log_memory("after workers")
+    # 写入尾部
+    if chunk_buffer:
+        _flush_buffer(chunk_buffer, temp_dir, temp_files)
+        del chunk_buffer
 
-    # 构建factor_df，使用float32减少内存
-    if not all_factor_data:
+    # 显式关闭pool（确保worker释放内存）
+    pool.join()
+    _log_memory("after workers (streamed)")
+
+    # 读取所有chunk并合并
+    if not temp_files:
+        print("警告: 无因子数据生成")
         return pd.DataFrame()
 
-    factor_df = pd.DataFrame(all_factor_data)
-    del all_factor_data
-    gc.collect()
-
-    # 数值列转float32（字符串列code/date/industry不转）
-    numeric_cols = factor_df.select_dtypes(include=['float64']).columns
-    for col in numeric_cols:
-        factor_df[col] = factor_df[col].astype(np.float32)
+    factor_df = _read_and_merge_chunks(temp_files)
+    print(f"合并后数据: {len(factor_df)} 行, {factor_df['code'].nunique()} 只股票")
 
     _log_memory("after df build")
 
@@ -324,20 +424,68 @@ def compute_factor_data(stock_file_map, fundamental_data, regime_lookup, stock_c
     # 合并市场状态
     if regime_lookup and not factor_df.empty and 'date' in factor_df.columns:
         factor_df['date'] = pd.to_datetime(factor_df['date'])
-        regime_df = pd.DataFrame([
-            {'date': dt, 'regime': np.int8(regime)}
-            for dt, regime in regime_lookup.items()
-        ])
-        factor_df = factor_df.merge(regime_df, on='date', how='left')
-        factor_df['regime'] = factor_df['regime'].fillna(0).astype(np.int8)
+        regime_arr = np.zeros(len(factor_df), dtype=np.int8)
+        dates_series = factor_df['date']
+        for dt, reg in regime_lookup.items():
+            mask = dates_series == dt
+            regime_arr[mask] = np.int8(reg)
+        factor_df['regime'] = regime_arr
         regime_counts = factor_df['regime'].value_counts().to_dict()
         print(f"市场状态分布: {regime_counts}")
-        del regime_df
 
     gc.collect()
     _log_memory("after factor_df done")
 
     return factor_df
+
+
+def _flush_buffer(buffer, temp_dir, temp_files):
+    """将buffer写入临时pickle文件并清空"""
+    if not buffer:
+        return
+    chunk_df = pd.DataFrame(buffer)
+    temp_path = os.path.join(temp_dir, f'chunk_{len(temp_files)}.pkl')
+    chunk_df.to_pickle(temp_path)
+    temp_files.append(temp_path)
+    buffer.clear()
+
+
+def _read_and_merge_chunks(temp_files):
+    """逐文件读取chunk并合并，读取完立即删除临时文件"""
+    chunks = []
+    for f in temp_files:
+        chunks.append(pd.read_pickle(f))
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+    try:
+        os.rmdir(os.path.dirname(temp_files[0]))
+    except Exception:
+        pass
+    return pd.concat(chunks, ignore_index=True)
+
+
+def _cross_sectional_ic(df, factor_name, value_col='future_ret', min_samples=10):
+    """计算单个因子的截面Spearman IC（按日期groupby，避免pivot内存爆炸）
+
+    与pivot方法数学等价，但只遍历日期分组计算rank-IC，
+    不需要创建 dates×stocks 宽矩阵，大幅降低内存占用。
+
+    Returns:
+        list of float: 每个日期的IC值
+    """
+    ic_values = []
+    for _, group in df.groupby('date', sort=False):
+        valid = group[[factor_name, value_col]].dropna()
+        if len(valid) >= min_samples:
+            # 检查因子值是否有方差（避免ConstantInputWarning）
+            if valid[factor_name].nunique() <= 1:
+                continue
+            ic, _ = stats.spearmanr(valid[factor_name], valid[value_col])
+            if not np.isnan(ic):
+                ic_values.append(ic)
+    return ic_values
 
 
 def calibrate_industry_regime(factor_df, candidate_factors):
@@ -377,28 +525,12 @@ def calibrate_industry_regime(factor_df, candidate_factors):
 
             factor_metrics = {}
 
-            # 预计算future_ret的pivot（所有因子共用）
-            try:
-                ret_pivot = regime_df.pivot(index='date', columns='code', values='future_ret')
-                ret_rank = ret_pivot.rank(axis=1, na_option='keep').astype(np.float32)
-            except Exception:
-                continue
-
             for factor_name in candidate_factors:
                 if factor_name not in regime_df.columns:
                     continue
 
-                # 截面IC计算：每天对截面做Spearman rank corr
-                try:
-                    fn_pivot = regime_df.pivot(index='date', columns='code', values=factor_name)
-                    fn_rank = fn_pivot.rank(axis=1, na_option='keep').astype(np.float32)
-                    del fn_pivot
-
-                    ic_series = fn_rank.corrwith(ret_rank, axis=1)
-                    ic_list = ic_series.dropna().tolist()
-                    del fn_rank, ic_series
-                except Exception:
-                    ic_list = []
+                # 截面IC计算：按日期groupby代替pivot，避免内存爆炸
+                ic_list = _cross_sectional_ic(regime_df, factor_name)
 
                 if len(ic_list) < 10:
                     continue
@@ -437,14 +569,11 @@ def calibrate_industry_regime(factor_df, candidate_factors):
             if factor_metrics:
                 calibration_results[industry][regime_name] = factor_metrics
 
-            del ret_pivot, ret_rank
-            gc.collect()
-
     return calibration_results
 
 
 def _compute_combined_factor_ic(regime_df, factor_names, weights):
-    """计算组合因子的截面IC（向量化实现）
+    """计算组合因子的截面IC（groupby方式，避免pivot内存爆炸）
 
     Args:
         regime_df: 行业×市场状态的因子DataFrame
@@ -464,26 +593,20 @@ def _compute_combined_factor_ic(regime_df, factor_names, weights):
         return None
 
     # 向量化计算组合因子值
-    combined = np.zeros(len(regime_df))
+    combined = np.zeros(len(regime_df), dtype=np.float32)
     for f, w in w_map.items():
         combined += regime_df[f].fillna(0).values * w
     combined /= total_w
 
-    regime_df_copy = regime_df.copy()
-    regime_df_copy['_combined'] = combined
-
-    # 截面IC计算
-    try:
-        fn_pivot = regime_df_copy.pivot(index='date', columns='code', values='_combined')
-        ret_pivot = regime_df_copy.pivot(index='date', columns='code', values='future_ret')
-        fn_rank = fn_pivot.rank(axis=1, na_option='keep').astype(np.float32)
-        ret_rank = ret_pivot.rank(axis=1, na_option='keep').astype(np.float32)
-        del fn_pivot, ret_pivot
-        ic_series = fn_rank.corrwith(ret_rank, axis=1)
-        ic_list = ic_series.dropna().tolist()
-        del fn_rank, ret_rank, ic_series
-    except Exception:
-        return None
+    # 使用groupby计算截面IC（替代pivot）
+    combined_series = pd.Series(combined, index=regime_df.index, dtype=np.float32)
+    temp_df = pd.DataFrame({
+        '_combined': combined_series,
+        'future_ret': regime_df['future_ret'],
+        'date': regime_df['date'],
+    })
+    ic_list = _cross_sectional_ic(temp_df, '_combined')
+    del temp_df, combined_series
 
     if len(ic_list) < 10:
         return None
@@ -722,14 +845,14 @@ def main():
 
     # Step 1: 扫描元数据（不预加载全部股票数据）
     print("\n=== Step 1: 扫描数据 ===")
-    stock_file_map, fundamental_data, regime_lookup, stock_codes, all_dates = prepare_calibration_data()
+    stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates = prepare_calibration_data()
 
-    # Step 2: 流式计算因子数据（worker自行加载CSV）
+    # Step 2: 流式计算因子数据（spawn模式，worker自行加载CSV和FundamentalData）
     print("\n=== Step 2: 计算因子数据 ===")
-    factor_df = compute_factor_data(stock_file_map, fundamental_data, regime_lookup, stock_codes, all_dates)
+    factor_df = compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates)
 
     # 释放不再需要的中间数据
-    del stock_file_map, all_dates
+    del stock_file_map, fundamental_path, all_dates
     gc.collect()
     _log_memory("after cleanup")
 
