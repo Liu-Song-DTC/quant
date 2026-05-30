@@ -829,6 +829,7 @@ multi_timeframe:
     partial: 0.72
     full: 1.0
     weak_trend: 0.95
+    blend_strength: 0.4
   pattern:
     weight: 0.15
   structure:

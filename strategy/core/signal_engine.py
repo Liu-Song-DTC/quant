@@ -181,6 +181,8 @@ class SignalEngine:
 
         # === 统一多时间框架分析器 ===
         self.mtf_analyzer = MultiTimeframeAnalyzer(config_loader.config if config_loader.config else {})
+        mtf_cfg = config_loader.get('multi_timeframe', {})
+        self.mtf_blend_strength = mtf_cfg.get('discount', {}).get('blend_strength', 0.4)
 
     def set_factor_data(self, factor_df: pd.DataFrame):
         """设置因子数据（用于动态因子选择）
@@ -415,7 +417,7 @@ class SignalEngine:
                     if trend_init <= 0:
                         buy = False
 
-            chan_force_sell = chan_sell_sig and (sl <= -2 or sp_sell >= 1)
+            chan_force_sell = chan_sell_sig and sl <= -2
             # MA60止损: 跌破MA60且score转负 → 强制卖出，截断下跌趋势中的持仓
             ma60_stop = (not price_above_ma60) and score < 0 and close_p > 0 and ma60_v > 0
 
@@ -1483,16 +1485,18 @@ class SignalEngine:
         weekly_trend_up = bool(self._safe_get(ind, 'weekly_trend_up', idx, False))
         monthly_trend_up = bool(self._safe_get(ind, 'monthly_trend_up', idx, False))
         if score > 0:
-            # 买入信号: MTF反转折扣 (v8.1 fix)
+            # 买入信号: MTF反转折扣 (v8.1→v9: blend_strength控制幅度)
             # 数据: MTF对齐时买入准确率48.9% vs 不对齐时59.2%
             # 高级别趋势"好"=短期已透支→折扣; "差"=潜在反转→溢价
-            mtf_buy_factor = 2.0 - mtf_discount
-            mtf_buy_factor = float(np.clip(mtf_buy_factor, 0.5, 1.5))
+            raw_buy_factor = 2.0 - mtf_discount
+            mtf_buy_factor = 1.0 + (raw_buy_factor - 1.0) * self.mtf_blend_strength
+            mtf_buy_factor = float(np.clip(mtf_buy_factor, 0.75, 1.25))
             score *= mtf_buy_factor
             adjusted_score *= mtf_buy_factor
         elif score < 0:
-            # 卖出信号: MTF对称折扣 — 顺势卖出(周月线偏空)折扣小, 逆势卖出折扣大
-            sell_mtf_discount = 0.5 + (1.0 - mtf_discount) * 0.7
+            # 卖出信号: MTF对称折扣 — 顺势卖出折扣小, 逆势卖出折扣大
+            sell_mtf_discount_raw = 0.5 + (1.0 - mtf_discount) * 0.7
+            sell_mtf_discount = 0.5 + (sell_mtf_discount_raw - 0.5) * self.mtf_blend_strength
             sell_mtf_discount = max(0.35, min(1.0, sell_mtf_discount))
             score *= sell_mtf_discount
             adjusted_score *= sell_mtf_discount
@@ -1637,7 +1641,7 @@ class SignalEngine:
         chan_sell_signal = chan_boost.get('is_chan_sell_boost', False)
         sl_for_sell = int(self._safe_get(ind, 'signal_level', idx, 0))
         sp_for_sell = int(self._safe_get(ind, 'sell_point', idx, 0))
-        chan_force_sell = chan_sell_signal and (sl_for_sell <= -2 or sp_for_sell >= 1)
+        chan_force_sell = chan_sell_signal and sl_for_sell <= -2
         sell = (score is not None and
                 not np.isnan(score) and
                 (score < effective_sell_threshold or chan_force_sell))
@@ -1783,7 +1787,7 @@ class SignalEngine:
         buy = (score > buy_threshold or chan_force_buy) and price_ok and price_not_extended
 
         # chan_force_sell（与_generate_signal内逻辑完全一致）
-        chan_force_sell = chan_sell_signal and (sl <= -2 or sp_for_sell >= 1)
+        chan_force_sell = chan_sell_signal and sl <= -2
         sell = score < sell_threshold or chan_force_sell
 
         return buy, sell
