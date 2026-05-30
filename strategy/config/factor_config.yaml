@@ -663,6 +663,45 @@ portfolio:
     exposure_min: 0.25
     exposure_max: 1.0
   turnover_bonus: 0.02
+  # === 组合调参区 (从硬编码迁移到YAML) ===
+  params:
+    max_positions: 8
+    risk_parity_min_weight_ratio: 0.5     # min_weight = ratio / n
+    rank_decay: 0.3                       # 排名权重衰减 1.0→0.7
+    # 市场仓位地板/天花板
+    bull_market_floor: 0.85
+    bull_market_ceiling: 1.0
+    bear_market_floor: 0.30
+    bear_market_ceiling: 0.55
+    # Chan候选加分
+    chan_bonus_sl2: 0.04                  # signal_level>=2
+    chan_bonus_buy_point: 0.02            # buy_point>0
+    chan_bonus_trend2: 0.01               # trend_type==2
+    # 高位追涨惩罚(乘法)
+    mom_60d_fomo_threshold: 0.30          # 超过此值大幅降权
+    mom_60d_fomo_mult: 0.30
+    mom_60d_warn_threshold: 0.20          # 温和惩罚
+    mom_60d_warn_mult: 0.65
+    dist_ma60_extended_threshold: 0.30
+    dist_ma60_extended_mult: 0.40
+    # 加法调整
+    isolated_b3_penalty: -0.08            # 孤立B3扣分
+    industry_pharma_penalty: -0.05        # 医药
+    industry_chem_penalty: -0.03          # 化工
+    sideways_bonus: 0.03                  # 横盘(mom≈0)加分
+    oversold_bonus: 0.04                  # 超跌(dist_ma60<-0.05)
+    vol_expand_bonus: 0.03                # 波动扩张(>1.3x)
+    vol_contract_penalty: -0.03           # 波动收缩(<0.7x)
+    dd20_sharp_bonus: 0.04                # 深度回调<-12%
+    dd20_moderate_bonus: 0.02             # 中度回调<-6%
+    b3_vol_mild_penalty: -0.03            # B3缩量-0.05~-0.20
+    b3_vol_severe_penalty: -0.06          # B3缩量-0.20~-0.30
+    # 力竭/反转风险
+    exhaustion_high_threshold: 0.30
+    exhaustion_moderate_threshold: 0.15
+    # 板块轮动
+    sector_momentum_weight: 0.40
+    sector_signal_density_weight: 0.60
 portfolio_stop_loss:
   enabled: true
   emergency_exposure: 0.5
@@ -837,7 +876,8 @@ multi_timeframe:
     pivot_lookback: 5
 backtest:
   cash: 150000.0
-  commission: 0.00011
-  slippage: 0.0001
+  commission: 0.00050  # 万2.5佣金+万5印花税(卖出), 等效~万5
+  slippage: 0.0001     # 万1滑点(大盘股); 小盘股实际更高
+  stamp_tax: 0.00050   # 卖出印花税0.05%
   rebalance_days: 25
   num_workers: 4

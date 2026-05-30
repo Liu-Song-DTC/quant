@@ -39,8 +39,6 @@ def _load_industry_ic_weights():
 class PortfolioConstructor:
     """仓位管理器 - 基于因子排名选股"""
 
-    MAX_POSITIONS = 8
-
     @staticmethod
     def _nan_safe(val, default=0.0):
         """NaN-safe value extraction: NaN is truthy so `val or default` fails."""
@@ -140,6 +138,40 @@ class PortfolioConstructor:
         self.mr_mom60_reduce = mr_config.get('mom_60d_reduce', 0.40)
         self.mr_dist60_reduce = mr_config.get('dist_ma60_reduce', 0.35)
         self.mr_reduce_pct = mr_config.get('reduce_pct', 0.3)
+
+        # === 组合可调参数（从YAML加载，替代硬编码魔数） ===
+        pp = portfolio_config.get('params', {})
+        self.max_positions = pp.get('max_positions', 8)
+        self.rp_min_weight_ratio = pp.get('risk_parity_min_weight_ratio', 0.5)
+        self.rank_decay = pp.get('rank_decay', 0.3)
+        self.bull_market_floor = pp.get('bull_market_floor', 0.85)
+        self.bull_market_ceiling = pp.get('bull_market_ceiling', 1.0)
+        self.bear_market_floor = pp.get('bear_market_floor', 0.30)
+        self.bear_market_ceiling = pp.get('bear_market_ceiling', 0.55)
+        self.chan_bonus_sl2 = pp.get('chan_bonus_sl2', 0.04)
+        self.chan_bonus_buy_point = pp.get('chan_bonus_buy_point', 0.02)
+        self.chan_bonus_trend2 = pp.get('chan_bonus_trend2', 0.01)
+        self.mom_60d_fomo_threshold = pp.get('mom_60d_fomo_threshold', 0.30)
+        self.mom_60d_fomo_mult = pp.get('mom_60d_fomo_mult', 0.30)
+        self.mom_60d_warn_threshold = pp.get('mom_60d_warn_threshold', 0.20)
+        self.mom_60d_warn_mult = pp.get('mom_60d_warn_mult', 0.65)
+        self.dist_ma60_extended_threshold = pp.get('dist_ma60_extended_threshold', 0.30)
+        self.dist_ma60_extended_mult = pp.get('dist_ma60_extended_mult', 0.40)
+        self.isolated_b3_penalty = pp.get('isolated_b3_penalty', -0.08)
+        self.industry_pharma_penalty = pp.get('industry_pharma_penalty', -0.05)
+        self.industry_chem_penalty = pp.get('industry_chem_penalty', -0.03)
+        self.sideways_bonus = pp.get('sideways_bonus', 0.03)
+        self.oversold_bonus = pp.get('oversold_bonus', 0.04)
+        self.vol_expand_bonus = pp.get('vol_expand_bonus', 0.03)
+        self.vol_contract_penalty = pp.get('vol_contract_penalty', -0.03)
+        self.dd20_sharp_bonus = pp.get('dd20_sharp_bonus', 0.04)
+        self.dd20_moderate_bonus = pp.get('dd20_moderate_bonus', 0.02)
+        self.b3_vol_mild_penalty = pp.get('b3_vol_mild_penalty', -0.03)
+        self.b3_vol_severe_penalty = pp.get('b3_vol_severe_penalty', -0.06)
+        self.exhaustion_high_threshold = pp.get('exhaustion_high_threshold', 0.30)
+        self.exhaustion_moderate_threshold = pp.get('exhaustion_moderate_threshold', 0.15)
+        self.sector_momentum_weight = pp.get('sector_momentum_weight', 0.40)
+        self.sector_signal_density_weight = pp.get('sector_signal_density_weight', 0.60)
 
         # === 缠论止盈配置 ===
         chan_config = config.get('chan_theory', {}) if hasattr(config, 'get') else {}
@@ -285,7 +317,7 @@ class PortfolioConstructor:
         每10000资金支持1个仓位, 范围[5, 12]
         """
         n = int(total_equity / 20000)
-        return max(3, min(n, PortfolioConstructor.MAX_POSITIONS))
+        return max(3, min(n, self.max_positions))
 
     def _get_min_positions(self, market_regime: int) -> int:
         """动态最小持仓数（小说：熊市允许空仓）
@@ -326,7 +358,7 @@ class PortfolioConstructor:
         weights = inv_vols / inv_vols.sum()
 
         # 权重下限: 防止单票权重过低
-        min_weight = 0.5 / n
+        min_weight = self.rp_min_weight_ratio / n
 
         # 迭代优化
         for iteration in range(self.rp_max_iterations):
@@ -528,15 +560,15 @@ class PortfolioConstructor:
         # 消除之前在 trend_score=0 和 -0.5 处的仓位悬崖
         if trend_score > 0.5:
             market_signal = 1.0
-            floor, ceiling = 0.85, 1.0
+            floor, ceiling = self.bull_market_floor, self.bull_market_ceiling
         elif trend_score > -0.5:
             t = (trend_score + 0.5)  # [-0.5, 0.5] → [0, 1.0]
             market_signal = float(0.4 + t * 0.6)  # [0.4, 1.0]
             floor = float(max(0.3, market_signal - 0.15))
             ceiling = float(min(1.0, market_signal + 0.15))
         else:
-            market_signal = 0.4
-            floor, ceiling = 0.3, 0.55
+            market_signal = self.bear_market_floor + 0.1  # 0.40
+            floor, ceiling = self.bear_market_floor, self.bear_market_ceiling
 
         # 叠加熊市风险（适度防御，降低防御强度）
         if bear_risk and drawdown > 0.15:
@@ -794,14 +826,14 @@ class PortfolioConstructor:
 
             # Chan结构作为轻微加分（score已包含主要Chan信息）
             if sl >= 2:
-                chan_bonus = 0.04
+                chan_bonus = self.chan_bonus_sl2
             elif cb > 0:
-                chan_bonus = 0.02
+                chan_bonus = self.chan_bonus_buy_point
             else:
                 chan_bonus = 0.0
 
             if stock_trend == 2:
-                chan_bonus += 0.01
+                chan_bonus += self.chan_bonus_trend2
 
             c['chan_quality'] = 0.5 + chan_bonus
 
@@ -818,52 +850,52 @@ class PortfolioConstructor:
             dist_ma60 = self._nan_safe(getattr(sig_ref, 'dist_ma60', 0.0))
             vol_regime = self._nan_safe(getattr(sig_ref, 'vol_regime', 1.0))
 
-            if mom_60d > 0.30:
-                multiplier *= 0.30
-            elif mom_60d > 0.20:
-                multiplier *= 0.65  # 温和惩罚(原-=0.08对rank=0.8相当于*0.9,统一用乘法)
+            if mom_60d > self.mom_60d_fomo_threshold:
+                multiplier *= self.mom_60d_fomo_mult
+            elif mom_60d > self.mom_60d_warn_threshold:
+                multiplier *= self.mom_60d_warn_mult
 
-            if dist_ma60 > 0.30:
-                multiplier *= 0.40
+            if dist_ma60 > self.dist_ma60_extended_threshold:
+                multiplier *= self.dist_ma60_extended_mult
 
             # ── 加法调整（加到rank*multiplier上） ──
             # 板块共振: 孤立B3扣分
             if industry_chan_count.get(c.get('industry', '其他'), 0) < 2:
-                additive -= 0.08
+                additive += self.isolated_b3_penalty
 
             # 弱势行业惩罚 (基于历史胜率, 传媒IC=0.2018已移除)
             ind = c.get('industry', '')
             if '医药' in str(ind):
-                additive -= 0.05
+                additive += self.industry_pharma_penalty
             elif '化工' in str(ind):
-                additive -= 0.03
+                additive += self.industry_chem_penalty
 
             # DYN因子不再惩罚 — IC验证已筛选, 惩罚与动态选择逻辑矛盾 (Fix#8)
 
             # 横盘/超跌/波动率/回调 奖励
             if -0.05 <= mom_60d <= 0.05:
-                additive += 0.03
+                additive += self.sideways_bonus
             if dist_ma60 < -0.05:
-                additive += 0.04
+                additive += self.oversold_bonus
             if vol_regime > 1.3:
-                additive += 0.03
+                additive += self.vol_expand_bonus
             elif vol_regime < 0.7:
-                additive -= 0.03
+                additive += self.vol_contract_penalty
 
             max_dd_20d = self._nan_safe(getattr(sig_ref, 'max_dd_20d', 0.0))
             if max_dd_20d < -0.12:
-                additive += 0.04
+                additive += self.dd20_sharp_bonus
             elif max_dd_20d < -0.06:
-                additive += 0.02
+                additive += self.dd20_moderate_bonus
 
             # B3缩量惩罚
             bp = c.get('chan_buy_point', 0)
             if bp == 3:
                 vol_ratio = self._nan_safe(getattr(sig_ref, 'volume_ratio', 0.0))
                 if -0.20 < vol_ratio <= -0.05:
-                    additive -= 0.03
+                    additive += self.b3_vol_mild_penalty
                 elif -0.30 < vol_ratio <= -0.20:
-                    additive -= 0.06
+                    additive += self.b3_vol_severe_penalty
 
             # 换手加分
             turnover = self.turnover_bonus if (c['is_held'] and c['rank_pct'] > hold_threshold) else 0.0
@@ -921,7 +953,7 @@ class PortfolioConstructor:
                 ic_dict = self.industry_ic.get(c['industry'], {})
                 ic = ic_dict.get(regime_key, ic_dict.get('neutral', 0.05))
                 # 排名权重: 线性衰减 1.0 → 0.5
-                rank_w = 1.0 - 0.3 * (i / max(n - 1, 1))
+                rank_w = 1.0 - self.rank_decay * (i / max(n - 1, 1))
                 # 行业IC为权重提供差异化
                 ic_mult = np.clip(ic / 0.05, 0.6, 1.5)
                 # 信心调整
@@ -938,9 +970,9 @@ class PortfolioConstructor:
 
         # 单票权重上限: 候选不足时动态放宽以提升资金利用率
         max_single = self.max_single_weight_from_cfg
-        if len(selected) < self.MAX_POSITIONS:
+        if len(selected) < self.max_positions:
             # 候选不足 → 提高单票上限, 集中资金到优质标的
-            slack = (self.MAX_POSITIONS - len(selected)) / self.MAX_POSITIONS
+            slack = (self.max_positions - len(selected)) / self.max_positions
             max_single = min(max_single * (1.0 + slack * 1.5), max_single * 1.5)
         capped_weights = [min(w, max_single) for w in weights]
 
@@ -949,11 +981,11 @@ class PortfolioConstructor:
         for i, c in enumerate(selected):
             sig = c.get('sig')
             er = self._nan_safe(getattr(sig, 'exhaustion_risk', 0.0)) if sig else 0.0
-            if er > 0.3:
+            if er > self.exhaustion_high_threshold:
                 # 力竭风险高: 权重降至 exhaustion_max_weight 以内
                 capped_weights[i] = min(capped_weights[i], self.exhaustion_max_weight)
                 exhaustion_tags.add(c['code'])
-            elif er > 0.15:
+            elif er > self.exhaustion_moderate_threshold:
                 # 中度力竭: 权重打折
                 capped_weights[i] *= self.exhaustion_reduce_mult
 
