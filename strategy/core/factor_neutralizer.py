@@ -121,7 +121,9 @@ def neutralize_factor_df(
             neutralized = neutralize_factors(
                 grp[fc].values, industries, mkt_caps
             )
-            result.loc[idx, neu_col] = neutralized
+            if neu_col not in result.columns:
+                result[neu_col] = np.nan
+            result.loc[idx, neu_col] = neutralized.astype(result[fc].dtype)
 
     return result
 

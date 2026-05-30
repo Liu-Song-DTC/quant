@@ -63,6 +63,7 @@ def get_stock_pool(min_price: float = 2.0,
 
     selected = set()
     data_errors = 0
+    liquidity_filtered = 0
 
     for item, code in valid_files:
         if code in exclusion_set:
@@ -79,13 +80,26 @@ def get_stock_pool(min_price: float = 2.0,
             if last_price <= 0 or np.isnan(last_price) or last_price < min_price:
                 continue
 
+            # 流动性过滤: 近20日日均成交额 >= 3000万 (排除僵尸股)
+            if 'amount' in df.columns and len(df) >= 20:
+                avg_amount = df['amount'].iloc[-20:].mean()
+                if avg_amount < 30_000_000:
+                    liquidity_filtered += 1
+                    continue
+            # 流动性补充: 无amount列时, 近20日日均成交量 >= 100万股
+            elif 'volume' in df.columns and len(df) >= 20:
+                avg_vol = df['volume'].iloc[-20:].mean()
+                if avg_vol < 1_000_000:
+                    liquidity_filtered += 1
+                    continue
+
             selected.add(code)
         except Exception:
             data_errors += 1
             continue
 
     selected.add('sh000001')
-    print(f"股票池: {len(valid_files)} 总文件 -> 排除科创板{len(exclusion_set)} | 异常{data_errors} -> {len(selected)} 只 (含sh000001)")
+    print(f"股票池: {len(valid_files)} 总文件 -> 排除科创板{len(exclusion_set)} | 异常{data_errors} | 流动性过滤{liquidity_filtered} -> {len(selected)} 只 (含sh000001)")
     return selected
 
 

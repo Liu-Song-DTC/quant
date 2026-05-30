@@ -556,8 +556,8 @@ class AnalysisFramework:
         # 2. 基于信号层分析
         if self.signal_results:
             buy_acc = self.signal_results.get('buy', {}).get('accuracy', 0)
-            if buy_acc < 0.5:
-                recommendations.append(f"买入信号准确率仅{buy_acc:.2%}，低于50%，建议优化买入信号逻辑")
+            if buy_acc < ACCURACY_TARGET:
+                recommendations.append(f"买入信号准确率仅{buy_acc:.2%}，低于{ACCURACY_TARGET:.0%}目标，建议优化买入信号逻辑")
 
             signal_ic = self.signal_results.get('signal_ic', 0)
             if abs(signal_ic) < 0.02:
@@ -663,22 +663,26 @@ class AnalysisFramework:
         except Exception:
             return {'alerts': [], 'summary': 'validation_results读取失败', 'need_recalibration': False}
 
-        # 按行业累计IC（限于backtest_factors中的因子）
-        cfg_path2 = os.path.join(STRATEGY_DIR, 'config', 'factor_config.yaml')
-        with open(cfg_path2, 'r', encoding='utf-8') as f:
-            raw_cfg = yaml.safe_load(f)
-        backtest_factors = raw_cfg.get('backtest_factors', [])
-
         alerts = []
-        regime_map = {0: 'neutral', 1: 'bull', -1: 'bear'}
+        has_regime = 'regime' in val_df.columns
 
         for industry in baseline:
             ind_data = val_df[val_df['industry'] == industry] if 'industry' in val_df.columns else pd.DataFrame()
             if ind_data.empty:
                 continue
 
-            for regime_val, regime_name in regime_map.items():
-                regime_data = ind_data[ind_data['regime'] == regime_val] if 'regime' in ind_data.columns else ind_data
+            # 按 regime 分组（如果有），否则整体计算
+            if has_regime:
+                groups = [(0, 'neutral'), (1, 'bull'), (-1, 'bear')]
+            else:
+                groups = [(None, 'neutral')]
+
+            for regime_val, regime_name in groups:
+                if regime_val is not None:
+                    regime_data = ind_data[ind_data['regime'] == regime_val]
+                else:
+                    regime_data = ind_data
+
                 if len(regime_data) < 30:
                     continue
 
@@ -686,29 +690,29 @@ class AnalysisFramework:
                 if base_ic is None:
                     continue
 
-                # 计算backtest_factors中所有因子在最近期的平均IC
-                current_ics = []
-                for fn in backtest_factors:
-                    if fn in regime_data.columns:
-                        ic_s = safe_spearmanr(regime_data[fn], regime_data['future_ret'])
-                        if ic_s is not None and not np.isnan(ic_s):
-                            current_ics.append(abs(ic_s))
-
-                if not current_ics:
+                # 用 factor_value 计算近期IC（backtest_factors 的原始列不在 validation_results 中）
+                valid = regime_data.dropna(subset=['factor_value', 'future_ret'])
+                if len(valid) < 30:
                     continue
-
-                avg_current_ic = np.mean(current_ics)
+                ic_val, _ = safe_spearmanr(valid['factor_value'], valid['future_ret'])
+                if ic_val is None or np.isnan(float(ic_val)):
+                    continue
+                current_ic = float(ic_val)
+                current_abs_ic = abs(current_ic)
                 base_abs_ic = abs(base_ic) if base_ic else 0.01
 
-                # 退化检测：当前IC相对基线下降>20%
-                decay_pct = (base_abs_ic - avg_current_ic) / max(base_abs_ic, 0.01)
-                if decay_pct > 0.20:
+                # 退化检测：当前IC绝对值相对基线下降>20%
+                decay_pct = (base_abs_ic - current_abs_ic) / max(base_abs_ic, 0.01)
+                # 方向反转检测：IC符号翻转 → 因子完全失效
+                sign_flipped = (base_ic * current_ic < 0) and base_abs_ic > 0.03
+                if decay_pct > 0.20 or sign_flipped:
                     alerts.append({
                         'industry': industry,
                         'regime': regime_name,
-                        'baseline_ic': round(base_abs_ic, 4),
-                        'current_ic': round(avg_current_ic, 4),
+                        'baseline_ic': round(base_ic, 4),
+                        'current_ic': round(current_ic, 4),
                         'decay_pct': round(decay_pct * 100, 1),
+                        'sign_flipped': sign_flipped,
                     })
 
         need_recal = len(alerts) > 3  # 超过3个行业-状态组合退化 → 建议重标定

@@ -23,7 +23,8 @@ class MarketRegimeInfo:
     size_score: float     # 大小盘分数: -1(大盘) 到 1(小盘)
     style_confidence: float  # 风格置信度: 0-1
     # 熊市风险信号 (新增)
-    bear_risk: bool       # 熊市风险（用于风险管理）
+    bear_risk: bool       # 熊市风险（用于风险管理，120日维度）
+    bear_risk_fast: bool  # 快速熊市风险（60日维度，急跌检测）
     # 状态切换率
     regime_volatility: float = 0.0  # 0(稳定) ~ 1(混沌)，用于动态调仓频率
 
@@ -40,6 +41,7 @@ class MarketRegimeInfo:
             'size_score': self.size_score,
             'style_confidence': self.style_confidence,
             'bear_risk': self.bear_risk,
+            'bear_risk_fast': self.bear_risk_fast,
             'regime_volatility': self.regime_volatility,
         }
 
@@ -56,14 +58,14 @@ class MarketRegimeDetector:
 
     def _init_params(self):
         """初始化参数"""
-        # 熊市阈值（调整后：阈值更对称）
-        self.mom5_bear = -0.02    # 5日动量 < -2%
-        self.mom_bear = -0.02     # 20日动量 < -2%（调整：原0导致过度保守）
-        self.mom_bear_sustained = -0.03  # 持续熊市：20日动量 < -3%
+        # 熊市阈值 (Fix#7: 2%→5%, 避免频繁切换)
+        self.mom5_bear = -0.05    # 5日动量 < -5%
+        self.mom_bear = -0.05     # 20日动量 < -5%
+        self.mom_bear_sustained = -0.08  # 持续熊市：20日动量 < -8%
 
-        # 牛市阈值（调整后：与熊市对称）
-        self.mom_bull = 0.02      # 20日动量 > 2%（调整：原3%过高）
-        self.mom60_bull = 0.02    # 60日动量 > 2%
+        # 牛市阈值 (Fix#7: 2%→5%, 需要有意义的上行趋势)
+        self.mom_bull = 0.05      # 20日动量 > 5%
+        self.mom60_bull = 0.05    # 60日动量 > 5%
 
         # 极端波动阈值
         self.vol_extreme_high = 0.30
@@ -85,13 +87,31 @@ class MarketRegimeDetector:
         self.bear_risk_ma_period = 120  # 均线周期
         self.bear_risk_drawdown = 0.15  # 回撤阈值 15%
         self.bear_risk_momentum = -0.10  # 120日动量阈值 -10%
+        # === 快速熊市检测：60日维度，捕捉急跌（120日动量滞后）===
+        self.bear_risk_momentum_fast = -0.06  # 60日动量阈值 -6%
+        self.bear_risk_drawdown_fast = 0.10   # 60日回撤阈值 10%
 
-    def generate(self, index_df: pd.DataFrame):
+    def generate(self, index_df: pd.DataFrame,
+                 small_cap_df: pd.DataFrame = None,      # 中证1000 (000852)
+                 growth_df: pd.DataFrame = None):         # 创业板指 (399006)
         """
-        生成市场状态序列
+        生成市场状态序列 (Fix#6: 支持多指数风格检测)
+
+        Args:
+            index_df: 上证指数 (sh000001) — 主指数, 用于牛熊判断
+            small_cap_df: 中证1000 — 用于大小盘风格判断
+            growth_df: 创业板指 — 用于成长/价值风格判断
         """
         self.index_data = index_df.copy()
         self._calculate_indicators()
+
+        # 预处理辅助指数
+        self._small_cap_data = None
+        self._growth_data = None
+        if small_cap_df is not None:
+            self._small_cap_data = self._prepare_aux_index(small_cap_df, len(self.index_data))
+        if growth_df is not None:
+            self._growth_data = self._prepare_aux_index(growth_df, len(self.index_data))
 
         # 生成完整信号
         regime_info_list = []
@@ -106,13 +126,13 @@ class MarketRegimeDetector:
         self.index_data['trend_score'] = [r.trend_score for r in regime_info_list]
         self.index_data['volatility'] = [r.volatility for r in regime_info_list]
         self.index_data['is_extreme'] = [r.is_extreme for r in regime_info_list]
-        # 风格因子 (新增)
         self.index_data['style_regime'] = [r.style_regime for r in regime_info_list]
         self.index_data['style_score'] = [r.style_score for r in regime_info_list]
         self.index_data['size_score'] = [r.size_score for r in regime_info_list]
         self.index_data['style_confidence'] = [r.style_confidence for r in regime_info_list]
         # 熊市风险信号
         self.index_data['bear_risk'] = [r.bear_risk for r in regime_info_list]
+        self.index_data['bear_risk_fast'] = [r.bear_risk_fast for r in regime_info_list]
         # 状态切换率（后处理：基于已生成的regime序列计算20日切换频率）
         regime_vals = self.index_data['regime'].values
         regime_vol_list = []
@@ -146,8 +166,8 @@ class MarketRegimeDetector:
         self.momentum_120 = close / close.shift(120) - 1  # 新增120日动量
 
         # 波动率
-        returns = close.pct_change()
-        self.volatility = returns.rolling(20).std() * np.sqrt(252)
+        self.returns = close.pct_change()
+        self.volatility = self.returns.rolling(20).std() * np.sqrt(252)
 
         # 风格指标 (新增)
         # 大小盘相对强弱: 使用短期动量差异
@@ -155,20 +175,23 @@ class MarketRegimeDetector:
         self.size_momentum_long = self.momentum  # 长期动量
 
         # === 新增：熊市风险指标 ===
-        # 计算回撤
+        # 计算回撤 (120日)
         self.rolling_max = close.rolling(window=120, min_periods=1).max()
         self.drawdown = (close - self.rolling_max) / self.rolling_max
+        # 快速回撤 (60日) - 用于急跌检测
+        self.rolling_max_60 = close.rolling(window=60, min_periods=1).max()
+        self.drawdown_60 = (close - self.rolling_max_60) / self.rolling_max_60
 
     def _detect_detailed(self, i: int) -> MarketRegimeInfo:
         """
         详细检测 - 输出多种信号
         """
-        if i < 120:
+        if i < 60:
             return MarketRegimeInfo(
                 regime=0, confidence=0.0, momentum_score=0.0,
                 trend_score=0.0, volatility=0.0, is_extreme=False,
                 style_regime='balanced', style_score=0.0, size_score=0.0, style_confidence=0.0,
-                bear_risk=False
+                bear_risk=False, bear_risk_fast=False
             )
 
         # 获取各指标
@@ -237,8 +260,26 @@ class MarketRegimeDetector:
         bear_risk = (drawdown < -self.bear_risk_drawdown and
                      mom_120 < self.bear_risk_momentum and
                      ema_bearish)
+        # 快速熊市检测: 60日维度, 捕捉急跌（120日动量滞后，急跌中数周才触发）
+        drawdown_60 = self._safe_get(self.drawdown_60, i, 0)
+        mom_60_val = self._safe_get(self.momentum_60, i, 0)
+        bear_risk_fast = (drawdown_60 < -self.bear_risk_drawdown_fast and
+                          mom_60_val < self.bear_risk_momentum_fast)
 
         # === 风格状态检测 ===
+        # 中性市场置信度评估: 信号分歧度越低, 中性判定越可靠
+        if regime == 0 and confidence == 0.0:
+            # 评估多空信号的分歧程度
+            bull_signals = sum([mom_5 > 0.01, mom > 0.01, mom_60 > 0.02, ema20_above_60])
+            bear_signals = sum([mom_5 < -0.01, mom < -0.01, mom_60 < -0.02, not ema20_above_60])
+            total_signals = max(bull_signals + bear_signals, 1)
+            # 信号分歧度: 0=完全分歧(混战), 1=信号一致但力度不足
+            signal_agreement = abs(bull_signals - bear_signals) / total_signals
+            if signal_agreement < 0.3:
+                confidence = 0.5  # 高置信中性: 信号完全分歧, 典型的震荡市
+            else:
+                confidence = 0.25  # 低置信中性: 信号偏向一侧但未达阈值, 可能即将转势
+
         style_regime, style_score, size_score, style_confidence = self._detect_style_regime(i)
 
         return MarketRegimeInfo(
@@ -252,44 +293,77 @@ class MarketRegimeDetector:
             style_score=style_score,
             size_score=size_score,
             style_confidence=style_confidence,
-            bear_risk=bear_risk
+            bear_risk=bear_risk,
+            bear_risk_fast=bear_risk_fast,
         )
+
+    def _prepare_aux_index(self, aux_df: pd.DataFrame, target_len: int):
+        """对齐辅助指数到主指数的时间轴
+
+        返回与主指数同长度的close/returns数组，日期不匹配处填NaN。
+        """
+        if aux_df is None or 'close' not in aux_df.columns:
+            return None
+        aux_dates = pd.to_datetime(aux_df['datetime'].values)
+        main_dates = pd.to_datetime(self.index_data['datetime'].values)
+        close_arr = np.full(target_len, np.nan)
+        ret_arr = np.full(target_len, np.nan)
+        date_to_idx = {str(d.date()): i for i, d in enumerate(aux_dates)}
+        for i, d in enumerate(main_dates):
+            key = str(d.date())
+            if key in date_to_idx:
+                j = date_to_idx[key]
+                close_arr[i] = aux_df['close'].values[j]
+                if j > 0:
+                    prev = aux_df['close'].values[j - 1]
+                    if prev > 0:
+                        ret_arr[i] = (close_arr[i] - prev) / prev
+        return {'close': close_arr, 'ret': ret_arr}
 
     def _detect_style_regime(self, i: int):
         """
-        检测风格状态 - 大小盘/价值成长
+        检测风格状态 (Fix#6: 支持多指数真实风格检测)
+
+        当接入中证1000和创业板指数据时:
+        - size_score: 中证1000 vs 上证指数 20日相对强弱 → 真实大小盘判断
+        - style_score: 创业板指 vs 上证指数 20日相对强弱 → 真实成长/价值判断
+
+        无辅助指数时回退到单指数动量代理。
 
         返回: (style_regime, style_score, size_score, confidence)
-        - style_regime: 'large_cap', 'small_cap', 'value', 'growth', 'balanced'
-        - style_score: -1到1 (大盘/价值 -> 小盘/成长)
-        - size_score: -1到1 (大盘 -> 小盘)
-        - confidence: 0-1
         """
         if i < 60:
             return 'balanced', 0.0, 0.0, 0.0
 
-        # 获取动量指标
-        size_mom_short = self._safe_get(self.size_momentum, i, 0)
-        size_mom_long = self._safe_get(self.size_momentum_long, i, 0)
-
-        # 大小盘判断: 使用动量差异
-        # 如果个股动量 > 阈值，认为市场偏向小盘
-        size_score = np.clip(size_mom_short / self.size_threshold, -1.0, 1.0)
-
-        # 价值/成长判断: 使用长期动量趋势
-        # 长期动量为正倾向于成长风格 (上涨趋势中成长更强)
-        # 长期动量为负倾向于价值风格 (下跌趋势中价值更稳)
-        if size_mom_long > self.size_threshold:
-            style_score = np.clip(size_mom_long / 0.1, 0.0, 1.0)  # 偏向成长
-        elif size_mom_long < -self.size_threshold:
-            style_score = np.clip(size_mom_long / 0.1, -1.0, 0.0)  # 偏向价值
+        # ── Fix#6: 使用辅助指数做真实风格检测 ──
+        if self._small_cap_data is not None and not np.isnan(self._small_cap_data['ret'][i]):
+            # 大小盘: 中证1000相对上证指数的超额收益
+            sc_ret_20 = np.nanmean(self._small_cap_data['ret'][max(0,i-20):i+1])
+            main_ret_20 = np.nanmean(self.returns[max(0,i-20):i+1])
+            size_score = np.clip((sc_ret_20 - main_ret_20) / 0.02, -1.0, 1.0)
         else:
-            style_score = 0.0
+            # 回退: 单指数动量代理
+            size_mom = self._safe_get(self.size_momentum, i, 0)
+            size_score = np.clip(size_mom / self.size_threshold, -1.0, 1.0)
 
-        # 计算置信度
+        if self._growth_data is not None and not np.isnan(self._growth_data['ret'][i]):
+            # 成长/价值: 创业板指相对上证指数的超额收益
+            gr_ret_20 = np.nanmean(self._growth_data['ret'][max(0,i-20):i+1])
+            main_ret_20_gr = np.nanmean(self.returns[max(0,i-20):i+1])
+            style_score = np.clip((gr_ret_20 - main_ret_20_gr) / 0.02, -1.0, 1.0)
+        else:
+            # 回退: 长期动量趋势
+            size_mom_long = self._safe_get(self.size_momentum_long, i, 0)
+            if size_mom_long > self.size_threshold:
+                style_score = np.clip(size_mom_long / 0.1, 0.0, 1.0)
+            elif size_mom_long < -self.size_threshold:
+                style_score = np.clip(size_mom_long / 0.1, -1.0, 0.0)
+            else:
+                style_score = 0.0
+
         confidence = min(1.0, abs(size_score) * 2)
 
-        # 确定风格状态
+        # 风格状态判定
         if abs(size_score) < 0.3:
             style_regime = 'balanced'
         elif size_score > 0.3:
@@ -297,12 +371,10 @@ class MarketRegimeDetector:
         else:
             style_regime = 'large_cap'
 
-        # 如果在牛市中，增加成长偏好
-        if i < len(self.momentum) and self.momentum.iloc[i] > self.mom_bull:
-            if style_score > 0:
-                style_regime = 'growth'
-            else:
-                style_regime = 'value'
+        if style_score > 0.3:
+            style_regime = 'growth'
+        elif style_score < -0.3:
+            style_regime = 'value'
 
         return style_regime, style_score, size_score, confidence
 
@@ -315,7 +387,7 @@ class MarketRegimeDetector:
             if pd.isna(val):
                 return default
             return val
-        except Exception:
+        except (IndexError, KeyError, AttributeError):
             return default
 
     # 兼容旧接口
@@ -345,6 +417,7 @@ class MarketRegimeDetector:
             size_score=float(self.index_data.loc[idx, 'size_score']),
             style_confidence=float(self.index_data.loc[idx, 'style_confidence']),
             bear_risk=bool(self.index_data.loc[idx, 'bear_risk']),
+            bear_risk_fast=bool(self.index_data.loc[idx, 'bear_risk_fast']),
         )
 
     def get_regime(self, date) -> int:

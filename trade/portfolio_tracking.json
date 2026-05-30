@@ -1,0 +1,22 @@
+{
+  "entry_dates": {
+    "603386": "2026-05-27"
+  },
+  "peak_prices": {
+    "603386": 15.8
+  },
+  "entry_reasons": {
+    "603386": {
+      "buy_point": 0,
+      "signal_level": 0,
+      "trend_type": 0
+    }
+  },
+  "mr_exit_cooldown": {},
+  "entry_reason_lost_count": {},
+  "post_sell_tracking": {},
+  "current_exposure": 0.4991772999999999,
+  "stop_loss_triggered": false,
+  "stop_loss_recovery_days": 0,
+  "peak_equity": 150000.0
+}

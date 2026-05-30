@@ -19,19 +19,23 @@ from .config_loader import load_config
 FACTOR_FAMILIES = {
     'momentum':  ['mom_10', 'mom_20', 'mom_diff_5_20', 'mom_diff_10_20',
                   'momentum_reversal', 'momentum_acceleration', 'max_ret_20',
-                  'ret_vol_ratio_10', 'ret_vol_ratio_20', 'relative_strength'],
+                  'ret_vol_ratio_10', 'ret_vol_ratio_20', 'relative_strength',
+                  'ema20_slope', 'ma_alignment', 'mom_x_lowvol_20_20'],
     'lowvol':    ['volatility', 'volatility_5', 'volatility_10', 'volatility_20',
                   'trend_lowvol', 'bb_width_20', 'atr_ratio_20', 'vol_confirm',
-                  'low_downside', 'volume_contraction', 'consolidation_breakout'],
-    'value':     ['fund_score', 'fund_roe', 'fund_profit_growth', 'fund_eps',
-                  'fund_cf_to_profit', 'fund_gross_margin', 'fund_debt_ratio',
-                  'fund_pg_improve', 'fund_rg_improve', 'inv_turnover'],
-    'quality':   ['fund_revenue_growth', 'tech_fund_combo', 'turnover_stability',
-                  'rsi_vol_combo', 'bb_rsi_combo', 'turnover_shrink'],
+                  'low_downside', 'volume_contraction', 'consolidation_breakout',
+                  'inv_turnover'],
+    'value':     ['fund_score', 'fund_roe', 'fund_profit_growth', 'fund_revenue_growth',
+                  'fund_eps', 'fund_cf_to_profit', 'fund_gross_margin', 'fund_debt_ratio',
+                  'fund_pg_improve', 'fund_rg_improve', 'fund_pe', 'fund_pb'],
+    'quality':   ['tech_fund_combo', 'turnover_stability', 'turnover_shrink',
+                  'rsi_vol_combo', 'bb_rsi_combo'],
     'alpha':     ['skewness_20', 'kurtosis_20', 'tail_risk', 'volatility_skew',
                   'overnight_ret', 'intraday_ret', 'gap_ratio',
                   'price_volume_corr_20', 'illiq_20'],
-    'volume_price': ['wash_sale_score', 'vol_price_breakout', 'smart_money_flow'],
+    'volume_price': ['wash_sale_score', 'vol_price_breakout', 'smart_money_flow',
+                     'gap_breakout_confirm', 'top_fractal_volume'],
+    'reversal':   ['exhaustion_risk', 'stroke_phase'],
 }
 
 
@@ -65,7 +69,6 @@ _CHAN_EXCLUDE = {
     'chan_buy_score', 'chan_sell_score', 'structure_stop_price',
     'capital_flow_score', 'capital_flow_direction',
     'news_sentiment_score', 'news_sentiment_direction',
-    'smart_money_flow',
 }
 
 
@@ -103,7 +106,6 @@ def _compute_date_chunk(args):
     ic_decay_factor = config.get('ic_decay_factor', 1.0)
     min_factor_count = config.get('min_factor_count', 2)
     min_factor_families = config.get('min_factor_families', 2)
-    min_ic_1f = config.get('min_ic_1f', 0.05)
     use_static_candidates = config.get('use_static_candidates', True)
     industry_factor_config_static = config.get('industry_factor_config', {})
     extra_candidate_factors = config.get('extra_candidate_factors', [])
@@ -321,7 +323,6 @@ class DynamicFactorSelector:
         self.min_ic_dates = dynamic_config.get('min_ic_dates', 5)
         self.ic_decay_factor = dynamic_config.get('ic_decay_factor', 1.0)
         self.min_factor_count = dynamic_config.get('min_factor_count', 2)
-        self.min_ic_1f = dynamic_config.get('min_ic_1f', 0.05)
         self.use_static_candidates = dynamic_config.get('use_static_candidates', True)
         self.reweight_blend = dynamic_config.get('reweight_blend', 0.5)
 
@@ -389,7 +390,6 @@ class DynamicFactorSelector:
             'ic_decay_factor': self.ic_decay_factor,
             'min_factor_count': self.min_factor_count,
             'min_factor_families': load_config().get('dynamic_factor', {}).get('min_factor_families', 2),
-            'min_ic_1f': self.min_ic_1f,
             'use_static_candidates': self.use_static_candidates,
             'industry_factor_config': load_config().get('industry_factors', {}),
             'reweight_blend': self.reweight_blend,

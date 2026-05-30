@@ -379,6 +379,11 @@ def run_daily(skip_update: bool = False, force: bool = False):
     internal = ps.load_internal()
     runner.prepare(exposure=internal["exposure"], peak_equity=internal["peak_equity"])
 
+    # 恢复跨日持仓跟踪状态（入场日期、峰值、止损冷却等）
+    tracking_file = str(ROOT / "trade" / "portfolio_tracking.json")
+    if hasattr(runner.strategy, 'portfolio'):
+        runner.strategy.portfolio.restore_tracking_state(tracking_file)
+
     # 注入行业情绪乘数
     if sentiment_multipliers:
         runner.set_sentiment_multipliers(sentiment_multipliers)
@@ -395,6 +400,8 @@ def run_daily(skip_update: bool = False, force: bool = False):
             runner.strategy.portfolio.current_exposure,
             runner.strategy.portfolio.peak_equity or 0.0,
         )
+        # 持久化持仓跟踪状态（入场日期/峰值/冷却等，跨交易日保持）
+        runner.strategy.portfolio.save_tracking_state(tracking_file)
 
     if result is None:
         print("信号生成失败，请检查数据")
@@ -423,7 +430,13 @@ def run_daily(skip_update: bool = False, force: bool = False):
         json.dump(recommendations, f, ensure_ascii=False, indent=2, default=str)
     print(f"\n建议已保存: {cfg.rec_file}")
     if recommendations.get("buys") or recommendations.get("sells"):
-        print(f"执行后请手动更新: trade/portfolio_state.json")
+        # Auto-update portfolio state after trade execution
+        try:
+            ps.update_after_trade(recommendations)
+            ps.save()
+            print(f"持仓状态已自动更新: trade/portfolio_state.json")
+        except Exception as e:
+            print(f"警告: 持仓状态自动更新失败 ({e})，请手动更新 trade/portfolio_state.json")
 
     # 微信推送
     if cfg.notification_enabled and cfg.notification_sckey:

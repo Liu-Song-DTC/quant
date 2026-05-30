@@ -39,8 +39,10 @@ class MLFactorPredictor:
             'reg_alpha': ml_cfg.get('reg_alpha', 1.0),
             'min_child_weight': ml_cfg.get('min_child_weight', 5),
             'random_state': 42,
-            'n_jobs': -1,
+            'n_jobs': min(4, __import__('os').cpu_count() or 4),
             'verbosity': 0,
+            'tree_method': 'hist',      # 节省训练内存
+            'device': 'cpu',            # 强制 CPU（避免 GPU OOM）
             'early_stopping_rounds': 30,  # XGBoost 3.x: 在构造时传入
         }
 
@@ -97,7 +99,12 @@ class MLFactorPredictor:
             print("[ML] xgboost未安装（需 libomp: brew install libomp）")
             return None
 
-        df = self.prepare_features(factor_df.copy(), regime_info, is_train=True)
+        # 只复制数值型特征列（而非全量 factor_df），减少内存占用
+        exclude_set = {'code', 'date', 'future_ret', 'industry'}
+        numeric_cols = [c for c in factor_df.columns if c not in exclude_set
+                       and factor_df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
+        meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry'] if c in factor_df.columns]
+        df = self.prepare_features(factor_df[meta_cols + numeric_cols].copy(), regime_info, is_train=True)
         if 'future_ret' not in df.columns:
             print("[ML] 训练数据缺少future_ret列")
             return None
@@ -158,7 +165,12 @@ class MLFactorPredictor:
         if self.model is None:
             return np.zeros(len(df))
 
-        df = self.prepare_features(df.copy(), regime_info)
+        # 只复制数值型特征列（而非全量 df），减少内存占用
+        exclude_set = {'code', 'date', 'future_ret', 'industry'}
+        numeric_cols = [c for c in df.columns if c not in exclude_set
+                       and df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
+        meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry'] if c in df.columns]
+        df = self.prepare_features(df[meta_cols + numeric_cols].copy(), regime_info)
         valid_features = [c for c in self.feature_cols if c in df.columns]
 
         if not valid_features:

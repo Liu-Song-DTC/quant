@@ -53,8 +53,9 @@ class Signal:
     news_sentiment_score: float = 0.0        # 系统3: 资讯热点 [0,1]
 
     # === 当日数据 ===
-    daily_return: float = 0.0               # 当日收益率 (选股日当天)
-    volume_ratio: float = 1.0               # 当日量比 (vs 20日均量, 压缩值)
+    daily_return: float = 0.0               # 当日收益率 (选股日当天, 小数)
+    volume_ratio: float = 0.0               # 当日量比 (vs 20日均量, 压缩值到-1~1)
+    volume_ratio_raw: float = 1.0           # 当日原始量比 (未压缩, 用于阈值判断)
 
     # === 新因子：笔阶段+力竭+跳空+顶分型量能 ===
     exhaustion_risk: float = 0.0             # 力竭风险 [0, 1]
@@ -65,6 +66,18 @@ class Signal:
     # === 均线趋势（缠论买点的方向前提）===
     ma_trend_up: bool = False                # EMA20 > EMA60 均线多头排列
 
+    # === 多时间框架趋势 ===
+    pre_discount_score: float = 0.0           # MTF折扣前的原始分数（用于参数网格扫描）
+    weekly_trend_up: bool = False             # 周线多头 (周EMA20 > EMA60)
+    monthly_trend_up: bool = False            # 月线多头 (月EMA10 > EMA30)
+    weekly_trend_strength: float = 0.0        # 周线趋势强度 [0, 1]
+    monthly_trend_strength: float = 0.0       # 月线趋势强度 [0, 1]
+    mtf_alignment_score: float = 0.0          # 多时间框架对齐分数 [-1, 1]
+    mtf_discount_factor: float = 1.0          # 统一MTF折扣因子 [0.3, 1.1]
+    weekly_pattern_signal: float = 0.0        # 周线K线形态信号 [-1, 1]
+    nearest_resistance_pct: float = 0.0       # 最近阻力位距离 (%)
+    nearest_support_pct: float = 0.0          # 最近支撑位距离 (%)
+
     # === 基本面排雷 ===
     profit_declining: bool = False            # 近两季度净利润同比持续下滑
 
@@ -73,6 +86,11 @@ class Signal:
     dist_ma60: float = 0.0                   # 距MA60偏离 (%)
     max_dd_20d: float = 0.0                  # 20日最大回撤 (%, 负值)
     vol_regime: float = 1.0                  # 波动率区间 (短期vol/长期vol)
+
+    # === 内部字段：向量化阈值重评估所需（不参与to_dict序列化） ===
+    _chan_buy_signal: bool = False            # 缠论买入增强是否触发
+    _chan_sell_signal: bool = False           # 缠论卖出增强是否触发
+    _dist_ma20: float = 0.0                   # 距MA20偏离 (%)
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -95,7 +113,20 @@ class Signal:
             'chan_structure_score': self.chan_structure_score,
             'chan_buy_point': self.chan_buy_point,
             'chan_sell_point': self.chan_sell_point,
+            'signal_level': self.signal_level,
             'trend_type': self.trend_type,
+            'chan_pivot_zg': self.chan_pivot_zg,
+            'chan_pivot_zd': self.chan_pivot_zd,
+            'chan_pivot_zz': self.chan_pivot_zz,
+            'daily_return': self.daily_return,
+            'volume_ratio': self.volume_ratio,
+            'volume_ratio_raw': self.volume_ratio_raw,
+            'exhaustion_risk': self.exhaustion_risk,
+            'gap_breakout_confirm': self.gap_breakout_confirm,
+            'stroke_phase': self.stroke_phase,
+            'top_fractal_volume': self.top_fractal_volume,
+            'ma_trend_up': self.ma_trend_up,
+            'profit_declining': self.profit_declining,
             'resonance_systems': self.resonance_systems,
             'capital_flow_score': self.capital_flow_score,
             'news_sentiment_score': self.news_sentiment_score,
@@ -103,6 +134,16 @@ class Signal:
             'dist_ma60': self.dist_ma60,
             'max_dd_20d': self.max_dd_20d,
             'vol_regime': self.vol_regime,
+            'pre_discount_score': self.pre_discount_score,
+            'weekly_trend_up': self.weekly_trend_up,
+            'monthly_trend_up': self.monthly_trend_up,
+            'weekly_trend_strength': self.weekly_trend_strength,
+            'monthly_trend_strength': self.monthly_trend_strength,
+            'mtf_alignment_score': self.mtf_alignment_score,
+            'mtf_discount_factor': self.mtf_discount_factor,
+            'weekly_pattern_signal': self.weekly_pattern_signal,
+            'nearest_resistance_pct': self.nearest_resistance_pct,
+            'nearest_support_pct': self.nearest_support_pct,
         }
 
     def get_risk_level(self) -> str:

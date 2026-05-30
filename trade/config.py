@@ -70,23 +70,44 @@ class TradeConfig:
             return dates[-1] + timedelta(days=int(remaining * 365 / 252))
         return start + timedelta(days=int(n_days * 365 / 252))
 
+    def _get_rebalance_period(self) -> int:
+        """从 factor_config.yaml 读取动态调仓周期, 取最小值作为门控（确保不遗漏）
+
+        实际调仓由 signal_runner._should_rebalance 按市场状态动态判断。
+        """
+        try:
+            cfg_path = ROOT / "strategy" / "config" / "factor_config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                dr = cfg.get("dynamic_rebalance", {})
+                if dr.get("enabled", True):
+                    return min(dr.get("bull_period", 20),
+                              dr.get("neutral_period", 20),
+                              dr.get("bear_period", 15))
+        except Exception:
+            pass
+        return 20
+
     def is_rebalance_day(self, today: datetime) -> bool:
-        """自动判断今天是否调仓日(每20个交易日, 使用真实交易日历)"""
+        """自动判断今天是否调仓日（使用动态调仓周期的最小值作为门控）"""
+        period = self._get_rebalance_period()
         start = datetime.strptime(self.start_date, "%Y-%m-%d").date()
         today_date = today.date() if hasattr(today, 'date') else today
         trading_days = self._count_trading_days(start, today_date)
-        return trading_days >= 0 and trading_days % 20 == 0
+        return trading_days >= 0 and trading_days % period == 0
 
     def rebalance_info(self, today: datetime) -> dict:
         """返回调仓日信息: 是否调仓日、上次/下次调仓日"""
+        period = self._get_rebalance_period()
         start = datetime.strptime(self.start_date, "%Y-%m-%d").date()
         today_date = today.date() if hasattr(today, 'date') else today
         trading_days = self._count_trading_days(start, today_date)
-        is_rebal = trading_days >= 0 and trading_days % 20 == 0
+        is_rebal = trading_days >= 0 and trading_days % period == 0
 
-        # 上次调仓日: 最近的第 20 的倍数个交易日
-        last_n = (trading_days // 20) * 20
-        next_n = last_n + 20
+        # 上次/下次调仓日: 最近的第 period 的倍数个交易日
+        last_n = (trading_days // period) * period
+        next_n = last_n + period
 
         last_rebal = self._trading_day_offset(start, last_n)
         next_rebal = self._trading_day_offset(start, next_n)

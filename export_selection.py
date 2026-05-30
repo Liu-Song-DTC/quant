@@ -61,10 +61,11 @@ def style_header(ws, headers, row=1):
 
 
 def style_data_rows(ws, start_row, end_row, ncols):
-    for row in range(start_row, end_row + 1):
-        fill = EVEN_FILL if (row - start_row) % 2 == 0 else ODD_FILL
-        for col in range(1, ncols + 1):
-            cell = ws.cell(row=row, column=col)
+    """批量设置数据行样式 — 使用 iter_rows 替代逐格 cell() 查找"""
+    for row_idx, row in enumerate(ws.iter_rows(min_row=start_row, max_row=end_row,
+                                                 min_col=1, max_col=ncols)):
+        fill = EVEN_FILL if row_idx % 2 == 0 else ODD_FILL
+        for cell in row:
             cell.font = DATA_FONT
             cell.alignment = DATA_ALIGN
             cell.border = THIN_BORDER
@@ -73,21 +74,25 @@ def style_data_rows(ws, start_row, end_row, ncols):
 
 
 def auto_width(ws, min_width=8, max_width=40):
-    for col_cells in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col_cells[0].column)
-        for cell in col_cells:
+    """计算列宽 — 单次遍历 iter_rows 替代 ws.columns（openpyxl ws.columns 极慢）"""
+    col_widths = {}
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
+        for cell in row:
             if cell.value:
                 val = str(cell.value)
                 length = sum(2 if ord(c) > 127 else 1 for c in val)
-                max_len = max(max_len, length)
-        ws.column_dimensions[col_letter].width = min(max(max_len + 2, min_width), max_width)
+                col_idx = cell.col_idx
+                if length > col_widths.get(col_idx, 0):
+                    col_widths[col_idx] = length
+    for col_idx, width in col_widths.items():
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = min(max(width + 2, min_width), max_width)
 
 
 def load_stock_name_map():
     stock_list = ROOT / "data" / "stock_data" / "stock_metadata" / "stock_list.csv"
     if stock_list.exists():
-        df = pd.read_csv(stock_list, dtype={"symbol": str})
+        df = pd.read_csv(stock_list, dtype={"symbol": str}, usecols=["symbol", "name"])
         return dict(zip(df["symbol"], df["name"]))
     return {}
 
@@ -332,12 +337,49 @@ def run_selection(skip_data_refresh=False):
     # ── 正常流程: prepare (含动态因子) + run ──
     runner.prepare(exposure=1.0, peak_equity=0.0)
 
+    # 恢复跨日持仓跟踪状态
+    tracking_file = str(ROOT / "trade" / "portfolio_tracking.json")
+    if hasattr(runner.strategy, 'portfolio'):
+        runner.strategy.portfolio.restore_tracking_state(tracking_file)
+
+    # Fix P1: 从持仓状态提取真实成本, 使止损/移动止盈生效
+    cost = {}
+    total_market_value = 0.0
+    for code, pos in positions.items():
+        if isinstance(pos, dict):
+            shares = pos.get("shares", 0)
+            cost_price = pos.get("cost_price", 0)
+            if shares > 0 and cost_price > 0:
+                cost[code] = [shares, cost_price]
+                total_market_value += shares * prices.get(code, 0)
+
+    # Fix P1: 更新组合日收益率历史 (使波动率控制生效)
+    daily_returns = ps.get("daily_returns", [])
+    if daily_returns:
+        for ret in daily_returns[-60:]:  # 最近60天
+            runner.strategy.portfolio.update_returns(ret)
+
     result = runner.run(
         current_positions={k: v.get("market_value", 0) if isinstance(v, dict) else v
                           for k, v in positions.items()},
         cash=cash,
-        cost={},
+        cost=cost,
     )
+
+    # 持久化持仓跟踪状态（入场日期/峰值/止损冷却等，跨交易日保持）
+    if hasattr(runner.strategy, 'portfolio'):
+        runner.strategy.portfolio.save_tracking_state(tracking_file)
+
+    # 输出监控报告
+    from strategy.core.monitor import monitor
+    monitor.print_report()
+
+    # ── 释放 SignalRunner 中的 stock_data_dict (~4000 只 × 2 年行情, 最大内存占用) ──
+    runner.stock_data_dict.clear()
+    runner.strategy = None
+    del runner
+    import gc
+    gc.collect()
 
     if result is None:
         print("选股失败!")

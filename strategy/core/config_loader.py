@@ -169,7 +169,9 @@ class ConfigLoader:
 
 
 def load_config(config_path: str = None) -> ConfigLoader:
-    """加载配置的便捷函数"""
+    """加载配置的便捷函数 (支持 FACTOR_CONFIG_PATH 环境变量覆盖)"""
+    if config_path is None:
+        config_path = os.environ.get('FACTOR_CONFIG_PATH')
     if config_path is None:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         config_path = os.path.join(base_dir, 'config', 'factor_config.yaml')

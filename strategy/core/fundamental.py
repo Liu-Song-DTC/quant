@@ -1,57 +1,64 @@
 # core/fundamental.py
 import pandas as pd
+import logging
 import os
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class FundamentalData:
     """基本面数据加载器 - 支持历史数据，防止信息泄露"""
 
     def __init__(self, data_path, stock_codes=None):
-        """初始化基本面数据加载器
+        """初始化基本面数据加载器（惰性加载，按需从磁盘读取单只股票CSV）
 
         Args:
             data_path: 基本面数据目录
-            stock_codes: 可选，只加载指定股票的基本面数据（提高效率）
+            stock_codes: 可选，只索引指定股票的基本面数据
         """
         self.data_path = data_path
-        self.stock_data = {}  # {code: DataFrame}
-        self._load_all_stocks(stock_codes)
+        self.stock_data = {}  # {code: DataFrame} 惰性缓存，首次访问时加载
+        self._file_map = {}   # {code: file_path}
+        self._scan_stock_files(stock_codes)
 
-    def _load_all_stocks(self, stock_codes=None):
-        """加载股票的基本面数据
-
-        Args:
-            stock_codes: 可选，只加载指定股票
-        """
+    def _scan_stock_files(self, stock_codes=None):
+        """扫描可用股票文件路径（不加载数据）"""
         if not os.path.exists(self.data_path):
             print(f"基本面数据目录不存在: {self.data_path}")
             return
 
         if stock_codes:
-            # 只加载指定的股票
-            files = [f"{code}.csv" for code in stock_codes]
-            files = [f for f in files if os.path.exists(os.path.join(self.data_path, f))]
-            print(f"加载基本面数据: {len(files)} 只股票（指定范围）")
+            for code in stock_codes:
+                fpath = os.path.join(self.data_path, f"{code}.csv")
+                if os.path.exists(fpath):
+                    self._file_map[code] = fpath
+            print(f"基本面数据索引: {len(self._file_map)} 只股票（指定范围，惰性加载）")
         else:
-            # 加载所有股票文件
-            files = [f for f in os.listdir(self.data_path) if f.endswith('.csv')]
-            print(f"加载基本面数据: {len(files)} 只股票")
+            for f in os.listdir(self.data_path):
+                if f.endswith('.csv'):
+                    code = f.replace('.csv', '')
+                    self._file_map[code] = os.path.join(self.data_path, f)
+            print(f"基本面数据索引: {len(self._file_map)} 只股票（惰性加载）")
 
-        for f in files:
-            code = f.replace('.csv', '')
-            try:
-                df = pd.read_csv(os.path.join(self.data_path, f))
-                # 确保数据类型正确
-                if '报告期' in df.columns:
-                    df['报告期'] = df['报告期'].astype(str)
-                if '数据可用日期' in df.columns:
-                    df['数据可用日期'] = df['数据可用日期'].astype(str)
-                self.stock_data[code] = df
-            except Exception as e:
-                continue
-
-        print(f"成功加载 {len(self.stock_data)} 只股票的基本面数据")
+    def _load_stock(self, code):
+        """按需加载单只股票的基本面CSV到缓存"""
+        if code in self.stock_data:
+            return
+        fpath = self._file_map.get(code)
+        if fpath is None:
+            self.stock_data[code] = pd.DataFrame()  # 标记为已尝试，避免重复文件检查
+            return
+        try:
+            df = pd.read_csv(fpath)
+            if '报告期' in df.columns:
+                df['报告期'] = df['报告期'].astype(str)
+            if '数据可用日期' in df.columns:
+                df['数据可用日期'] = df['数据可用日期'].astype(str)
+            self.stock_data[code] = df
+        except Exception:
+            logger.warning(f"基本面数据读取失败 code={code} path={fpath}", exc_info=True)
+            self.stock_data[code] = pd.DataFrame()
 
     def _get_available_data(self, code, current_date):
         """获取当前日期可用的基本面数据（防止信息泄露）
@@ -64,7 +71,7 @@ class FundamentalData:
             DataFrame: 可用的基本面数据（按报告期排序）
         """
         if code not in self.stock_data:
-            return pd.DataFrame()
+            self._load_stock(code)
 
         df = self.stock_data[code]
 
@@ -354,3 +361,44 @@ class FundamentalData:
         if cur_rg is not None and prev_rg is not None:
             return cur_rg - prev_rg
         return None
+
+    # ========== 估值因子 (Fix#1) ==========
+
+    def get_pe(self, code, current_date, price=None):
+        """获取市盈率(PE) — 需要当前价格
+
+        返回 PE = price / EPS。值越低越便宜。
+        若price未提供，尝试从latest数据中获取。
+        """
+        latest = self._get_latest(code, current_date)
+        if latest is None:
+            return None
+        eps = latest.get('每股收益')
+        if eps is None or eps <= 0:
+            return None
+        try:
+            eps = float(eps)
+        except (ValueError, TypeError):
+            return None
+        if price is None or price <= 0:
+            return None
+        return price / eps
+
+    def get_pb(self, code, current_date, price=None):
+        """获取市净率(PB) — 需要当前价格
+
+        返回 PB = price / BPS。值越低越便宜。
+        """
+        latest = self._get_latest(code, current_date)
+        if latest is None:
+            return None
+        bps = latest.get('每股净资产')
+        if bps is None or bps <= 0:
+            return None
+        try:
+            bps = float(bps)
+        except (ValueError, TypeError):
+            return None
+        if price is None or price <= 0:
+            return None
+        return price / bps

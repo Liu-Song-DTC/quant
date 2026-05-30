@@ -1,5 +1,6 @@
 import backtrader as bt
 import pandas as pd
+import numpy as np
 import datetime
 import os
 from tqdm import tqdm
@@ -14,6 +15,7 @@ from core.signal_engine import SignalEngine
 from core.factor_preparer import prepare_factor_data
 from core.signal_store import SignalStore
 from core.config_loader import load_config
+from core.monitor import monitor, get_logger
 from core.industry_mapping import INDUSTRY_KEYWORDS
 from core.market_regime_detector import MarketRegimeDetector
 from core.stock_pool import get_stock_pool, get_exclusion_set
@@ -221,13 +223,19 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     calendar_index = pd.DatetimeIndex(sorted(dates))
     del dates
 
-    # 处理指数数据 - 生成市场状态
+    # 处理指数数据 - 生成市场状态 (Fix#6: 多指数风格检测)
     regime_df = None
     if "sh000001" in stock_data_dict:
-        strategy.generate_market_regime(stock_data_dict["sh000001"])
-        # 获取regime_df用于传递给worker进程
+        strategy.generate_market_regime(
+            stock_data_dict["sh000001"],
+            small_cap_df=stock_data_dict.get("000852"),
+            growth_df=stock_data_dict.get("399006"),
+        )
         regime_df = strategy.index_data
-        print(f"市场状态数据已生成，共 {len(regime_df)} 条记录")
+        has_sc = "000852" in stock_data_dict
+        has_gr = "399006" in stock_data_dict
+        print(f"市场状态数据已生成，共 {len(regime_df)} 条记录"
+              f" (中证1000={'✓' if has_sc else '✗'}, 创业板指={'✓' if has_gr else '✗'})")
 
     # 准备动态因子数据
     factor_mode = config.config.get('factor_mode', 'both')
@@ -249,6 +257,14 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业")
     else:
         print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
+
+    # === 释放 stock_data_dict（factor_df 已生成，不再需要原始数据） ===
+    # 提前释放以降低 ML 训练期间的内存峰值（两者共存额外占用 3-5GB）
+    stock_data_dict.clear()
+    del stock_data_dict
+    import gc
+    gc.collect()
+    print("已释放 stock_data_dict 内存（因子数据已生成）")
 
     # === ML预测层训练 ===
     ml_config = config.config.get('ml', {})
@@ -276,9 +292,10 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     date_df = factor_df[factor_df['date'] == date]
                     if len(date_df) == 0:
                         continue
-                    preds = ml_predictor.predict(date_df.copy())
-                    for i, (_, row) in enumerate(date_df.iterrows()):
-                        _ml_preds[(row['code'], date)] = preds[i]
+                    preds = ml_predictor.predict(date_df)
+                    codes = date_df['code'].values
+                    for j, code in enumerate(codes):
+                        _ml_preds[(code, date)] = preds[j]
                 print(f"ML预测完成: {len(_ml_preds)} 条预测")
             else:
                 print(f"[ML] 验证IC不足({val_ic}), 跳过ML预测")
@@ -342,24 +359,16 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         for name in stock_codes
     ]
 
-    # === 释放 stock_data_dict (避免 fork 复制 ~3-5GB 到每个 worker) ===
-    # Signal workers 直接从 CSV 文件读取数据，不需要内存中的 DataFrame
-    # 在 fork 前释放可节省 NUM_WORKERS × 3-5GB 的内存
-    stock_data_dict.clear()
-    del stock_data_dict
-    import gc
-    gc.collect()
-    print("已释放 stock_data_dict 内存（避免 fork 复制到 worker 进程）")
-
     # 增量写入信号CSV（而非内存中累积 ~1.3GB 的 all_signals 列表）
     strategy_dir = os.path.dirname(os.path.abspath(__file__))
     signals_output_path = os.path.join(strategy_dir, 'rolling_validation_results', 'backtest_signals.csv')
     os.makedirs(os.path.dirname(signals_output_path), exist_ok=True)
     signal_csv = open(signals_output_path, 'w', encoding='utf-8')
-    signal_csv.write('code,date,buy,sell,score,factor_value,factor_name,industry,factor_quality,'
+    signal_csv.write('code,date,buy,sell,score,pre_discount_score,factor_value,factor_name,industry,factor_quality,'
                      'chan_divergence_type,chan_divergence_strength,chan_structure_score,'
                      'chan_buy_point,chan_sell_point,signal_level,trend_type,'
-                     'chan_pivot_zg,chan_pivot_zd,mom_60d,dist_ma60,max_dd_20d,vol_regime\n')
+                     'chan_pivot_zg,chan_pivot_zd,mom_60d,dist_ma60,max_dd_20d,vol_regime,'
+                     'mtf_discount_factor,mtf_alignment_score,avg_trend_strength\n')
     signal_count = [0]  # 用list实现闭包写入计数
 
     # 多进程并行生成信号
@@ -391,7 +400,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                 if hasattr(date, 'date'):
                     date = date.date()
                 signal_csv.write(
-                    f'{c},{date},{sig.buy},{sig.sell},{sig.score},{sig.factor_value},'
+                    f'{c},{date},{sig.buy},{sig.sell},{sig.score},{sig.pre_discount_score},'
+                    f'{sig.factor_value},'
                     f'{sig.factor_name},{sig.industry},'
                     f'{getattr(sig, "factor_quality", 0.0)},'
                     f'{getattr(sig, "chan_divergence_type", "")},'
@@ -406,7 +416,10 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     f'{getattr(sig, "mom_60d", 0.0)},'
                     f'{getattr(sig, "dist_ma60", 0.0)},'
                     f'{getattr(sig, "max_dd_20d", 0.0)},'
-                    f'{getattr(sig, "vol_regime", 1.0)}\n'
+                    f'{getattr(sig, "vol_regime", 1.0)},'
+                    f'{getattr(sig, "mtf_discount_factor", 1.0)},'
+                    f'{getattr(sig, "mtf_alignment_score", 0.0)},'
+                    f'{(getattr(sig, "weekly_trend_strength", 0.0) + getattr(sig, "monthly_trend_strength", 0.0)) / 2}\n'
                 )
                 signal_count[0] += 1
                 # 动态因子统计

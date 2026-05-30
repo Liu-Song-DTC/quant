@@ -50,7 +50,7 @@ def compress_fundamental_factor(raw_value: float, factor_name: str) -> float:
     if raw_value is None or (isinstance(raw_value, float) and np.isnan(raw_value)):
         return 0.0
     compressors = {
-        'fund_score': lambda v: np.tanh((np.clip(v, -100, 100) - 50) / 50),
+        'fund_score': lambda v: np.tanh((np.clip(v, 0, 1.0) - 0.5) * 3),  # [0,1.0]→[-0.9,0.9]
         'fund_profit_growth': lambda v: np.tanh(np.clip(v, -100, 100)),
         'fund_revenue_growth': lambda v: np.tanh(np.clip(v, -100, 100)),
         'fund_roe': lambda v: np.tanh((np.clip(v, -50, 50) - 10) / 20),
@@ -60,6 +60,8 @@ def compress_fundamental_factor(raw_value: float, factor_name: str) -> float:
         'fund_debt_ratio': lambda v: np.tanh((50 - np.clip(v, 0, 100)) / 50),
         'fund_pg_improve': lambda v: np.tanh(np.clip(v, -5, 5) * 2),
         'fund_rg_improve': lambda v: np.tanh(np.clip(v, -5, 5) * 2),
+        'fund_pe': lambda v: np.tanh((15 - np.clip(v, 1, 200)) / 30),   # PE<15=便宜→正信号
+        'fund_pb': lambda v: np.tanh((1.5 - np.clip(v, 0.1, 50)) / 5),  # PB<1.5=便宜→正信号
     }
     compressor = compressors.get(factor_name)
     if compressor:
@@ -194,6 +196,7 @@ def calculate_indicators(
     # 根因：停牌后复牌或异常交易会导致成交量比极大
     raw_vol_ratio = vol_arr / (result['volume_ma20'] + 1e-6)
     result['volume_ratio'] = np.arctan(raw_vol_ratio - 1) / (np.pi / 2)  # 相对于1的偏离，压缩到(-1, 1)
+    result['volume_ratio_raw'] = raw_vol_ratio  # 原始量比，供阈值判断使用
 
     # === ATR ===
     for period in params.get('atr_periods', [10, 14, 20]):
@@ -234,11 +237,36 @@ def calculate_indicators(
     result['full_golden'] = (result['ema5'] > result['ema20']) & (result['ema20'] > result['ema60'])
     result['full_death'] = (result['ema5'] < result['ema20']) & (result['ema20'] < result['ema60'])
 
+    # === MA趋势质量 (替代冗余二元均线因子) ===
+    # 三维度综合: 排列度(40%) + 通道宽度(30%) + 斜率方向(30%)
+    # 相比纯排列度，加入价差和斜率使其:
+    #   - 更灵敏: 价差收窄先于排列破坏 (Fix#5)
+    #   - 更独立: 不同于trend_lowvol和mom_x_lowvol (Fix#6)
+    ma5, ma10, ma20, ma60 = result['ma5'], result['ma10'], result['ma20'], result['ma60']
+    # 维度1: MA排列度 (0-5)
+    alignment = np.zeros(n, dtype=np.float32)
+    alignment += (close_arr > ma5).astype(np.float32)
+    alignment += (ma5 > ma10).astype(np.float32)
+    alignment += (ma10 > ma20).astype(np.float32)
+    alignment += (ma20 > ma60).astype(np.float32)
+    alignment += (ma5 > ma20).astype(np.float32)
+    alignment_score = alignment / 5.0
+    # 维度2: MA通道宽度 (价差越大=趋势越强，使用tanh压缩)
+    ma_spread = (ma5 - ma60) / (ma60 + 1e-10)
+    spread_score = np.tanh(ma_spread * 3)
+    # 维度3: MA20斜率方向（复用下述 ema20_slope，提前计算）
+    ema20_slope = result['ema20'] / _shift(result['ema20'], 10, safe=True) - 1
+    slope_score = np.tanh(ema20_slope * 10)
+    # 综合
+    result['ma_alignment'] = (
+        alignment_score * 0.4 + spread_score * 0.3 + slope_score * 0.3
+    )
+
     # === 趋势强度 ===
     result['trend_strength'] = (result['ema20'] - result['ema60']) / (result['ema60'] + 1e-10)
 
     # === 斜率 ===
-    result['ema20_slope'] = result['ema20'] / _shift(result['ema20'], 10, safe=True) - 1
+    result['ema20_slope'] = ema20_slope
 
     # === MACD ===
     result['macd'], result['macd_signal'], result['macd_hist'] = _macd(close_arr)
@@ -302,6 +330,56 @@ def calculate_indicators(
     mom20 = result.get('mom_20', np.zeros(n))
     result['vol_confirm'] = np.tanh(vp_corr * mom20 * 10)
 
+    # === 趋势起点突破因子 (捕捉趋势初期，避免等动量积累20天才触发) ===
+
+    # 1. MA20斜率: 5日变化率，正值=均线拐头向上
+    ma20 = result['ma20']
+    ma20_slope_5d = (ma20 - _shift(ma20, 5, safe=True)) / (_shift(ma20, 5, safe=True) + 1e-10)
+    # MA20斜率加速度: 当前斜率 vs 5日前斜率，正加速=趋势启动
+    ma20_slope_accel = ma20_slope_5d - _shift(ma20_slope_5d, 5, safe=True)
+    result['ma20_slope'] = np.tanh(ma20_slope_5d * 200)
+
+    # 2. 趋势突破: 价格刚站上MA20 + MA20拐头 + 放量确认
+    price_vs_ma20 = (close_arr - ma20) / (ma20 + 1e-10)
+    # 接近MA20(0~3%以内) = 新鲜突破, 非追高
+    proximity = 1.0 - np.clip(np.abs(price_vs_ma20) / 0.05, 0.0, 1.0)
+    above_ma20 = (price_vs_ma20 > 0).astype(float)
+    vol_ratio_20 = result['volume_ratio_raw']
+    vol_spike = np.clip((vol_ratio_20 - 0.8) / 1.2, 0.0, 1.0)  # 量比>0.8开始给分, >2.0满分
+    # 突破强度: 价格位置 + 均线拐头 + 量能
+    breakout_score = (above_ma20 * proximity * 0.35 +
+                      np.tanh(ma20_slope_5d * 100 + 0.5) * 0.35 +
+                      vol_spike * 0.30)
+    result['trend_breakout'] = np.tanh(breakout_score * 3)
+
+    # 3. 短期金叉: MA5上穿MA20, 趋势启动的最早信号
+    ma5 = result['ma5']
+    cross_up = ((ma5 > ma20) & (_shift(ma5, 1, safe=True) <= _shift(ma20, 1, safe=True))).astype(float)
+    # 金叉后3天内仍有效(窗口期)
+    cross_recent = np.zeros(n)
+    for i in range(5, n):
+        if cross_up[i]:
+            cross_recent[i] = 1.0
+        elif i >= 1 and cross_recent[i-1] > 0 and i - np.argmax(cross_up[max(0,i-4):i+1]) <= 3:
+            cross_recent[i] = 0.7  # 金叉后第2-3天衰减
+    # 金叉强度 = 金叉时MA5-MA20的差距
+    cross_gap = (ma5 - ma20) / (ma20 + 1e-10)
+    result['ma_golden_cross'] = cross_recent * np.tanh(cross_gap * 50 + 0.5)
+
+    # 4. 趋势启动综合: 突破+金叉+均线斜率+RSI恢复
+    rsi_14 = result['rsi_14']
+    # RSI从40-55区域回升=趋势初期; >70=过热扣分
+    rsi_recovery = np.where(rsi_14 < 40, 0.0,
+                    np.where(rsi_14 < 55, (rsi_14 - 40) / 15,
+                    np.where(rsi_14 < 70, 1.0,
+                    1.0 - (rsi_14 - 70) / 30)))
+    result['trend_initiation'] = (
+        result['trend_breakout'] * 0.30 +
+        result['ma_golden_cross'] * 0.25 +
+        result['ma20_slope'] * 0.25 +
+        rsi_recovery * 0.20
+    )
+
     # === 换手率因子 ===
     if turnover_rate is not None:
         tr_ma20 = _sma(turnover_rate, 20)
@@ -361,7 +439,7 @@ def calculate_indicators(
 
     # 2-4. 收益偏度/峰度/波动率偏度/残差动量 — 已由 _njit_compute_alpha_factors 批量计算
     result['skewness_20'] = np.tanh(skew_20)
-    result['kurtosis_20'] = np.tanh(-kurt_20 / 3)  # 低峰度=正信号
+    result['kurtosis_20'] = np.tanh(-kurt_20 / 3)
     result['volatility_skew'] = np.tanh(vol_skew)
     result['residual_momentum'] = np.tanh(residual_mom * 2)
 
@@ -571,13 +649,13 @@ def calculate_indicators(
 
     # --- 1. gap_breakout_confirm: 跳空缺口B3确认因子 ---
     # 原理: 向上跳空+放量=中枢突破强确认(B3加分)；跳空+缩量=假突破(扣分)
+    # Fix#6: 直接使用volume_ratio_raw, 不再用tan逆解压(数值不稳定)
     gap_breakout = np.zeros(n)
     if open_arr is not None and n > 0:
+        raw_vr_arr = result.get('volume_ratio_raw', np.ones(n))
         for i in range(1, n):
             gap = (open_arr[i] - close_arr[i-1]) / (close_arr[i-1] + 1e-10)
-            vol_ratio_i = result['volume_ratio'][i] if abs(result['volume_ratio'][i]) < 1 else np.sign(result['volume_ratio'][i]) * 0.99
-            # 还原到原始vol_ratio近似值
-            raw_vr = np.tan(vol_ratio_i * np.pi / 2) + 1  # 反tanh近似
+            raw_vr = raw_vr_arr[i]
             if gap > 0.02:
                 if raw_vr > 2.0:
                     gap_breakout[i] = 0.9  # 高开+爆量=强突破
@@ -1580,5 +1658,11 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['exhaustion_risk'] = ind['exhaustion_risk'][idx] if not np.isnan(ind['exhaustion_risk'][idx]) else 0.0
     if 'top_fractal_volume' in ind:
         result['top_fractal_volume'] = ind['top_fractal_volume'][idx] if not np.isnan(ind['top_fractal_volume'][idx]) else 0.0
+
+    # === 均线系统因子 ===
+    if 'ma_alignment' in ind:
+        result['ma_alignment'] = ind['ma_alignment'][idx] if not np.isnan(ind['ma_alignment'][idx]) else 0.0
+    if 'ema20_slope' in ind:
+        result['ema20_slope'] = ind['ema20_slope'][idx] if not np.isnan(ind['ema20_slope'][idx]) else 0.0
 
     return result

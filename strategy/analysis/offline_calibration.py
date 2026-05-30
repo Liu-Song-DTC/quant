@@ -48,7 +48,8 @@ from core.config_loader import load_config
 from core.fundamental import FundamentalData
 from core.factor_calculator import (
     calculate_indicators, compute_composite_factors,
-    compress_fundamental_factor, get_default_params
+    compress_fundamental_factor, get_default_params,
+    compute_fundamental_score
 )
 from core.market_regime_detector import MarketRegimeDetector
 from core.industry_mapping import INDUSTRY_KEYWORDS
@@ -138,7 +139,9 @@ def _calibrate_stock_worker(args):
     # 替代原来每个日期15+次独立方法调用，大幅减少DataFrame filter+sort操作）
     fund_cache = {}
     if _worker_fd is not None:
-        for eval_date in factor_dates:
+        # 优化: 只查股票有交易数据的日期, 跳过无效查询 (提速50%+)
+        valid_dates = [d for d in factor_dates if d in date_to_idx and date_to_idx[d] >= lookback]
+        for eval_date in valid_dates:
             try:
                 latest = _worker_fd._get_latest(code, eval_date)
                 if latest is None:
@@ -164,24 +167,11 @@ def _calibrate_stock_worker(args):
                 operating_cf = latest.get('xjll_经营性现金流-现金流量净额')
                 profit = latest.get('净利润-净利润')
 
-                # fund_score inline计算（与原get_fundamental_score逻辑一致）
-                fund_score = 0.0
-                if roe is not None:
-                    fund_score += min(roe * 100, 30)
-                if pg is not None:
-                    if pg > 0.5:
-                        fund_score += 25
-                    elif pg > 0.2:
-                        fund_score += 15
-                    elif pg > 0:
-                        fund_score += 5
-                if eps is not None and eps > 0:
-                    fund_score += min(eps * 10, 20)
-                if rg is not None:
-                    if rg > 0.3:
-                        fund_score += 15
-                    elif rg > 0.1:
-                        fund_score += 10
+                # fund_score — 统一使用 compute_fundamental_score (与实盘一致)
+                # roe/pg/rg已通过_pct转为小数, eps保持原值
+                fund_score = compute_fundamental_score(
+                    roe=roe, profit_growth=pg, revenue_growth=rg, eps=eps
+                )
 
                 # pg_improve / rg_improve（需上一季度数据）
                 pg_improve = None
@@ -199,6 +189,18 @@ def _calibrate_stock_worker(args):
                 if operating_cf is not None and profit is not None and profit > 0:
                     cf_to_profit = operating_cf / profit
 
+                # 估值因子: PE/PB (Fix#1)
+                eps_val = latest.get('每股收益')
+                bps_val = latest.get('每股净资产')
+                try:
+                    eps_val = float(eps_val) if eps_val is not None else None
+                except (ValueError, TypeError):
+                    eps_val = None
+                try:
+                    bps_val = float(bps_val) if bps_val is not None else None
+                except (ValueError, TypeError):
+                    bps_val = None
+
                 fund_cache[eval_date] = {
                     'roe': roe,
                     'profit_growth': pg,
@@ -208,15 +210,15 @@ def _calibrate_stock_worker(args):
                     'pg_improve': pg_improve,
                     'rg_improve': rg_improve,
                     'cf_to_profit': cf_to_profit,
+                    'eps': eps_val,
+                    'bps': bps_val,
                 }
             except Exception:
                 fund_cache[eval_date] = {}
 
     results = []
-    for sample_date in factor_dates:
-        idx = date_to_idx.get(sample_date)
-        if idx is None or idx < lookback:
-            continue
+    for sample_date in valid_dates:  # 复用上面过滤后的有效日期
+        idx = date_to_idx[sample_date]  # 已验证存在且>=lookback
 
         fund_data = fund_cache.get(sample_date, {})
 
@@ -248,6 +250,18 @@ def _calibrate_stock_worker(args):
                 if val is not None and isinstance(val, (int, float)):
                     row[row_key] = np.float32(compress_fundamental_factor(val, row_key))
 
+        # 估值因子: PE/PB (Fix#1 — 用当前价格计算)
+        if fund_data:
+            current_price = close_arr[idx]
+            eps = fund_data.get('eps')
+            bps = fund_data.get('bps')
+            if eps and eps > 0 and current_price > 0:
+                pe = current_price / eps
+                row['fund_pe'] = np.float32(compress_fundamental_factor(pe, 'fund_pe'))
+            if bps and bps > 0 and current_price > 0:
+                pb = current_price / bps
+                row['fund_pb'] = np.float32(compress_fundamental_factor(pb, 'fund_pb'))
+
         # 计算未来收益
         if idx + forward_period < n:
             future_price = close_arr[idx + forward_period]
@@ -255,6 +269,13 @@ def _calibrate_stock_worker(args):
             if current_price > 0:
                 row['future_ret'] = np.float32((future_price - current_price) / current_price)
                 results.append(row)
+
+    # 清理本只股票在worker中的基本面缓存（防止worker处理多只股票后缓存膨胀到GB级）
+    if _worker_fd is not None and code in _worker_fd.stock_data:
+        del _worker_fd.stock_data[code]
+
+    # 释放本只股票的大对象
+    del ind, df, fund_cache, date_to_idx, close_arr, high_arr, low_arr, vol_arr
 
     return results
 
@@ -269,8 +290,9 @@ def prepare_calibration_data():
     4. 基本面数据（FundamentalData内部加载）
     """
     config = load_config()
-    data_path = config.get('paths.data', '../data/stock_data/backtrader_data/')
-    fundamental_path = config.get('paths.fundamental', '../data/stock_data/fundamental_data/')
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    data_path = os.path.join(project_root, 'data/stock_data/backtrader_data/')
+    fundamental_path = os.path.join(project_root, 'data/stock_data/fundamental_data/')
 
     # ---- 扫描文件路径 + 轻量收集日期（只读datetime列） ----
     stock_file_map = {}  # {code: file_path}
@@ -328,17 +350,23 @@ def prepare_calibration_data():
 
 
 def _calc_max_workers():
-    """根据可用内存估算最大worker数，硬上限4（WSL 8GB安全余量）"""
+    """根据可用内存估算最大worker数
+
+    每个worker内存占用：
+    - FundamentalData惰性加载（虽然处理完清理缓存，但峰值仍需考虑）
+    - 技术指标数组（每只股票~几十MB）
+    - Python进程基础开销
+    保守估计每worker ~500MB，保留1.5GB给系统和因子数据合并。
+    """
     try:
         with open('/proc/meminfo', 'r') as f:
             for line in f:
                 if line.startswith('MemAvailable:'):
                     avail_kb = int(line.split()[1])
                     avail_gb = avail_kb / (1024 * 1024)
-                    # 每worker保守估计1.2GB（FundamentalData加载全部基本面CSV约500-800MB）
-                    max_w = max(1, int(avail_gb / 1.2))
-                    # 硬上限：WSL 8GB机器最多4个worker
-                    max_w = min(max_w, 4)
+                    # 保守：每worker 500MB，保留1.5GB给主进程合并factor_df和标定计算
+                    max_w = max(1, int((avail_gb - 1.5) / 0.5))
+                    max_w = min(max_w, 4)  # 最多4个（避免fork/spawn过重）
                     print(f"可用内存: {avail_gb:.1f} GB → 最大workers: {max_w}")
                     return max_w
     except Exception:
@@ -356,7 +384,7 @@ def compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_c
     4. auto-cap workers基于可用内存
     """
     config = load_config()
-    lookback = config.get('industry_factor_config.lookback_days', 120)
+    lookback = config.get('industry_factor_config.lookback_days', 250)
     forward_period = config.get('dynamic_factor.forward_period', 20)
     configured_workers = config.get('backtest.num_workers', 4)
 
@@ -379,7 +407,7 @@ def compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_c
     temp_dir = tempfile.mkdtemp(prefix='calib_factors_')
     temp_files = []
     chunk_buffer = []
-    chunk_size = 300000  # 每30万行写入一次（降低峰值内存）
+    chunk_size = 150000  # 每15万行写入一次
     total_rows = 0
 
     ctx = multiprocessing.get_context('spawn')
@@ -410,6 +438,9 @@ def compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_c
 
     factor_df = _read_and_merge_chunks(temp_files)
     print(f"合并后数据: {len(factor_df)} 行, {factor_df['code'].nunique()} 只股票")
+
+    # 降精度：所有float64 → float32，int64 → int32（大幅减少内存占用）
+    _downcast_df(factor_df)
 
     _log_memory("after df build")
 
@@ -464,6 +495,17 @@ def _read_and_merge_chunks(temp_files):
     except Exception:
         pass
     return pd.concat(chunks, ignore_index=True)
+
+
+def _downcast_df(df):
+    """原地降精度DataFrame以节省内存"""
+    for col in df.columns:
+        col_type = df[col].dtype
+        if col_type == 'float64':
+            df[col] = pd.to_numeric(df[col], downcast='float')
+        elif col_type == 'int64':
+            df[col] = pd.to_numeric(df[col], downcast='integer')
+    return df
 
 
 def _cross_sectional_ic(df, factor_name, value_col='future_ret', min_samples=10):
@@ -592,11 +634,15 @@ def _compute_combined_factor_ic(regime_df, factor_names, weights):
     if total_w == 0:
         return None
 
-    # 向量化计算组合因子值
+    # 向量化计算组合因子值 (dropna而非fillna(0): 缺失≠中性)
+    valid_mask = np.ones(len(regime_df), dtype=bool)
+    for f in w_map:
+        valid_mask &= regime_df[f].notna().values
     combined = np.zeros(len(regime_df), dtype=np.float32)
     for f, w in w_map.items():
-        combined += regime_df[f].fillna(0).values * w
-    combined /= total_w
+        combined[valid_mask] += regime_df[f].values[valid_mask] * w
+    combined[valid_mask] /= total_w
+    combined[~valid_mask] = np.nan  # 有缺失则不参与IC计算
 
     # 使用groupby计算截面IC（替代pivot）
     combined_series = pd.Series(combined, index=regime_df.index, dtype=np.float32)

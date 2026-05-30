@@ -14,12 +14,19 @@ try:
                 _proxy["host"],
                 auth_token=_proxy["auth_token"],
                 retry=_proxy.get("retry", 30),
+                hook_domains=[
+                    "fund.eastmoney.com",
+                    "push2.eastmoney.com",
+                    "push2his.eastmoney.com",
+                    "emweb.securities.eastmoney.com",
+                ],
             )
             print(f"akshare代理已安装: {_proxy['host']}")
 except Exception:
     pass
 
 import akshare as ak
+import efinance as ef
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -130,37 +137,27 @@ class StockDataManager:
         try:
             print("正在获取股票列表...")
 
-            # 获取A股实时数据
-            spot_data = ak.stock_zh_a_spot_em()
+            # 使用 efinance 获取A股实时数据（积分 5-10 vs akshare 12-18）
+            spot_data = ef.stock.get_realtime_quotes()
 
-            # 清理列名
-            spot_data.columns = [col.strip().replace(' ', '_').replace('\u200b', '')
-                               for col in spot_data.columns]
-
-            # 标准化列名
+            # 标准化列名（efinance 列名）
             column_mapping = {
-                '代码': 'symbol',
-                '名称': 'name',
+                '股票代码': 'symbol',
+                '股票名称': 'name',
                 '最新价': 'close',
                 '涨跌幅': 'change_pct',
                 '涨跌额': 'change',
                 '成交量': 'volume',
                 '成交额': 'amount',
-                '振幅': 'amplitude',
                 '最高': 'high',
                 '最低': 'low',
                 '今开': 'open',
-                '昨收': 'pre_close',
+                '昨日收盘': 'pre_close',
                 '量比': 'volume_ratio',
                 '换手率': 'turnover',
-                '市盈率-动态': 'pe_ttm',
-                '市净率': 'pb',
+                '动态市盈率': 'pe_ttm',
                 '总市值': 'total_market_cap',
                 '流通市值': 'circulating_market_cap',
-                '涨速': 'change_speed',
-                '5分钟涨跌': 'change_5min',
-                '60日涨跌幅': 'change_60d',
-                '年初至今涨跌幅': 'change_ytd'
             }
 
             # 重命名列
@@ -338,7 +335,7 @@ class StockDataManager:
             range_days = (pd.to_datetime(end_date) - min_start).days
             base_sleep = 0.05 if range_days < 30 else 0.5
 
-            # 不复权数据（原始数据）
+            # 不复权数据（原始数据）- efinance（积分 1-2）
             if 'none' in adj_types:
                 try:
                     type_start = _type_start('none')
@@ -346,21 +343,21 @@ class StockDataManager:
                     if start_date < end_date:
                         time.sleep(random.uniform(0, base_sleep))
                         df_none = self._retry_call(
-                            lambda: ak.stock_zh_a_hist(
-                                symbol=symbol,
-                                period="daily",
-                                start_date=start_date,
-                                end_date=end_date,
-                                adjust=""
+                            lambda: ef.stock.get_quote_history(
+                                symbol,
+                                beg=start_date,
+                                end=end_date,
+                                klt=101,
+                                fqt=0,
                             ),
-                            fn_name=f"stock_zh_a_hist({symbol}, none)",
+                            fn_name=f"get_quote_history({symbol}, none)",
                         )
                         if not df_none.empty:
                             data_dict['none'] = df_none
                 except Exception:
                     print(f"警告：无法获取 {symbol} 的不复权数据")
 
-            # 前复权数据
+            # 前复权数据 - efinance（积分 1-2）
             if 'qfq' in adj_types:
                 try:
                     type_start = _type_start('qfq')
@@ -368,21 +365,21 @@ class StockDataManager:
                     if start_date < end_date:
                         time.sleep(random.uniform(0, base_sleep))
                         df_qfq = self._retry_call(
-                            lambda: ak.stock_zh_a_hist(
-                                symbol=symbol,
-                                period="daily",
-                                start_date=start_date,
-                                end_date=end_date,
-                                adjust="qfq"
+                            lambda: ef.stock.get_quote_history(
+                                symbol,
+                                beg=start_date,
+                                end=end_date,
+                                klt=101,
+                                fqt=1,
                             ),
-                            fn_name=f"stock_zh_a_hist({symbol}, qfq)",
+                            fn_name=f"get_quote_history({symbol}, qfq)",
                         )
                         if not df_qfq.empty:
                             data_dict['qfq'] = df_qfq
                 except Exception:
                     print(f"警告：无法获取 {symbol} 的前复权数据")
 
-            # 后复权数据
+            # 后复权数据 - efinance（积分 1-2）
             if 'hfq' in adj_types:
                 try:
                     type_start = _type_start('hfq')
@@ -390,14 +387,14 @@ class StockDataManager:
                     if start_date < end_date:
                         time.sleep(random.uniform(0, base_sleep))
                         df_hfq = self._retry_call(
-                            lambda: ak.stock_zh_a_hist(
-                                symbol=symbol,
-                                period="daily",
-                                start_date=start_date,
-                                end_date=end_date,
-                                adjust="hfq"
+                            lambda: ef.stock.get_quote_history(
+                                symbol,
+                                beg=start_date,
+                                end=end_date,
+                                klt=101,
+                                fqt=2,
                             ),
-                            fn_name=f"stock_zh_a_hist({symbol}, hfq)",
+                            fn_name=f"get_quote_history({symbol}, hfq)",
                         )
                         if not df_hfq.empty:
                             data_dict['hfq'] = df_hfq
@@ -420,12 +417,12 @@ class StockDataManager:
             return None
 
     def _get_ipo_date(self, symbol):
-        """获取上市日期"""
+        """获取上市日期（efinance）"""
         try:
-            stock_info = ak.stock_individual_info_em(symbol=symbol)
-            for _, row in stock_info.iterrows():
-                if '上市时间' in str(row['item']):
-                    return str(row['value']).split()[0]
+            info = ef.stock.get_base_info(symbol)
+            ipo_date = info.get('上市时间', None)
+            if ipo_date and str(ipo_date) != 'nan' and str(ipo_date) != '-':
+                return str(ipo_date).split()[0]
         except Exception:
             pass
 
@@ -1224,7 +1221,9 @@ class StockDataManager:
             except Exception as e:
                 print(f"  警告: {date} 获取失败: {e}")
                 return False
-        help(self.fundamental_source_dir / f"{date}" / "yjbb.csv", ak.stock_yjbb_em)
+        # efinance 日期格式为 YYYY-MM-DD
+        _ef_date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+        help(self.fundamental_source_dir / f"{date}" / "yjbb.csv", lambda date=date: ef.stock.get_all_company_performance(_ef_date))
         help(self.fundamental_source_dir / f"{date}" / "zcfz.csv", ak.stock_zcfz_em)
         help(self.fundamental_source_dir / f"{date}" / "lrb.csv", ak.stock_lrb_em)
         help(self.fundamental_source_dir / f"{date}" / "xjll.csv", ak.stock_xjll_em)

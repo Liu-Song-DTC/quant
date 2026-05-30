@@ -14,6 +14,8 @@ ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT / "strategy"))
 from core.factor_calculator import calculate_indicators
 from core.signal_engine import SignalEngine
+from core.multi_timeframe import MultiTimeframeAnalyzer
+from core.config_loader import load_config
 
 
 def load_selection(excel_path: str):
@@ -51,13 +53,21 @@ def evaluate_stock(code: str, name: str, industry: str, selection_date: str):
     high = d[high_col].values[:n].astype(float)
     low = d[low_col].values[:n].astype(float)
     volume = d[vol_col].values[:n].astype(float)
+    open_ = d[[c for c in d.columns if 'open' in c.lower()][0]].values[:n].astype(float)
+    dates = pd.to_datetime(d[date_col].values[:n])
 
     buy_price = close[today_idx - 1] if today_idx > 0 else close[today_idx]
     today_price = close[today_idx]
     today_ret = (today_price - buy_price) / buy_price * 100
 
-    ind = calculate_indicators(close, high, low, volume)
+    # Fix: 传入open_arr使gap相关因子正常工作
+    turnover = d[[c for c in d.columns if 'turnover' in c.lower()][0]].values[:n].astype(float) if any('turnover' in c.lower() for c in d.columns) else None
+    ind = calculate_indicators(close, high, low, volume, open_arr=open_, turnover_rate=turnover)
     i = today_idx
+
+    # 统一多时间框架分析 (日历感知周线/月线, 替代EMA60/120代理)
+    mtf = MultiTimeframeAnalyzer()
+    mtf_result = mtf.analyze(close, high, low, open_, volume, dates)
 
     # ── 重新跑策略的所有检查 ──
     se = SignalEngine()
@@ -76,8 +86,8 @@ def evaluate_stock(code: str, name: str, industry: str, selection_date: str):
     tc = bool(ind.get('b3_trend_confirmed', np.zeros(n, dtype=bool))[i])
     zg = float(ind.get('chan_pivot_zg', np.full(n, np.nan))[i])
     zd = float(ind.get('chan_pivot_zd', np.full(n, np.nan))[i])
-    ema60_v = float(ind.get('ema60', np.zeros(n))[i])
-    ema120_v = float(ind.get('ema120', np.zeros(n))[i])
+    weekly_trend_up = bool(mtf_result.weekly_trend_up[i])
+    weekly_trend_strength = float(mtf_result.weekly_trend_strength[i])
     ma20_v = float(ind.get('ma20', np.zeros(n))[i])
     daily_ret = float(ind.get('ret', np.zeros(n))[i])
     vol_ratio = float(ind.get('volume_ratio', np.zeros(n))[i])
@@ -86,10 +96,14 @@ def evaluate_stock(code: str, name: str, industry: str, selection_date: str):
 
     sell_reasons = []
 
-    # 1. ZG硬止损: 跌破中枢上沿
+    # 1. ZG硬止损: 跌破中枢上沿(阈值从配置读取, 默认0.995)
     if buy_point == 3 and not np.isnan(zg) and zg > 0:
-        if today_price < zg * 0.99:
-            sell_reasons.append(f"ZG破位(收盘{today_price:.2f}<ZG×0.99={zg*0.99:.2f})")
+        try:
+            zg_threshold = float(load_config().get('chan_theory_enhanced.b3_filter.zg_hard_stop_threshold', 0.995))
+        except Exception:
+            zg_threshold = 0.995
+        if today_price < zg * zg_threshold:
+            sell_reasons.append(f"ZG破位(收盘{today_price:.2f}<ZG×{zg_threshold}={zg*zg_threshold:.2f})")
 
     # 2. 趋势逆转: 上涨→下跌 (B2在下跌趋势中买入是正常的, 不单独构成卖出)
     if trend_type == -2:
@@ -105,10 +119,10 @@ def evaluate_stock(code: str, name: str, industry: str, selection_date: str):
         if today_ret < -1.0 or trend_type <= 0 or chan_sell_score > 0.3:
             sell_reasons.append("买点信号消失(结构走坏)")
 
-    # 5. 周线转空 (涨了的股票不算, 持有观察)
-    if ema60_v > 0 and ema120_v > 0 and ema60_v <= ema120_v:
+    # 5. 周线转空 (基于日历感知周线真实趋势, 替代EMA60/120代理)
+    if not weekly_trend_up and weekly_trend_strength > 0.2:
         if today_ret < -0.5:  # 只有跌了才构成卖出理由
-            sell_reasons.append("周线转空(EMA60≤EMA120)")
+            sell_reasons.append(f"周线转空(趋势强度{weekly_trend_strength:.2f})")
 
     # 6. 均线破位: 跌破EMA20且EMA20向下
     if today_price < ema20 * 0.98:
