@@ -6,7 +6,8 @@
 1. 等权top N: 截面rank_pct>0.5的top N只, 等权分配
 2. 行业均衡: 每个行业最多5只, 避免过度集中
 3. 最小风控: 仅深度回撤和fv_mean降仓
-4. 止损仅限再平衡日: 避免非再平衡日过早卖出
+4. 非再平衡日: 执行成本止损+缠论止盈(S1/S2/S3)+均值回归退出，不执行信号止损
+5. 再平衡日: 执行完整选股+所有止损机制(含组合止损)
 """
 import numpy as np
 from collections import deque
@@ -95,7 +96,7 @@ class PortfolioConstructor:
         self.min_confidence = sel_config.get('min_confidence', 0.80)
         self.exhaustion_max_weight = sel_config.get('exhaustion_max_weight', 0.03)
         self.exhaustion_reduce_mult = sel_config.get('exhaustion_reduce_mult', 0.5)
-        self.industry_max_weight = sel_config.get('industry_max_weight', 0.20)
+        self.industry_max_weight = sel_config.get('industry_max_weight', 0.35)
         self.max_single_weight_from_cfg = sel_config.get('rank_weight_cap',
                                               sel_config.get('max_single_weight', 0.18))
 
@@ -121,7 +122,7 @@ class PortfolioConstructor:
         self.time_stop_min_return = es_config.get('time_stop_min_return', -0.02)
         self.trailing_stop_pct = es_config.get('trailing_stop_pct', 0.15)
         self.trailing_stop_enabled = es_config.get('trailing_stop_enabled', True)
-        self.volatility_adaptive_mult = es_config.get('volatility_adaptive_mult', 1.5)
+        self.volatility_adaptive_mult = es_config.get('volatility_adaptive_mult', 1.3)
         # 按买点类型分层时间止损
         self.time_stop_by_bp = es_config.get('time_stop_by_buy_point', {
             1: (40, -0.08), 2: (30, -0.05), 3: (20, -0.05)
@@ -172,6 +173,9 @@ class PortfolioConstructor:
         self.exhaustion_moderate_threshold = pp.get('exhaustion_moderate_threshold', 0.15)
         self.sector_momentum_weight = pp.get('sector_momentum_weight', 0.40)
         self.sector_signal_density_weight = pp.get('sector_signal_density_weight', 0.60)
+        self.mr_exit_cooldown_days = pp.get('mr_exit_cooldown_days', 14)
+        self.ideal_position_max_mult = pp.get('ideal_position_max_mult', 2.0)
+        self._min_hold_days = pp.get('min_hold_days', 5)
 
         # === 缠论止盈配置 ===
         chan_config = config.get('chan_theory', {}) if hasattr(config, 'get') else {}
@@ -193,6 +197,12 @@ class PortfolioConstructor:
         self._post_sell_tracking: dict = {}  # {code: {'trigger_price': float, 'reason': str}}
 
         self.peak_equity = None
+        self.last_selection = []  # 每期选股结果
+        self.current_ranking = {}
+        self.current_n_positions = 0
+        self.current_exposure = 1.0
+        self._stop_loss_triggered = False
+        self._stop_loss_recovery_days = 0
         self.industry_ic = _load_industry_ic_weights()
         self.position_cost = {}
         self.sentiment_multipliers: dict = {}
@@ -201,13 +211,6 @@ class PortfolioConstructor:
     def set_sector_rotation(self, sr):
         """注入板块轮动分析器（含动量+信号密度）"""
         self._sector_rotation = sr
-        self.last_selection = []
-        self.current_ranking = {}
-        self.current_n_positions = 0
-        self.current_exposure = 1.0
-        self._stop_loss_triggered = False
-        self._stop_loss_recovery_days = 0
-        self._min_hold_days = 5
 
     def save_tracking_state(self, filepath: str):
         """持久化持仓跟踪状态到 JSON 文件（实盘跨日状态保持）"""
@@ -310,11 +313,10 @@ class PortfolioConstructor:
         """
         self._daily_returns.append(daily_return)
 
-    @staticmethod
-    def _calc_max_position(total_equity: float, prices: dict) -> int:
+    def _calc_max_position(self, total_equity: float, prices: dict) -> int:
         """根据资金自动计算最大持仓数
 
-        每10000资金支持1个仓位, 范围[5, 12]
+        每20000资金支持1个仓位, 范围[3, max_positions]
         """
         n = int(total_equity / 20000)
         return max(3, min(n, self.max_positions))
@@ -423,7 +425,7 @@ class PortfolioConstructor:
                     days_since = (date - exit_date).days
                 else:
                     days_since = 999
-                if days_since < 14:  # ~10个交易日冷却
+                if days_since < self.mr_exit_cooldown_days:
                     continue
                 else:
                     del self._mr_exit_cooldown[code]  # 冷却期满,清除记录
@@ -439,7 +441,7 @@ class PortfolioConstructor:
             # 100股整手下，100*price必须不超过理想仓位
             # 允许2倍理想仓位（100股整手会导致超配，但至少能买入）
             ideal_per_stock = total_equity / n_positions
-            if price * 100 > ideal_per_stock * 2:
+            if price * 100 > ideal_per_stock * self.ideal_position_max_mult:
                 continue
 
             # === Chan 信号数据 (融合核心) ===

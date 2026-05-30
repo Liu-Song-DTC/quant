@@ -6,6 +6,7 @@ dynamic_factor:
   min_train_samples: 50
   min_ic_dates: 10
   ic_decay_factor: 0.9
+  min_quality_threshold: 0.04   # DYN质量阈值，低于此值fallback到静态因子
   fallback_to_static: true
   min_factor_count: 3
   min_factor_families: 2
@@ -624,9 +625,22 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.12
-  sell_threshold: -0.2
-  buy_threshold_pct: 0.45
+  buy_threshold: 0.25
+  sell_threshold: -0.25
+  buy_threshold_pct: 0.35
+  resonance:
+    sys1_buy_threshold_mult: 0.7    # 系统1放宽30%查共振
+    sys2_cf_score_threshold: 0.5    # 系统2资金流向最低强度
+    sys3_ns_score_threshold: 0.3    # 系统3资讯情绪最低强度
+  # 卖出趋势保护（避免趋势中途虚假卖出）
+  # trend_initiation增强参数
+  ti_boost_scale: 2.0               # tanh缩放系数
+  ti_boost_magnitude: 0.12          # ti增强幅度
+  # 自适应Chan融合权重参数
+  ti_adaptive_scale: 0.3            # ti_mean缩放系数
+  ti_adaptive_max_adjust: 0.12      # 最大权重调整量
+  # 信号置信度基线
+  signal_confidence_baseline: 0.2
   # 卖出趋势保护（避免趋势中途虚假卖出）
   trend_sell_threshold_strong: -0.15   # MA20>MA60多头排列时的卖出阈值
   trend_sell_threshold_weak: -0.10     # 仅price>MA20时的卖出阈值
@@ -699,6 +713,12 @@ portfolio:
     # 力竭/反转风险
     exhaustion_high_threshold: 0.30
     exhaustion_moderate_threshold: 0.15
+    # 均值回归退出冷却期 (交易日)
+    mr_exit_cooldown_days: 14
+    # 单只股票最大仓位倍数 (vs 等权仓位)
+    ideal_position_max_mult: 2.0
+    # 最短持仓天数
+    min_hold_days: 5
     # 板块轮动
     sector_momentum_weight: 0.40
     sector_signal_density_weight: 0.60
@@ -808,6 +828,11 @@ chan_theory_enhanced:
     consolidation_discount: 0.8
     zhongyin_penalty: 0.9
     pivot_bottom_boost: 1.06
+  b1_gate:
+    min_bottom_div: 0.15       # B1买点最低底背离强度
+    min_fx_vol_spike: 1.5      # B1买点最低分型量能比
+  b2_gate:
+    min_confidence: 0.30       # B2买点最低置信度
   b3_filter:
     enabled: true
     gate_min_conditions: 2

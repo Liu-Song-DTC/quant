@@ -60,6 +60,17 @@ class FundamentalData:
             logger.warning(f"基本面数据读取失败 code={code} path={fpath}", exc_info=True)
             self.stock_data[code] = pd.DataFrame()
 
+    def clear_stock_cache(self, code=None):
+        """清除基本面数据缓存以释放内存。
+
+        Args:
+            code: 指定股票代码，None 则清除全部缓存。
+        """
+        if code is not None:
+            self.stock_data.pop(code, None)
+        else:
+            self.stock_data.clear()
+
     def _get_available_data(self, code, current_date):
         """获取当前日期可用的基本面数据（防止信息泄露）
 

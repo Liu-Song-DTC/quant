@@ -1409,7 +1409,7 @@ def main():
     print("\n======> 创建回测股票池...")
     universe = manager.create_universe_for_backtest(
         symbols=sample_symbols,
-        start_date='2024-01-01',
+        start_date='2016-01-01',
         end_date=today,
         min_days=100,
     )

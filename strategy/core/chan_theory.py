@@ -210,10 +210,12 @@ def detect_fractals(
         l0, l1, l2 = proc_low[i-2], proc_low[i-1], proc_low[i]
 
         # 顶分型 at i-1: proc_high[i-1] 是局部最高
-        if h1 > h0 and h1 > h2:
+        # P5 fix: 第三根K线low必须低于中间K线low，确认反转（避免假分型）
+        if h1 > h0 and h1 > h2 and l2 < l1:
             raw_tops.append(i - 1)
         # 底分型 at i-1: proc_low[i-1] 是局部最低
-        if l1 < l0 and l1 < l2:
+        # P5 fix: 第三根K线high必须高于中间K线high，确认反转
+        if l1 < l0 and l1 < l2 and h2 > h1:
             raw_bottoms.append(i - 1)
 
     # 分型交替过滤
@@ -431,28 +433,57 @@ def detect_segments(
         seg_start = s1.start_idx
         seg_end_idx = i + 2  # strokes索引
 
-        # 找线段终点: 特征序列法
-        # 向上线段: 笔的高点需逐步抬高
-        # 向下线段: 笔的低点需逐步降低
-        j = i + 3
-        while j < len(strokes):
-            sj = strokes[j]
-            prev = strokes[seg_end_idx]
-
-            if seg_dir_val == 1:  # 向上线段
-                # 若新的向上笔高点上移，且向下笔不破前低太多
+        # P1 fix: 特征序列法 — 替代硬编码0.95/1.05百分比
+        # 向上线段：特征序列=向下笔序列，向下笔破前向下笔低点→线段结束
+        # 向下线段：特征序列=向上笔序列，向上笔破前向上笔高点→线段结束
+        if seg_dir_val == 1:
+            # 向上线段：追踪特征序列(向下笔)的低点
+            last_down_low = None
+            last_down_idx = None
+            for j in range(i, len(strokes)):
+                sj = strokes[j]
                 if sj.direction == 1:
-                    if sj.high > prev.high:
+                    # 向上笔：突破前高则延续
+                    prev_up = strokes[seg_end_idx] if seg_end_idx < j else sj
+                    if sj.high > prev_up.high:
                         seg_end_idx = j
-                    elif sj.high < prev.high * 0.95:  # 显著下移 → 线段结束
+                        last_down_low = None  # 新高重置特征序列
+                else:  # sj.direction == -1 向下笔
+                    if last_down_low is None:
+                        last_down_low = sj.low
+                        last_down_idx = j
+                    elif sj.low < last_down_low:
+                        # 向下笔破前向下笔低点 → 特征序列顶分型 → 线段结束
+                        seg_end_idx = j - 1
                         break
-            else:  # 向下线段
+                    else:
+                        # 未破前低，更新最新向下笔
+                        last_down_low = sj.low
+                        last_down_idx = j
+        else:  # seg_dir_val == -1 向下线段
+            # 向下线段：追踪特征序列(向上笔)的高点
+            last_up_high = None
+            last_up_idx = None
+            for j in range(i, len(strokes)):
+                sj = strokes[j]
                 if sj.direction == -1:
-                    if sj.low < prev.low:
+                    # 向下笔：破前低则延续
+                    prev_down = strokes[seg_end_idx] if seg_end_idx < j else sj
+                    if sj.low < prev_down.low:
                         seg_end_idx = j
-                    elif sj.low > prev.low * 1.05:  # 显著上移 → 线段结束
+                        last_up_high = None  # 新低重置特征序列
+                else:  # sj.direction == 1 向上笔
+                    if last_up_high is None:
+                        last_up_high = sj.high
+                        last_up_idx = j
+                    elif sj.high > last_up_high:
+                        # 向上笔破前向上笔高点 → 特征序列底分型 → 线段结束
+                        seg_end_idx = j - 1
                         break
-            j += 1
+                    else:
+                        # 未破前高，更新最新向上笔
+                        last_up_high = sj.high
+                        last_up_idx = j
 
         # 创建线段
         seg_strokes = strokes[i:seg_end_idx + 1]
@@ -572,17 +603,13 @@ def detect_chan_pivots(
         pivots.append(pivot)
 
         # 尝试扩展: 后续线段若仍在重叠区间内 → 中枢延续
-        # 每次扩展重算重叠区间为 min(当前zg, 新线段high) / max(当前zd, 新线段low)
-        # 这样重叠区间单调收缩，符合缠论中枢定义
+        # P4 fix: ZG/ZD 由前3段确定后保持不变（与原著一致），延伸仅增加段数和时间跨度
+        # 通过要求后续线段的high/low必须覆盖ZG/ZD来判断是否仍在重叠区间
         for j in range(i + 3, len(segments)):
             sj = segments[j]
-            overlap_h = min(pivot.zg, sj.high)
-            overlap_l = max(pivot.zd, sj.low)
-            if overlap_h > overlap_l:
+            # 只要有部分重叠即算中枢延续（sj.high > pivot.zd and sj.low < pivot.zg）
+            if sj.high > pivot.zd and sj.low < pivot.zg:
                 pivot.end_idx = sj.end_idx
-                pivot.zg = overlap_h
-                pivot.zd = overlap_l
-                pivot.zz = (pivot.zg + pivot.zd) / 2
                 pivot.segment_count += 1
             else:
                 # 脱离中枢 → 第三类买卖点可在此产生
@@ -691,6 +718,90 @@ def classify_trend_type(
 
 
 # ==================== 7. 三类买卖点识别 ====================
+
+def _compute_macd_divergence(
+    close: np.ndarray,
+    pivots: List[Pivot],
+    last_pivot: Pivot,
+    n_bars: int,
+) -> float:
+    """计算背驰强度 — 比较最后两个下跌段/上涨段的MACD面积（P0: 原著MACD面积法）
+
+    背驰 = 价格创新低(高)但MACD面积缩小 → 趋势衰竭信号
+
+    Returns:
+        divergence_strength: [0, 1], >0.3 表示有背驰, >0.5 强背驰
+    """
+    if len(close) < 50 or len(pivots) < 2:
+        return 0.0
+
+    # 计算MACD
+    ema12 = np.zeros_like(close)
+    ema26 = np.zeros_like(close)
+    alpha12 = 2 / 13
+    alpha26 = 2 / 27
+    ema12[0] = close[0]
+    ema26[0] = close[0]
+    for i in range(1, len(close)):
+        ema12[i] = alpha12 * close[i] + (1 - alpha12) * ema12[i - 1]
+        ema26[i] = alpha26 * close[i] + (1 - alpha26) * ema26[i - 1]
+    macd = ema12 - ema26
+
+    # 找最后两个下跌段：从中枢上方到中枢下方的价格段
+    p_end = last_pivot.end_idx
+    p_zd = last_pivot.zd
+
+    # 找最后两个有方向的中枢
+    directional = [p for p in pivots if p.trend_dir != 0]
+    if len(directional) < 2:
+        return 0.0
+
+    # 取最近两个同向中枢
+    prev_p = directional[-2]
+    curr_p = directional[-1]
+
+    if curr_p.trend_dir == -1:
+        # 下跌趋势：两段都从中枢上方向下运行
+        seg1_start = max(0, prev_p.start_idx - 5)
+        seg1_end = min(len(close) - 1, prev_p.end_idx + 5)
+        seg2_start = max(0, curr_p.start_idx - 5)
+        seg2_end = min(len(close) - 1, curr_p.end_idx + 5)
+    elif curr_p.trend_dir == 1:
+        # 上涨趋势：两段都从中枢下方向上运行
+        seg1_start = max(0, prev_p.start_idx - 5)
+        seg1_end = min(len(close) - 1, prev_p.end_idx + 5)
+        seg2_start = max(0, curr_p.start_idx - 5)
+        seg2_end = min(len(close) - 1, curr_p.end_idx + 5)
+    else:
+        return 0.0
+
+    if seg2_end <= seg2_start or seg1_end <= seg1_start:
+        return 0.0
+
+    # 累积MACD面积 (取绝对值)
+    area1 = np.sum(np.abs(macd[seg1_start:seg1_end + 1]))
+    area2 = np.sum(np.abs(macd[seg2_start:seg2_end + 1]))
+
+    if area1 <= 0:
+        return 0.0
+
+    area_ratio = area2 / (area1 + 1e-10)
+
+    # 价格变化
+    price1 = np.abs(close[seg1_end] - close[seg1_start])
+    price2 = np.abs(close[seg2_end] - close[seg2_start])
+
+    # 背驰条件: MACD面积减小但价格跌幅相当或更大
+    # area_ratio < 1.0 = 力度减弱
+    if area_ratio < 0.85 and price2 > price1 * 0.7:
+        div_strength = min(1.0, (1.0 - area_ratio) * 2.0)
+    elif area_ratio < 1.0:
+        div_strength = (1.0 - area_ratio) * 1.2
+    else:
+        div_strength = 0.0
+
+    return float(np.clip(div_strength, 0.0, 1.0))
+
 
 def detect_buy_sell_points(
     pivots: List[Pivot],
@@ -893,42 +1004,95 @@ def detect_buy_sell_points(
             elif td == 1 or (td == 0 and p_curr.zd > p_prev.zg):
                 up_count += 1
 
-        # 下跌趋势确认（>=2次中枢下移）→ 可能一买
+        # === 一买 (B1): 标准背驰路径 ===
+        # 下跌趋势确认（>=2次中枢下移）→ 背驰确认后一买
         if down_count >= 2 or (down_count >= 1 and len(recent_pivots) <= 2):
-            for idx in range(last_pivot.end_idx, min(last_pivot.end_idx + 20, n_bars)):
-                if pivot_position[idx] == -1 and buy_point[idx] == 0:
+            div_strength = _compute_macd_divergence(close, pivots, last_pivot, n_bars)
+            if div_strength > 0.15:
+                for idx in range(last_pivot.end_idx, min(last_pivot.end_idx + 20, n_bars)):
+                    if pivot_position[idx] == -1 and buy_point[idx] == 0:
+                        buy_point[idx] = 1
+                        dist_pct = (last_pivot.zd - close[idx]) / (close[idx] + 1e-10)
+                        base_conf = 0.35 + down_count * 0.10 + div_strength * 0.3
+                        buy_confidence[idx] = min(0.9, base_conf + dist_pct * 10)
+
+        # === B1扩展: V型反转 — 深度回撤后强力反弹 ===
+        # 60日最大回撤>20% + 近3日反弹>3% + 近期曾跌破MA20
+        if n_bars >= 60:
+            for idx in range(60, n_bars):
+                if buy_point[idx] != 0:
+                    continue
+                max60 = np.max(close[idx - 60:idx])
+                dd_from_high = (max60 - close[idx]) / max60 if max60 > 0 else 0
+                bounce_3d = (close[idx] - close[max(0, idx - 3)]) / (close[max(0, idx - 3)] + 1e-10)
+                # 曾跌破MA20：近5日最低价低于近5日均价
+                recent_low = np.min(close[max(0, idx - 5):idx + 1])
+                recent_avg = np.mean(close[max(0, idx - 5):idx + 1])
+                was_below_ma = recent_low < recent_avg * 0.97
+                if dd_from_high > 0.20 and bounce_3d > 0.03 and was_below_ma:
                     buy_point[idx] = 1
-                    dist_pct = (last_pivot.zd - close[idx]) / (close[idx] + 1e-10)
-                    # 趋势越强，超卖一买置信度越高
-                    base_conf = 0.35 + down_count * 0.10
-                    buy_confidence[idx] = min(0.9, base_conf + dist_pct * 10)
+                    buy_confidence[idx] = float(np.clip(0.30 + dd_from_high * 0.5 + bounce_3d * 3, 0.25, 0.7))
+
+        # === B1扩展: 缺口反转 — 跳空高开突破下跌趋势 ===
+        if n_bars >= 3:
+            for idx in range(3, n_bars):
+                if buy_point[idx] != 0:
+                    continue
+                gap_up = (close[idx] - close[idx - 1]) / (close[idx - 1] + 1e-10)
+                # 之前处于下跌：近5日趋势向下
+                pre_trend = (close[idx - 1] - close[max(0, idx - 5)]) / (close[max(0, idx - 5)] + 1e-10)
+                if gap_up > 0.02 and pre_trend < -0.03:
+                    buy_point[idx] = 1
+                    buy_confidence[idx] = float(np.clip(0.30 + gap_up * 5, 0.25, 0.7))
+
+        # === B1扩展: 横盘突破 — 中枢震荡后向上突破ZG ===
+        if len(pivots) >= 1:
+            last_p = pivots[-1]
+            # 中枢已横盘超过30根K线 → 充分蓄力
+            pivot_width = last_p.end_idx - last_p.start_idx
+            if pivot_width >= 20:
+                for idx in range(last_p.end_idx, min(last_p.end_idx + 15, n_bars)):
+                    if buy_point[idx] != 0:
+                        continue
+                    if close[idx] > last_p.zg and pivot_position[idx] == 1:
+                        buy_point[idx] = 1
+                        breakout_pct = (close[idx] - last_p.zg) / last_p.zg
+                        buy_confidence[idx] = float(np.clip(0.30 + breakout_pct * 8, 0.25, 0.65))
 
         # 上涨趋势确认（>=2次中枢上移）→ 可能一卖
+        # P0+P2 fix: S1必须同时满足"中枢上方"+"背驰确认"
         if up_count >= 2 or (up_count >= 1 and len(recent_pivots) <= 2):
-            for idx in range(last_pivot.end_idx, min(last_pivot.end_idx + 20, n_bars)):
-                if pivot_position[idx] == 1 and sell_point[idx] == 0:
-                    sell_point[idx] = 1
-                    dist_pct = (close[idx] - last_pivot.zg) / (last_pivot.zg + 1e-10)
-                    base_conf = 0.35 + up_count * 0.10
-                    sell_confidence[idx] = min(0.9, base_conf + dist_pct * 10)
+            div_strength = _compute_macd_divergence(close, pivots, last_pivot, n_bars)
+            if div_strength > 0.15:
+                for idx in range(last_pivot.end_idx, min(last_pivot.end_idx + 20, n_bars)):
+                    if pivot_position[idx] == 1 and sell_point[idx] == 0:
+                        sell_point[idx] = 1
+                        dist_pct = (close[idx] - last_pivot.zg) / (last_pivot.zg + 1e-10)
+                        base_conf = 0.35 + up_count * 0.10 + div_strength * 0.3
+                        sell_confidence[idx] = min(0.9, base_conf + dist_pct * 10)
 
     # === 二买/二卖: 基于一买/一卖之后的反向运动 ===
-    # 简化实现: 一买之后回调不破前低
+    # P3 fix: B2置信度基于价格位置+回调深度，不再硬编码0.5
     for idx in range(1, n_bars):
         if buy_point[idx - 1] == 1 and buy_point[idx] == 0:
-            # 一买后N天内的小幅回调 → 可能二买
             for j in range(idx + 3, min(idx + 20, n_bars)):
+                # 不破一买低点 + 价格在中枢附近
                 if close[j] > close[idx] * 0.98 and pivot_position[j] <= 0:
                     if buy_point[j] == 0:
                         buy_point[j] = 2
-                        buy_confidence[j] = 0.5
+                        # 品质: 回调浅(接近一买价格) + 在中枢附近 = 更可靠
+                        pullback_depth = (close[j] - close[idx]) / close[idx]
+                        pivot_proximity = 1.0 if pivot_position[j] == 0 else 0.7
+                        buy_confidence[j] = float(np.clip(0.45 + pullback_depth * 5 + pivot_proximity * 0.1, 0.3, 0.8))
 
         if sell_point[idx - 1] == 1 and sell_point[idx] == 0:
             for j in range(idx + 3, min(idx + 20, n_bars)):
                 if close[j] < close[idx] * 1.02 and pivot_position[j] >= 0:
                     if sell_point[j] == 0:
                         sell_point[j] = 2
-                        sell_confidence[j] = 0.5
+                        bounce_depth = (close[idx] - close[j]) / close[idx]
+                        pivot_proximity = 1.0 if pivot_position[j] == 0 else 0.7
+                        sell_confidence[j] = float(np.clip(0.45 + bounce_depth * 5 + pivot_proximity * 0.1, 0.3, 0.8))
 
     return {
         'buy_point': buy_point,
@@ -1065,6 +1229,9 @@ def compute_chan_signal(
         'pivot_zg': pivot_info_dict['pivot_zg'],
         'pivot_zd': pivot_info_dict['pivot_zd'],
         'pivot_zz': pivot_info_dict['pivot_zz'],
+        'chan_pivot_zg': pivot_info_dict['pivot_zg'],   # Fix#1: 兼容别名，避免下游键名错配
+        'chan_pivot_zd': pivot_info_dict['pivot_zd'],
+        'chan_pivot_zz': pivot_info_dict['pivot_zz'],
         'pivot_level': pivot_info_dict['pivot_level'],
         'pivot_count': np.full(n, len(pivots)),
 
@@ -1226,17 +1393,23 @@ def detect_stroke_mmd(
         s_curr = strokes[i]       # 当前笔
 
         # === 笔1买: 两个向下笔后，第二笔趋势耗尽 ===
+        # 笔级≈30分钟级别：捕捉小时间框架背驰结构
         if (s_prev.direction == -1 and s_curr.direction == 1 and
                 s_prev.low < s_prev2.low):  # 创新低
-            # 检查前一笔末尾是否有趋势耗尽
             end_zone = range(s_prev.end_idx - 5, min(s_prev.end_idx + 5, n))
             td_present = any(bi_td[idx] for idx in end_zone if 0 <= idx < n)
-            # 笔力度递减: 第二笔下跌力度 < 第一笔 → 背驰前兆
+            # 笔力度递减: 第二笔下跌力度 < 第一笔 → 笔级背驰
             force_prev2 = (abs(s_prev2.end_price - s_prev2.start_price) / (s_prev2.start_price + 1e-10)) / max(s_prev2.end_idx - s_prev2.start_idx, 1)
             force_prev = (abs(s_prev.end_price - s_prev.start_price) / (s_prev.start_price + 1e-10)) / max(s_prev.end_idx - s_prev.start_idx, 1)
             force_decay = force_prev < force_prev2 * 0.85
-            if td_present or force_decay:
-                conf = 0.65 if (td_present and force_decay) else 0.55
+            # 笔级MACD背离: 价格新低但动能减弱(≈30分钟级别MACD面积缩小)
+            micro_div = False
+            if s_prev.end_idx < n and s_prev2.end_idx < n:
+                seg2_delta = np.mean(np.abs(np.diff(close[s_prev2.start_idx:s_prev2.end_idx + 1])))
+                seg1_delta = np.mean(np.abs(np.diff(close[s_prev.start_idx:s_prev.end_idx + 1])))
+                micro_div = seg1_delta < seg2_delta * 0.85 and seg1_delta > 0
+            if td_present or force_decay or micro_div:
+                conf = 0.65 if (td_present and force_decay) else (0.60 if force_decay else 0.50)
                 for idx in range(s_curr.start_idx, min(s_curr.end_idx + 1, n)):
                     if bi_buy_point[idx] == 0:
                         bi_buy_point[idx] = 1
@@ -2022,32 +2195,48 @@ def _compute_ml_confirm(
         has_seg_sell = seg_sell[i] > 0
         has_chan_buy = chan_buy[i] > 0.3
         has_chan_sell = chan_sell[i] > 0.3
+        bi_buy_strong = bi_buy_conf[i] >= 0.45
+        bi_sell_strong = bi_sell_conf[i] >= 0.45
+        seg_buy_strong = seg_buy_conf[i] >= 0.35
+        seg_sell_strong = seg_sell_conf[i] >= 0.35
 
-        if has_bi_buy and (has_seg_buy or has_chan_buy):
+        # level 4: 笔+线段强共振 (≈30min+日线双级别背驰)
+        if has_bi_buy and has_seg_buy and bi_buy_strong and seg_buy_strong:
+            confirmed_buy[i] = True
+            signal_level[i] = 4
+            buy_strength[i] = 0.80 + 0.10 * bi_buy_conf[i] + 0.10 * seg_buy_conf[i]
+        elif has_bi_sell and has_seg_sell and bi_sell_strong and seg_sell_strong:
+            confirmed_sell[i] = True
+            signal_level[i] = -4
+            sell_strength[i] = 0.80 + 0.10 * bi_sell_conf[i] + 0.10 * seg_sell_conf[i]
+        # level 3: 笔+线段普通确认
+        elif has_bi_buy and has_seg_buy:
             confirmed_buy[i] = True
             signal_level[i] = 3
-            buy_strength[i] = 0.7 + 0.15 * bi_buy_conf[i] + 0.15 * seg_buy_conf[i]
-        elif has_bi_sell and (has_seg_sell or has_chan_sell):
+            buy_strength[i] = 0.65 + 0.15 * bi_buy_conf[i] + 0.15 * seg_buy_conf[i]
+        elif has_bi_sell and has_seg_sell:
             confirmed_sell[i] = True
             signal_level[i] = -3
-            sell_strength[i] = 0.7 + 0.15 * bi_sell_conf[i] + 0.15 * seg_sell_conf[i]
+            sell_strength[i] = 0.65 + 0.15 * bi_sell_conf[i] + 0.15 * seg_sell_conf[i]
+        # level 2: 线段级 (日线)
         elif has_seg_buy and not has_bi_sell:
             confirmed_buy[i] = True
             signal_level[i] = 2
-            buy_strength[i] = 0.45 + 0.2 * seg_buy_conf[i]
+            buy_strength[i] = 0.45 + 0.25 * seg_buy_conf[i]
         elif has_seg_sell and not has_bi_buy:
             confirmed_sell[i] = True
             signal_level[i] = -2
-            sell_strength[i] = 0.45 + 0.2 * seg_sell_conf[i]
+            sell_strength[i] = 0.45 + 0.25 * seg_sell_conf[i]
+        # level 1: 笔级 (≈30分钟级别)
         elif has_bi_buy and not has_seg_sell:
             signal_level[i] = 1
-            buy_strength[i] = 0.3 + 0.15 * bi_buy_conf[i]
-            if has_chan_buy:
+            buy_strength[i] = 0.25 + 0.25 * bi_buy_conf[i]
+            if has_chan_buy or bi_buy_strong:
                 confirmed_buy[i] = True
         elif has_bi_sell and not has_seg_buy:
             signal_level[i] = -1
-            sell_strength[i] = 0.3 + 0.15 * bi_sell_conf[i]
-            if has_chan_sell:
+            sell_strength[i] = 0.25 + 0.25 * bi_sell_conf[i]
+            if has_chan_sell or bi_sell_strong:
                 confirmed_sell[i] = True
 
     return confirmed_buy, confirmed_sell, signal_level, buy_strength, sell_strength

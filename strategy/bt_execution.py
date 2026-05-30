@@ -111,6 +111,11 @@ def _generate_stock_signal_worker(args):
         store = SignalStore()
         data = pd.read_csv(filepath, parse_dates=['datetime'])
         engine.generate(code, data, store)
+
+        # 释放该股票的基本面数据缓存（避免每个worker累积 ~1100 只股票的基本面数据）
+        if hasattr(engine, 'fundamental_data') and engine.fundamental_data is not None:
+            engine.fundamental_data.clear_stock_cache(code)
+
         return (code, store._store)
     except Exception as e:
         # 返回异常信息，避免worker静默失败
@@ -368,7 +373,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                      'chan_divergence_type,chan_divergence_strength,chan_structure_score,'
                      'chan_buy_point,chan_sell_point,signal_level,trend_type,'
                      'chan_pivot_zg,chan_pivot_zd,mom_60d,dist_ma60,max_dd_20d,vol_regime,'
-                     'mtf_discount_factor,mtf_alignment_score,avg_trend_strength\n')
+                     'mtf_discount_factor,mtf_alignment_score,avg_trend_strength,'
+                     'risk_vol,daily_return,volume_ratio,stroke_phase,exhaustion_risk,'
+                     'gap_breakout_confirm,profit_declining,ma_trend_up\n')
     signal_count = [0]  # 用list实现闭包写入计数
 
     # 多进程并行生成信号
@@ -390,12 +397,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             desc="generating signals"
         ):
             code, store_data = result
-            # 写入 signal_store
-            for (c, date), signal in store_data.items():
-                if hasattr(date, 'date'):
-                    date = date.date()
-                strategy.signal_store.set(c, date, signal)
-            # 增量写入CSV（避免内存中累积上千万条信号）
+            # 增量写入CSV（不在内存中累积 Signal 对象）
             for (c, date), sig in store_data.items():
                 if hasattr(date, 'date'):
                     date = date.date()
@@ -419,7 +421,15 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     f'{getattr(sig, "vol_regime", 1.0)},'
                     f'{getattr(sig, "mtf_discount_factor", 1.0)},'
                     f'{getattr(sig, "mtf_alignment_score", 0.0)},'
-                    f'{(getattr(sig, "weekly_trend_strength", 0.0) + getattr(sig, "monthly_trend_strength", 0.0)) / 2}\n'
+                    f'{(getattr(sig, "weekly_trend_strength", 0.0) + getattr(sig, "monthly_trend_strength", 0.0)) / 2},'
+                    f'{getattr(sig, "risk_vol", 0.0)},'
+                    f'{getattr(sig, "daily_return", 0.0)},'
+                    f'{getattr(sig, "volume_ratio", 0.0)},'
+                    f'{getattr(sig, "stroke_phase", 0.0)},'
+                    f'{getattr(sig, "exhaustion_risk", 0.0)},'
+                    f'{getattr(sig, "gap_breakout_confirm", 0.0)},'
+                    f'{getattr(sig, "profit_declining", False)},'
+                    f'{getattr(sig, "ma_trend_up", False)}\n'
                 )
                 signal_count[0] += 1
                 # 动态因子统计
@@ -429,9 +439,14 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     dynamic_factor_stats['factor_names'][fn] = dynamic_factor_stats['factor_names'].get(fn, 0) + 1
                 else:
                     dynamic_factor_stats['miss'] += 1
+            # 释放该股票返回的 dict（Signal 已写入 CSV，不再需要）
+            store_data.clear()
 
     signal_csv.close()
     print(f"信号数据已保存: {signal_count[0]} 条 -> {signals_output_path}")
+
+    # === 从CSV加载信号到 DataFrame-backed SignalStore（节省 ~800MB 内存） ===
+    strategy.signal_store.finalize(signals_output_path)
 
     # 释放不再需要的大对象
     del stock_items

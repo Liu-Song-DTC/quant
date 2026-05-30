@@ -82,6 +82,17 @@ def _safe_get_arr(ind: dict, key: str, n: int, default):
     return np.full(n, default)
 
 
+@njit
+def _ema(arr, span):
+    """指数移动平均 — 模块级 Numba JIT 编译函数"""
+    result = np.zeros_like(arr, dtype=float)
+    result[0] = arr[0]
+    alpha = 2 / (span + 1)
+    for i in range(1, len(arr)):
+        result[i] = alpha * arr[i] + (1 - alpha) * result[i-1]
+    return result
+
+
 class SignalEngine:
     """信号生成引擎 - 使用行业验证后的高质量因子"""
 
@@ -140,6 +151,19 @@ class SignalEngine:
         }
         self._buy_threshold_pct = self._buy_threshold_pct_map[0]
 
+        # === 三系统共振阈值 ===
+        resonance_cfg = signal_config.get('resonance', {})
+        self.resonance_sys1_buy_mult = resonance_cfg.get('sys1_buy_threshold_mult', 0.7)
+        self.resonance_sys2_cf_threshold = resonance_cfg.get('sys2_cf_score_threshold', 0.5)
+        self.resonance_sys3_ns_threshold = resonance_cfg.get('sys3_ns_score_threshold', 0.3)
+
+        # === TI增强 & 自适应融合参数 ===
+        self.ti_boost_scale = signal_config.get('ti_boost_scale', 2.0)
+        self.ti_boost_magnitude = signal_config.get('ti_boost_magnitude', 0.12)
+        self.ti_adaptive_scale = signal_config.get('ti_adaptive_scale', 0.3)
+        self.ti_adaptive_max_adjust = signal_config.get('ti_adaptive_max_adjust', 0.12)
+        self.signal_confidence_baseline = signal_config.get('signal_confidence_baseline', 0.2)
+
         # 基本面因子配置
         self.fundamental_enabled = True
         self.fundamental_weight = config_loader.get('fundamental_weight', 0.3)
@@ -178,6 +202,18 @@ class SignalEngine:
         # 兼容两种配置key: fallback_to_fixed 和 fallback_to_static
         self.factor_fallback_to_fixed = config_loader.get('dynamic_factor.fallback_to_fixed',
                                                           config_loader.get('dynamic_factor.fallback_to_static', True))
+
+        # === 动态因子质量阈值 ===
+        dyn_cfg = config_loader.get('dynamic_factor', {})
+        self.dyn_quality_threshold = dyn_cfg.get('min_quality_threshold', 0.04)
+
+        # === Chan增强门控阈值（B1/B2买点）===
+        chan_enh_cfg = config_loader.get('chan_theory_enhanced', {})
+        b1_cfg = chan_enh_cfg.get('b1_gate', {})
+        b2_cfg = chan_enh_cfg.get('b2_gate', {})
+        self.chan_b1_min_bottom_div = b1_cfg.get('min_bottom_div', 0.15)
+        self.chan_b1_min_fx_vol_spike = b1_cfg.get('min_fx_vol_spike', 1.5)
+        self.chan_b2_min_confidence = b2_cfg.get('min_confidence', 0.30)
 
         # === 统一多时间框架分析器 ===
         self.mtf_analyzer = MultiTimeframeAnalyzer(config_loader.config if config_loader.config else {})
@@ -342,9 +378,7 @@ class SignalEngine:
             price_above_ma60 = close_p > 0 and ma60_v > 0 and close_p > ma60_v
 
             b1_strong = (bp_buy == 1 and chan_buy_sig and sl >= 2)
-            if b1_strong:
-                price_ok = dist_ma20 > -0.05
-            elif chan_force_buy:
+            if chan_force_buy:
                 price_ok = price_above_ma20
             else:
                 # 非缠论买入: 必须多头排列(MA20>MA60) + price站上MA20/MA60，确认中期趋势向上
@@ -754,10 +788,6 @@ class SignalEngine:
                 mult *= 1.0 + b2_boost
                 is_buy_boost = True
                 div_quality = max(div_quality, second_buy_conf * 0.75)
-            elif is_buy_boost:
-                # 已有买信号 + B2确认 → 强力共振
-                mult *= 1.0 + b2_boost * 0.7
-                div_quality = max(div_quality, second_buy_conf * 0.75)
 
         # 回退到旧的三类买卖点 (无多级别确认时)
         # B3/B2/B1 互斥优先级：一个时间点只能处于一种买点状态
@@ -772,12 +802,6 @@ class SignalEngine:
                     mult *= b3_mult
                     div_quality = max(div_quality, buy_conf * 0.90)
                     is_buy_boost = True
-                else:
-                    b3_mult = self._calc_b3_multiplier(ind, idx, market_info, industry)
-                    if b3_mult is not None:
-                        mult *= b3_mult
-                        div_quality = max(div_quality, buy_conf * 0.90)
-                        is_buy_boost = True
 
             elif buy_point == 2 and buy_conf > 0.2:
                 # B2: 回调确认买点 — 最安全
@@ -1119,8 +1143,8 @@ class SignalEngine:
             else:
                 ma20_mult = 1.0
 
-            # 硬门控: B2需要至少b2_confidence>0.3
-            if b2_confidence < 0.30:
+            # 硬门控: B2需要至少满足最低置信度
+            if b2_confidence < self.chan_b2_min_confidence:
                 return None
 
             combined = regime_mult * b1_qual_mult * bounce_mult * macd_mult * vol_mult * ma20_mult
@@ -1241,7 +1265,7 @@ class SignalEngine:
         td_mult = 1.10 if bi_td else 0.90
 
         # ── 硬门控: B1需要至少背离+恐慌量能之一达标 ──
-        if bottom_div < 0.15 and fx_vol_spike < 1.5:
+        if bottom_div < self.chan_b1_min_bottom_div and fx_vol_spike < self.chan_b1_min_fx_vol_spike:
             return None
 
         combined = regime_mult * div_mult * vol_mult * oversold_mult * td_mult
@@ -1353,7 +1377,8 @@ class SignalEngine:
         if not is_industry and fundamental_score > 0:
             base_score = base_score + fundamental_score * self.fundamental_weight
 
-        # 纯动量：直接使用因子值，不做二次加工
+        # 统一归一化到 [-1, 1]：确保Chan/非Chan路径分数范围一致
+        base_score = base_score / 10.0
         score = base_score
 
         # === 缠论增强（czsc风格 7层融合）===
@@ -1392,8 +1417,8 @@ class SignalEngine:
 
         if chan_score != 0.0:
             # Fix#1: 标准化加法融合 — 两分量纲不同，必须归一化到[0,1]后再融合
-            # base_score ∈ [-10, 10] → [0, 1]
-            base_norm = (base_score + 10) / 20.0
+            # base_score ∈ [-1, 1] → [0, 1]
+            base_norm = (base_score + 1.0) / 2.0
             base_norm = float(np.clip(base_norm, 0.0, 1.0))
             # chan_score ∈ [-0.65, 0.65] → [0, 1] (中性点=0.5)
             # 正值信号映射到(0.5, 1.0]，负值映射到[0.0, 0.5)
@@ -1467,12 +1492,12 @@ class SignalEngine:
         ns_dir = int(self._safe_get(ind, 'news_sentiment_direction', idx, 0))
 
         # 判定各系统是否发出买入信号
-        sys1_buy = score > self.buy_threshold * 0.7  # 放宽阈值，查共振而非绝对强度
-        sys2_buy = cf_score > 0.5 and cf_dir == 1    # 明确资金流入(排除中性)
-        sys3_buy = ns_score > 0.3 and ns_dir == 1    # 明确利好冲击(排除中性)
+        sys1_buy = score > self.buy_threshold * self.resonance_sys1_buy_mult
+        sys2_buy = cf_score > self.resonance_sys2_cf_threshold and cf_dir == 1
+        sys3_buy = ns_score > self.resonance_sys3_ns_threshold and ns_dir == 1
         sys1_sell = score < self.sell_threshold
-        sys2_sell = cf_score > 0.5 and cf_dir == -1  # 资金流出
-        sys3_sell = ns_score > 0.3 and ns_dir == -1  # 利空冲击
+        sys2_sell = cf_score > self.resonance_sys2_cf_threshold and cf_dir == -1
+        sys3_sell = ns_score > self.resonance_sys3_ns_threshold and ns_dir == -1
 
         n_buy_systems = sum([sys1_buy, sys2_buy, sys3_buy])
         n_sell_systems = sum([sys1_sell, sys2_sell, sys3_sell])
@@ -1681,12 +1706,12 @@ class SignalEngine:
             chan_div_type = 'hidden_bottom'
         elif self._safe_get(ind, 'hidden_top_divergence', idx, 0.0) > 0.15:
             chan_div_type = 'hidden_top'
-        elif self._safe_get(ind, 'second_buy_point', idx, 0) > 0:
-            chan_div_type = 'B2'  # 二买 — 最安全的缠论买点
         elif self._safe_get(ind, 'bottom_fractal_vol_spike', idx, 0.0) >= 3.0:
-            chan_div_type = 'bottom_fx_3x'  # 量在价先
+            chan_div_type = 'bottom_fx_3x'
         elif self._safe_get(ind, 'bottom_fractal_quality', idx, 0.0) > 0.35:
             chan_div_type = 'bottom_fx'
+        elif self._safe_get(ind, 'second_buy_point', idx, 0) > 0:
+            chan_div_type = 'B2'
         else:
             chan_div_type = 'none'
 
@@ -1701,9 +1726,10 @@ class SignalEngine:
             factor_quality=factor_quality,
             signal_confidence=signal_confidence,
             chan_divergence_type=chan_div_type,
-            chan_divergence_strength=max(bottom_div, top_div, self._safe_get(ind, 'buy_confidence', idx, 0.0),
-                                         self._safe_get(ind, 'sell_confidence', idx, 0.0)),
-            chan_structure_score=float(self._safe_get(ind, 'alignment_score', idx, 0.0)),
+            chan_divergence_strength=max(bottom_div, top_div),  # Fix#4: 仅背离强度，不混入置信度
+            chan_structure_score=float(self._safe_get(ind, 'alignment_score', idx, 0.0)
+                                       + 0.15 * self._safe_get(ind, 'structure_complete', idx, 0.0)
+                                       + 0.10 * min(self._safe_get(ind, 'pivot_count', idx, 0), 5) / 5),
             chan_buy_point=buy_point,
             chan_sell_point=sell_point,
             signal_level=int(self._safe_get(ind, 'signal_level', idx, 0)),
@@ -1738,59 +1764,6 @@ class SignalEngine:
             nearest_support_pct=float(self._safe_get(ind, 'nearest_support_pct', idx, 0.0)),
             _chan_buy_signal=is_chan_buy, _chan_sell_signal=is_chan_sell, _dist_ma20=dist_ma20,
         )
-
-    def _reevaluate_buy_sell(self, sig: Signal, buy_threshold: float, sell_threshold: float,
-                              ind: dict, idx: int) -> Tuple[bool, bool]:
-        """基于已有Signal字段 + 新阈值重新判定买卖，不重复昂贵计算。
-
-        使用Signal中的内部字段 _chan_buy_signal, _chan_sell_signal, _dist_ma20
-        以及公开字段 score, chan_buy_point, chan_sell_point, signal_level 完成判定。
-        """
-        score = sig.score
-        if score is None or np.isnan(score):
-            return False, False
-
-        dist_ma20 = sig._dist_ma20
-        chan_buy_signal = sig._chan_buy_signal
-        chan_sell_signal = sig._chan_sell_signal
-        bp_buy = sig.chan_buy_point
-        sp_for_sell = sig.chan_sell_point
-        sl = sig.signal_level
-
-        # chan_force_buy（与_generate_signal内逻辑完全一致）
-        chan_force_buy = chan_buy_signal and (sl >= 2 or bp_buy == 1)
-
-        # MA20价格位置检查
-        close_price = float(self._safe_get(ind, 'close', idx, 0.0))
-        ma20_val = float(self._safe_get(ind, 'ma20', idx, 0.0))
-        price_above_ma20 = close_price > 0 and ma20_val > 0 and close_price > ma20_val
-
-        b1_strong = (bp_buy == 1 and chan_buy_signal and sl >= 2)
-        if b1_strong:
-            price_ok = dist_ma20 > -0.05
-        else:
-            price_ok = price_above_ma20
-
-        # 乖离上限
-        is_b3 = (bp_buy == 3 and chan_buy_signal)
-        if is_b3 and sl >= 2:
-            max_dist = 0.40
-        elif is_b3:
-            max_dist = 0.35
-        elif b1_strong:
-            max_dist = 0.25
-        else:
-            max_dist = 0.30
-
-        price_not_extended = dist_ma20 < max_dist
-
-        buy = (score > buy_threshold or chan_force_buy) and price_ok and price_not_extended
-
-        # chan_force_sell（与_generate_signal内逻辑完全一致）
-        chan_force_sell = chan_sell_signal and sl <= -2
-        sell = score < sell_threshold or chan_force_sell
-
-        return buy, sell
 
     # ========================================================================
     # 向量化批处理：标量收集 + 数组级联装配
@@ -1963,11 +1936,14 @@ class SignalEngine:
 
         # === 1.5. trend_initiation 增强: ti>0时温和提升score，帮助克服旧动量因子滞后 ===
         ti_arr = _safe_get_arr(ind, 'trend_initiation', n, 0.0)
-        ti_boost = np.tanh(np.maximum(0, ti_arr) * 2.0) * 0.12
+        ti_boost = np.tanh(np.maximum(0, ti_arr) * self.ti_boost_scale) * self.ti_boost_magnitude
         score += ti_boost
 
+        # 统一归一化到 [-1, 1]：确保Chan/非Chan路径分数范围一致
+        score /= 10.0
+
         # 保存 pre_discount_score 在 MTF 折扣前（引用，后面会 copy）
-        pre_discount_score = None  # 延迟到 MTF 前赋值
+        pre_discount_score = score.copy()  # 保存MTF折扣前分数
 
         # === 2. 缠论+因子 加法融合 ===
         chan_sl = _safe_get_arr(ind, 'signal_level', n, 0).astype(int)
@@ -1996,7 +1972,7 @@ class SignalEngine:
         # 标准化加法融合（仅对有缠论信号的bar）
         has_chan = chan_score != 0.0
         if has_chan.any():
-            base_norm = np.clip((score + 10.0) / 20.0, 0.0, 1.0)
+            base_norm = np.clip((score + 1.0) / 2.0, 0.0, 1.0)
             ch_pos = chan_score >= 0
             ch_neg = ~ch_pos
             chan_norm = np.empty(n)
@@ -2004,8 +1980,8 @@ class SignalEngine:
             chan_norm[ch_neg] = 0.5 - 0.5 * np.clip(np.abs(chan_score[ch_neg]) / 0.65, 0.0, 1.0)
             np.clip(chan_norm, 0.0, 1.0, out=chan_norm)
             # 自适应融合权重: ti强劲时趋势端权重大，缓解新旧因子分歧
-            ti_mean = float(np.mean(ti_arr[has_chan]))
-            adaptive_cfw = cfw + np.clip(ti_mean * 0.3, 0.0, 0.12)
+            ti_mean = float(np.mean(ti_arr[valid])) if valid.any() else 0.0
+            adaptive_cfw = cfw + np.clip(ti_mean * self.ti_adaptive_scale, 0.0, self.ti_adaptive_max_adjust)
             adaptive_ffw = 1.0 - adaptive_cfw
             fused_norm = adaptive_ffw * base_norm + adaptive_cfw * chan_norm
             score[has_chan] = fused_norm[has_chan] * 2.0 - 1.0
@@ -2044,12 +2020,12 @@ class SignalEngine:
         cf_dir = _safe_get_arr(ind, 'capital_flow_direction', n, 0).astype(int)
         ns_dir = _safe_get_arr(ind, 'news_sentiment_direction', n, 0).astype(int)
 
-        s1b = score > self.buy_threshold * 0.7
-        s2b = (cf_score > 0.5) & (cf_dir == 1)
-        s3b = (ns_score > 0.3) & (ns_dir == 1)
+        s1b = score > self.buy_threshold * self.resonance_sys1_buy_mult
+        s2b = (cf_score > self.resonance_sys2_cf_threshold) & (cf_dir == 1)
+        s3b = (ns_score > self.resonance_sys3_ns_threshold) & (ns_dir == 1)
         s1s = score < self.sell_threshold
-        s2s = (cf_score > 0.5) & (cf_dir == -1)
-        s3s = (ns_score > 0.3) & (ns_dir == -1)
+        s2s = (cf_score > self.resonance_sys2_cf_threshold) & (cf_dir == -1)
+        s3s = (ns_score > self.resonance_sys3_ns_threshold) & (ns_dir == -1)
         n_buy = s1b.astype(np.int8) + s2b.astype(np.int8) + s3b.astype(np.int8)
         n_sell = s1s.astype(np.int8) + s2s.astype(np.int8) + s3s.astype(np.int8)
 
@@ -2092,7 +2068,7 @@ class SignalEngine:
         bottom_fx_qual = _safe_get_arr(ind, 'bottom_fractal_quality', n, 0.0)
         vol_ratio_raw = _safe_get_arr(ind, 'volume_ratio_raw', n, 1.0)
 
-        conf = np.full(n, 0.2)
+        conf = np.full(n, self.signal_confidence_baseline)
         conf = np.where(s['risk_dyn_quality'] > 0.02,
                         conf + np.clip(s['risk_dyn_quality'] * 5, 0, 0.3), conf)
         conf = np.where(np.abs(smart_money) > 0.15, conf + 0.10, conf)
@@ -2121,36 +2097,52 @@ class SignalEngine:
         bottom_fx_spike = _safe_get_arr(ind, 'bottom_fractal_vol_spike', n, 0.0)
 
         div_type = np.full(n, 'none', dtype=object)
-        for i in range(n):
-            if not valid[i]:
-                continue
-            sl_i = chan_sl[i]
-            if sl_i == 3 and confirmed_buy[i]:
-                div_type[i] = f'bi{bi_buy[i]}_seg{buy_point_raw[i]}_buy'
-            elif sl_i == -3 and confirmed_sell[i]:
-                div_type[i] = f'bi{bi_sell[i]}_seg{sell_point_raw[i]}_sell'
-            elif sl_i == 2 and confirmed_buy[i]:
-                div_type[i] = f'buy{buy_point_raw[i]}'
-            elif sl_i == -2 and confirmed_sell[i]:
-                div_type[i] = f'sell{sell_point_raw[i]}'
-            elif sl_i == 1 and confirmed_buy[i]:
-                div_type[i] = f'bi{bi_buy[i]}'
-            elif sl_i == -1 and confirmed_sell[i]:
+        # 向量化：固定字符串条件直接数组赋值，可变字符串仅遍历匹配索引
+        # 优先级：低→高（后续赋值覆盖前面的）
+
+        # 固定字符串条件 — 纯向量化，无循环
+        # Fix#6: 重排优先级 — 背离>分型>B2，确保'bottom'不被B2覆盖
+        mask = valid & (bottom_fx_qual > 0.35)
+        div_type[mask] = 'bottom_fx'
+        mask = valid & (bottom_fx_spike >= 3.0)
+        div_type[mask] = 'bottom_fx_3x'
+        mask = valid & (hidden_top > 0.15)
+        div_type[mask] = 'hidden_top'
+        mask = valid & (hidden_bottom > 0.15)
+        div_type[mask] = 'hidden_bottom'
+        mask = valid & (top_div > bottom_div) & (top_div > 0.3)
+        div_type[mask] = 'top'
+        mask = valid & (bottom_div > top_div) & (bottom_div > 0.3)
+        div_type[mask] = 'bottom'
+        # B2在背离之后赋值（不被'bottom'覆盖但也不覆盖'bottom'）
+        mask = valid & (second_buy > 0) & (div_type == 'none')
+        div_type[mask] = 'B2'
+
+        # 可变字符串条件 — 仅遍历匹配索引（<2% bars）
+        mask = valid & (chan_sl == -1) & confirmed_sell
+        if mask.any():
+            for i in np.where(mask)[0]:
                 div_type[i] = f'bi{bi_sell[i]}'
-            elif bottom_div[i] > top_div[i] and bottom_div[i] > 0.3:
-                div_type[i] = 'bottom'
-            elif top_div[i] > bottom_div[i] and top_div[i] > 0.3:
-                div_type[i] = 'top'
-            elif hidden_bottom[i] > 0.15:
-                div_type[i] = 'hidden_bottom'
-            elif hidden_top[i] > 0.15:
-                div_type[i] = 'hidden_top'
-            elif second_buy[i] > 0:
-                div_type[i] = 'B2'
-            elif bottom_fx_spike[i] >= 3.0:
-                div_type[i] = 'bottom_fx_3x'
-            elif bottom_fx_qual[i] > 0.35:
-                div_type[i] = 'bottom_fx'
+        mask = valid & (chan_sl == 1) & confirmed_buy
+        if mask.any():
+            for i in np.where(mask)[0]:
+                div_type[i] = f'bi{bi_buy[i]}'
+        mask = valid & (chan_sl == -2) & confirmed_sell
+        if mask.any():
+            for i in np.where(mask)[0]:
+                div_type[i] = f'sell{sell_point_raw[i]}'
+        mask = valid & (chan_sl == 2) & confirmed_buy
+        if mask.any():
+            for i in np.where(mask)[0]:
+                div_type[i] = f'buy{buy_point_raw[i]}'
+        mask = valid & (chan_sl == -3) & confirmed_sell
+        if mask.any():
+            for i in np.where(mask)[0]:
+                div_type[i] = f'bi{bi_sell[i]}_seg{sell_point_raw[i]}_sell'
+        mask = valid & (chan_sl == 3) & confirmed_buy
+        if mask.any():
+            for i in np.where(mask)[0]:
+                div_type[i] = f'bi{bi_buy[i]}_seg{buy_point_raw[i]}_buy'
 
         # === 10. 组装返回（尽量引用 s/ind 已有数组，不复制） ===
         return {
@@ -2168,11 +2160,7 @@ class SignalEngine:
             'factor_quality': s['risk_dyn_quality'],
             'signal_confidence': signal_confidence,
             'chan_divergence_type': div_type,
-            'chan_divergence_strength': np.maximum(
-                np.maximum(bottom_div, top_div),
-                np.maximum(_safe_get_arr(ind, 'buy_confidence', n, 0.0),
-                           _safe_get_arr(ind, 'sell_confidence', n, 0.0))
-            ),
+            'chan_divergence_strength': np.maximum(bottom_div, top_div),  # Fix#4: 仅背离强度
             'chan_structure_score': _safe_get_arr(ind, 'alignment_score', n, 0.0),
             'chan_buy_point': buy_point_raw,
             'chan_sell_point': sell_point_raw,
@@ -2427,8 +2415,7 @@ class SignalEngine:
 
         # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
         # dyn_quality = avg combined_IR, <0.08 ≈ 因子几乎无预测力
-        DYN_QUALITY_THRESHOLD = 0.04
-        if dyn_quality < DYN_QUALITY_THRESHOLD:
+        if dyn_quality < self.dyn_quality_threshold:
             return None
 
         # 只要有因子通过IC验证就使用
@@ -2847,7 +2834,6 @@ class SignalEngine:
         self._has_fund_data_cache = True
 
     @staticmethod
-    @staticmethod
     def _compute_fund_score_from_row(row) -> float:
         """从基本面数据行计算评分 — 委托给 factor_calculator.compute_fundamental_score"""
         from .factor_calculator import compute_fundamental_score
@@ -2986,15 +2972,6 @@ class SignalEngine:
         result[window-1:] = np.convolve(arr, np.ones(window)/window, mode='valid')
         return result
 
-    @staticmethod
-    @njit
-    def _ema(arr, span):
-        result = np.zeros_like(arr, dtype=float)
-        result[0] = arr[0]
-        alpha = 2 / (span + 1)
-        for i in range(1, len(arr)):
-            result[i] = alpha * arr[i] + (1 - alpha) * result[i-1]
-        return result
 
     def _rsi(self, close, window):
         delta = np.diff(close, prepend=close[0])
@@ -3104,8 +3081,8 @@ class SignalEngine:
         return result
 
     def _macd(self, close, fast=12, slow=26, signal=9):
-        ema_fast = self._ema(close, fast)
-        ema_slow = self._ema(close, slow)
+        ema_fast = _ema(close, fast)
+        ema_slow = _ema(close, slow)
         macd = ema_fast - ema_slow
-        macd_signal = self._ema(macd, signal)
+        macd_signal = _ema(macd, signal)
         return macd, macd_signal, macd - macd_signal
