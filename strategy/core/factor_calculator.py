@@ -216,15 +216,6 @@ def calculate_indicators(
         result['turnover_ma20'] = np.ones(n)
         result['turnover_burst'] = np.zeros(n)
 
-    # === 涨停频率因子 (limit_up_freq) ===
-    # 逻辑: 过去20日中涨停(>9.5%)的次数占比，捕捉妖股"持续涨停"特征
-    # 默认涨停阈值9.5%(主板)，科创板20%逻辑由调用方按需调整
-    daily_ret = returns.copy()
-    daily_ret[0] = 0  # 第一天无前日数据
-    limit_up_mask = daily_ret >= 0.095
-    limit_up_sum_20 = _sma(limit_up_mask.astype(float), 20) * 20  # 过去20日涨停次数
-    result['limit_up_freq'] = np.tanh(limit_up_sum_20 * 0.5)  # tanh压缩，2次涨停≈sig=0.76
-
     # === ATR ===
     for period in params.get('atr_periods', [10, 14, 20]):
         result[f'atr_{period}'] = _atr(high_arr, low_arr, close_arr, period)
@@ -246,6 +237,15 @@ def calculate_indicators(
     returns = np.zeros(n)
     returns[1:] = (close_arr[1:] - close_arr[:-1]) / (close_arr[:-1] + 1e-10)
     result['ret'] = returns
+
+    # === 涨停频率因子 (limit_up_freq) ===
+    # 逻辑: 过去20日中涨停(>9.5%)的次数，捕捉妖股"持续涨停"特征
+    daily_ret = returns.copy()
+    daily_ret[0] = 0
+    limit_up_mask = daily_ret >= 0.095
+    limit_up_sum_20 = _sma(limit_up_mask.astype(float), 20) * 20
+    result['limit_up_freq'] = np.tanh(limit_up_sum_20 * 0.5)
+
     for period in params.get('volatility_periods', [5, 10, 20]):
         result[f'volatility_{period}'] = _rolling_std(returns, period)
 

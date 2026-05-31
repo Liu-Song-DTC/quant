@@ -80,16 +80,20 @@ def get_stock_pool(min_price: float = 2.0,
             if last_price <= 0 or np.isnan(last_price) or last_price < min_price:
                 continue
 
-            # 流动性过滤: 近20日日均成交额 >= 3000万 (排除僵尸股)
+            # 流动性过滤: 近20日日均成交额
+            # 科创板(688): 1000万（妖股启动前成交额较低）
+            # 主板: 3000万（排除僵尸股）
+            min_amount = 10_000_000 if code.startswith('688') else 30_000_000
+            min_vol = 300_000 if code.startswith('688') else 1_000_000
             if 'amount' in df.columns and len(df) >= 20:
                 avg_amount = df['amount'].iloc[-20:].mean()
-                if avg_amount < 30_000_000:
+                if avg_amount < min_amount:
                     liquidity_filtered += 1
                     continue
-            # 流动性补充: 无amount列时, 近20日日均成交量 >= 100万股
+            # 流动性补充: 无amount列时, 近20日日均成交量
             elif 'volume' in df.columns and len(df) >= 20:
                 avg_vol = df['volume'].iloc[-20:].mean()
-                if avg_vol < 1_000_000:
+                if avg_vol < min_vol:
                     liquidity_filtered += 1
                     continue
 

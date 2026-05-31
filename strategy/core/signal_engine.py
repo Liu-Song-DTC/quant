@@ -420,14 +420,27 @@ class SignalEngine:
             ma60_v = float(_safe_get_arr(indicators, 'ma60', n, 0.0)[i])
             price_above_ma60 = close_p > 0 and ma60_v > 0 and close_p > ma60_v
 
+            # 科创板豁免MA60检查（上市可能不足60天，MA60为NaN）
+            is_star_ma60 = code.startswith('688')
+            if is_star_ma60:
+                # 科创板只检查MA20
+                price_ok = price_above_ma20
+            else:
+                ma20_above_ma60 = ma20_v > 0 and ma60_v > 0 and ma20_v > ma60_v
+                price_ok = price_above_ma20 and price_above_ma60 and ma20_above_ma60
+
             b1_strong = (bp_buy == 1 and chan_buy_sig and sl >= 2)
             if chan_force_buy:
                 price_ok = price_above_ma20
             else:
                 # 非缠论买入: 必须多头排列(MA20>MA60) + price站上MA20/MA60，确认中期趋势向上
                 # 避免下跌趋势中的反弹被误认为反转(82%套牢率根因)
-                ma20_above_ma60 = ma20_v > 0 and ma60_v > 0 and ma20_v > ma60_v
-                price_ok = price_above_ma20 and price_above_ma60 and ma20_above_ma60
+                # 科创板豁免MA60（上市<60天无MA60数据）
+                if code.startswith('688'):
+                    price_ok = price_above_ma20
+                else:
+                    ma20_above_ma60 = ma20_v > 0 and ma60_v > 0 and ma20_v > ma60_v
+                    price_ok = price_above_ma20 and price_above_ma60 and ma20_above_ma60
 
             is_b3 = (bp_buy == 3 and chan_buy_sig)
             if is_b3 and sl >= 2:
@@ -479,11 +492,13 @@ class SignalEngine:
 
             # === 因子质量门控: 禁止低质量因子生成买入信号 ===
             if buy and not chan_force_buy and self.fqg_enabled:
+                is_star = code.startswith('688')  # 科创板豁免质量门控（历史短，因子标签不全）
+
                 # 兜底/默认因子(MOM/REV/SHARPE/V41)禁止生成买入信号
                 _raw_fn = str(result['factor_name'][i])
-                if _raw_fn in ('MOM', 'REV', 'SHARPE', 'V41', 'NONE'):
+                if not is_star and _raw_fn in ('MOM', 'REV', 'SHARPE', 'V41', 'NONE'):
                     buy = False
-                else:
+                elif not is_star:
                     # 预计算因子标签来确定质量层级
                     _has_fund = bool(result['has_fundamental'][i])
                     _has_style = bool(float(result['style_confidence'][i]) > 0.3)
