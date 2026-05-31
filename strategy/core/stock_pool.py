@@ -134,23 +134,15 @@ def is_star_board(code: str) -> bool:
 
 
 def get_exclusion_set() -> set:
-    """获取需要排除的股票集合: ST + 科创板
+    """获取需要排除的股票集合: 仅ST
 
     Returns:
         set of stock codes to exclude
     """
     st_codes = load_st_stocks()
 
-    # 科创板: 688xxx
-    star_codes = set()
-    data_dir = _get_data_dir()
-    if os.path.exists(data_dir):
-        for item in os.listdir(data_dir):
-            if not (item.endswith('_qfq.csv') or item.endswith('_hfq.csv')):
-                continue
-            code = item[:-8] if item.endswith('_qfq.csv') else item[:-8]
-            if is_star_board(code):
-                star_codes.add(code)
+    # 科创板(688xxx) 不再排除 — 2025-2026年妖股主要集中在科创板
+    star_codes = set()  # 保留变量但不填充，方便将来可配置
 
     excluded = st_codes | star_codes
     overlap = len(st_codes & star_codes)

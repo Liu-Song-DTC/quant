@@ -183,24 +183,24 @@ def _compute_date_chunk(args):
                 ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
 
-                # IC质量过滤
-                if ic_stability < 0.40:
+                # IC质量过滤（收紧：宁缺毋滥）
+                if ic_stability < 0.45:
                     continue
                 ic_variance = ic_std / (abs(ic_mean) + 1e-10) if abs(ic_mean) > 1e-10 else 999
-                if ic_variance > 8.0:   # 收紧: IC噪音>8x信号 → 拒绝
+                if ic_variance > 6.0:
                     continue
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
-                if abs(t_statistic) < 0.3:
+                if abs(t_statistic) < 0.4:
                     continue
                 if ic_mean <= 0:
                     continue
-                if combined_ir < 0.005:
+                if combined_ir < 0.015:
                     continue
                 p_value = stats.norm.sf(ic_mean / (ic_std / np.sqrt(n_dates)))
-                if p_value > 0.45:
+                if p_value > 0.40:
                     continue
                 n_positive = sum(1 for ic in ic_list if ic > 0)
-                if n_positive / n_dates < 0.40:
+                if n_positive / n_dates < 0.45:
                     continue
                 if n_dates >= 10:
                     split_idx = int(n_dates * 0.8)
@@ -260,8 +260,8 @@ def _compute_date_chunk(args):
                 if n_selected < min_factor_count:
                     continue
 
-                # 质量底线: IC太弱或选出的因子太少 → 回退到固定因子
-                if avg_quality < 0.015 or n_selected < 2:
+                # 质量底线: 只保留中等以上质量的因子组合
+                if avg_quality < 0.03 or n_selected < 2:
                     continue
 
                 total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10

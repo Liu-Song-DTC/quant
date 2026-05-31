@@ -146,10 +146,12 @@ def _compute_stock_factors_worker(args):
     low_arr = df['low'].values if 'low' in df.columns else close_arr
     vol_arr = df['volume'].values if 'volume' in df.columns else np.ones(n)
     open_arr = df['open'].values if 'open' in df.columns else close_arr
+    turnover_arr = df['turnover_rate'].values if 'turnover_rate' in df.columns else None
 
     # === 使用统一的因子计算器计算所有基础指标 ===
     params = get_default_params()
-    ind = calculate_indicators(close_arr, high_arr, low_arr, vol_arr, params, open_arr=open_arr)
+    ind = calculate_indicators(close_arr, high_arr, low_arr, vol_arr, params,
+                               open_arr=open_arr, turnover_rate=turnover_arr)
 
     # === 构建日期到索引的映射（O(1) 查找）===
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}

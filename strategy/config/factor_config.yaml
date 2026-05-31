@@ -28,6 +28,10 @@ dynamic_factor:
   - ma_golden_cross
   - trend_initiation
   - ma20_slope
+  # 妖股因子 (2025-2026年市场风格切换)
+  - volume_surge
+  - turnover_burst
+  - limit_up_freq
 backtest_factors:
 - fund_score
 - volatility
@@ -685,7 +689,9 @@ portfolio:
     exhaustion_max_weight: 0.05
     exhaustion_reduce_mult: 0.6
     industry_max_weight: 0.35
-    rank_weight_cap: 0.18
+    # 妖股行情下允许更集中持仓
+    rank_weight_cap: 0.22
+    speculative_max_weight: 0.28
   fv_exposure_params:
     fv_low: -0.02
     fv_high: 0.03

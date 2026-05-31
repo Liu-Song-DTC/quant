@@ -223,9 +223,9 @@ class SignalEngine:
 
         # === 动态因子质量阈值 ===
         dyn_cfg = config_loader.get('dynamic_factor', {})
+        # DYN质量阈值：只有显著优于固定因子时才启用（宁缺毋滥）
+        # 数据分析显示：DYN质量<0.05的因子信号反而弱于固定的行业因子
         self.dyn_quality_threshold = dyn_cfg.get('min_quality_threshold', 0.04)
-        # 实际使用更低阈值提高覆盖率（缓存层已经做过质量过滤）
-        self.dyn_quality_threshold = max(0.015, self.dyn_quality_threshold * 0.5)
 
         # === Chan增强门控阈值（B1/B2买点）===
         chan_enh_cfg = config_loader.get('chan_theory_enhanced', {})
@@ -538,7 +538,9 @@ class SignalEngine:
                     if trend_init <= 0:
                         buy = False
 
-            chan_force_sell = chan_sell_sig and sl <= -2
+            # 妖股保护: 涨停股忽略缠论卖出信号（暴力拉升中的顶背离是假信号）
+            _is_limit_up_stock = (float(result['daily_return'][i]) >= 0.095)
+            chan_force_sell = chan_sell_sig and sl <= -2 and not _is_limit_up_stock
             # MA60止损: 跌破MA60且score转负 → 强制卖出，截断下跌趋势中的持仓
             ma60_stop = (not price_above_ma60) and score < 0 and close_p > 0 and ma60_v > 0
 

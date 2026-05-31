@@ -48,10 +48,15 @@ REBALANCE_BULL = DYNAMIC_REBALANCE_CONFIG.get('bull_period', 30)
 REBALANCE_NEUTRAL = DYNAMIC_REBALANCE_CONFIG.get('neutral_period', 20)
 REBALANCE_BEAR = DYNAMIC_REBALANCE_CONFIG.get('bear_period', 15)
 NUM_WORKERS = config.get('backtest.num_workers', 8)
+# 回测日期范围过滤 (加速测试: fromdate='2024-01-01', todate='2026-05-30')
+FROMDATE = config.get('backtest.fromdate', None)
+TODATE = config.get('backtest.todate', None)
 
-# 数据路径 - 从配置文件读取
-DATA_PATH = config.get('paths.data', '../data/stock_data/backtrader_data/')
-FUNDAMENTAL_PATH = config.get('paths.fundamental', '../data/stock_data/fundamental_data/')
+# 数据路径 - 从配置文件读取，默认相对于策略目录（而非 CWD）
+_STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIR = os.path.dirname(_STRATEGY_DIR)
+DATA_PATH = config.get('paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data/backtrader_data/'))
+FUNDAMENTAL_PATH = config.get('paths.fundamental', os.path.join(_PROJECT_DIR, 'data/stock_data/fundamental_data/'))
 
 
 # 全局变量用于 worker 进程
@@ -64,12 +69,12 @@ def _init_worker(fundamental_data, stock_codes, use_dynamic, industry_codes, fac
     """Worker 进程初始化函数
 
     注意: 不传递 factor_df (巨大DataFrame) 到每个worker，预计算的 factor_cache 已包含所有因子选择结果。
-    fundamental_data 直接从父进程继承（fork COW共享），避免每个 worker 重新从磁盘加载。
+    fundamental_data 由父进程 fork 共享（COW），每个 worker 仅触发按需加载的页面复制。
     """
     global _worker_engine, _worker_use_dynamic
     _worker_use_dynamic = use_dynamic
 
-    # 每个 worker 创建自己的 engine，复用父进程的 fundamental_data（fork 后 COW 共享）
+    # fork 后共享父进程的 fundamental_data（COW 零拷贝）
     _worker_engine = SignalEngine()
 
     if fundamental_data is not None:
@@ -99,7 +104,7 @@ def _init_worker(fundamental_data, stock_codes, use_dynamic, industry_codes, fac
 
 def _generate_stock_signal_worker(args):
     """Worker 函数：为一个股票生成信号 — 直接从文件读取，避免 pickle 传大数据"""
-    global _worker_engine, _worker_use_dynamic
+    global _worker_engine, _worker_use_dynamic, _worker_diag_reported
     code, filepath = args
 
     try:
@@ -110,13 +115,25 @@ def _generate_stock_signal_worker(args):
 
         store = SignalStore()
         data = pd.read_csv(filepath, parse_dates=['datetime'])
+        # 日期范围过滤（与主进程一致的加速优化）
+        if FROMDATE:
+            data = data[data['datetime'] >= FROMDATE]
+        if TODATE:
+            data = data[data['datetime'] <= TODATE]
+        if len(data) < 60:
+            del data
+            return (code, {})
         engine.generate(code, data, store)
 
         # 释放该股票的基本面数据缓存（避免每个worker累积 ~1100 只股票的基本面数据）
         if hasattr(engine, 'fundamental_data') and engine.fundamental_data is not None:
             engine.fundamental_data.clear_stock_cache(code)
 
-        return (code, store._store)
+        # 清理本股票数据，避免 worker 内 DataFrame 累积
+        result = (code, store._store)
+        del data
+        del store
+        return result
     except Exception as e:
         # 返回异常信息，避免worker静默失败
         print(f"[Worker Error] {code}: {e}", flush=True)
@@ -134,9 +151,16 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     stock_codes = []  # 获取回测池中的股票列表
 
     # 只读取一次CSV数据，同时记录文件路径和涨跌停数据
+    # 10年回测优化: 仅加载必要列(减少~60%内存)，完整数据由worker从文件读
     stock_data_dict = {}
     stock_file_map = {}  # code → filepath，传给worker直接从文件读
     _LIMIT_DATA = {}     # 重置涨跌停数据
+    _LOAD_COLS = ['datetime', 'open', 'high', 'low', 'close', 'volume', 'change_percent', 'amplitude']
+    # float32 优化: OHLCV价格列用32位浮点(精度足够,内存减半)
+    _DTYPE_MAP = {
+        'open': 'float32', 'high': 'float32', 'low': 'float32', 'close': 'float32',
+        'volume': 'float32', 'change_percent': 'float32', 'amplitude': 'float32',
+    }
     for item in tqdm(all_items, desc="loading data"):
         if item.startswith('._'):
             continue
@@ -147,7 +171,15 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             name = item[:-8]
         else:
             continue
-        data = pd.read_csv(filepath, parse_dates=['datetime'])
+        data = pd.read_csv(filepath, parse_dates=['datetime'], dtype=_DTYPE_MAP)
+        # 日期范围过滤（加速测试：fromdate/todate）
+        if FROMDATE:
+            data = data[data['datetime'] >= FROMDATE]
+        if TODATE:
+            data = data[data['datetime'] <= TODATE]
+        # 仅保留必要列以节省内存 (10年回测 ~1.5GB→~0.8GB with float32)
+        _available_cols = [c for c in _LOAD_COLS if c in data.columns]
+        data = data[_available_cols]
         stock_data_dict[name] = data
         stock_file_map[name] = filepath
 
@@ -188,12 +220,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     else:
         print(f"股票池过滤: 已关闭，使用全市场 {len(stock_data_dict)} 只股票")
 
-    # === 剔除科创板 ===
-    star_codes = {k for k in stock_data_dict if k.startswith('688')}
-    before_excl = len(stock_data_dict)
-    stock_data_dict = {k: v for k, v in stock_data_dict.items() if k not in star_codes}
-    stock_file_map = {k: v for k, v in stock_file_map.items() if k not in star_codes}
-    print(f"科创板过滤: {before_excl} -> {len(stock_data_dict)} 只")
+    # === 科创板(688xxx) 不再剔除 — 2025-2026年妖股主要集中板块 ===
+    star_codes = set()
+    before_excl_star = len(stock_data_dict)
+    # stock_data_dict = {k: v for k, v in stock_data_dict.items() if k not in star_codes}
+    # stock_file_map = {k: v for k, v in stock_file_map.items() if k not in star_codes}
+    print(f"科创板保留: {before_excl_star} 只 (不再排除)")
 
     # === ST股票识别（基于基本面数据） ===
     _ST_CODES = set()
@@ -221,14 +253,23 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     else:
         strategy.st_codes = set()
 
-    # 从任意一个DataFrame获取日期（所有股票数据共享日历）
-    dates = set()
-    for data in stock_data_dict.values():
-        dates.update(data['datetime'])
-    calendar_index = pd.DatetimeIndex(sorted(dates))
-    del dates
-
     # 处理指数数据 - 生成市场状态 (Fix#6: 多指数风格检测)
+    # 同时构建统一交易日历（sh000001 代表全市场交易日，用于其他股票对齐）
+    if 'sh000001' in stock_data_dict:
+        index_df = stock_data_dict['sh000001']
+        if 'datetime' in index_df.columns:
+            calendar_index = pd.DatetimeIndex(sorted(index_df['datetime']))
+        else:
+            calendar_index = pd.DatetimeIndex(sorted(index_df.index))
+    else:
+        dates = set()
+        for data in stock_data_dict.values():
+            if 'datetime' in data.columns:
+                dates.update(data['datetime'])
+            else:
+                dates.update(data.index)
+        calendar_index = pd.DatetimeIndex(sorted(dates))
+        del dates
     regime_df = None
     if "sh000001" in stock_data_dict:
         strategy.generate_market_regime(
@@ -262,14 +303,20 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业")
     else:
         print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
+        stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
 
     # === 释放 stock_data_dict（factor_df 已生成，不再需要原始数据） ===
-    # 提前释放以降低 ML 训练期间的内存峰值（两者共存额外占用 3-5GB）
+    # 提前释放以降低 ML 训练/因子预计算期间的内存峰值（两者共存额外占用 2-3GB）
     stock_data_dict.clear()
     del stock_data_dict
     import gc
     gc.collect()
     print("已释放 stock_data_dict 内存（因子数据已生成）")
+
+    # ===================================================================
+    # Phase A: ML训练 + 因子预计算（依赖 factor_df，需在 factor_df 释放前完成）
+    # 先于 Backtrader datafeed 创建，避免 reindexed 数据(~2GB) 与 factor_df(~4GB) 共存
+    # ===================================================================
 
     # === ML预测层训练 ===
     ml_config = config.config.get('ml', {})
@@ -282,7 +329,6 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             ml_predictor = MLFactorPredictor(config.config)
             val_ic = ml_predictor.train(factor_df)
             if val_ic is not None and val_ic > 0:
-                # 保存模型到项目目录（避免临时目录被清理）
                 strategy_dir = os.path.dirname(os.path.abspath(__file__))
                 model_dir = os.path.join(strategy_dir, 'models')
                 os.makedirs(model_dir, exist_ok=True)
@@ -290,7 +336,6 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                 ml_predictor.save_model(_ml_model_path)
                 print(f"ML模型已保存: {_ml_model_path}")
 
-                # 生成所有日期/股票的ML预测（主进程）
                 print("生成ML预测...")
                 all_dates_sorted = sorted(factor_df['date'].unique())
                 for date in tqdm(all_dates_sorted, desc="ML预测"):
@@ -311,19 +356,17 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             import traceback
             traceback.print_exc()
 
-    # 生成信号（多进程并行）
-    # use_dynamic 表示是否使用动态因子选择器
+    # 准备信号生成用的参数
     use_dynamic = factor_mode != 'fixed'
     stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
 
-    # 创建带动态因子的 SignalEngine（如果启用）
+    # 创建带动态因子的 SignalEngine + 预计算因子选择（如果启用）
     main_engine = None
     if use_dynamic:
         main_engine = SignalEngine()
         main_engine.set_factor_data(factor_df)
         main_engine.set_industry_mapping(industry_codes)
         main_engine.set_fundamental_data(fundamental_data)
-        # 设置ML预测值和模型（用于主引擎）
         if _ml_model_path is not None and _ml_preds:
             from core.ml_predictor import MLFactorPredictor
             ml_predictor = MLFactorPredictor(config.config)
@@ -344,19 +387,44 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         precomputed_cache = main_engine.dynamic_factor_selector._factor_cache
         precomputed_all_dates = main_engine.dynamic_factor_selector._all_dates_cache
 
-        # === 释放 factor_df 以避免 fork 复制到 worker 进程 ===
-        # factor_df 约 2-3GB，fork 后每个 worker 复制一份 → 4 workers = 8-12GB
-        # 预计算完成后 factor_cache 已包含所有需要的因子选择结果，不再需要 factor_df
+        # === 释放 factor_df（预计算完成，不再需要原始因子DataFrame） ===
         strategy.signal_engine.dynamic_factor_selector.factor_df = None
         main_engine.dynamic_factor_selector.factor_df = None
+        main_engine.dynamic_factor_selector.industry_codes = {}
         del factor_df
         factor_df = None
         import gc
+        gc.collect()
         gc.collect()
         print("已释放 factor_df 内存（避免 fork 复制到 worker 进程）")
     else:
         precomputed_cache = None
         precomputed_all_dates = None
+
+    # ===================================================================
+    # Phase B: 创建 Backtrader datafeeds（从磁盘重新加载，避免与 factor_df 共存）
+    # factor_df 已释放，此时内存峰值最低
+    # ===================================================================
+    price_cols = ['open', 'high', 'low', 'close']
+    for name in tqdm(stock_codes, desc="preparing datafeeds"):
+        filepath = stock_file_map.get(name)
+        if not filepath:
+            continue
+        data = pd.read_csv(filepath, parse_dates=['datetime'], dtype=_DTYPE_MAP)
+        if FROMDATE:
+            data = data[data['datetime'] >= FROMDATE]
+        if TODATE:
+            data = data[data['datetime'] <= TODATE]
+        if 'datetime' in data.columns:
+            data = data.set_index('datetime')
+        data = data.reindex(calendar_index)
+        data[price_cols] = data[price_cols].ffill()
+        if 'volume' in data.columns:
+            data['volume'] = data['volume'].fillna(0)
+            if data['volume'].dtype != 'float64':
+                data['volume'] = data['volume'].astype('float64')
+        datafeed = bt.feeds.PandasData(dataname=data[price_cols + ['volume']])
+        cerebro.adddata(datafeed, name=name)
 
     # 准备参数：传文件路径给worker（而非dict），避免内存翻倍
     stock_items = [
@@ -380,6 +448,17 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
     # 多进程并行生成信号
     print(f"多进程生成信号 ({NUM_WORKERS} workers)...")
+
+    # === 预fork清理: 释放主进程缓存，最小化 COW 共享内存 ===
+    if fundamental_data is not None:
+        fundamental_data.clear_stock_cache()  # 清除所有惰性加载的基本面缓存
+    if main_engine is not None:
+        main_engine.set_fundamental_data(None)  # 解除 main_engine 对 fundamental_data 的引用
+    del main_engine
+    main_engine = None
+    import gc
+    gc.collect()
+    print("预fork清理完成: 最小化COW共享内存")
 
     # 动态因子统计
     dynamic_factor_stats = {'hit': 0, 'miss': 0, 'factor_names': {}}
@@ -465,22 +544,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             for fn, cnt in sorted(dynamic_factor_stats['factor_names'].items(), key=lambda x: -x[1])[:10]:
                 print(f"  {fn}: {cnt:,}")
 
-    price_cols = ['open', 'high', 'low', 'close']
-    # 从文件逐个加载股票数据（stock_data_dict 已在 fork 前释放）
-    for name in tqdm(stock_codes, desc="preparing datafeeds"):
-        filepath = stock_file_map.get(name)
-        if not filepath:
-            continue
-        data = pd.read_csv(filepath, parse_dates=['datetime'])
-        data = data.set_index('datetime')
-        data = data.reindex(calendar_index)
-        data[price_cols] = data[price_cols].ffill()
-        if 'volume' in data.columns:
-            data['volume'] = data['volume'].fillna(0)
-        datafeed = bt.feeds.PandasData(dataname=data)
-        cerebro.adddata(datafeed, name=name)
-
-    # 更新策略的基本面数据加载范围
+    # 更新策略的基本面数据加载范围（限制为实际回测池股票，节省查询内存）
     if hasattr(strategy, 'portfolio') and hasattr(strategy.portfolio, 'fundamental_data'):
         from core.fundamental import FundamentalData
         fundamental_path = os.path.join(
@@ -490,12 +554,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         strategy.portfolio.fundamental_data = FundamentalData(fundamental_path + '/', stock_codes=stock_codes)
         print(f"基本面数据已限制为 {len(stock_codes)} 只股票")
 
-    # 释放 stock_file_map 内存
+    # 释放 stock_file_map + 最终清理
     stock_file_map.clear()
     del stock_file_map
     import gc
     gc.collect()
-    print("已释放数据加载缓存")
+    print("已释放所有缓存内存")
 
 class BacktraderExecution(bt.Strategy):
     params = dict(
@@ -703,6 +767,22 @@ class BacktraderExecution(bt.Strategy):
                       f'Cost: {order.executed.value}, Comm {order.executed.comm}, Size: {order.executed.size}, Stock: {order.data._name}')
 
 if __name__ == "__main__":
+    # === 日志输出：同时输出到 stdout 和文件，方便监控进度 ===
+    import sys as _sys
+    from datetime import datetime as _dt
+    _log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_path = os.path.join(_log_dir, f'bt_execution_{_dt.now().strftime("%Y%m%d_%H%M%S")}.log')
+    class _Tee:
+        def __init__(self, *files): self.files = files
+        def write(self, data):
+            for f in self.files: f.write(data); f.flush()
+        def flush(self):
+            for f in self.files: f.flush()
+    _log_f = open(_log_path, 'w', encoding='utf-8')
+    _sys.stdout = _Tee(_sys.stdout, _log_f)
+    print(f"回测日志: {_log_path}")
+
     # 加载基本面数据 (支持 _qfq.csv 和 _hfq.csv)
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     stock_codes = []
@@ -761,8 +841,11 @@ if __name__ == "__main__":
         BacktraderExecution,
         real_strategy=strategy,
     )
-    # 启动回测
-    print("启动回测引擎...")
+    # 启动回测前最终GC: 清理信号生成阶段残留的临时对象
+    import gc
+    gc.collect()
+    gc.collect()
+    print(f"启动回测引擎 (可用内存优化完毕)...")
     try:
         result = cerebro.run()
     except MemoryError:
@@ -796,6 +879,32 @@ if __name__ == "__main__":
         os.makedirs(os.path.dirname(selections_path), exist_ok=True)
         selections_df.to_csv(selections_path, index=False)
         print(f"\n选股结果已保存: {len(selections_df)} 条 -> {selections_path}")
+
+    # === 妖股观察名单: 从信号中筛选潜在妖股候选 ===
+    try:
+        signals_df = pd.read_csv(signals_output_path)
+        yg = signals_df.copy()
+        yg['volume_ratio'] = pd.to_numeric(yg['volume_ratio'], errors='coerce')
+        yg['daily_return'] = pd.to_numeric(yg['daily_return'], errors='coerce')
+        yg['score'] = pd.to_numeric(yg['score'], errors='coerce')
+
+        # 妖股特征: 高量比(>2.0) + 高日收益(>3%) + 正score, 但未触发买入
+        yg_candidates = yg[
+            (yg['volume_ratio'] > 2.0) &
+            (yg['daily_return'] > 0.03) &
+            (yg['score'] > 0) &
+            (yg['buy'] == False)
+        ].copy()
+
+        if len(yg_candidates) > 0:
+            yg_candidates = yg_candidates.sort_values(['date', 'score'], ascending=[True, False])
+            yg_path = os.path.join(strategy_dir, 'rolling_validation_results', 'yaogu_watchlist.csv')
+            yg_candidates[['date', 'code', 'score', 'volume_ratio', 'daily_return',
+                            'factor_name', 'industry']].to_csv(yg_path, index=False)
+            print(f"妖股观察名单已保存: {len(yg_candidates)} 条 -> {yg_path}")
+        del yg, signals_df
+    except Exception as e:
+        print(f"[妖股名单] 生成失败: {e}")
 
     # 打印因子选择统计
     strategy.signal_engine.print_factor_stats()

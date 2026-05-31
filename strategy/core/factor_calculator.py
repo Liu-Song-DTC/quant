@@ -198,6 +198,33 @@ def calculate_indicators(
     result['volume_ratio'] = np.arctan(raw_vol_ratio - 1) / (np.pi / 2)  # 相对于1的偏离，压缩到(-1, 1)
     result['volume_ratio_raw'] = raw_vol_ratio  # 原始量比，供阈值判断使用
 
+    # === 妖股成交量放大因子 (volume_surge) ===
+    # 逻辑：计算今日成交量 / 20日平均成交量，>2 表示显著放量
+    # 使用 arctan 压缩防止极端值，放量>2x时为正信号
+    vol_ma20 = result['volume_ma20']
+    vol_surge_raw = vol_arr / (vol_ma20 + 1e-6)
+    result['volume_surge'] = np.tanh((vol_surge_raw - 1.5) * 2)  # 以1.5倍为基准
+
+    # === 换手率突破因子 (turnover_burst) ===
+    # 逻辑：今日换手率 / 20日平均换手率，>2 表示资金进场
+    if turnover_rate is not None and len(turnover_rate) == n:
+        to_ma20 = _sma(turnover_rate, 20)
+        to_burst_raw = turnover_rate / (to_ma20 + 1e-10)
+        result['turnover_ma20'] = to_ma20
+        result['turnover_burst'] = np.tanh((to_burst_raw - 1.5) * 2)
+    else:
+        result['turnover_ma20'] = np.ones(n)
+        result['turnover_burst'] = np.zeros(n)
+
+    # === 涨停频率因子 (limit_up_freq) ===
+    # 逻辑: 过去20日中涨停(>9.5%)的次数占比，捕捉妖股"持续涨停"特征
+    # 默认涨停阈值9.5%(主板)，科创板20%逻辑由调用方按需调整
+    daily_ret = returns.copy()
+    daily_ret[0] = 0  # 第一天无前日数据
+    limit_up_mask = daily_ret >= 0.095
+    limit_up_sum_20 = _sma(limit_up_mask.astype(float), 20) * 20  # 过去20日涨停次数
+    result['limit_up_freq'] = np.tanh(limit_up_sum_20 * 0.5)  # tanh压缩，2次涨停≈sig=0.76
+
     # === ATR ===
     for period in params.get('atr_periods', [10, 14, 20]):
         result[f'atr_{period}'] = _atr(high_arr, low_arr, close_arr, period)
