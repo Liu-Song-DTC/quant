@@ -302,7 +302,11 @@ def refresh_data():
     today_str = dt.today().strftime('%Y-%m-%d')
     print("同步回测数据 (仅更新有新增日期的股票)...")
     manager.create_backtrader_data(symbols, start_date='2024-01-01', end_date=today_str, adj_type='qfq')
-    print("回测数据已就绪\n")
+    print("回测数据已就绪")
+
+    # 4. 下载概念板块当日行情 (供题材热度计算)
+    manager.download_concept_daily()
+    print()
 
 
 def run_selection(skip_data_refresh=False):

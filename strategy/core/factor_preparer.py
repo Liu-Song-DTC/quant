@@ -14,6 +14,9 @@ from typing import Dict, List, Tuple
 import multiprocessing
 from tqdm import tqdm
 
+# 全局题材热度计算器 (fork 前初始化, worker 进程继承)
+_worker_concept_calc = None
+
 from .config_loader import load_config
 from .fundamental import FundamentalData
 from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor
@@ -23,14 +26,16 @@ from .factor_calculator import calculate_indicators, compute_composite_factors, 
 _worker_fd = None
 
 
-def _init_factor_worker(fd):
-    """Worker 进程初始化函数 - 共享父进程已加载的 FundamentalData
+def _init_factor_worker(fd, concept_calc=None):
+    """Worker 进程初始化函数 - 共享父进程已加载的 FundamentalData + ConceptHeatCalculator
 
     使用 fork 后 COW 共享父进程的 FundamentalData，避免每个 worker 从磁盘重新加载
     4000+ 只股票的基本面数据（~8 workers × 4000 CSVs = 32000+ 次文件读取）。
     """
-    global _worker_fd
+    global _worker_fd, _worker_concept_calc
     _worker_fd = fd
+    if concept_calc is not None:
+        _worker_concept_calc = concept_calc
 
 
 def _preload_fundamental_cache(fd, code, dates):
@@ -183,8 +188,15 @@ def _compute_stock_factors_worker(args):
         row = {'code': code, 'date': sample_date, 'industry': stock_industry}
         row.update(combo_factors)
 
-        # 题材热度因子 - 从ind直接提取
-        if 'concept_heat' in ind and idx < len(ind['concept_heat']):
+        # 题材热度因子 - 从真实概念数据计算
+        global _worker_concept_calc
+        if _worker_concept_calc is not None:
+            try:
+                _worker_concept_calc.set_daily_data(sample_date)
+                row['concept_heat'] = _worker_concept_calc.get_concept_heat(code)
+            except Exception:
+                row['concept_heat'] = 0.5
+        elif 'concept_heat' in ind and idx < len(ind['concept_heat']):
             row['concept_heat'] = float(ind['concept_heat'][idx])
 
         # 基本面因子 - 使用统一压缩函数（与signal_engine一致）
@@ -301,8 +313,18 @@ def prepare_factor_data(stock_data: dict, fd,
     df_chunks = []
     total_results = 0
 
+    # 加载题材热度计算器（fork前, COW共享）
+    concept_calc = None
+    try:
+        from .concept_heat import ConceptHeatCalculator
+        concept_calc = ConceptHeatCalculator()
+        concept_calc.load()
+        print(f"题材热度计算器已加载: {len(concept_calc._concept_hist)} 概念板块历史")
+    except Exception as e:
+        print(f"题材热度计算器加载失败(fallback): {e}")
+
     ctx = multiprocessing.get_context('fork')
-    with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fd,)) as pool:
+    with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fd, concept_calc)) as pool:
         for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=50),
                        total=len(args_list), desc="计算因子"):
             batch_data.extend(res)

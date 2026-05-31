@@ -62,12 +62,25 @@ class ConceptHeatCalculator:
     def set_daily_data(self, date, concept_returns: Dict[str, float] = None):
         """设置当日概念涨跌幅并计算产业链传导
 
+        - 实盘模式: 优先从 data/concept_daily.csv 自动读取
         - 回测模式: 从 concept_hist 按日期查找
-        - 实盘模式: 传入 concept_returns
+        - 手动模式: 传入 concept_returns
         """
         if concept_returns is not None:
             self._concept_scores = concept_returns
-        elif self._concept_hist:
+        else:
+            # 尝试从当日概念数据CSV读取 (实盘 data_manager 已下载)
+            daily_csv = Path(__file__).parent.parent.parent / "data" / "concept_daily.csv"
+            if daily_csv.exists():
+                try:
+                    df = pd.read_csv(daily_csv)
+                    if '涨跌幅' in df.columns and '板块名称' in df.columns:
+                        self._concept_scores = dict(zip(
+                            df['板块名称'], df['涨跌幅'].astype(float) / 100.0))
+                except Exception:
+                    pass
+
+        if not self._concept_scores and self._concept_hist:
             # 回测: 从缓存历史中查找
             date_ts = pd.Timestamp(date)
             self._concept_scores = {}

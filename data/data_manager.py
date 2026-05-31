@@ -1418,6 +1418,29 @@ def main():
     print("数据管理完成")
     print("=" * 50)
 
+    # ── 下载概念板块当日数据 ──
+    print("\n>>>>>> 下载概念板块当日行情...")
+    manager.download_concept_daily()
+
+
+def download_concept_daily(self):
+    """下载当日全量概念板块涨跌幅 → 供题材热度计算使用"""
+    concept_path = self.data_dir / "concept_daily.csv"
+    try:
+        import akshare as ak
+        df = ak.stock_board_concept_name_em()
+        df['date'] = pd.Timestamp.now().strftime('%Y-%m-%d')
+        df.to_csv(concept_path, index=False)
+        print(f"概念板块行情已保存: {len(df)} 个板块 -> {concept_path}")
+    except Exception as e:
+        print(f"概念板块下载失败: {e}")
+
+StockDataManager.download_concept_daily = download_concept_daily
+
+
+if __name__ == "__main__":
+    main()
+
     #  打印汇总信息
     print(f"\n汇总信息:")
     print(f"- 股票列表: {len(stock_list)} 只")
