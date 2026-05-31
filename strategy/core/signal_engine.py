@@ -223,9 +223,9 @@ class SignalEngine:
 
         # === 动态因子质量阈值 ===
         dyn_cfg = config_loader.get('dynamic_factor', {})
-        # DYN质量阈值：只有显著优于固定因子时才启用（宁缺毋滥）
-        # 数据分析显示：DYN质量<0.05的因子信号反而弱于固定的行业因子
-        self.dyn_quality_threshold = dyn_cfg.get('min_quality_threshold', 0.04)
+        # DYN质量阈值：对齐缓存层 combined_ir 最低门槛(0.015)，避免死区
+        # 缓存层已做严格质量过滤，此处过度收紧只会让99%的DYN白算
+        self.dyn_quality_threshold = dyn_cfg.get('min_quality_threshold', 0.04) * 0.5
 
         # === Chan增强门控阈值（B1/B2买点）===
         chan_enh_cfg = config_loader.get('chan_theory_enhanced', {})
@@ -570,8 +570,13 @@ class SignalEngine:
                         buy = False
 
             # 妖股保护: 涨停股忽略缠论卖出信号（暴力拉升中的顶背离是假信号）
-            _is_limit_up_stock = (float(result['daily_return'][i]) >= 0.095)
+            _daily_ret = float(result['daily_return'][i])
+            _is_limit_up_stock = (_daily_ret >= 0.095)
+            _is_limit_down_stock = (_daily_ret <= -0.095)
             chan_force_sell = chan_sell_sig and sl <= -2 and not _is_limit_up_stock
+            # 跌停保护: 跌停股禁止买入
+            if _is_limit_down_stock:
+                buy = False
             # MA60止损: 跌破MA60且score转负 → 强制卖出，截断下跌趋势中的持仓
             ma60_stop = (not price_above_ma60) and score < 0 and close_p > 0 and ma60_v > 0
 
@@ -1815,11 +1820,32 @@ class SignalEngine:
                price_ok and
                price_not_extended)
 
-        # 缠论卖点: 强卖点直接触发sell（与买入逻辑对称）
-        chan_sell_signal = chan_boost.get('is_chan_sell_boost', False)
+        # === 补全门控(对齐 generate() 路径): FQG + TI趋势 + 涨跌停 ===
+        if buy and not chan_force_buy:
+            # FQG: 兜底因子禁止买入
+            if self.fqg_enabled and code and code.startswith('688'):
+                pass  # 科创板豁免
+            elif self.fqg_enabled and fn in ('MOM', 'REV', 'SHARPE', 'V41', 'NONE'):
+                buy = False
+            # 跌停保护
+            _dr = self._safe_get(ind, 'ret', idx, 0)
+            if _dr <= -0.095:
+                buy = False
+            # TI趋势: 非缠论买入需验证趋势
+            if buy and not chan_buy_signal:
+                trend_init_legacy = self._safe_get(ind, 'trend_initiation', idx, 0)
+                if trend_init_legacy <= 0:
+                    buy = False
+
+        # 缠论卖点判定 + 涨停保护
+        chan_sell_signal_local = chan_boost.get('is_chan_sell_boost', False)
         sl_for_sell = int(self._safe_get(ind, 'signal_level', idx, 0))
-        sp_for_sell = int(self._safe_get(ind, 'sell_point', idx, 0))
-        chan_force_sell = chan_sell_signal and sl_for_sell <= -2
+        chan_force_sell = chan_sell_signal_local and sl_for_sell <= -2
+        if chan_force_sell:
+            _dr_sell = self._safe_get(ind, 'ret', idx, 0)
+            if _dr_sell >= 0.095:
+                chan_force_sell = False
+
         sell = (score is not None and
                 not np.isnan(score) and
                 (score < effective_sell_threshold or chan_force_sell))

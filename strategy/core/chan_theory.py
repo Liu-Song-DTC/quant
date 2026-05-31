@@ -109,9 +109,9 @@ def process_inclusions(
     if n < 3:
         return high.copy(), low.copy(), np.arange(n)
 
-    # 预分配数组（最大可能长度 = n）
-    new_high = np.zeros(n, dtype=np.float64)
-    new_low = np.zeros(n, dtype=np.float64)
+    # 预分配数组（最大可能长度 = n），dtype 与输入一致避免 numba 类型不统一
+    new_high = np.zeros(n, dtype=high.dtype)
+    new_low = np.zeros(n, dtype=low.dtype)
     orig_map = np.arange(n, dtype=np.int64)
 
     new_high[0] = high[0]
@@ -924,19 +924,18 @@ def detect_buy_sell_points(
         # 趋势要求: 至少2个同向向上不重叠中枢 → 仅已成趋势时B3才可靠
         p_rank = pivot_upward_rank.get(id(p), 0)
         p_trend_ok = len(non_overlap_up) >= 2 and p_rank >= 2
-        for idx in range(p_end + 1, min(p_end + 30, n_bars)):
+        # Fix: 前视偏差 — 仅扫描pivot结束后1根K线内的突破(避免看到未来30根K线)
+        for idx in range(p_end + 1, min(p_end + 2, n_bars)):
             if pivot_position[idx] == 1 and close[idx] > p.zg * 1.02:
-                # 有效突破ZG → 找后续回调
                 pullback_low = float('inf')
                 pullback_idx = -1
-                for j in range(idx + 1, min(idx + 15, n_bars)):
+                for j in range(idx + 1, min(idx + 2, n_bars)):
                     if close[j] < pullback_low:
                         pullback_low = close[j]
                         pullback_idx = j
-                    # 回调到ZG附近 (ZG*0.97 ~ ZG*1.03) 且最低价>ZG
                     near_zg = p.zg * 0.97 < close[j] < p.zg * 1.03
                     above_zg = pullback_low > p.zg
-                    if near_zg and above_zg and j >= idx + 3:
+                    if near_zg and above_zg and j >= idx + 1:
                         if buy_point[j] == 0:
                             buy_point[j] = 3
                             b3_trend_rank[j] = p_rank
@@ -966,18 +965,18 @@ def detect_buy_sell_points(
                         break
 
         # === 三卖 (S3): 向下跌破中枢后反弹不回中枢 ===
-        for idx in range(p_end + 1, min(p_end + 30, n_bars)):
+        # Fix: 前视偏差 — 仅扫描pivot结束后1根K线
+        for idx in range(p_end + 1, min(p_end + 2, n_bars)):
             if pivot_position[idx] == -1 and close[idx] < p.zd * 0.98:
-                # 有效跌破ZD → 找后续反弹
                 bounce_high = -float('inf')
                 bounce_idx = -1
-                for j in range(idx + 1, min(idx + 15, n_bars)):
+                for j in range(idx + 1, min(idx + 2, n_bars)):
                     if close[j] > bounce_high:
                         bounce_high = close[j]
                         bounce_idx = j
                     near_zd = p.zd * 0.97 < close[j] < p.zd * 1.03
                     below_zd = bounce_high < p.zd
-                    if near_zd and below_zd and j >= idx + 3:
+                    if near_zd and below_zd and j >= idx + 1:
                         if sell_point[j] == 0:
                             sell_point[j] = 3
                             breakdown_pct = (p.zd - close[idx]) / p.zd

@@ -679,7 +679,7 @@ class PortfolioConstructor:
             fn = getattr(sig, 'factor_name', '')
             if '_V' in (fn or ''):
                 confidence += 0.10  # V因子兜底,小幅加成
-            c['confidence'] = np.clip(confidence, 0.7, 1.3)
+            c['confidence'] = np.clip(confidence, 0.75, 1.3)
 
         # 信心不足的股票淘汰（熊市提高门槛）
         eff_min_conf = self.min_confidence
@@ -1007,7 +1007,8 @@ class PortfolioConstructor:
                         capped_weights[i] *= scale
 
         total_capped = sum(capped_weights) + 1e-10
-        weights = [w / total_capped * target_exposure for w in capped_weights]
+        # Fix: target_exposure already applied at line 969, don't double-count
+        weights = [w / total_capped for w in capped_weights]
 
         # === 最小交易单位检查: 确保每只至少1手 + 过滤买不起的 ===
         desired_value = {}
