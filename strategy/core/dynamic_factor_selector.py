@@ -184,23 +184,23 @@ def _compute_date_chunk(args):
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
 
                 # IC质量过滤
-                if ic_stability < 0.48:
+                if ic_stability < 0.40:
                     continue
                 ic_variance = ic_std / (abs(ic_mean) + 1e-10) if abs(ic_mean) > 1e-10 else 999
-                if ic_variance > 5.0:   # 收紧: IC噪音>5x信号 → 拒绝 (原10.0太松)
+                if ic_variance > 8.0:   # 收紧: IC噪音>8x信号 → 拒绝
                     continue
                 combined_ir = ir * (0.5 + 0.5 * ic_stability)
-                if abs(t_statistic) < 0.4:
+                if abs(t_statistic) < 0.3:
                     continue
                 if ic_mean <= 0:
                     continue
-                if combined_ir < 0.02:
+                if combined_ir < 0.005:
                     continue
                 p_value = stats.norm.sf(ic_mean / (ic_std / np.sqrt(n_dates)))
-                if p_value > 0.35:
+                if p_value > 0.45:
                     continue
                 n_positive = sum(1 for ic in ic_list if ic > 0)
-                if n_positive / n_dates < 0.45:
+                if n_positive / n_dates < 0.40:
                     continue
                 if n_dates >= 10:
                     split_idx = int(n_dates * 0.8)
@@ -261,7 +261,7 @@ def _compute_date_chunk(args):
                     continue
 
                 # 质量底线: IC太弱或选出的因子太少 → 回退到固定因子
-                if avg_quality < 0.03 or n_selected < 2:
+                if avg_quality < 0.015 or n_selected < 2:
                     continue
 
                 total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10
@@ -307,7 +307,10 @@ class DynamicFactorSelector:
     def set_factor_cache(self, factor_cache: dict, all_dates: list):
         """设置预计算的因子选择缓存（用于多进程共享）"""
         self._factor_cache = factor_cache
-        self._all_dates_cache = all_dates
+        self._all_dates_cache = [pd.to_datetime(d) if not isinstance(d, pd.Timestamp) else d for d in all_dates]
+        self._lookup_fail_count = 0
+        self._lookup_fail_samples = []
+        self._lookup_success_count = 0
 
     def _load_config(self):
         config_loader = load_config()
@@ -332,7 +335,7 @@ class DynamicFactorSelector:
             self.factor_df = factor_df
             self._factor_cache.clear()
             if factor_df is not None and len(factor_df) > 0:
-                self._all_dates_cache = sorted(factor_df['date'].unique().tolist())
+                self._all_dates_cache = [pd.to_datetime(d) for d in sorted(factor_df['date'].unique().tolist())]
             else:
                 self._all_dates_cache = []
 
@@ -427,10 +430,34 @@ class DynamicFactorSelector:
         if val_date_ts in self._factor_cache:
             return self._factor_cache[val_date_ts]
 
+        # Debug: track lookup failures
+        if not hasattr(self, '_lookup_fail_count'):
+            self._lookup_fail_count = 0
+            self._lookup_fail_samples = []
+            self._lookup_success_count = 0
+
         for i in range(len(all_dates) - 1, -1, -1):
             if all_dates[i] < val_date_ts:
                 nearest_date = all_dates[i]
                 if nearest_date in self._factor_cache:
+                    self._lookup_success_count += 1
                     return self._factor_cache[nearest_date]
+
+        # Both exact match and fallback failed
+        self._lookup_fail_count += 1
+        if len(self._lookup_fail_samples) < 5:
+            cache_sample_keys = list(self._factor_cache.keys())[:3] if self._factor_cache else []
+            all_dates_sample = all_dates[:3] if len(all_dates) > 0 else []
+            self._lookup_fail_samples.append(
+                f"date={val_date} ts={val_date_ts} type={type(val_date_ts).__name__} "
+                f"cache_size={len(self._factor_cache)} all_dates_size={len(all_dates)} "
+                f"cache_key_types={[type(k).__name__ for k in cache_sample_keys]} "
+                f"all_dates_types={[type(d).__name__ for d in all_dates_sample]}"
+            )
+        # Print summary every 10000 failures
+        if self._lookup_fail_count % 10000 == 1 and self._lookup_fail_count > 1:
+            print(f"\n[DYN_DEBUG] lookup_fail_count={self._lookup_fail_count} lookup_success={self._lookup_success_count}", flush=True)
+            for s in self._lookup_fail_samples:
+                print(f"  [DYN_DEBUG] {s}", flush=True)
 
         return {}

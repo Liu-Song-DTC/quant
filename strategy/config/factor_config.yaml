@@ -1,10 +1,10 @@
 factor_mode: dynamic
 dynamic_factor:
-  train_window_days: 180
-  forward_period: 20
+  train_window_days: 60
+  forward_period: 10
   top_n_factors: 4
-  min_train_samples: 50
-  min_ic_dates: 10
+  min_train_samples: 40
+  min_ic_dates: 5
   ic_decay_factor: 0.9
   min_quality_threshold: 0.04   # DYN质量阈值，低于此值fallback到静态因子
   fallback_to_static: true
@@ -625,13 +625,28 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.25
-  sell_threshold: -0.25
-  buy_threshold_pct: 0.35
+  buy_threshold: 0.30
+  sell_threshold: -0.28
+  buy_threshold_pct: 0.40
   resonance:
     sys1_buy_threshold_mult: 0.7    # 系统1放宽30%查共振
     sys2_cf_score_threshold: 0.5    # 系统2资金流向最低强度
     sys3_ns_score_threshold: 0.3    # 系统3资讯情绪最低强度
+  # 因子质量门控: 禁止低质量因子生成买入信号
+  factor_quality_gate:
+    enabled: true
+    banned_suffixes: ['_T']          # 纯技术/兜底因子禁止买入
+    restricted_suffixes:             # 受限因子需更高阈值(乘数)
+      '_FBA': 1.25
+      '_FV': 1.25
+      '_F': 1.20                     # 无增强标签的因子
+    premium_suffixes:                # 优质因子(乘数1.0=基准)
+      '_FLA': 1.0
+      '_FGR': 1.0
+      '_FGRV': 1.0
+      '_FLAV': 1.0
+      '_FSM': 1.0
+      '_FD': 1.0
   # 卖出趋势保护（避免趋势中途虚假卖出）
   # trend_initiation增强参数
   ti_boost_scale: 2.0               # tanh缩放系数
@@ -642,10 +657,10 @@ signal:
   # 信号置信度基线
   signal_confidence_baseline: 0.2
   # 卖出趋势保护（避免趋势中途虚假卖出）
-  trend_sell_threshold_strong: -0.15   # MA20>MA60多头排列时的卖出阈值
-  trend_sell_threshold_weak: -0.10     # 仅price>MA20时的卖出阈值
+  trend_sell_threshold_strong: -0.18   # MA20>MA60多头排列时的卖出阈值
+  trend_sell_threshold_weak: -0.13     # 仅price>MA20时的卖出阈值
   trend_sell_ti_threshold: 0.05        # ti超过此值进一步放宽卖出阈值
-  trend_sell_ti_relax: -0.20           # ti强劲时的卖出阈值
+  trend_sell_ti_relax: -0.25           # ti强劲时的卖出阈值
 regime_multiplier:
   bull: 1.0
   neutral: 0.95
@@ -663,7 +678,7 @@ portfolio:
   selection:
     min_rank_pct: 0.6
     min_absolute_score: 0.1
-    min_confidence: 0.7
+    min_confidence: 0.75
     chan_gate_enabled: true
     chan_gate_min_count: 2
     chan_fallback_score: 0.4
@@ -679,7 +694,7 @@ portfolio:
   turnover_bonus: 0.02
   # === 组合调参区 (从硬编码迁移到YAML) ===
   params:
-    max_positions: 8
+    max_positions: 6
     risk_parity_min_weight_ratio: 0.5     # min_weight = ratio / n
     rank_decay: 0.3                       # 排名权重衰减 1.0→0.7
     # 市场仓位地板/天花板
@@ -906,3 +921,6 @@ backtest:
   stamp_tax: 0.00050   # 卖出印花税0.05%
   rebalance_days: 25
   num_workers: 4
+  # 回测日期范围 (注释掉=全量, 设置后只加载范围内数据，加速开发调试)
+  fromdate: '2024-01-01'
+  todate: '2026-05-30'
