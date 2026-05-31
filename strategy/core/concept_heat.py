@@ -148,24 +148,15 @@ def get_calculator() -> ConceptHeatCalculator:
     return _calculator
 
 
-def compute_concept_heat(volume_surge, turnover_burst, limit_up_freq,
-                         excess_return_5d=None, stock_codes=None, daily_concept_returns=None):
-    """numpy兼容接口 — 本地合成版(fallback)"""
-    n = len(volume_surge)
-    result = np.full(n, 0.5)
+def compute_concept_heat_for_date(date, codes: List[str]):
+    """为指定日期批量计算股票的题材热度（回测用）
 
-    try:
-        calc = get_calculator()
-        if daily_concept_returns:
-            calc.update_concept_scores(daily_concept_returns)
-        if stock_codes:
-            return calc.get_all_concept_heat(stock_codes)
-    except Exception:
-        pass
+    Args:
+        date: 日期 (str or Timestamp)
+        codes: 股票代码列表
 
-    yaogu = (np.tanh(np.maximum(volume_surge, 0) * 1.5) +
-             np.tanh(np.maximum(turnover_burst, 0) * 1.5) +
-             np.tanh(np.maximum(limit_up_freq, 0) * 1.5)) / 3.0
-    result = 0.4 * yaogu + 0.3 * 0.5 + 0.3 * np.clip(
-        np.tanh(excess_return_5d * 3.0) if excess_return_5d is not None else 0.5, 0, 1)
-    return np.clip(result, 0.0, 1.0)
+    Returns:
+        np.ndarray of heat scores 0~1
+    """
+    calc = get_calculator()
+    return calc.get_all_concept_heat(codes, date=date)

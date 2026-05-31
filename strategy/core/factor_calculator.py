@@ -247,18 +247,9 @@ def calculate_indicators(
     result['limit_up_freq'] = np.tanh(limit_up_sum_20 * 0.5)
 
     # === 题材热度因子 (concept_heat) ===
-    # 本地合成: 妖股信号 + 超额收益 → 捕捉题材驱动行情
-    from .concept_heat import compute_concept_heat
-    # 5日超额收益（简化：自收益作为proxy，调用方可通过industry_momentum补全）
-    excess_5d = np.zeros(n)
-    excess_5d[5:] = (close_arr[5:] - close_arr[:-5]) / (close_arr[:-5] + 1e-10)
-    concept_h = compute_concept_heat(
-        result['volume_surge'] if 'volume_surge' in result else np.zeros(n),
-        result['turnover_burst'] if 'turnover_burst' in result else np.zeros(n),
-        result['limit_up_freq'],
-        excess_5d if len(excess_5d) == n else None,
-    )
-    result['concept_heat'] = concept_h
+    # 由 concept_heat.py 的 ConceptHeatCalculator 基于真实概念数据计算
+    # calculate_indicators() 不再本地合成 — 避免与 volume_surge/turnover_burst 信息重叠
+    result['concept_heat'] = np.full(n, 0.5)  # 默认中等, 由调用方覆盖
 
     for period in params.get('volatility_periods', [5, 10, 20]):
         result[f'volatility_{period}'] = _rolling_std(returns, period)
