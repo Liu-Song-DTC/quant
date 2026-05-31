@@ -482,6 +482,12 @@ class SignalEngine:
             if tech_score > 0.4 and not np.isnan(score):
                 effective_score = max(score, tech_score * 0.6)  # 技术score打6折，避免完全覆盖因子
 
+            # 题材热度增强: concept_heat>0.6的股票获得score加成
+            _ch = float(_safe_get_arr(indicators, 'concept_heat', n, 0.5)[i])
+            if _ch > 0.6 and not np.isnan(score):
+                concept_boost = (_ch - 0.5) * 0.15  # max +0.075 at concept_heat=1.0
+                effective_score = max(effective_score, score + concept_boost)
+
             trend_breakout = (vol_spike and price_above_ma20
                             and tech_score > 0.4
                             and not np.isnan(effective_score) and effective_score > buy_th * 0.7)

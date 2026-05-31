@@ -32,6 +32,8 @@ dynamic_factor:
   - volume_surge
   - turnover_burst
   - limit_up_freq
+  # 题材热度因子 (本地合成)
+  - concept_heat
 backtest_factors:
 - fund_score
 - volatility

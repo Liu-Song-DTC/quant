@@ -183,6 +183,10 @@ def _compute_stock_factors_worker(args):
         row = {'code': code, 'date': sample_date, 'industry': stock_industry}
         row.update(combo_factors)
 
+        # 题材热度因子 - 从ind直接提取
+        if 'concept_heat' in ind and idx < len(ind['concept_heat']):
+            row['concept_heat'] = float(ind['concept_heat'][idx])
+
         # 基本面因子 - 使用统一压缩函数（与signal_engine一致）
         if fund_data:
             raw_roe = fund_data.get('roe')
