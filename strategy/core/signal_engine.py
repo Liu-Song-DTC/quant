@@ -337,6 +337,16 @@ class SignalEngine:
             return
 
         indicators = self._calculate_indicators(market_data)
+        # 注入真实题材热度 (实盘从concept_daily.csv, 回测从concept_hist)
+        try:
+            from .concept_heat import get_calculator
+            calc = get_calculator()
+            n = len(indicators.get('close', []))
+            last_date = dates[-1]
+            calc.set_daily_data(last_date)
+            indicators['concept_heat'] = np.full(n, calc.get_concept_heat(code))
+        except Exception:
+            pass
         self._preload_stock_fundamentals(code, dates)
 
         n = len(close)
