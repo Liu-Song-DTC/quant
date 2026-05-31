@@ -1054,7 +1054,7 @@ def detect_buy_sell_points(
                     if buy_point[idx] != 0:
                         continue
                     if close[idx] > last_p.zg and pivot_position[idx] == 1:
-                        buy_point[idx] = 1
+                        buy_point[idx] = 3  # 突破中枢上沿→B3,非B1
                         breakout_pct = (close[idx] - last_p.zg) / last_p.zg
                         buy_confidence[idx] = float(np.clip(0.30 + breakout_pct * 8, 0.25, 0.65))
 

@@ -112,22 +112,23 @@ def compute_chain_signals(
     signals: Dict[str, float] = {}
 
     for chain_name, chain in INDUSTRY_CHAINS.items():
+        seg_names = list(chain.keys())  # ["算力基础设施","芯片与通信",...]
+        if len(seg_names) < 2:
+            continue
+
         # 计算每个环节的平均涨跌幅
         segment_returns = {}
         segment_concepts = {}
-        for seg_name, seg_concepts in chain.items():
-            seg_rets = [concept_returns.get(c, 0) for c in seg_concepts]
+        for seg_name, seg_concepts_list in chain.items():
+            seg_rets = [concept_returns.get(c, 0) for c in seg_concepts_list]
             segment_returns[seg_name] = np.mean(seg_rets) if seg_rets else 0
-            segment_concepts[seg_name] = seg_concepts
+            segment_concepts[seg_name] = seg_concepts_list
 
-        # 按涨跌幅排序环节: 上游→中游→下游 → 上游→下游
-        order = ["upstream", "midstream", "downstream"]
-
-        # 如果上游涨了但下游没涨 → 埋伏下游
-        for i in range(len(order)):
-            for j in range(i + 1, len(order)):
-                early_seg = order[i]
-                late_seg = order[j]
+        # 正向传导: 上游环节涨了但下游没涨 → 埋伏下游
+        for i in range(len(seg_names)):
+            for j in range(i + 1, len(seg_names)):
+                early_seg = seg_names[i]
+                late_seg = seg_names[j]
                 spread = segment_returns[early_seg] - segment_returns[late_seg]
 
                 # 上游比下游领先3%以上 → 下游有补涨空间
@@ -138,11 +139,11 @@ def compute_chain_signals(
                         current = signals.get(c, 0)
                         signals[c] = max(current, bonus)
 
-        # 另一方向: 如下游暴涨但上游没动 → 上游有补库需求
-        for i in range(len(order) - 1, -1, -1):
+        # 逆向传导: 下游暴涨但上游没动 → 上游补库
+        for i in range(len(seg_names) - 1, -1, -1):
             for j in range(i):
-                late_seg = order[i]
-                early_seg = order[j]
+                late_seg = seg_names[i]
+                early_seg = seg_names[j]
                 spread = segment_returns[late_seg] - segment_returns[early_seg]
                 if spread > 0.05:
                     bonus = min(spread * 3, 0.25)

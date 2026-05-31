@@ -555,7 +555,9 @@ class PortfolioConstructor:
             for c in candidates:
                 ind = c.get('industry', '')
                 tilt = self._sector_rotation.get_composite_tilt(ind)
-                c['rank_pct'] = float(np.clip(c['rank_pct'] * tilt, 0.0, 1.0))
+                # 加法偏移而非乘法: 保留百分位语义, tilt>1给加分, tilt<1不减分
+                tilt_bonus = max(0, (tilt - 1.0) * 0.15)
+                c['rank_pct'] = float(np.clip(c['rank_pct'] + tilt_bonus, 0.0, 1.0))
 
         # === 市场仓位调整（v8 趋势主导）===
         # 平滑插值: trend_score ∈ [-0.5, 0.5] 线性映射到 [0.3, 1.0]

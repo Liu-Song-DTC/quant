@@ -337,14 +337,20 @@ class SignalEngine:
             return
 
         indicators = self._calculate_indicators(market_data)
-        # 注入真实题材热度 (实盘从concept_daily.csv, 回测从concept_hist)
+        # 注入真实题材热度 (逐bar计算，避免前视偏差)
         try:
             from .concept_heat import get_calculator
             calc = get_calculator()
             n = len(indicators.get('close', []))
-            last_date = dates[-1]
-            calc.set_daily_data(last_date)
-            indicators['concept_heat'] = np.full(n, calc.get_concept_heat(code))
+            heat_arr = np.full(n, 0.5)
+            last_date = None
+            for i in range(60, n):  # 从第60根bar开始(最小技术指标窗口)
+                bar_date = dates[i]
+                if bar_date != last_date:
+                    calc.set_daily_data(bar_date)
+                    last_date = bar_date
+                heat_arr[i] = calc.get_concept_heat(code)
+            indicators['concept_heat'] = heat_arr
         except Exception:
             pass
         self._preload_stock_fundamentals(code, dates)
@@ -492,11 +498,12 @@ class SignalEngine:
             if tech_score > 0.4 and not np.isnan(score):
                 effective_score = max(score, tech_score * 0.6)  # 技术score打6折，避免完全覆盖因子
 
-            # 题材热度增强: concept_heat>0.6的股票获得score加成
+            # 题材热度增强: concept_heat>0.6 → score加成(同时影响买入门槛和截面排名)
             _ch = float(_safe_get_arr(indicators, 'concept_heat', n, 0.5)[i])
             if _ch > 0.6 and not np.isnan(score):
                 concept_boost = (_ch - 0.5) * 0.15  # max +0.075 at concept_heat=1.0
-                effective_score = max(effective_score, score + concept_boost)
+                score += concept_boost
+                effective_score = max(score, tech_score * 0.6) if tech_score > 0.4 else score
 
             trend_breakout = (vol_spike and price_above_ma20
                             and tech_score > 0.4
