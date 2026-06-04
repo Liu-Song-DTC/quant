@@ -100,6 +100,8 @@ def _compute_date_chunk(args):
 
     train_window_days = config['train_window_days']
     forward_period = config['forward_period']
+    assert forward_period > 0, f"forward_period 必须>0，当前={forward_period}"
+
     top_n = config['top_n_factors']
     min_train_samples = config['min_train_samples']
     min_ic_dates = config.get('min_ic_dates', 5)
@@ -121,6 +123,8 @@ def _compute_date_chunk(args):
     for val_date in tqdm(valid_dates, desc=f"IC计算({len(date_chunk)}天)", leave=False):
         val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
 
+        # Walk-Forward 隔离：train_end = val_date - forward_period
+        # 确保训练集不包含验证期的 future_ret 数据，防止前视偏差
         train_start_date = val_date_ts - pd.Timedelta(days=train_window_days)
         train_end_date = val_date_ts - pd.Timedelta(days=forward_period)
 

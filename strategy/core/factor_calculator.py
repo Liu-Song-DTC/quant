@@ -679,37 +679,128 @@ def calculate_indicators(
 
     # ==================== 新因子：跳空+量能+笔阶段+力竭风险+顶分型量能 ====================
 
-    # --- 1. gap_breakout_confirm: 跳空缺口B3确认因子 ---
-    # 原理: 向上跳空+放量=中枢突破强确认(B3加分)；跳空+缩量=假突破(扣分)
-    # Fix#6: 直接使用volume_ratio_raw, 不再用tan逆解压(数值不稳定)
+    # --- 1. gap_breakout_confirm: 跳空缺口B3确认因子 (向量化) ---
     gap_breakout = np.zeros(n)
-    if open_arr is not None and n > 0:
+    if open_arr is not None and n > 1:
         raw_vr_arr = result.get('volume_ratio_raw', np.ones(n))
-        for i in range(1, n):
-            gap = (open_arr[i] - close_arr[i-1]) / (close_arr[i-1] + 1e-10)
-            raw_vr = raw_vr_arr[i]
-            if gap > 0.02:
-                if raw_vr > 2.0:
-                    gap_breakout[i] = 0.9  # 高开+爆量=强突破
-                elif raw_vr > 1.3:
-                    gap_breakout[i] = 0.5  # 高开+温和放量=中等突破
-                elif raw_vr < 0.7:
-                    gap_breakout[i] = -0.5  # 高开+缩量=假突破
-                else:
-                    gap_breakout[i] = 0.2
-            elif gap < -0.02:
-                if raw_vr > 2.0:
-                    gap_breakout[i] = -0.9  # 低开+放量=恐慌抛售
-                elif raw_vr < 0.5:
-                    gap_breakout[i] = 0.1  # 低开+缩量=洗盘嫌疑
-                else:
-                    gap_breakout[i] = -0.4
-            # 与前一日连续跳空: 强化信号
-            if i >= 2 and abs(gap) > 0.01:
-                prev_gap = (open_arr[i-1] - close_arr[i-2]) / (close_arr[i-2] + 1e-10)
-                if gap * prev_gap > 0:  # 同向跳空
-                    gap_breakout[i] *= 1.3
+        gap = np.zeros(n)
+        gap[1:] = (open_arr[1:] - close_arr[:-1]) / (close_arr[:-1] + 1e-10)
+
+        gap_up = gap > 0.02
+        gap_down = gap < -0.02
+        # 高开+爆量(强突破)
+        mask = gap_up & (raw_vr_arr > 2.0)
+        gap_breakout[mask] = 0.9
+        # 高开+温和放量
+        mask = gap_up & (raw_vr_arr > 1.3) & (raw_vr_arr <= 2.0)
+        gap_breakout[mask] = 0.5
+        # 高开+缩量(假突破)
+        mask = gap_up & (raw_vr_arr < 0.7) & ~(gap_breakout > 0)
+        gap_breakout[mask] = -0.5
+        # 高开+正常量
+        mask = gap_up & (gap_breakout == 0)
+        gap_breakout[mask] = 0.2
+        # 低开+放量(恐慌)
+        mask = gap_down & (raw_vr_arr > 2.0)
+        gap_breakout[mask] = -0.9
+        # 低开+缩量(洗盘嫌疑)
+        mask = gap_down & (raw_vr_arr < 0.5)
+        gap_breakout[mask] = 0.1
+        # 低开+正常量
+        mask = gap_down & (gap_breakout == 0)
+        gap_breakout[mask] = -0.4
+        # 连续同向跳空强化
+        if n >= 3:
+            prev_gap = np.zeros(n)
+            prev_gap[2:] = (open_arr[1:-1] - close_arr[:-2]) / (close_arr[:-2] + 1e-10)
+            same_dir = (gap * prev_gap > 0) & (np.abs(gap) > 0.01)
+            gap_breakout[same_dir] *= 1.3
     result['gap_breakout_confirm'] = np.clip(gap_breakout, -1, 1)
+
+    # --- 1.5. vol_opening_confirm: "放量+次日开盘确认"多K线形态 ---
+    # 五维评估（不只两根K线）:
+    #   前文: Day T前5日趋势(下跌→反转加分/上涨→加速加分/横盘→突破加分)
+    #   量能: Day T量比>1.5(基础), >2.0(强), >3.0(极强)
+    #   实体: Day T阳线实体大小(>3%=强阳, <1%=小阳)
+    #   确认: Day T+1开盘>前收 AND T+1收盘位置(继续收阳更可靠)
+    #   位置: 20日高低位(底部放量=真反转, 高位放量=出货嫌疑)
+    vol_open_confirm = np.zeros(n)
+    vol_open_strength = np.zeros(n)
+    if open_arr is not None and n > 1:
+        raw_vr = result.get('volume_ratio_raw', np.ones(n))
+        # 预计算上下文指标
+        pp20 = result.get('price_position_20', np.full(n, 0.5))
+        ret_5d = np.zeros(n)
+        ret_5d[5:] = (close_arr[5:] - close_arr[:-5]) / (close_arr[:-5] + 1e-10)
+        # 前5日振幅(判断横盘)
+        amp_5d = np.zeros(n)
+        if high is not None and low is not None and n >= 5:
+            for i in range(5, n):
+                h5 = np.max(high[i-5:i+1])
+                l5 = np.min(low[i-5:i+1])
+                amp_5d[i] = (h5 - l5) / (close_arr[i] + 1e-10)
+
+        for i in range(1, n):
+            if raw_vr[i-1] < 1.5:
+                continue
+            if open_arr[i] <= close_arr[i-1]:
+                continue
+
+            vol_open_confirm[i] = 1.0
+            is_bullish_prev = close_arr[i-1] > open_arr[i-1]
+            body_pct = (close_arr[i-1] - open_arr[i-1]) / (open_arr[i-1] + 1e-10)
+            strength = 0.0
+
+            # ── 1. 前文趋势 (±0.15) ──
+            if i >= 6:
+                if ret_5d[i-1] < -0.04:
+                    strength += 0.15  # 下跌后放量=反转信号(最强)
+                elif ret_5d[i-1] > 0.04:
+                    strength += 0.05  # 上涨后放量=加速但位置偏高需谨慎
+                else:
+                    strength += 0.10  # 横盘后放量=突破蓄力
+
+            # ── 2. 前文振幅 — 横盘突破 (±0.08) ──
+            if i >= 5 and amp_5d[i-1] < 0.05:
+                strength += 0.08  # 窄幅横盘后放量→蓄力突破
+            elif i >= 5 and amp_5d[i-1] > 0.15:
+                strength -= 0.05  # 宽幅震荡后放量→方向不确定
+
+            # ── 3. 20日位置 — 底部vs高位 (±0.12) ──
+            pos = pp20[i-1] if i >= 20 else 0.5
+            if pos < 0.25:
+                strength += 0.12  # 底部放量=主力建仓
+            elif pos > 0.80:
+                strength -= 0.10  # 高位放量=出货嫌疑
+
+            # ── 4. 量能级别 (基础0.35~0.65) ──
+            if raw_vr[i-1] > 3.0:
+                strength += 0.30
+            elif raw_vr[i-1] > 2.0:
+                strength += 0.20
+            else:
+                strength += 0.12
+
+            # ── 5. Day T阳线实体 (+0.05~0.15) ──
+            if is_bullish_prev:
+                strength += 0.05 + min(0.10, max(0, body_pct) * 2)
+            else:
+                strength -= 0.10  # 放量收阴=分歧大
+
+            # ── 6. Day T+1收盘位置确认 (±0.10) ──
+            # T+1继续收阳(收盘>开盘)=更强确认；T+1收阴=开盘确认但盘中回落
+            if close_arr[i] > open_arr[i]:
+                strength += 0.08
+                # T+1收盘>T收盘=资金继续流入
+                if close_arr[i] > close_arr[i-1]:
+                    strength += 0.05
+            else:
+                strength -= 0.06  # 高开低走=诱多嫌疑
+
+            vol_open_strength[i] = float(np.clip(strength, 0.15, 1.0))
+
+    result['vol_opening_confirm'] = vol_open_confirm
+    result['vol_opening_strength'] = vol_open_strength
 
     # --- 2. stroke_phase: 笔阶段识别因子 ---
     # 原理: 价格位置+量能趋势+振幅+趋势方向=判断笔处于形成/加速/力竭阶段
@@ -1690,6 +1781,10 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['exhaustion_risk'] = ind['exhaustion_risk'][idx] if not np.isnan(ind['exhaustion_risk'][idx]) else 0.0
     if 'top_fractal_volume' in ind:
         result['top_fractal_volume'] = ind['top_fractal_volume'][idx] if not np.isnan(ind['top_fractal_volume'][idx]) else 0.0
+    if 'vol_opening_confirm' in ind:
+        result['vol_opening_confirm'] = ind['vol_opening_confirm'][idx] if not np.isnan(ind['vol_opening_confirm'][idx]) else 0.0
+    if 'vol_opening_strength' in ind:
+        result['vol_opening_strength'] = ind['vol_opening_strength'][idx] if not np.isnan(ind['vol_opening_strength'][idx]) else 0.0
 
     # === 均线系统因子 ===
     if 'ma_alignment' in ind:

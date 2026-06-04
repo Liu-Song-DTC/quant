@@ -570,10 +570,11 @@ class MultiTimeframeAnalyzer:
         low_align = align <= -0.3
         mid_align = ~(high_align | low_align)
 
-        base[high_align] = self.discount_partial + (self.discount_full - self.discount_partial) * (align[high_align] - 0.3) / 0.7
+        # 三段线性，align=±0.3处连续: low→mid→high
         base[low_align] = self.discount_counter_trend + (self.discount_partial - self.discount_counter_trend) * (align[low_align] + 1.0) / 0.7
-        # mid段从partial开始(对齐分数-0.3处与low段连续), 到partial+0.06(对齐分数+0.3处与high段连续)
         base[mid_align] = self.discount_partial + 0.06 * (align[mid_align] + 0.3) / 0.6
+        # high段从mid终点(partial+0.06)开始到full，消除0.06跳跃
+        base[high_align] = (self.discount_partial + 0.06) + (self.discount_full - self.discount_partial - 0.06) * (align[high_align] - 0.3) / 0.7
         base = np.clip(base, self.discount_counter_trend, self.discount_full)
 
         # 趋势强度调整: 高级别趋势弱 → 额外折扣

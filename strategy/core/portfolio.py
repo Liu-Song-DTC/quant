@@ -14,6 +14,7 @@ from collections import deque
 from copy import deepcopy
 from datetime import date as date_type
 from .config_loader import load_config
+from scipy.special import erfinv, erf
 import yaml
 import os
 
@@ -35,6 +36,23 @@ def _load_industry_ic_weights():
                 }
             return result
     return {}
+
+
+def _rank_to_normal(rank_pct, clip=0.001):
+    """Quantile→Normal变换：将[0,1]线性排名映射到N(0,1)，拉大尾部差距。
+
+    线性排名: 第1名-第2名 ≈ 第50名-第51名（差距均为 1/N）
+    正态变换后: 第1名远高于第2名（尾部被拉伸），中段差距不变
+
+    变换是可逆的: _normal_to_rank(erfinv(2p-1)) = p
+    """
+    clipped = np.clip(rank_pct, clip, 1.0 - clip)
+    return np.sqrt(2.0) * erfinv(2.0 * clipped - 1.0)
+
+
+def _normal_to_rank(normal_score):
+    """逆变换：N(0,1) → [0,1] rank"""
+    return (erf(normal_score / np.sqrt(2.0)) + 1.0) / 2.0
 
 
 class PortfolioConstructor:
@@ -153,7 +171,7 @@ class PortfolioConstructor:
         self.chan_bonus_buy_point = pp.get('chan_bonus_buy_point', 0.02)
         self.chan_bonus_trend2 = pp.get('chan_bonus_trend2', 0.01)
         self.mom_60d_fomo_threshold = pp.get('mom_60d_fomo_threshold', 0.30)
-        self.mom_60d_fomo_mult = pp.get('mom_60d_fomo_mult', 0.30)
+        self.mom_60d_fomo_mult = pp.get('mom_60d_fomo_mult', 0.50)  # 底线从0.30→0.50
         self.mom_60d_warn_threshold = pp.get('mom_60d_warn_threshold', 0.20)
         self.mom_60d_warn_mult = pp.get('mom_60d_warn_mult', 0.65)
         self.dist_ma60_extended_threshold = pp.get('dist_ma60_extended_threshold', 0.30)
@@ -482,8 +500,11 @@ class PortfolioConstructor:
                     if code not in current_positions:
                         continue
 
-            # 硬门控: 新入场必须有Chan结构确认 (买点/背离/底分型)
-            # 纯因子驱动不参与选股，已持仓的不受影响
+            # 软门控: 无Chan结构的新入场 → 不拒绝，但有效得分处罚
+            # Gate 1已在信号层打低分，此处叠加惩罚确保排名靠后
+            # 注意: 新入场的硬拒绝由下方 chan_passed 门控(第786行)保证
+            # 此处的 no_chan_penalty 对已持仓的结构消退也生效
+            no_chan_penalty = 0.0
             if code not in current_positions:
                 div_type = getattr(sig, 'chan_divergence_type', '')
                 div_strength = getattr(sig, 'chan_divergence_strength', 0.0)
@@ -493,16 +514,14 @@ class PortfolioConstructor:
                     (div_type in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2') and div_strength > 0.2)
                 )
                 if not has_chan:
-                    continue
-                # 均值回归时机过滤: 有缠论买点但严重追高也不入场
-                # Chan确认结构，均值回归确认时机
-                # 阈值与上游短期趋势过滤#11/#12对齐: >0.50 / >0.45
+                    no_chan_penalty = -0.12  # 无结构降权，但不拒绝（Gate 1已打低分）
+                # 均值回归时机过滤: 严重追高也不入场
                 mom_60d = self._nan_safe(getattr(sig, 'mom_60d', 0.0))
                 dist_ma60 = self._nan_safe(getattr(sig, 'dist_ma60', 0.0))
                 if mom_60d > 0.50:
-                    continue
+                    no_chan_penalty = -0.15  # 严重追高加重扣分，但仍保留候选资格
                 if dist_ma60 > 0.45:
-                    continue
+                    no_chan_penalty = min(no_chan_penalty, -0.15)
 
             candidates.append({
                 'code': code,
@@ -518,17 +537,20 @@ class PortfolioConstructor:
                 'chan_sell_point': chan_sell,
                 'chan_buy_strength': buy_strength if sl > 0 else 0.0,
                 'trend_type': stock_trend,
+                'no_chan_penalty': no_chan_penalty,
             })
 
         if not candidates:
             print(f" [选股] 无候选股票通过初筛 (universe={len(universe)}, 门控/价格/趋势过滤全部淘汰)")
             return {}
 
-        # === 截面排名（全市场 + 行业内混合） ===
+        # === 截面排名（全市场 + 行业内混合，正态空间） ===
+        # Quantile→Normal变换: 拉大尾部差距，极端值 vs 普通值的区分更显著
         factor_values = np.array([c['factor_value'] for c in candidates])
-        cross_rank = pd.Series(factor_values).rank(pct=True)
+        rank_pct = pd.Series(factor_values).rank(pct=True)
+        cross_normal = _rank_to_normal(rank_pct.values)  # → N(0,1)
 
-        # 行业内排名：同行业股票内部比较，选出"行业最佳"
+        # 行业内排名：同行业股票内部比较
         industry_groups: dict = {}
         for i, c in enumerate(candidates):
             ind = c.get('industry', 'default') or 'default'
@@ -536,16 +558,18 @@ class PortfolioConstructor:
                 industry_groups[ind] = []
             industry_groups[ind].append((i, c['factor_value']))
 
-        within_industry_rank = np.full(len(candidates), 0.5)
+        within_normal = np.zeros(len(candidates))  # N(0,1)空间，默认0=中位数
         for ind, members in industry_groups.items():
             if len(members) >= 3:
                 indices, vals = zip(*members)
                 ind_rank = pd.Series(np.array(vals)).rank(pct=True)
+                ind_normal = _rank_to_normal(ind_rank.values)
                 for j, idx in enumerate(indices):
-                    within_industry_rank[idx] = ind_rank.iloc[j]
+                    within_normal[idx] = ind_normal[j]
 
-        # 混合排名: 70%全市场 + 30%行业内
-        blended_rank = 0.7 * cross_rank.values + 0.3 * within_industry_rank
+        # 在正态空间混合: 70%全市场 + 30%行业内，再映射回[0,1]
+        blended_normal = 0.7 * cross_normal + 0.3 * within_normal
+        blended_rank = _normal_to_rank(blended_normal)
 
         for i, c in enumerate(candidates):
             c['rank_pct'] = float(blended_rank[i])
@@ -780,18 +804,21 @@ class PortfolioConstructor:
         if new_rejects:
             qualified = [c for c in qualified if c not in new_rejects]
 
-        # === Chan买点门控: 结构确认是入场前提 ===
+        # === 门控结构确认: 新入场需至少满足结构/品质二选一 ===
         # 已持仓的结构消退 → 豁免门控，给入场理由消失确认期恢复机会
-        # 能否留任取决于 effective_score 排名，不靠门控保送
+        # 路径A: 显式Chan结构 (sl>=1 or bp>0) — 传统缠论确认
+        # 路径B: 门控综合品质 (gate_quality>=0.85) — Gate评分达标
+        #    gate_quality归一化后中性≈0.94, <0.85表示多门控显著偏空
         chan_passed = []
         for c in qualified:
             bp = c.get('chan_buy_point', 0)
             sl = c.get('signal_level', 0)
-            if sl < 1 and bp <= 0:
+            sig = c.get('sig')
+            gate_q = getattr(sig, '_gate_quality', 0.5) if sig else 0.5
+            if sl < 1 and bp <= 0 and gate_q < 1.0:
                 if c['code'] not in current_codes:
                     continue
             # 均线趋势检查: EMA20 > EMA60 是缠论买点的方向前提
-            sig = c.get('sig')
             ma_up = getattr(sig, 'ma_trend_up', False) if sig else False
             tt = getattr(sig, 'trend_type', 0) if sig else 0
             if bp == 3 and not ma_up:
@@ -800,7 +827,8 @@ class PortfolioConstructor:
                 continue  # B2在下跌趋势中不可靠
             chan_passed.append(c)
         if len(chan_passed) == 0:
-            print(f" [选股] Chan门控全部淘汰: {len(qualified)}只候选均无结构确认 (没有买点/背离/底分型), 无法入场")
+            print(f" [选股] 门控全部淘汰: {len(qualified)}只候选均无结构确认"
+                  f" (sl<1且bp<=0且gate_quality<1.0), 无法入场")
             return {}
 
         # === 板块共振: 计算行业集中度, 用于后续排序惩罚 ===
@@ -814,39 +842,17 @@ class PortfolioConstructor:
         # 换手控制：现有持仓给予换手惩罚加分，需超过交易成本才能被替换
         hold_threshold = 0.3  # 已持仓股票，rank_pct>0.3即可保留 (更宽松)
 
-        # 计算有效得分: 截面排名(score) + 均值回归调整
-        # TODO Fix#12: 信号层应只做评分(因子值+缠论质量分)，组合层做所有决策
-        # 当前两层仍有职责重叠(信号层做了P0/P1/P2冲突修正、周线过滤等决策)
-        # score已包含因子+Chan boost+P0/P1/P2, 无需再算一次Chan加成
+        # 计算有效得分: 纯score(已含门控质量) 截面排名 + 时序调整
+        # Gate 1-4已在信号层编码为adjusted_score，组合层只做时序/行业/换手微调
         scores = np.array([c['score'] for c in qualified])
-        score_rank = pd.Series(scores).rank(pct=True).values  # score截面排名
+        score_rank = pd.Series(scores).rank(pct=True).values
 
         for i, c in enumerate(qualified):
             c['is_held'] = c['code'] in current_codes
 
-            sl = c.get('signal_level', 0)
-            cb = c.get('chan_buy_point', 0)
-            stock_trend = c.get('trend_type', 0)
-
-            # Chan结构作为轻微加分（score已包含主要Chan信息）
-            if sl >= 2:
-                chan_bonus = self.chan_bonus_sl2
-            elif cb > 0:
-                chan_bonus = self.chan_bonus_buy_point
-            else:
-                chan_bonus = 0.0
-
-            if stock_trend == 2:
-                chan_bonus += self.chan_bonus_trend2
-
-            c['chan_quality'] = 0.5 + chan_bonus
-
-            # Fix#5: 分离乘法调整和加法调整，避免数学不一致
-            #   effective_score = score_rank * multiplier + additive_bonus
-            #   乘法调整只作用于rank，加法调整独立于乘法
             rank = float(score_rank[i])
             multiplier = 1.0
-            additive = chan_bonus  # Chan加分从加法项开始
+            additive = 0.0
 
             # ── 乘法调整（作用于rank） ──
             sig_ref = c.get('sig')
@@ -875,6 +881,13 @@ class PortfolioConstructor:
                 additive += self.industry_chem_penalty
 
             # DYN因子不再惩罚 — IC验证已筛选, 惩罚与动态选择逻辑矛盾 (Fix#8)
+
+            # BOM质量加分: 高壁垒+高利润个股获得选股优先
+            bom_score = self._nan_safe(getattr(sig_ref, 'bom_quality_score', 0.3))
+            if bom_score > 0.70:
+                additive += 0.06
+            elif bom_score > 0.55:
+                additive += 0.03
 
             # 横盘/超跌/波动率/回调 奖励
             if -0.05 <= mom_60d <= 0.05:
@@ -909,7 +922,8 @@ class PortfolioConstructor:
                 c['is_held'] = False
                 turnover = 0.0
 
-            c['effective_score'] = rank * multiplier + additive + turnover
+            # 无Chan结构软惩罚（Gate 1已打低分，组合层叠加确保排名靠后但不拒绝）
+            c['effective_score'] = rank * multiplier + additive + turnover + c.get('no_chan_penalty', 0.0)
 
         # 排序：按有效得分降序（已持仓有换手加分）
         qualified.sort(key=lambda x: -x['effective_score'])
@@ -1058,7 +1072,7 @@ class PortfolioConstructor:
                 'chan_buy_strength': c.get('chan_buy_strength', 0.0),
                 'trend_type': c.get('trend_type', 0),
                 'signal_level': c.get('signal_level', 0),
-                'chan_bonus': c.get('chan_quality', 0.5) - 0.5,  # Fix: chan_bonus存在chan_quality中
+                'chan_bonus': 0.0,  # 门控系统已处理
                 'effective_score': c.get('effective_score', c['score']),
                 'is_held': c.get('is_held', False),
                 'confidence': c.get('confidence', 1.0),

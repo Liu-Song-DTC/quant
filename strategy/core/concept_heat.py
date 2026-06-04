@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
 
-from .industry_chain import compute_chain_signals, get_chain_lead_score
+from .industry_chain import compute_chain_signals, get_chain_lead_score, discover_chain_edges
 
 
 class ConceptHeatCalculator:
@@ -33,6 +33,9 @@ class ConceptHeatCalculator:
         self._concept_scores: Dict[str, float] = {}
         self._chain_signals: Dict[str, float] = {}
         self._concept_hist: Dict[str, pd.DataFrame] = {}
+        self._auto_edges: dict = {}  # 自动发现的产业链传导边
+        self._auto_edges_computed = False
+        self._scores_cache: Dict[str, tuple] = {}  # 日期→(concept_scores, chain_signals)
         self._loaded = False
 
     def load(self, hist_path: str = None):
@@ -57,7 +60,49 @@ class ConceptHeatCalculator:
         except FileNotFoundError:
             print(f"[ConceptHeat] 已加载 {len(self._stock_concepts)} 股票映射 (无历史数据)")
 
+        # 自动发现产业链传导关系（从历史数据中挖掘）
+        if len(self._concept_hist) >= 10:
+            self._compute_auto_edges()
         self._loaded = True
+
+    def _compute_auto_edges(self):
+        """从历史概念数据自动发现传导关系
+
+        使用3日滚动收益替代日频：单日噪音太大导致相关性不显著，
+        3日聚合后信噪比提升，同时保留足够的时序分辨率。
+        """
+        if self._auto_edges_computed or len(self._concept_hist) < 10:
+            return
+        try:
+            concept_3d_rets = {}
+            for name, df in self._concept_hist.items():
+                if len(df) < 20 or 'return' not in df.columns:
+                    continue
+                daily = df['return'].dropna().values
+                if len(daily) < 20:
+                    continue
+                # 3日滚动累计收益: r[t-2]+r[t-1]+r[t] 的累积
+                rolling_3d = np.array([
+                    np.prod(1 + daily[max(0, i-2):i+1]) - 1
+                    for i in range(2, len(daily))
+                ])
+                if len(rolling_3d) >= 10:
+                    concept_3d_rets[name] = rolling_3d
+            if len(concept_3d_rets) < 10:
+                return
+            names = list(concept_3d_rets.keys())
+            self._auto_edges = discover_chain_edges(
+                concept_3d_rets, names,
+                min_correlation=0.35,  # 3日频阈值（日频0.55太高，周频0.30太低）
+                max_lag=3,             # 3日频滞后1~3期 ≈ 3~9个自然日
+                top_n=30,
+            )
+            self._auto_edges_computed = True
+            total_edges = sum(len(v) for v in self._auto_edges.values())
+            print(f"[ConceptHeat] 自动发现 {total_edges} 条产业链传导边 (来自 {len(names)} 个概念, 3日频)")
+        except Exception:
+            self._auto_edges = {}
+            self._auto_edges_computed = True
 
     def set_daily_data(self, date, concept_returns: Dict[str, float] = None):
         """设置当日概念涨跌幅并计算产业链传导
@@ -66,19 +111,33 @@ class ConceptHeatCalculator:
         - 回测模式: 从 concept_hist 按日期查找
         - 手动模式: 传入 concept_returns
         """
+        # 统一规范化日期键，确保所有路径使用一致缓存键
+        cache_key = str(pd.Timestamp(date).date())
+        # _scores_cache 已在 __init__ 初始化
+
         if concept_returns is not None:
             self._concept_scores = concept_returns
+            self._chain_signals = compute_chain_signals(
+                concept_returns, auto_discovered_edges=self._auto_edges
+            )
+            self._scores_cache[cache_key] = (concept_returns, self._chain_signals)
+            return
+        elif cache_key in self._scores_cache:
+            self._concept_scores, self._chain_signals = self._scores_cache[cache_key]
+            return
         else:
             # 尝试从当日概念数据CSV读取 (实盘 data_manager 已下载)
-            daily_csv = Path(__file__).parent.parent.parent / "data" / "concept_daily.csv"
-            if daily_csv.exists():
+            if not hasattr(self, '_daily_csv_path'):
+                self._daily_csv_path = Path(__file__).parent.parent.parent / "data" / "concept_daily.csv"
+                self._daily_csv_exists = self._daily_csv_path.exists()
+            if self._daily_csv_exists:
                 try:
-                    df = pd.read_csv(daily_csv)
+                    df = pd.read_csv(self._daily_csv_path)
                     if '涨跌幅' in df.columns and '板块名称' in df.columns:
                         self._concept_scores = dict(zip(
                             df['板块名称'], df['涨跌幅'].astype(float) / 100.0))
                 except Exception:
-                    pass
+                    self._daily_csv_exists = False
 
         if not self._concept_scores and self._concept_hist:
             # 回测: 从缓存历史中查找
@@ -89,16 +148,24 @@ class ConceptHeatCalculator:
                 if len(row) > 0:
                     self._concept_scores[name] = float(row.iloc[0]['return'])
                 else:
-                    # 尝试最近日期
                     nearby = df[df['date'] <= date_ts]
                     if len(nearby) > 0:
                         self._concept_scores[name] = float(nearby.iloc[-1]['return'])
 
         # 计算产业链传导信号
         if self._concept_scores:
-            self._chain_signals = compute_chain_signals(self._concept_scores)
+            self._chain_signals = compute_chain_signals(
+                self._concept_scores, auto_discovered_edges=self._auto_edges
+            )
         else:
             self._chain_signals = {}
+
+        # 缓存结果供同日期其他股票复用（限300条防内存膨胀）
+        # _scores_cache 已在 __init__ 初始化
+        if len(self._scores_cache) > 300:
+            oldest = min(self._scores_cache.keys())
+            del self._scores_cache[oldest]
+        self._scores_cache[cache_key] = (self._concept_scores, self._chain_signals)
 
     def get_concept_heat(self, code: str) -> float:
         """获取单只股票的题材热度 (概念涨幅 + 产业链埋伏)"""

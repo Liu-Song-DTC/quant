@@ -55,11 +55,16 @@ class SignalStore:
             'risk_vol': float, 'daily_return': float,
             'volume_ratio': float, 'stroke_phase': float,
             'exhaustion_risk': float, 'gap_breakout_confirm': float,
+            'vol_opening_confirm': float, 'vol_opening_strength': float,
+            'bom_quality_score': float, 'gate_quality': float,
             'profit_declining': bool, 'ma_trend_up': bool,
         }
-        use_cols = list(dtypes.keys()) + ['date']
+        # 只读取CSV中存在的列（向后兼容旧格式，缺少新字段时用默认值）
+        available_cols = pd.read_csv(csv_path, nrows=0).columns.tolist()
+        effective_dtypes = {k: v for k, v in dtypes.items() if k in available_cols}
+        use_cols = [c for c in list(effective_dtypes.keys()) + ['date'] if c in available_cols]
         self._df = pd.read_csv(
-            csv_path, dtype=dtypes, usecols=use_cols,
+            csv_path, dtype=effective_dtypes, usecols=use_cols,
         )
         # 用字符串索引避免 datetime.date vs pd.Timestamp 类型不匹配
         self._df.set_index(['code', 'date'], inplace=True)
@@ -160,6 +165,10 @@ class SignalStore:
             stroke_phase=_f('stroke_phase'),
             exhaustion_risk=_f('exhaustion_risk'),
             gap_breakout_confirm=_f('gap_breakout_confirm'),
+            vol_opening_confirm=_f('vol_opening_confirm'),
+            vol_opening_strength=_f('vol_opening_strength'),
+            bom_quality_score=_f('bom_quality_score', 0.3),
+            _gate_quality=_f('gate_quality', 0.5),
             profit_declining=_b('profit_declining'),
             ma_trend_up=_b('ma_trend_up'),
         )

@@ -1,6 +1,6 @@
 factor_mode: dynamic
 dynamic_factor:
-  train_window_days: 60
+  train_window_days: 360  # ~12个月交易日，IC估计更稳定（生产推荐360，开发调试可临时降为60加速）
   forward_period: 10
   top_n_factors: 4
   min_train_samples: 40
@@ -21,6 +21,8 @@ dynamic_factor:
   - low_downside
   - vol_confirm
   - gap_breakout_confirm
+  - vol_opening_confirm
+  - vol_opening_strength
   - stroke_phase
   - exhaustion_risk
   - top_fractal_volume
@@ -58,6 +60,8 @@ backtest_factors:
 - ema20_slope
 - exhaustion_risk
 - gap_breakout_confirm
+- vol_opening_confirm
+- vol_opening_strength
 - top_fractal_volume
 - stroke_phase
 - trend_breakout
@@ -634,6 +638,8 @@ signal:
   buy_threshold: 0.30
   sell_threshold: -0.28
   buy_threshold_pct: 0.40
+  buy_threshold_pct_bull: 0.35
+  buy_threshold_pct_bear: 0.55
   resonance:
     sys1_buy_threshold_mult: 0.7    # 系统1放宽30%查共振
     sys2_cf_score_threshold: 0.5    # 系统2资金流向最低强度
@@ -683,7 +689,7 @@ portfolio:
     bear: 1
   selection:
     min_rank_pct: 0.6
-    min_absolute_score: 0.1
+    min_absolute_score: 0.05
     min_confidence: 0.75
     chan_gate_enabled: true
     chan_gate_min_count: 2
@@ -925,10 +931,10 @@ multi_timeframe:
 backtest:
   cash: 150000.0
   commission: 0.00050  # 万2.5佣金+万5印花税(卖出), 等效~万5
-  slippage: 0.0001     # 万1滑点(大盘股); 小盘股实际更高
+  slippage: 0.0003     # 万3滑点(已从小盘股实际水平上调)
   stamp_tax: 0.00050   # 卖出印花税0.05%
   rebalance_days: 25
   num_workers: 4
-  # 回测日期范围 (注释掉=全量, 设置后只加载范围内数据，加速开发调试)
+  # 回测日期范围 — 开发调试用截断加速；生产环境应注释掉以使用全量历史(>=2015年)
   fromdate: '2024-01-01'
   todate: '2026-05-30'

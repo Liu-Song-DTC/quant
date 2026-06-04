@@ -46,6 +46,15 @@ class Strategy:
     def generate_signal(self, code, market_data, latest_only=False):
         self.signal_engine.generate(code, market_data, self.signal_store, latest_only=latest_only)
 
+    def set_sector_data(self, stock_data_dict: dict, industry_codes: dict):
+        """设置板块轮动数据（仅industry_stock_counts，动量由signal_density驱动）"""
+        self.industry_stock_counts = {
+            ind: len(codes) for ind, codes in industry_codes.items()
+        }
+        # 注意: 不在此调用 compute() — 回测中全量数据的close[-1]是未来价格，会导致前视偏差。
+        # 行业倾斜由 compute_signal_density()（per-date，无前视）驱动，占60%权重。
+        # 动量组件(40%)保持默认1.0，避免引入未来信息。
+
     def set_sentiment_multipliers(self, date, market_regime: int = 0):
         """从情绪编排器获取行业情绪权重并注入组合构建器"""
         if self.sentiment_orchestrator is None:

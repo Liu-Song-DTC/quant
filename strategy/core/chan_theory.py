@@ -924,12 +924,12 @@ def detect_buy_sell_points(
         # 趋势要求: 至少2个同向向上不重叠中枢 → 仅已成趋势时B3才可靠
         p_rank = pivot_upward_rank.get(id(p), 0)
         p_trend_ok = len(non_overlap_up) >= 2 and p_rank >= 2
-        # Fix: 前视偏差 — 仅扫描pivot结束后1根K线内的突破(避免看到未来30根K线)
-        for idx in range(p_end + 1, min(p_end + 2, n_bars)):
+        # Fix: 前视偏差 — 扫描pivot结束后5根K线内的突破(扩展自原1根K线)
+        for idx in range(p_end + 1, min(p_end + 6, n_bars)):
             if pivot_position[idx] == 1 and close[idx] > p.zg * 1.02:
                 pullback_low = float('inf')
                 pullback_idx = -1
-                for j in range(idx + 1, min(idx + 2, n_bars)):
+                for j in range(idx + 1, min(idx + 4, n_bars)):
                     if close[j] < pullback_low:
                         pullback_low = close[j]
                         pullback_idx = j
@@ -965,12 +965,12 @@ def detect_buy_sell_points(
                         break
 
         # === 三卖 (S3): 向下跌破中枢后反弹不回中枢 ===
-        # Fix: 前视偏差 — 仅扫描pivot结束后1根K线
-        for idx in range(p_end + 1, min(p_end + 2, n_bars)):
+        # Fix: 前视偏差 — 扫描pivot结束后5根K线(扩展自原1根K线)
+        for idx in range(p_end + 1, min(p_end + 6, n_bars)):
             if pivot_position[idx] == -1 and close[idx] < p.zd * 0.98:
                 bounce_high = -float('inf')
                 bounce_idx = -1
-                for j in range(idx + 1, min(idx + 2, n_bars)):
+                for j in range(idx + 1, min(idx + 4, n_bars)):
                     if close[j] > bounce_high:
                         bounce_high = close[j]
                         bounce_idx = j
@@ -1015,8 +1015,8 @@ def detect_buy_sell_points(
                         base_conf = 0.35 + down_count * 0.10 + div_strength * 0.3
                         buy_confidence[idx] = min(0.9, base_conf + dist_pct * 10)
 
-        # === B1扩展: V型反转 — 深度回撤后强力反弹 ===
-        # 60日最大回撤>20% + 近3日反弹>3% + 近期曾跌破MA20
+        # === B1扩展: V型反转 — 深度回撤后强力反弹 + 量能确认 ===
+        # 60日最大回撤>20% + 近3日反弹>3% + 近期曾跌破MA20 + 反弹放量
         if n_bars >= 60:
             for idx in range(60, n_bars):
                 if buy_point[idx] != 0:
@@ -1024,15 +1024,21 @@ def detect_buy_sell_points(
                 max60 = np.max(close[idx - 60:idx])
                 dd_from_high = (max60 - close[idx]) / max60 if max60 > 0 else 0
                 bounce_3d = (close[idx] - close[max(0, idx - 3)]) / (close[max(0, idx - 3)] + 1e-10)
-                # 曾跌破MA20：近5日最低价低于近5日均价
-                recent_low = np.min(close[max(0, idx - 5):idx + 1])
-                recent_avg = np.mean(close[max(0, idx - 5):idx + 1])
+                # 曾跌破MA20：近20日最低价低于近20日均价(用SMA20近似)
+                recent_low = np.min(close[max(0, idx - 20):idx + 1])
+                recent_avg = np.mean(close[max(0, idx - 20):idx + 1])
                 was_below_ma = recent_low < recent_avg * 0.97
-                if dd_from_high > 0.20 and bounce_3d > 0.03 and was_below_ma:
+                # 量能确认: 反弹3日均量 > 前5日均量 × 1.2（放量反弹才是真反转）
+                vol_ok = True
+                if volume is not None and idx >= 8:
+                    vol_bounce = np.mean(volume[max(0, idx - 2):idx + 1])
+                    vol_pre = np.mean(volume[max(0, idx - 7):max(0, idx - 2)])
+                    vol_ok = vol_bounce > vol_pre * 1.2 if vol_pre > 0 else True
+                if dd_from_high > 0.20 and bounce_3d > 0.03 and was_below_ma and vol_ok:
                     buy_point[idx] = 1
                     buy_confidence[idx] = float(np.clip(0.30 + dd_from_high * 0.5 + bounce_3d * 3, 0.25, 0.7))
 
-        # === B1扩展: 缺口反转 — 跳空高开突破下跌趋势 ===
+        # === B1扩展: 缺口反转 — 跳空高开放量突破下跌趋势 ===
         if n_bars >= 3:
             for idx in range(3, n_bars):
                 if buy_point[idx] != 0:
@@ -1040,7 +1046,12 @@ def detect_buy_sell_points(
                 gap_up = (close[idx] - close[idx - 1]) / (close[idx - 1] + 1e-10)
                 # 之前处于下跌：近5日趋势向下
                 pre_trend = (close[idx - 1] - close[max(0, idx - 5)]) / (close[max(0, idx - 5)] + 1e-10)
-                if gap_up > 0.02 and pre_trend < -0.03:
+                # 量能确认: 跳空日量比>1.0（放量跳空才是真突破，缩量跳空=假突破）
+                vol_ok = True
+                if volume is not None and idx >= 20:
+                    avg_vol_20 = np.mean(volume[max(0, idx - 20):idx])
+                    vol_ok = volume[idx] > avg_vol_20 * 1.0 if avg_vol_20 > 0 else True
+                if gap_up > 0.02 and pre_trend < -0.03 and vol_ok:
                     buy_point[idx] = 1
                     buy_confidence[idx] = float(np.clip(0.30 + gap_up * 5, 0.25, 0.7))
 
@@ -1161,25 +1172,23 @@ def compute_chan_signal(
     # Layer 6: 买卖点
     bsp_info = detect_buy_sell_points(pivots, segments, strokes, n, close, volume)
 
-    # === 多级别对齐 ===
+    # === 多级别对齐 (向量化) ===
     alignment = np.zeros(n)
-    for i in range(20, n):
-        if np.isnan(ema20[i]) or np.isnan(ema60[i]):
-            continue
-        score = 0.0
-        if ema20[i] > ema60[i]:
-            score += 0.35
-        else:
-            score -= 0.35
-        if not np.isnan(ema120[i]) and ema60[i] > ema120[i]:
-            score += 0.35
-        elif not np.isnan(ema120[i]):
-            score -= 0.35
-        if not np.isnan(ema120[i]) and ema20[i] > ema60[i] > ema120[i]:
-            score += 0.3
-        elif not np.isnan(ema120[i]) and ema20[i] < ema60[i] < ema120[i]:
-            score -= 0.3
-        alignment[i] = np.clip(score, -1.0, 1.0)
+    valid = ~np.isnan(ema20) & ~np.isnan(ema60)
+    valid_120 = valid & ~np.isnan(ema120)
+    # ema20 vs ema60
+    alignment[valid] = np.where(ema20[valid] > ema60[valid], 0.35, -0.35)
+    # ema60 vs ema120
+    above_120 = valid_120 & (ema60 > ema120)
+    below_120 = valid_120 & ~(ema60 > ema120)
+    alignment[above_120] += 0.35
+    alignment[below_120] -= 0.35
+    # 全排列
+    full_bull = valid_120 & (ema20 > ema60) & (ema60 > ema120)
+    full_bear = valid_120 & (ema20 < ema60) & (ema60 < ema120)
+    alignment[full_bull] += 0.3
+    alignment[full_bear] -= 0.3
+    alignment = np.clip(alignment, -1.0, 1.0)
 
     # === 信号强度: 综合买卖点 + 趋势 + 对齐 (Numba JIT) ===
     buy_signal, sell_signal = _compute_chan_buy_sell(

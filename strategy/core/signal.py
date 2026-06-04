@@ -63,6 +63,13 @@ class Signal:
     stroke_phase: float = 0.0                # 笔阶段 [-1, 1]
     top_fractal_volume: float = 0.0          # 顶分型量能背离 [-1, 1]
 
+    # === 放量开盘确认（"量在价先"的强确认形态）===
+    vol_opening_confirm: float = 0.0         # 放量+次日开盘确认形态 [0, 1]
+    vol_opening_strength: float = 0.0        # 形态强度 [0, 1]
+
+    # === BOM产业链质量 ===
+    bom_quality_score: float = 0.3           # BOM综合质量分(高壁垒+高利润) [0, 1]
+
     # === 均线趋势（缠论买点的方向前提）===
     ma_trend_up: bool = False                # EMA20 > EMA60 均线多头排列
 
@@ -91,6 +98,7 @@ class Signal:
     _chan_buy_signal: bool = False            # 缠论买入增强是否触发
     _chan_sell_signal: bool = False           # 缠论卖出增强是否触发
     _dist_ma20: float = 0.0                   # 距MA20偏离 (%)
+    _gate_quality: float = 0.5                # 4门控综合质量系数 [0, 1]
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -125,6 +133,9 @@ class Signal:
             'gap_breakout_confirm': self.gap_breakout_confirm,
             'stroke_phase': self.stroke_phase,
             'top_fractal_volume': self.top_fractal_volume,
+            'vol_opening_confirm': self.vol_opening_confirm,
+            'vol_opening_strength': self.vol_opening_strength,
+            'bom_quality_score': self.bom_quality_score,
             'ma_trend_up': self.ma_trend_up,
             'profit_declining': self.profit_declining,
             'resonance_systems': self.resonance_systems,

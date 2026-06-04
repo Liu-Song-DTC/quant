@@ -24,7 +24,13 @@ class SectorRotation:
         self._sector_momentum: Dict[str, float] = {}   # {industry: composite_momentum}
         self._sector_rank: Dict[str, float] = {}        # {industry: rank_pct 0~1}
         self._sector_tilt: Dict[str, float] = {}        # {industry: tilt_multiplier}
+        self._signal_density: Dict[str, float] = {}     # {industry: density}
+        self._signal_density_rank: Dict[str, float] = {}  # {industry: density_rank}
         self._computed = False
+        # 轮动速度追踪：记录每期的领涨行业top3，用于检测切换过快
+        self._top_sectors_history: list = []  # [(date_str, [top3_industries]), ...]
+        self._rotation_speed: float = 0.0     # 0=稳定, 1=极快切换
+        self._last_compute_date: str = ""
 
     # ── 公共接口 ──
 
@@ -35,6 +41,7 @@ class SectorRotation:
         lookback_short: int = 10,
         lookback_mid: int = 20,
         lookback_long: int = 60,
+        date_str: str = "",
     ):
         """计算各行业多周期动量排名
 
@@ -42,6 +49,7 @@ class SectorRotation:
             stock_data_dict: {code: DataFrame} 日线数据
             industry_codes: {industry_name: [code, ...]}
             lookback_short/mid/long: 短/中/长周期
+            date_str: 日期标识，用于轮动速度追踪
         """
         if not stock_data_dict or not industry_codes:
             self._computed = False
@@ -102,6 +110,23 @@ class SectorRotation:
 
         self._computed = True
 
+        # ── 轮动速度追踪 ──
+        # 记录当日前3领涨行业，与上一次对比计算切换率
+        if date_str:
+            sorted_items = sorted(self._sector_rank.items(), key=lambda x: -x[1])
+            top3 = [s[0] for s in sorted_items[:3]]
+            self._top_sectors_history.append((date_str, top3))
+            # 保留最近20期
+            if len(self._top_sectors_history) > 20:
+                self._top_sectors_history = self._top_sectors_history[-20:]
+            # 计算轮动速度：连续两期top3的切换比例 (0=完全重合, 1=完全不同)
+            if len(self._top_sectors_history) >= 2:
+                prev_top3 = set(self._top_sectors_history[-2][1])
+                curr_top3 = set(self._top_sectors_history[-1][1])
+                n_changed = len(curr_top3 - prev_top3)
+                self._rotation_speed = float(0.7 * self._rotation_speed + 0.3 * (n_changed / 3.0))
+            self._last_compute_date = date_str
+
     def is_ready(self) -> bool:
         return self._computed
 
@@ -157,18 +182,37 @@ class SectorRotation:
             for i, ind in enumerate(self._signal_density.keys())
         }
 
+        # 轮动速度追踪: 基于信号密度的top3变化
+        sorted_items = sorted(self._signal_density_rank.items(), key=lambda x: -x[1])
+        top3 = [s[0] for s in sorted_items[:3]]
+        self._top_sectors_history.append(("", top3))
+        if len(self._top_sectors_history) > 20:
+            self._top_sectors_history = self._top_sectors_history[-20:]
+        if len(self._top_sectors_history) >= 2:
+            prev_top3 = set(self._top_sectors_history[-2][1])
+            curr_top3 = set(self._top_sectors_history[-1][1])
+            n_changed = len(curr_top3 - prev_top3)
+            self._rotation_speed = float(0.7 * self._rotation_speed + 0.3 * (n_changed / 3.0))
+
     def get_composite_tilt(self, industry: str) -> float:
         """综合行业倾斜乘数: 动量(滞后)40% + 信号密度(领先)60%
 
-        优先跟随信号密度，因为它是领先指标；动量作为验证
+        优先跟随信号密度，因为它是领先指标；动量作为验证。
+
+        防反馈环: 单个行业tilt上限1.15（前版1.20），防止因子偏好被板块倾斜放大。
+        轮动速度保护: 当领涨行业切换过快(rotation_speed>0.55)，市场无主线，tilt→1.0。
         """
+        # 轮动速度过快 → 行业倾斜失效，返回中性
+        if self._rotation_speed > 0.55:
+            return 1.0
+
         momentum_tilt = self._sector_tilt.get(industry, 1.0)
         signal_rank = self._signal_density_rank.get(industry, 0.5)
-        signal_tilt = float(0.85 + signal_rank * 0.30)  # 同动量一样, rank→[0.85,1.15]
+        signal_tilt = float(0.85 + signal_rank * 0.30)  # rank→[0.85,1.15]
 
-        # 信号密度权重更大：领先 > 滞后
         composite = momentum_tilt * 0.40 + signal_tilt * 0.60
-        return float(np.clip(composite, 0.80, 1.20))
+        # 收紧上限: 1.20→1.15 防反馈环
+        return float(np.clip(composite, 0.80, 1.15))
 
     def get_signal_density_score(self, industry: str) -> float:
         """纯信号密度分数 (-1~1)"""
@@ -185,7 +229,7 @@ class SectorRotation:
         composite = {}
         for ind in self._sector_momentum:
             momentum_rank = self._sector_rank.get(ind, 0.5)
-            signal_rank = self._signal_density_rank.get(ind, 0.5) if hasattr(self, '_signal_density_rank') else 0.5
+            signal_rank = self._signal_density_rank.get(ind, 0.5)
             composite[ind] = momentum_rank * 0.4 + signal_rank * 0.6
         sorted_items = sorted(composite.items(), key=lambda x: -x[1])
         return [s[0] for s in sorted_items[:top_n]]
@@ -197,7 +241,7 @@ class SectorRotation:
         composite = {}
         for ind in self._sector_momentum:
             momentum_rank = self._sector_rank.get(ind, 0.5)
-            signal_rank = self._signal_density_rank.get(ind, 0.5) if hasattr(self, '_signal_density_rank') else 0.5
+            signal_rank = self._signal_density_rank.get(ind, 0.5)
             composite[ind] = momentum_rank * 0.4 + signal_rank * 0.6
         sorted_items = sorted(composite.items(), key=lambda x: x[1])
         return [s[0] for s in sorted_items[:bottom_n]]
@@ -211,5 +255,5 @@ class SectorRotation:
             'sector_count': len(self._sector_momentum),
             'signal_density_top': sorted(
                 self._signal_density.items(), key=lambda x: -x[1]
-            )[:5] if hasattr(self, '_signal_density') and self._signal_density else [],
+            )[:5] if self._signal_density else [],
         }

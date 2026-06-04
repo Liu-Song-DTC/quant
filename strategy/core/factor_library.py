@@ -2,34 +2,8 @@
 """因子库 - 各种技术因子的计算函数"""
 
 import numpy as np
-from typing import Tuple, Dict, Optional, Callable
+from typing import Tuple, Dict
 
-
-class FactorRegistry:
-    """因子注册表 - 管理所有可用因子"""
-
-    _factors = {}
-    _factor_groups = {}
-
-    @classmethod
-    def register(cls, name: str, func: Callable, group: str = 'technical'):
-        """注册因子"""
-        cls._factors[name] = func
-        if group not in cls._factor_groups:
-            cls._factor_groups[group] = []
-        cls._factor_groups[group].append(name)
-
-    @classmethod
-    def get(cls, name: str) -> Optional[Callable]:
-        """获取因子函数"""
-        return cls._factors.get(name)
-
-    @classmethod
-    def list_factors(cls, group: str = None) -> list:
-        """列出因子"""
-        if group:
-            return cls._factor_groups.get(group, [])
-        return list(cls._factors.keys())
 
 
 # ==================== 辅助函数 ====================
@@ -287,21 +261,3 @@ def calc_factor_volatility_skew(close: np.ndarray) -> np.ndarray:
     return np.tanh(result)
 
 
-# 注册因子
-FactorRegistry.register('volatility_10', calc_factor_volatility_10, 'volatility')
-FactorRegistry.register('volatility_5', calc_factor_volatility_5, 'volatility')
-FactorRegistry.register('volatility_20', calc_factor_volatility_20, 'volatility')
-FactorRegistry.register('rsi_8', calc_factor_rsi_8, 'rsi')
-FactorRegistry.register('rsi_14', calc_factor_rsi_14, 'rsi')
-FactorRegistry.register('rsi_6', calc_factor_rsi_6, 'rsi')
-FactorRegistry.register('rsi_10', calc_factor_rsi_10, 'rsi')
-FactorRegistry.register('bb_width_20', calc_factor_bb_width_20, 'bollinger')
-FactorRegistry.register('momentum_10', calc_factor_momentum_10, 'momentum')
-FactorRegistry.register('momentum_20', calc_factor_momentum_20, 'momentum')
-FactorRegistry.register('atr', calc_factor_atr, 'volatility')
-# Alpha因子
-FactorRegistry.register('skewness_20', calc_factor_skewness_20, 'alpha')
-FactorRegistry.register('kurtosis_20', calc_factor_kurtosis_20, 'alpha')
-FactorRegistry.register('max_ret_20', calc_factor_max_ret_20, 'alpha')
-FactorRegistry.register('tail_risk', calc_factor_tail_risk, 'alpha')
-FactorRegistry.register('volatility_skew', calc_factor_volatility_skew, 'alpha')

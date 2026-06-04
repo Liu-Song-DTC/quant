@@ -99,59 +99,161 @@ def get_all_chain_concepts() -> set:
 def compute_chain_signals(
     concept_returns: Dict[str, float],
     top_n_per_chain: int = 3,
+    auto_discovered_edges: Optional[Dict[str, List[Tuple[str, float]]]] = None,
 ) -> Dict[str, float]:
-    """计算产业链传导信号
+    """计算产业链传导信号（自适应阈值 + 分行业vol版）
 
-    Args:
-        concept_returns: {概念名: 近期涨跌幅(小数)}
-        top_n_per_chain: 每条链关注的"埋伏"概念数
-
-    Returns:
-        {概念名: 埋伏分数(0~1)}
+    每产业链独立计算波动率基准，避免高波动行业(如AI)掩蔽低波动行业(如医药)的传导。
+    支持自动发现的传导边作为补充信号。
     """
     signals: Dict[str, float] = {}
 
+    # 全局波动率基准（兜底）
+    ret_vals = np.array(list(concept_returns.values()))
+    global_vol = float(np.std(ret_vals)) if len(ret_vals) > 3 else 0.02
+    global_vol = max(global_vol, 0.008)
+
     for chain_name, chain in INDUSTRY_CHAINS.items():
-        seg_names = list(chain.keys())  # ["算力基础设施","芯片与通信",...]
+        seg_names = list(chain.keys())
         if len(seg_names) < 2:
             continue
 
-        # 计算每个环节的平均涨跌幅
         segment_returns = {}
         segment_concepts = {}
+        chain_all_rets = []
         for seg_name, seg_concepts_list in chain.items():
             seg_rets = [concept_returns.get(c, 0) for c in seg_concepts_list]
-            segment_returns[seg_name] = np.mean(seg_rets) if seg_rets else 0
+            if seg_rets:
+                segment_returns[seg_name] = np.mean(seg_rets)
+                chain_all_rets.extend(seg_rets)
+            else:
+                segment_returns[seg_name] = 0
             segment_concepts[seg_name] = seg_concepts_list
 
-        # 正向传导: 上游环节涨了但下游没涨 → 埋伏下游
+        # 分行业vol: 本产业链内概念的标准差，兜底到全局vol
+        chain_vol = float(np.std(chain_all_rets)) if len(chain_all_rets) > 2 else global_vol
+        chain_vol = max(chain_vol, 0.008)
+
+        forward_threshold = chain_vol * 1.5
+        reverse_threshold = chain_vol * 2.5
+        # 跨级前向传导阈值（跨多环节需要更大价差）
+        forward_skip_threshold = chain_vol * 2.2
+
         for i in range(len(seg_names)):
             for j in range(i + 1, len(seg_names)):
                 early_seg = seg_names[i]
                 late_seg = seg_names[j]
                 spread = segment_returns[early_seg] - segment_returns[late_seg]
+                skip_levels = j - i  # 跨环节数: 1=相邻, 2+=跨级
 
-                # 上游比下游领先3%以上 → 下游有补涨空间
-                if spread > 0.03:
-                    bonus = min(spread * 5, 0.3)  # max 0.3 bonus
+                if skip_levels == 1 and spread > forward_threshold:
+                    bonus = min(spread / chain_vol * 0.10, 0.30)
                     for c in segment_concepts[late_seg]:
-                        # 取已有值和新值的最大
+                        current = signals.get(c, 0)
+                        signals[c] = max(current, bonus)
+                elif skip_levels >= 2 and spread > forward_skip_threshold:
+                    # 跨级传导: 更大价差要求, 更小加成(间接传导致信度低)
+                    bonus = min(spread / chain_vol * 0.06, 0.18)
+                    for c in segment_concepts[late_seg]:
                         current = signals.get(c, 0)
                         signals[c] = max(current, bonus)
 
-        # 逆向传导: 下游暴涨但上游没动 → 上游补库
         for i in range(len(seg_names) - 1, -1, -1):
             for j in range(i):
                 late_seg = seg_names[i]
                 early_seg = seg_names[j]
                 spread = segment_returns[late_seg] - segment_returns[early_seg]
-                if spread > 0.05:
-                    bonus = min(spread * 3, 0.25)
+                if spread > reverse_threshold:
+                    bonus = min(spread / chain_vol * 0.06, 0.25)
                     for c in segment_concepts[early_seg]:
                         current = signals.get(c, 0)
                         signals[c] = max(current, bonus)
 
+    # 自动发现边: 高相关性 + 前导滞后关系 → 补充传导信号
+    if auto_discovered_edges:
+        for edge_name, edges in auto_discovered_edges.items():
+            for target_concept, bonus in edges:
+                current = signals.get(target_concept, 0)
+                signals[target_concept] = max(current, bonus)
+
     return signals
+
+
+def discover_chain_edges(
+    concept_hist: Dict[str, np.ndarray],  # {concept_name: return_series}
+    concept_names: List[str],
+    min_correlation: float = 0.6,
+    max_lag: int = 5,
+    top_n: int = 20,
+) -> Dict[str, List[Tuple[str, float]]]:
+    """从历史数据自动发现产业链传导关系
+
+    方法: 对每对概念计算滞后相关性，找出A领先B的关系。
+    - 高正相关 (ρ > 0.6) 且 A(t) 与 B(t+k) 相关度最高 → A 领先 B
+
+    Args:
+        concept_hist: {concept_name: daily_return_array}
+        concept_names: 要分析的概念列表
+        min_correlation: 最低相关系数阈值
+        max_lag: 最大滞后天数
+        top_n: 返回前N个最强的领先-滞后关系
+
+    Returns:
+        {leader_name: [(follower_name, edge_strength), ...]}
+    """
+    edges: Dict[str, List[Tuple[str, float]]] = {}
+    scored_edges: List[Tuple[str, str, float]] = []
+
+    for i, lead_name in enumerate(concept_names):
+        lead_rets = concept_hist.get(lead_name)
+        if lead_rets is None or len(lead_rets) < 20:
+            continue
+
+        for j, follow_name in enumerate(concept_names):
+            if i == j:
+                continue
+            follow_rets = concept_hist.get(follow_name)
+            if follow_rets is None or len(follow_rets) < 20:
+                continue
+
+            # 确保长度一致
+            min_len = min(len(lead_rets), len(follow_rets))
+            if min_len < 20:
+                continue
+            lead = lead_rets[-min_len:]
+            follow = follow_rets[-min_len:]
+
+            # 同期相关性
+            corr_0 = float(np.corrcoef(lead, follow)[0, 1])
+            if np.isnan(corr_0) or corr_0 < min_correlation:
+                continue
+
+            # 滞后相关性: lead(t) vs follow(t+k) for k=1..max_lag
+            best_lag = 0
+            best_corr = corr_0
+            for k in range(1, max_lag + 1):
+                if min_len <= k:
+                    break
+                corr_k = float(np.corrcoef(lead[:-k], follow[k:])[0, 1])
+                if np.isnan(corr_k):
+                    continue
+                if corr_k > best_corr:
+                    best_corr = corr_k
+                    best_lag = k
+
+            # 存在显著领先关系: 最佳滞后k>0且相关性提升>0.05
+            if best_lag > 0 and best_corr > corr_0 + 0.05 and best_corr > min_correlation:
+                edge_strength = float(np.clip((best_corr - min_correlation) * 2.5, 0.05, 0.30))
+                scored_edges.append((lead_name, follow_name, edge_strength))
+
+    # 取top_n最强边
+    scored_edges.sort(key=lambda x: -x[2])
+    for lead, follow, strength in scored_edges[:top_n]:
+        if lead not in edges:
+            edges[lead] = []
+        edges[lead].append((follow, strength))
+
+    return edges
 
 
 def get_chain_lead_score(
@@ -161,13 +263,7 @@ def get_chain_lead_score(
 ) -> float:
     """计算单只股票的产业链埋伏分数
 
-    Args:
-        code: 股票代码
-        stock_concepts: {code: [概念列表]}
-        chain_signals: 从 compute_chain_signals 返回的信号
-
-    Returns:
-        0~1 之间的埋伏分数
+    max替代mean避免"已涨+未涨"被平均掉; tanh(×1.5)避免早期饱和
     """
     concepts = stock_concepts.get(code, [])
     if not concepts or not chain_signals:
@@ -177,4 +273,4 @@ def get_chain_lead_score(
     if not scores:
         return 0.0
 
-    return float(np.tanh(np.mean(scores) * 3.0))
+    return float(np.tanh(max(scores) * 1.5))

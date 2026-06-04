@@ -123,31 +123,41 @@ def compute_capital_flow_signal(
     smart_money_5d = _rolling_sum(daily_sm, 5)
     smart_money[5:] = smart_money_5d[5:] / 5.0
 
-    # === 2. 量能积累检测 (半向量化) ===
-    for i in range(20, n):
-        acc_score = 0.0
-        price_change_10 = (close[i] - close[i-10]) / (close[i-10] + 1e-10)
-        vol_trend = np.mean(volume[i-9:i+1]) / (np.mean(volume[i-19:i-9]) + 1e-10)
+    # === 2. 量能积累检测 (向量化) ===
+    # 预计算滚动统计量
+    vol_mean_10 = _rolling_mean(volume, 10)
+    vol_mean_10_prev = np.full(n, np.nan)
+    vol_mean_10_prev[10:] = vol_mean_10[:-10]  # 10日前同窗口均量: prev[i] = mean[i-10]
+    vol_trend_arr = np.ones(n)
+    valid_mask_arr = ~np.isnan(vol_mean_10) & ~np.isnan(vol_mean_10_prev) & (vol_mean_10_prev > 0)
+    vol_trend_arr[valid_mask_arr] = vol_mean_10[valid_mask_arr] / vol_mean_10_prev[valid_mask_arr]
 
-        # 模式A: 放量滞涨
-        if abs(price_change_10) < 0.05 and vol_trend > 1.3:
-            acc_score += 0.6
-        elif abs(price_change_10) < 0.08 and vol_trend > 1.1:
-            acc_score += 0.35
+    price_change_10_arr = np.zeros(n)
+    price_change_10_arr[10:] = (close[10:] - close[:-10]) / (close[:-10] + 1e-10)
 
-        # 模式B: 缩量下跌后放量回升
-        if price_change_10 < -0.03 and vol_trend < 0.8:
-            vol_recent = np.mean(volume[i-4:i+1])
-            if vol_recent > np.mean(volume[i-9:i-4]) * 1.2 and ret_1d[i] > 0:
-                acc_score += 0.4
+    # 模式A: 放量滞涨 — 向量化
+    mask_a1 = (np.abs(price_change_10_arr) < 0.05) & (vol_trend_arr > 1.3)
+    mask_a2 = (np.abs(price_change_10_arr) < 0.08) & (vol_trend_arr > 1.1) & ~mask_a1
+    accumulation[mask_a1] += 0.6
+    accumulation[mask_a2] += 0.35
 
-        # 模式C: 低换手率缩量横盘
-        if turnover_rate is not None:
-            avg_turnover = np.mean(turnover_rate[i-9:i+1])
-            if avg_turnover < 0.01 and abs(price_change_10) < 0.03:
-                acc_score += 0.25
+    # 模式B: 缩量下跌后放量回升 — 向量化
+    vol_mean_5 = _rolling_mean(volume, 5)
+    vol_mean_5_prev = np.full(n, np.nan)
+    vol_mean_5_prev[5:] = vol_mean_5[:-5]  # 5日前同窗口均量
+    mask_b_base = (price_change_10_arr < -0.03) & (vol_trend_arr < 0.8)
+    valid_b2 = ~np.isnan(vol_mean_5) & ~np.isnan(vol_mean_5_prev) & (vol_mean_5_prev > 0)
+    mask_b2 = valid_b2 & (vol_mean_5 > vol_mean_5_prev * 1.2) & (ret_1d > 0)
+    mask_b = mask_b_base & mask_b2
+    accumulation[mask_b] += 0.4
 
-        accumulation[i] = np.clip(acc_score, 0, 1)
+    # 模式C: 低换手率缩量横盘 (仅当turnover_rate存在)
+    if turnover_rate is not None:
+        avg_turnover_10 = _rolling_mean(turnover_rate, 10)
+        mask_c = (avg_turnover_10 < 0.01) & (np.abs(price_change_10_arr) < 0.03)
+        accumulation[mask_c] += 0.25
+
+    accumulation = np.clip(accumulation, 0, 1)
 
     # === 3. 净资金流向 (向量化) ===
     day_flow = (close - open_arr) * volume
@@ -190,8 +200,8 @@ def compute_capital_flow_signal(
     direction[flow_sum > 0.55] = 1
     direction[flow_sum < 0.35] = -1
 
-    # 3日EMA平滑 (JIT)
-    capital_flow_score = _ema_smooth(capital_flow_score, 2.0 / 4.0)
+    # 3日EMA平滑 (JIT), alpha=2/6≈0.33 降低滞后
+    capital_flow_score = _ema_smooth(capital_flow_score, 2.0 / 6.0)
 
     return {
         'capital_flow_score': capital_flow_score,

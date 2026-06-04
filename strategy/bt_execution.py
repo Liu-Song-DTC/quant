@@ -300,6 +300,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             NUM_WORKERS
         )
         strategy.set_factor_data(factor_df, industry_codes)
+        strategy.set_sector_data(stock_data_dict, industry_codes)
         print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业")
     else:
         print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
@@ -443,7 +444,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                      'chan_pivot_zg,chan_pivot_zd,mom_60d,dist_ma60,max_dd_20d,vol_regime,'
                      'mtf_discount_factor,mtf_alignment_score,avg_trend_strength,'
                      'risk_vol,daily_return,volume_ratio,stroke_phase,exhaustion_risk,'
-                     'gap_breakout_confirm,profit_declining,ma_trend_up\n')
+                     'gap_breakout_confirm,vol_opening_confirm,vol_opening_strength,'
+                     'bom_quality_score,gate_quality,profit_declining,ma_trend_up\n')
     signal_count = [0]  # 用list实现闭包写入计数
 
     # 多进程并行生成信号
@@ -507,6 +509,10 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     f'{getattr(sig, "stroke_phase", 0.0)},'
                     f'{getattr(sig, "exhaustion_risk", 0.0)},'
                     f'{getattr(sig, "gap_breakout_confirm", 0.0)},'
+                    f'{getattr(sig, "vol_opening_confirm", 0.0)},'
+                    f'{getattr(sig, "vol_opening_strength", 0.0)},'
+                    f'{getattr(sig, "bom_quality_score", 0.3)},'
+                    f'{getattr(sig, "_gate_quality", 0.5)},'
                     f'{getattr(sig, "profit_declining", False)},'
                     f'{getattr(sig, "ma_trend_up", False)}\n'
                 )

@@ -77,7 +77,6 @@ def detect_pivot_zone(
     low: np.ndarray,
     close: np.ndarray,
     min_overlap: int = 3,
-    zone_buffer: float = 0.02,
 ) -> Dict[str, np.ndarray]:
     """
     检测中枢（pivot/consolidation）区域。
