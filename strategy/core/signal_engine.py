@@ -1714,8 +1714,9 @@ class SignalEngine:
             factors = config.get('bull_factors', config.get('factors', []))
             weights = config.get('bull_weights', None)
         elif regime == -1:
-            factors = config.get('bear_factors', config.get('factors', []))
-            weights = config.get('bear_weights', None)
+            # 熊市使用中性因子（熊市标定因子OOS表现极差，-4%~-9% mean ret）
+            factors = config.get('factors', [])
+            weights = config.get('weights', None)
         else:
             factors = config.get('factors', [])
             weights = config.get('weights', None)
