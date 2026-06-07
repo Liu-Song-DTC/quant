@@ -10,7 +10,7 @@
    - 获取基本面数据 → compress_fundamental_factor() 压缩
    - compute_composite_factors(ind, idx, fund_score) 计算组合因子
    - 计算 future_ret (forward_period=20)
-4. 按INDUSTRY_KEYWORDS分行业
+4. 按概念板块分组（stock_concept_map.pkl，与信号引擎对齐）
 5. 对每个行业 × 每个市场状态：
    - 计算每个候选因子的截面Spearman IC
    - 汇总 IC_mean, IC_std, IR, stability
@@ -27,6 +27,7 @@
 import sys
 import os
 import gc
+import pickle
 import tempfile
 import numpy as np
 import pandas as pd
@@ -60,6 +61,7 @@ _worker_fd = None
 _worker_factor_dates = None
 _worker_lookback = 120
 _worker_forward_period = 20
+_worker_concept_map = {}  # {code: [concept_names]} — 概念板块标定
 
 
 def _log_memory(tag=""):
@@ -72,9 +74,10 @@ def _log_memory(tag=""):
         pass
 
 
-def _init_calib_worker(fundamental_path, stock_codes, factor_dates, lookback, forward_period):
+def _init_calib_worker(fundamental_path, stock_codes, factor_dates, lookback, forward_period,
+                       concept_map=None):
     """Worker进程初始化（spawn模式：每个worker独立加载FundamentalData）"""
-    global _worker_fd, _worker_factor_dates, _worker_lookback, _worker_forward_period
+    global _worker_fd, _worker_factor_dates, _worker_lookback, _worker_forward_period, _worker_concept_map
     if fundamental_path and os.path.exists(fundamental_path):
         _worker_fd = FundamentalData(fundamental_path, stock_codes)
     else:
@@ -82,6 +85,7 @@ def _init_calib_worker(fundamental_path, stock_codes, factor_dates, lookback, fo
     _worker_factor_dates = factor_dates
     _worker_lookback = lookback
     _worker_forward_period = forward_period
+    _worker_concept_map = concept_map or {}
 
 
 def _calibrate_stock_worker(args):
@@ -90,15 +94,24 @@ def _calibrate_stock_worker(args):
     与factor_preparer逻辑完全一致，使用统一的压缩函数。
     每个worker自行加载CSV，通过共享全局变量获取参数。
     """
-    global _worker_fd, _worker_factor_dates, _worker_lookback, _worker_forward_period
+    global _worker_fd, _worker_factor_dates, _worker_lookback, _worker_forward_period, _worker_concept_map
 
     code, file_path = args
     factor_dates = _worker_factor_dates
     lookback = _worker_lookback
     forward_period = _worker_forward_period
 
-    # 每个worker自行加载股票CSV（避免主进程预加载全部数据）
-    df = pd.read_csv(file_path, parse_dates=['datetime'])
+    # 每个worker自行加载股票CSV（raw_data格式: 日期/开盘/收盘/最高/最低/成交量/换手率）
+    try:
+        df = pd.read_csv(file_path, parse_dates=['日期'])
+    except Exception:
+        return []
+    if df.empty or '日期' not in df.columns:
+        return []
+    # 统一列名为英文
+    col_map = {'日期': 'datetime', '开盘': 'open', '收盘': 'close', '最高': 'high',
+               '最低': 'low', '成交量': 'volume', '换手率': 'turnover_rate'}
+    df.rename(columns={k: v for k, v in col_map.items() if k in df.columns}, inplace=True)
 
     if 'datetime' in df.columns:
         stock_dates = sorted(df['datetime'].tolist())
@@ -121,19 +134,9 @@ def _calibrate_stock_worker(args):
 
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}
 
-    # 获取行业
-    stock_industry = None
-    if _worker_fd is not None:
-        try:
-            if len(factor_dates) > 0:
-                raw_industry = _worker_fd.get_industry(code, factor_dates[0])
-                if raw_industry:
-                    for cat, keywords in INDUSTRY_KEYWORDS.items():
-                        if any(kw in str(raw_industry) for kw in keywords):
-                            stock_industry = cat
-                            break
-        except Exception:
-            pass
+    # 获取概念板块（与信号引擎对齐 — 使用stock_concept_map.pkl）
+    stock_concepts = _worker_concept_map.get(code, [])
+    stock_industry = stock_concepts[0] if stock_concepts else '其他'
 
     # 批量获取基本面数据（优化：每个日期只调用1次_get_latest + 1次_get_nth_latest，
     # 替代原来每个日期15+次独立方法调用，大幅减少DataFrame filter+sort操作）
@@ -284,41 +287,42 @@ def prepare_calibration_data():
     """准备标定所需的元数据（不预加载全部股票数据，节省内存）
 
     只加载：
-    1. 文件路径映射 (code → file_path)
-    2. 所有日期的并集（通过只读datetime列轻量扫描）
+    1. 文件路径映射 (code → file_path) — 使用raw_data全量历史数据
+    2. 所有日期的并集（通过只读日期列轻量扫描）
     3. 指数数据用于市场状态检测
     4. 基本面数据（FundamentalData内部加载）
+    5. 概念板块映射（stock_concept_map.pkl，与信号引擎对齐）
     """
     config = load_config()
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    data_path = os.path.join(project_root, 'data/stock_data/backtrader_data/')
+    raw_data_path = os.path.join(project_root, 'data/stock_data/raw_data/')
     fundamental_path = os.path.join(project_root, 'data/stock_data/fundamental_data/')
 
-    # ---- 扫描文件路径 + 轻量收集日期（只读datetime列） ----
+    # ---- 扫描raw_data目录: 每个股票一个子目录 ----
     stock_file_map = {}  # {code: file_path}
     all_dates = set()
     index_df = None
-    all_items = os.listdir(data_path)
 
-    for item in tqdm(all_items, desc="scanning files"):
-        if item.endswith('_qfq.csv'):
-            name = item[:-8]
-        elif item.endswith('_hfq.csv'):
-            name = item[:-8]
-        else:
+    for code in tqdm(os.listdir(raw_data_path), desc="scanning files"):
+        code_dir = os.path.join(raw_data_path, code)
+        if not os.path.isdir(code_dir):
             continue
-
-        file_path = os.path.join(data_path, item)
-        stock_file_map[name] = file_path
-
-        # 轻量扫描：只读datetime列收集日期
+        qfq_file = os.path.join(code_dir, 'qfq.csv')
+        if not os.path.exists(qfq_file):
+            continue
+        stock_file_map[code] = qfq_file
+        # 轻量扫描：只读日期列
         try:
-            dates = pd.read_csv(file_path, usecols=['datetime'], parse_dates=['datetime'])
-            all_dates.update(dates['datetime'].tolist())
+            dates = pd.read_csv(qfq_file, usecols=['日期'], parse_dates=['日期'])
+            all_dates.update(dates['日期'].tolist())
         except Exception:
             continue
 
     stock_codes = [c for c in stock_file_map.keys() if c != "sh000001"]
+
+    # 只保留近年数据用于标定（2020年以后）
+    all_dates = sorted(d for d in all_dates if d >= pd.Timestamp('2020-01-01'))
+    print(f"交易日期: {len(all_dates)} 天 (2020-01-01 起)")
 
     # ---- 只验证基本面数据路径存在（worker各自加载） ----
     fund_path_ok = fundamental_path and os.path.exists(fundamental_path)
@@ -330,7 +334,9 @@ def prepare_calibration_data():
     # ---- 生成市场状态（需要完整指数数据） ----
     regime_lookup = None
     if "sh000001" in stock_file_map:
-        index_df = pd.read_csv(stock_file_map["sh000001"], parse_dates=['datetime'])
+        index_df = pd.read_csv(stock_file_map["sh000001"], parse_dates=['date'])
+        if 'date' in index_df.columns:
+            index_df.rename(columns={'date': 'datetime'}, inplace=True)
         detector = MarketRegimeDetector()
         regime_result = detector.generate(index_df)
         regime_lookup = {}
@@ -344,9 +350,31 @@ def prepare_calibration_data():
               f"熊市={sum(1 for v in regime_lookup.values() if v == -1)}")
         del index_df, regime_result
 
+    # ---- 加载概念板块映射（与信号引擎对齐） ----
+    concept_map = {}
+    concept_map_path = os.path.join(project_root, 'data', 'stock_concept_map.pkl')
+    if os.path.exists(concept_map_path):
+        with open(concept_map_path, 'rb') as f:
+            raw_concept_map = pickle.load(f)
+        # 过滤宽泛标签概念
+        STYLE_KW = ['融资融券', '深股通', '沪股通', '富时罗素', '标准普尔', 'MSCI',
+                     '创业板综', '机构重仓', 'QFII', '破增发', '破发股', '昨日高',
+                     '中证500', '深成500', '中盘股', '小盘股', '央国企改革',
+                     '西部大开发', '年报预增', '专精特新', '上证380', 'HS300',
+                     '微盘股', '百元股', '大盘股', '小盘成长', '小盘价值',
+                     '转债标的', '长江三角', '深圳特区', '破净股', '创投']
+        for code, concepts in raw_concept_map.items():
+            filtered = [c for c in concepts if not any(kw in c for kw in STYLE_KW)]
+            if filtered:
+                concept_map[code] = filtered
+        print(f"概念板块映射: {len(concept_map)} 只股票, "
+              f"{len(set(c for clist in concept_map.values() for c in clist))} 个概念")
+    else:
+        print("警告: 未找到概念板块映射文件，回退到行业关键词")
+
     _log_memory("after prepare")
 
-    return stock_file_map, fundamental_path if fund_path_ok else None, regime_lookup, stock_codes, sorted(all_dates)
+    return stock_file_map, fundamental_path if fund_path_ok else None, regime_lookup, stock_codes, sorted(all_dates), concept_map
 
 
 def _calc_max_workers():
@@ -374,8 +402,15 @@ def _calc_max_workers():
     return 2
 
 
-def compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates):
-    """计算所有股票的因子数据（spawn模式，避免fork内存复制）
+def compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates,
+                         concept_map=None):
+    """计算所有股票的因子数据（spawn模式，支持概念板块标定）
+
+    核心优化：
+    1. spawn上下文：每个worker独立启动，不继承父进程内存（避免COW复制导致OOM）
+    2. 共享参数通过initargs传递，per-stock arg仅(code, file_path)
+    3. 结果流式写入磁盘分块，避免内存中同时持有全部结果
+
 
     核心优化：
     1. spawn上下文：每个worker独立启动，不继承父进程内存（避免COW复制导致OOM）
@@ -413,7 +448,8 @@ def compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_c
     ctx = multiprocessing.get_context('spawn')
     with ctx.Pool(num_workers,
                   initializer=_init_calib_worker,
-                  initargs=(fundamental_path, stock_codes, factor_dates, lookback, forward_period)) as pool:
+                  initargs=(fundamental_path, stock_codes, factor_dates, lookback, forward_period,
+                            concept_map)) as pool:
         for res in tqdm(pool.imap(_calibrate_stock_worker, args_list, chunksize=10),
                        total=len(args_list), desc="计算因子"):
             chunk_buffer.extend(res)
@@ -482,10 +518,18 @@ def _flush_buffer(buffer, temp_dir, temp_files):
 
 
 def _read_and_merge_chunks(temp_files):
-    """逐文件读取chunk并合并，读取完立即删除临时文件"""
-    chunks = []
+    """逐文件读取chunk并迭代合并，读取完立即删除临时文件
+
+    迭代concat避免同时持有所有chunk DataFrame + 最终合并结果（峰值内存翻倍）。
+    """
+    result = None
     for f in temp_files:
-        chunks.append(pd.read_pickle(f))
+        chunk = pd.read_pickle(f)
+        if result is None:
+            result = chunk
+        else:
+            result = pd.concat([result, chunk], ignore_index=True)
+        del chunk
         try:
             os.remove(f)
         except Exception:
@@ -494,7 +538,7 @@ def _read_and_merge_chunks(temp_files):
         os.rmdir(os.path.dirname(temp_files[0]))
     except Exception:
         pass
-    return pd.concat(chunks, ignore_index=True)
+    return result if result is not None else pd.DataFrame()
 
 
 def _downcast_df(df):
@@ -521,7 +565,6 @@ def _cross_sectional_ic(df, factor_name, value_col='future_ret', min_samples=10)
     for _, group in df.groupby('date', sort=False):
         valid = group[[factor_name, value_col]].dropna()
         if len(valid) >= min_samples:
-            # 检查因子值是否有方差（避免ConstantInputWarning）
             if valid[factor_name].nunique() <= 1:
                 continue
             ic, _ = stats.spearmanr(valid[factor_name], valid[value_col])
@@ -530,17 +573,75 @@ def _cross_sectional_ic(df, factor_name, value_col='future_ret', min_samples=10)
     return ic_values
 
 
-def calibrate_industry_regime(factor_df, candidate_factors):
-    """按行业×市场状态标定因子
+def _cross_sectional_ic_batch(regime_df, candidate_factors, value_col='future_ret', min_samples=10):
+    """批量计算所有候选因子的截面IC — 直接Spearman公式，避免scipy开销
 
-    Args:
-        factor_df: 因子数据DataFrame
-        candidate_factors: 候选因子列表
+    核心优化：
+    1. 一次groupby完成所有因子IC计算（而非每个因子重复groupby）
+    2. 使用 Spearman 简化公式: rs = 1 - 6*sum(d²)/(n*(n²-1))
+       避免 scipy.stats.spearmanr 的重复调用开销（~50x speedup per call）
+    3. 预计算 future_ret rank（所有因子共用）
 
     Returns:
-        dict: {industry: {regime_name: {factor: ic_metrics}}}
+        dict: {factor_name: [ic_values]}
     """
-    if factor_df.empty or 'industry' not in factor_df.columns:
+    factor_ic_lists = {fn: [] for fn in candidate_factors if fn in regime_df.columns}
+    if not factor_ic_lists:
+        return {}
+
+    factor_cols = list(factor_ic_lists.keys())
+
+    for _, group in regime_df.groupby('date', sort=False):
+        n_total = len(group)
+        if n_total < min_samples:
+            continue
+
+        ret_mask = group[value_col].notna()
+        if ret_mask.sum() < min_samples:
+            continue
+        ret_rank = group.loc[ret_mask, value_col].rank()
+
+        for fn in factor_cols:
+            fn_mask = group[fn].notna()
+            common = ret_mask & fn_mask
+            n = common.sum()
+            if n < min_samples:
+                continue
+
+            fn_vals = group.loc[common, fn]
+            if fn_vals.nunique() <= 1:
+                continue
+
+            fn_rank = fn_vals.rank()
+            # Align ret_rank to same index
+            cr = ret_rank.reindex(fn_rank.index)
+
+            # Spearman = Pearson on ranks.
+            # Use np.corrcoef which handles ties correctly (unlike the simplified
+            # formula rs=1-6*sum(d²)/(n*(n²-1)) which assumes no ties).
+            # Still much faster than scipy.stats.spearmanr per call.
+            corr = np.corrcoef(fn_rank.values, cr.values)[0, 1]
+            if not np.isnan(corr):
+                factor_ic_lists[fn].append(corr)
+
+    return factor_ic_lists
+
+
+def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None):
+    """按概念板块×市场状态标定因子
+
+    关键：每个概念使用ALL属于它的股票（不限于主概念），
+    与信号引擎的查找逻辑保持一致（一只股票→第一个有配置的概念）。
+
+    Args:
+        factor_df: 因子数据DataFrame（含code列）
+        candidate_factors: 候选因子列表
+        concept_map: {code: [concept_names]} 概念板块映射
+
+    Returns:
+        dict: {concept: {regime_name: {factor: ic_metrics}}}
+    """
+    if factor_df.empty:
         return {}
 
     # 确保日期类型正确
@@ -548,32 +649,50 @@ def calibrate_industry_regime(factor_df, candidate_factors):
         factor_df = factor_df.copy()
         factor_df['date'] = pd.to_datetime(factor_df['date'])
 
-    industries = factor_df['industry'].dropna().unique()
-    regime_map = {1: 'bull', 0: 'neutral', -1: 'bear'}
+    # 构建概念→代码映射（一只股票属于多个概念，每个概念包含所有关联股票）
+    if concept_map:
+        codes_in_df = set(factor_df['code'].unique())
+        concept_to_codes = defaultdict(list)
+        for code, concepts in concept_map.items():
+            if code in codes_in_df:
+                for c in concepts:
+                    concept_to_codes[c].append(code)
+        # 过滤：至少需要min_codes只股票
+        min_codes = 20
+        concepts = sorted(
+            c for c, clist in concept_to_codes.items()
+            if len(clist) >= min_codes
+        )
+        print(f"标定概念数: {len(concepts)} (min_codes={min_codes})")
+    else:
+        concepts = sorted(factor_df['industry'].dropna().unique())
+        concept_to_codes = None
+        print(f"标定行业数: {len(concepts)} (回退industry列)")
 
+    regime_map = {1: 'bull', 0: 'neutral', -1: 'bear'}
     calibration_results = {}
 
-    for industry in tqdm(industries, desc="标定行业"):
-        ind_df = factor_df[factor_df['industry'] == industry]
+    for concept in tqdm(concepts, desc="标定概念"):
+        if concept_to_codes:
+            ind_df = factor_df[factor_df['code'].isin(concept_to_codes[concept])]
+        else:
+            ind_df = factor_df[factor_df['industry'] == concept]
         if len(ind_df) < 100:
             continue
 
-        calibration_results[industry] = {}
+        calibration_results[concept] = {}
 
         for regime_val, regime_name in regime_map.items():
             regime_df = ind_df[ind_df['regime'] == regime_val]
             if len(regime_df) < 50:
                 continue
 
+            # 批量计算所有因子的截面IC（一次groupby，提速~30x）
+            factor_ic_lists = _cross_sectional_ic_batch(regime_df, candidate_factors)
+
             factor_metrics = {}
 
-            for factor_name in candidate_factors:
-                if factor_name not in regime_df.columns:
-                    continue
-
-                # 截面IC计算：按日期groupby代替pivot，避免内存爆炸
-                ic_list = _cross_sectional_ic(regime_df, factor_name)
-
+            for factor_name, ic_list in factor_ic_lists.items():
                 if len(ic_list) < 10:
                     continue
 
@@ -609,7 +728,7 @@ def calibrate_industry_regime(factor_df, candidate_factors):
                 }
 
             if factor_metrics:
-                calibration_results[industry][regime_name] = factor_metrics
+                calibration_results[concept][regime_name] = factor_metrics
 
     return calibration_results
 
@@ -675,30 +794,43 @@ def _compute_combined_factor_ic(regime_df, factor_names, weights):
     }
 
 
-def select_best_factors(calibration_results, factor_df, max_factors=3, min_combined_ir=0.02):
+def select_best_factors(calibration_results, factor_df, concept_map=None, max_factors=3, min_combined_ir=0.02):
     """贪心前向选择最优因子组合，验证组合IC
 
-    对每个行业×市场状态：
-    1. 按combined_ir排序候选因子
-    2. 贪心前向选择：逐步添加因子，选择使组合IC最高的因子
-    3. 验证最终组合因子的IC
-    4. 选择使组合IC最高的K值
+    使用与calibrate_industry_regime一致的概念分组（所有属于该概念的股票）。
 
     Args:
         calibration_results: calibrate_industry_regime的输出
-        factor_df: 因子数据DataFrame（用于计算组合IC）
+        factor_df: 因子数据DataFrame（含code列）
+        concept_map: {code: [concept_names]} 概念板块映射
         max_factors: 每个行业每个状态最多选几个因子
         min_combined_ir: 最低combined_ir阈值
 
     Returns:
         dict: 适合写入factor_config.yaml的格式
     """
-    industry_config = {}
+    result_config = {}
     regime_map = {'neutral': 0, 'bull': 1, 'bear': -1}
 
-    for industry, regimes in calibration_results.items():
+    # 构建概念→代码映射（与calibrate_industry_regime一致）
+    if concept_map:
+        codes_in_df = set(factor_df['code'].unique())
+        concept_to_codes = defaultdict(list)
+        for code, concepts in concept_map.items():
+            if code in codes_in_df:
+                for c in concepts:
+                    concept_to_codes[c].append(code)
+    else:
+        concept_to_codes = None
+
+    for concept, regimes in calibration_results.items():
         config = {}
-        ind_df = factor_df[factor_df['industry'] == industry] if 'industry' in factor_df.columns else factor_df
+        if concept_to_codes and concept in concept_to_codes:
+            ind_df = factor_df[factor_df['code'].isin(concept_to_codes[concept])]
+        elif 'industry' in factor_df.columns:
+            ind_df = factor_df[factor_df['industry'] == concept]
+        else:
+            ind_df = factor_df
 
         for regime_name in ['neutral', 'bull', 'bear']:
             if regime_name not in regimes:
@@ -788,9 +920,9 @@ def select_best_factors(calibration_results, factor_df, max_factors=3, min_combi
                 config['bear_combined_ic'] = round(combined_ic, 4)
 
         if config:
-            industry_config[industry] = config
+            result_config[concept] = config
 
-    return industry_config
+    return result_config
 
 
 def update_factor_config(industry_config, config_path):
@@ -891,11 +1023,12 @@ def main():
 
     # Step 1: 扫描元数据（不预加载全部股票数据）
     print("\n=== Step 1: 扫描数据 ===")
-    stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates = prepare_calibration_data()
+    stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates, concept_map = prepare_calibration_data()
 
     # Step 2: 流式计算因子数据（spawn模式，worker自行加载CSV和FundamentalData）
     print("\n=== Step 2: 计算因子数据 ===")
-    factor_df = compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates)
+    factor_df = compute_factor_data(stock_file_map, fundamental_path, regime_lookup, stock_codes, all_dates,
+                                     concept_map=concept_map)
 
     # 释放不再需要的中间数据
     del stock_file_map, fundamental_path, all_dates
@@ -910,9 +1043,9 @@ def main():
           f"{factor_df['industry'].nunique()} 个行业, "
           f"{factor_df['code'].nunique()} 只股票")
 
-    # Step 3: 标定
+    # Step 3: 标定（使用concept_map动态分组，所有属于该概念的股票参与IC计算）
     print("\n=== Step 3: 标定 ===")
-    calibration_results = calibrate_industry_regime(factor_df, candidate_factors)
+    calibration_results = calibrate_industry_regime(factor_df, candidate_factors, concept_map=concept_map)
 
     # 统计
     n_industries = len(calibration_results)
@@ -924,7 +1057,7 @@ def main():
 
     # Step 4: 贪心前向选择最优因子（验证组合IC）
     print("\n=== Step 4: 贪心前向选择最优因子 ===")
-    industry_config = select_best_factors(calibration_results, factor_df)
+    industry_config = select_best_factors(calibration_results, factor_df, concept_map=concept_map)
     print(f"选中行业: {len(industry_config)} 个")
     for ind, cfg in industry_config.items():
         neutral = cfg.get('factors', [])

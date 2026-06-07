@@ -67,7 +67,32 @@ def _load_industry_factors():
     return {}
 
 
+def _load_concept_map():
+    """加载概念板块映射（与标定对齐，用于因子配置查找）"""
+    import pickle
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    map_path = os.path.join(project_root, 'data', 'stock_concept_map.pkl')
+    if not os.path.exists(map_path):
+        return {}
+    with open(map_path, 'rb') as f:
+        raw = pickle.load(f)
+    # 过滤宽泛标签概念（与标定一致）
+    STYLE_KW = ['融资融券', '深股通', '沪股通', '富时罗素', '标准普尔', 'MSCI',
+                 '创业板综', '机构重仓', 'QFII', '破增发', '破发股', '昨日高',
+                 '中证500', '深成500', '中盘股', '小盘股', '央国企改革',
+                 '西部大开发', '年报预增', '专精特新', '上证380', 'HS300',
+                 '微盘股', '百元股', '大盘股', '小盘成长', '小盘价值',
+                 '转债标的', '长江三角', '深圳特区', '破净股', '创投']
+    result = {}
+    for code, concepts in raw.items():
+        filtered = [c for c in concepts if not any(kw in c for kw in STYLE_KW)]
+        if filtered:
+            result[code] = filtered
+    return result
+
+
 INDUSTRY_FACTOR_CONFIG = _load_industry_factors()
+STOCK_CONCEPT_MAP = _load_concept_map()  # 概念板块→因子配置查找（与标定对齐）
 
 
 def _safe_get_arr(ind: dict, key: str, n: int, default):
@@ -154,7 +179,7 @@ class SignalEngine:
         # 信号阈值（从配置文件加载）
         signal_config = config_loader.get('signal', {})
         self.buy_threshold = signal_config.get('buy_threshold', 0.12)
-        self.sell_threshold = signal_config.get('sell_threshold', -0.2)
+        self.sell_threshold = signal_config.get('sell_threshold', -0.35)
 
         # 卖出趋势保护阈值（防止趋势中途虚假卖出）
         self.trend_sell_threshold_strong = signal_config.get('trend_sell_threshold_strong', -0.15)
@@ -175,6 +200,8 @@ class SignalEngine:
         self.resonance_sys1_buy_mult = resonance_cfg.get('sys1_buy_threshold_mult', 0.7)
         self.resonance_sys2_cf_threshold = resonance_cfg.get('sys2_cf_score_threshold', 0.5)
         self.resonance_sys3_ns_threshold = resonance_cfg.get('sys3_ns_score_threshold', 0.3)
+        self.resonance_sys2_cf_sell_threshold = resonance_cfg.get('sys2_cf_sell_threshold', 0.35)
+        self.resonance_sys3_ns_sell_threshold = resonance_cfg.get('sys3_ns_sell_threshold', 0.2)
 
         # === TI增强 & 自适应融合参数 ===
         self.ti_boost_scale = signal_config.get('ti_boost_scale', 2.0)
@@ -231,9 +258,12 @@ class SignalEngine:
 
         # === 动态因子质量阈值 ===
         dyn_cfg = config_loader.get('dynamic_factor', {})
-        # DYN质量阈值：对齐缓存层 combined_ir 最低门槛(0.015)，避免死区
-        # 缓存层已做严格质量过滤，此处过度收紧只会让99%的DYN白算
-        self.dyn_quality_threshold = dyn_cfg.get('min_quality_threshold', 0.04) * 0.5
+        # DYN质量阈值：对齐缓存层 combined_ir 最低门槛(0.015)→阈值0.015
+        # 原0.04*0.5=0.02仍高于缓存层最低门槛0.015, 导致部分合格DYN因子被丢弃
+        self.dyn_quality_threshold = min(
+            dyn_cfg.get('min_quality_threshold', 0.04) * 0.5,
+            0.015  # 对齐缓存层 combined_ir 最低门槛
+        )
 
         # === Chan增强门控阈值（B1/B2买点）===
         chan_enh_cfg = config_loader.get('chan_theory_enhanced', {})
@@ -361,8 +391,8 @@ class SignalEngine:
                     last_date = bar_date
                 heat_arr[i] = calc.get_concept_heat(code)
             indicators['concept_heat'] = heat_arr
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[ConceptHeat] {code}: 题材热度注入失败 ({e}), 使用默认0.5")
         self._preload_stock_fundamentals(code, dates)
 
         n = len(close)
@@ -408,6 +438,8 @@ class SignalEngine:
                     bom_quality_score=0.3,
                     stroke_phase=0.0, top_fractal_volume=0.0,
                     ma_trend_up=False, profit_declining=False,
+                    chan_buy_strength=0.0, chan_sell_strength=0.0,
+                    b3_trend_confirmed=False,
                     mom_60d=0.0, dist_ma60=0.0, max_dd_20d=0.0, vol_regime=1.0,
                     weekly_trend_up=False, monthly_trend_up=False,
                     weekly_trend_strength=0.0, monthly_trend_strength=0.0,
@@ -457,20 +489,43 @@ class SignalEngine:
                 price_ok = price_above_ma20  # 形态信号放宽均线要求
 
             b1_strong = (bp_buy == 1 and chan_buy_sig and sl >= 2)
+            b1_weak = (bp_buy == 1 and chan_buy_sig and sl >= 1)  # B1一买即使sl=1也有效
             is_b3 = (bp_buy == 3 and chan_buy_sig)
             if is_b3 and sl >= 2:
                 max_dist = 0.40
             elif is_b3:
                 max_dist = 0.35
             elif b1_strong:
+                max_dist = 0.30  # B1强信号放宽: 0.25→0.30, 抄底时允许更大偏离
+            elif b1_weak:
                 max_dist = 0.25
             else:
                 max_dist = 0.30
             price_not_extended = dist_ma20 < max_dist
 
+            # B1买点阈值放宽: 一买是底部反转信号, 因子分数可能偏低, 用0.75x阈值
+            _b1_threshold_mult = 0.75 if (b1_strong or b1_weak) else 1.0
+            _effective_buy_th = buy_th * _b1_threshold_mult
+
             buy = (not hard_reject and not np.isnan(score) and
-                   (score > buy_th or chan_force_buy or vol_open_force_buy) and
+                   (score > _effective_buy_th or chan_force_buy or vol_open_force_buy) and
                    price_ok and price_not_extended)
+
+            # === 下跌趋势硬过滤: trend_type==-2禁止新买入 ===
+            # BP=1(一买)在下跌末端触发, 是唯一允许在下跌趋势中买入的情形
+            _trend_type = int(result['trend_type'][i])
+            _is_b1 = (bp_buy == 1 and chan_buy_sig and sl >= 1)
+            if buy and _trend_type == -2 and not _is_b1:
+                buy = False
+
+            # === MTF分级处理: Chan买力精准替代粗粒度MTF过滤 ===
+            # 有强Chan买力(buy_strength>=0.3)时豁免MTF限制，否则周线下跌→拒绝
+            _w_up = bool(result['weekly_trend_up'][i])
+            _m_up = bool(result['monthly_trend_up'][i])
+            _chan_buy_strength = float(_safe_get_arr(indicators, 'buy_strength', n, 0.0)[i])
+            if buy and not _w_up and not _is_b1:
+                if _chan_buy_strength < 0.30:  # Chan买力不够 → 严格执行MTF
+                    buy = False
 
             # === 因子质量门控: 禁止低质量因子生成买入信号 ===
             # 形态信号(vol_open_force_buy)同Chan强买一样豁免质量门控
@@ -485,7 +540,7 @@ class SignalEngine:
                     # 预计算因子标签来确定质量层级
                     _has_fund = bool(result['has_fundamental'][i])
                     _has_style = bool(float(result['style_confidence'][i]) > 0.3)
-                    _style_code = str(result['style_regime'][i])[:2].upper() if _has_style else ''
+                    _style_code = str(result['style_regime'][i]).replace('_','')[:2].upper() if _has_style else ''
                     _has_sm = bool(float(result['smart_money'][i]) > 0.15)
                     _has_div = bool(float(bottom_div_arr[i]) > 0.3 or float(top_div_arr[i]) > 0.3)
                     _n_resonance = int(result['n_buy_systems'][i])
@@ -539,7 +594,11 @@ class SignalEngine:
             # MA60止损: 跌破MA60且score转负 → 强制卖出
             ma60_stop = (not price_above_ma60) and score < 0 and close_p > 0 and ma60_v > 0
 
-            sell = not np.isnan(score) and (score < sell_th or chan_force_sell or ma60_stop)
+            # 卖出需要方向确认：纯分数低于阈值不够，需缠论卖点/门控偏空/均线破位任一确认
+            # 门控质量<0.75且score<0才触发卖出（避免门控差但仍在涨的持仓被误清）
+            sell_confirmed = (chan_sell_sig and sl <= -1) or ma60_stop
+            sell_confirmed = sell_confirmed or (float(result['_gate_quality'][i]) < 0.75 and score < 0)
+            sell = not np.isnan(score) and (score < sell_th or chan_force_sell) and sell_confirmed
 
             # 因子标签
             factor_tags = []
@@ -576,6 +635,9 @@ class SignalEngine:
                 chan_buy_point=int(result['chan_buy_point'][i]),
                 chan_sell_point=int(result['chan_sell_point'][i]),
                 signal_level=int(result['signal_level'][i]),
+                chan_buy_strength=float(result['chan_buy_strength'][i]),
+                chan_sell_strength=float(result['chan_sell_strength'][i]),
+                b3_trend_confirmed=bool(result['b3_trend_confirmed'][i]),
                 resonance_systems=int(result['resonance_systems'][i]),
                 capital_flow_score=float(result['capital_flow_score'][i]),
                 news_sentiment_score=float(result['news_sentiment_score'][i]),
@@ -1000,19 +1062,23 @@ class SignalEngine:
         """
         valid = s['valid']
 
-        # === 1. 纯因子分数（归一化到[-1,1]）===
+        # === 1. 纯因子分数（因子值已在[-1,1]，无需/10压缩） ===
         score = np.clip(s['factor_value'], -10.0, 10.0)
         fund_mask = ~s['is_industry'] & (s['fundamental_score'] > 0)
         score[fund_mask] += s['fundamental_score'][fund_mask] * self.fundamental_weight
-        score /= 10.0
         pre_discount_score = score.copy()
 
         # === 2. 门控质量系数 ===
         gate_grades, hard_rejects = compute_all_gates(ind, n)
         gate_quality = compute_gate_quality(gate_grades)
 
-        # === 3. 门控调整分 ===
-        adjusted_score = score * gate_quality
+        # === 3. 门控调整分 (P0修复: 加法替代乘法, 保留因子排名不被打乱) ===
+        # Gate层1: 连续偏移 (signal_engine — adjusted_score)
+        # 好的gate提分(最多+0.20)，差的gate扣分(最多-0.10)，保留因子排名
+        # gate_quality中性≈1.0, 范围[0.5,2.0], score量级~0.5
+        adjusted_score = score + (gate_quality - 1.0) * 0.20
+        # Gate层2: 硬过滤 (portfolio — chan_passed, gate_q >= 0.85)
+        # 两个层级互补：层1微调排名，层2阻止极差gate的新入场
 
         # === 4. 常用字段 ===
         chan_sl = _safe_get_arr(ind, 'signal_level', n, 0).astype(int)
@@ -1035,9 +1101,10 @@ class SignalEngine:
         n_buy = ((score > self.buy_threshold * self.resonance_sys1_buy_mult).astype(np.int8) +
                  ((cf_score > self.resonance_sys2_cf_threshold) & (cf_dir == 1)).astype(np.int8) +
                  ((ns_score > self.resonance_sys3_ns_threshold) & (ns_dir == 1)).astype(np.int8))
+        # 卖出侧使用独立阈值（流出量级通常小于流入，需更低门槛）
         n_sell = ((score < self.sell_threshold).astype(np.int8) +
-                  ((cf_score > self.resonance_sys2_cf_threshold) & (cf_dir == -1)).astype(np.int8) +
-                  ((ns_score > self.resonance_sys3_ns_threshold) & (ns_dir == -1)).astype(np.int8))
+                  ((cf_score > self.resonance_sys2_cf_sell_threshold) & (cf_dir == -1)).astype(np.int8) +
+                  ((ns_score > self.resonance_sys3_ns_sell_threshold) & (ns_dir == -1)).astype(np.int8))
 
         # === 5. 信号置信度 ===
         close_price = _safe_get_arr(ind, 'close', n, 0.0)
@@ -1129,6 +1196,9 @@ class SignalEngine:
             'chan_buy_point': buy_point_raw,
             'chan_sell_point': sell_point_raw,
             'signal_level': chan_sl,
+            'chan_buy_strength': _safe_get_arr(ind, 'buy_strength', n, 0.0),
+            'chan_sell_strength': _safe_get_arr(ind, 'sell_strength', n, 0.0),
+            'b3_trend_confirmed': _safe_get_arr(ind, 'b3_trend_confirmed', n, 0).astype(bool),
             'resonance_systems': np.maximum(n_buy, n_sell),
             'capital_flow_score': cf_score,
             'news_sentiment_score': ns_score,
@@ -1200,12 +1270,12 @@ class SignalEngine:
             pct = pct_raw  # e.g. 0.45
             # NaN-mask non-matching bars so rolling quantile only sees this regime
             s_regime = pd.Series(np.where(mask, scores, np.nan))
-            # rolling quantile: 包含当前bar，等价于deque append后算percentile
+            # rolling quantile: shift(1)排除当前bar，避免未来函数
+            # 只用当前bar之前的数据计算阈值，与实盘行为一致
             # min_periods=100 等价于 len(buffer) > 100
-            # 注：pd.rolling().quantile() 使用线性插值，与 np.percentile 的 discrete
-            # 分位边界有 <1% 的细微差异，已确认对最终信号方向无影响
-            roll_buy = s_regime.rolling(window=800, min_periods=100).quantile(pct)
-            roll_sell = s_regime.rolling(window=800, min_periods=100).quantile(1.0 - pct)
+            s_shifted = s_regime.shift(1)
+            roll_buy = s_shifted.rolling(window=800, min_periods=100).quantile(pct)
+            roll_sell = s_shifted.rolling(window=800, min_periods=100).quantile(1.0 - pct)
 
             # 只覆写rolling quantile有效的bar（>=100根），其余保留默认阈值
             buy_vals = roll_buy.values
@@ -1344,11 +1414,8 @@ class SignalEngine:
             self._dyn_fail['no_code_or_date'] += 1
             return None
 
-        # 获取当前日期的字符串形式
-        if hasattr(current_date, 'date'):
-            current_date_str = str(current_date.date())
-        else:
-            current_date_str = str(current_date)
+        # P1修复: 统一用 pd.to_datetime 归一化 → YYYY-MM-DD 格式
+        current_date_str = pd.to_datetime(current_date).strftime('%Y-%m-%d')
 
         # 获取股票所属行业
         specific_industry = self._get_specific_industry(code, current_date)
@@ -1415,9 +1482,8 @@ class SignalEngine:
                     import warnings
                     warnings.warn(f'Extreme factor value after compression: {factor_name}={factor_val:.2e} for {code} on {current_date}')
                     factor_val = np.sign(factor_val) * np.tanh(abs(factor_val))
-                # 标定归一化：跟踪因子典型量级 → 归一化 → IC权重真正决定贡献
-                self._update_factor_scale(factor_name, abs(factor_val))
-                factor_scores.append(self._normalize_factor(factor_name, factor_val))
+                # 使用原始压缩因子值（标定IC权重已基于压缩值计算，归一化会破坏权重语义）
+                factor_scores.append(factor_val)
                 w = factor_weights[i] if factor_weights and i < len(factor_weights) else 1.0
                 valid_weights.append(w)
                 valid_factors.append(factor_name)
@@ -1688,8 +1754,8 @@ class SignalEngine:
             if factor_val is not None and not np.isnan(factor_val):
                 factor_dir = direction.get(factor_name, 1)
                 val = factor_val * factor_dir
-                self._update_factor_scale(factor_name, abs(factor_val))
-                factor_scores.append(self._normalize_factor(factor_name, val))
+                # 使用原始压缩因子值（标定IC权重已基于压缩值计算，归一化会破坏权重语义）
+                factor_scores.append(val)
                 valid_factors.append(factor_name)
                 # 获取IC权重
                 if weights and i < len(weights):
@@ -1737,20 +1803,20 @@ class SignalEngine:
         style_regime = market_info.get('style_regime', 'balanced')
         style_confidence = market_info.get('style_confidence', 0.0)
 
-        if style_confidence < 0.3 or style_regime == 'balanced':
+        if style_confidence < 0.3 or style_regime.startswith('balanced'):
             return 0.0
 
-        if style_regime == 'small_cap':
+        if 'small_cap' in style_regime:
             price_pos = self._safe_get(ind, 'price_position_20', idx, 0.5)
             return -price_pos * 0.5 + 0.25
-        elif style_regime == 'large_cap':
+        elif 'large_cap' in style_regime:
             price_pos = self._safe_get(ind, 'price_position_20', idx, 0.5)
             return price_pos * 0.5 - 0.25
-        elif style_regime == 'growth':
+        elif '_growth' in style_regime:
             mom_10 = self._safe_get(ind, 'mom_10', idx, 0)
             # 使用 np.tanh 压缩替代 clip，保留相对大小
             return np.tanh(mom_10 * 2) * 0.3
-        elif style_regime == 'value':
+        elif '_value' in style_regime:
             vol_10 = self._safe_get(ind, 'volatility_10', idx, 0.02)
             # 使用 np.tanh 压缩替代 clip，保留相对大小
             return np.tanh((0.02 - vol_10) * 5) * 0.3
@@ -1853,10 +1919,16 @@ class SignalEngine:
             return 'default'
 
     def _get_specific_industry(self, code, current_date) -> str:
-        """获取具体行业名（使用INDUSTRY_KEYWORDS映射）"""
+        """获取具体行业名（优先概念板块，回退细行业名）"""
+        # 优先使用概念板块标定（与离线标定对齐）
+        if code in STOCK_CONCEPT_MAP:
+            for concept in STOCK_CONCEPT_MAP[code]:
+                if concept in INDUSTRY_FACTOR_CONFIG:
+                    return concept
+
         has_ic = hasattr(self, 'industry_codes') and self.industry_codes
 
-        # 首先尝试从 industry_codes 查找（使用预建反向索引，O(1)）
+        # 尝试从 industry_codes 查找（使用预建反向索引，O(1)）
         if has_ic:
             if not hasattr(self, '_industry_code_reverse_map'):
                 self._industry_code_reverse_map = {
@@ -1874,15 +1946,15 @@ class SignalEngine:
                 raw_industry = entry.get('industry')
                 if raw_industry:
                     cleaned = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
+                    # 返回细行业名：如果在配置中直接返回，否则返回原始名
+                    if cleaned in INDUSTRY_FACTOR_CONFIG:
+                        return cleaned
+                    # 尝试关键词匹配作为回退
                     for config_key, keywords in INDUSTRY_KEYWORDS.items():
-                        if raw_industry in keywords or cleaned in keywords:
+                        if any(kw in cleaned for kw in keywords):
                             if config_key in INDUSTRY_FACTOR_CONFIG:
                                 return config_key
-                        for kw in keywords:
-                            if kw in raw_industry or kw in cleaned:
-                                if config_key in INDUSTRY_FACTOR_CONFIG:
-                                    return config_key
-                    return raw_industry
+                    return cleaned
 
         # Fallback: 直接查询 fundamental_data
         has_fd = hasattr(self, 'fundamental_data') and self.fundamental_data
@@ -1891,15 +1963,16 @@ class SignalEngine:
                 raw_industry = self.fundamental_data.get_industry(code, current_date)
                 if not raw_industry:
                     return None
-                cleaned_industry = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
+                cleaned = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
+                # 返回细行业名：如果在配置中直接返回
+                if cleaned in INDUSTRY_FACTOR_CONFIG:
+                    return cleaned
+                # 关键词回退
                 for config_key, keywords in INDUSTRY_KEYWORDS.items():
-                    if raw_industry in keywords or cleaned_industry in keywords:
+                    if any(kw in cleaned for kw in keywords):
                         if config_key in INDUSTRY_FACTOR_CONFIG:
                             return config_key
-                    for kw in keywords:
-                        if kw in raw_industry or kw in cleaned_industry:
-                            if config_key in INDUSTRY_FACTOR_CONFIG:
-                                return config_key
+                return cleaned
             except Exception:
                 pass
         return None
