@@ -121,3 +121,55 @@ def get_industry_category(industry_name: str) -> str:
 def get_all_categories() -> list:
     """获取所有行业分类列表"""
     return list(INDUSTRY_KEYWORDS.keys())
+
+
+def build_fine_industry_map(fundamental_data, stock_codes: list, min_stocks: int = 10) -> dict:
+    """从基本面数据构建细粒度行业映射
+
+    使用"所处行业"字段直接分组，替代关键词匹配的20个大类。
+    过滤掉样本过少的行业（默认<10只股票）。
+
+    Args:
+        fundamental_data: FundamentalData实例
+        stock_codes: 股票代码列表
+        min_stocks: 最少股票数门槛
+
+    Returns:
+        {industry_name: [stock_codes]}
+    """
+    import pandas as pd
+    from collections import Counter
+
+    # 扫描行业分布
+    ind_counts = Counter()
+    code_industry = {}
+
+    for code in stock_codes:
+        try:
+            # 使用最近日期获取行业
+            ind = fundamental_data.get_industry(code, pd.Timestamp('2025-06-01'))
+            if ind and isinstance(ind, str) and ind.strip():
+                cleaned = ind.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
+                if cleaned:
+                    ind_counts[cleaned] += 1
+                    code_industry[code] = cleaned
+        except Exception:
+            pass
+
+    # 构建映射，过滤小行业
+    industry_map = {}
+    unmapped = []
+    for code in stock_codes:
+        ind = code_industry.get(code)
+        if ind and ind_counts.get(ind, 0) >= min_stocks:
+            industry_map.setdefault(ind, []).append(code)
+        else:
+            unmapped.append(code)
+
+    # 未匹配的股票归入"其他"
+    if unmapped:
+        industry_map['其他'] = unmapped
+
+    print(f"细行业映射: {len(industry_map)} 组, 最大={max(len(v) for v in industry_map.values())}, "
+          f"最小={min(len(v) for v in industry_map.values())}, 未匹配={len(unmapped)}")
+    return industry_map

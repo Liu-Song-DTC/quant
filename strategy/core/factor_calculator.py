@@ -1625,6 +1625,89 @@ def _macd(close: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9) ->
     return macd_line, signal_line, histogram
 
 
+# ==================== 涨停缩量回踩5日线低吸 ====================
+
+def _compute_limit_pullback_score(ind: Dict[str, np.ndarray], idx: int) -> float:
+    """涨停后缩量回踩5日线低吸因子
+
+    模式：涨停启动 → 缩量整理（非出货）→ 回踩MA5 → 低吸机会
+    得分范围：tanh压缩到(-1, 1)，正值为低吸买入信号
+    """
+    close = ind['close']
+    high = ind.get('high', close)
+    volume = ind.get('volume', None)
+    if volume is None:
+        turnover = ind.get('turnover_rate', None)
+        vol_arr = turnover if turnover is not None else np.ones(len(close))
+    else:
+        vol_arr = volume
+
+    n = len(close)
+    if idx < 25:
+        return 0.0
+
+    # 1. 寻找最近涨停日（20天内）
+    limit_up_idx = -1
+    lookback = min(idx - 1, 20)
+    for i in range(idx - 1, idx - lookback - 1, -1):
+        if close[i - 1] <= 0 or high[i] <= 0:
+            continue
+        daily_ret = (close[i] - close[i - 1]) / close[i - 1]
+        close_high_ratio = close[i] / high[i]
+        # A股涨停: 涨幅>=9.5%且收盘接近最高价(>=97%)
+        if daily_ret >= 0.095 and close_high_ratio >= 0.97:
+            limit_up_idx = i
+            break
+
+    if limit_up_idx < 0:
+        return 0.0
+
+    days_since = idx - limit_up_idx
+    if days_since < 1 or days_since > 15:
+        return 0.0  # 涨停当日不追/太久远失效
+
+    # 2. 缩量判断: 涨停后均量 vs 涨停日量
+    limit_vol = vol_arr[limit_up_idx]
+    post_vol = np.mean(vol_arr[limit_up_idx + 1:idx + 1]) if idx > limit_up_idx else limit_vol
+    vol_score = 0.0
+    if limit_vol > 0:
+        ratio = post_vol / limit_vol
+        if ratio < 0.5:
+            vol_score = 1.0
+        elif ratio < 0.8:
+            vol_score = 1.0 - (ratio - 0.5) / 0.3
+        else:
+            vol_score = 0.0
+
+    # 3. 回踩MA5判断
+    ma5_arr = ind.get('ma5', None)
+    if ma5_arr is None:
+        ma5_arr = np.array([np.mean(close[max(0, j - 4):j + 1]) for j in range(n)])
+    ma5_val = ma5_arr[idx]
+    if ma5_val <= 0:
+        return 0.0
+
+    price_vs_ma5 = close[idx] / ma5_val
+    if 0.97 <= price_vs_ma5 <= 1.02:
+        dist = abs(price_vs_ma5 - 1.0)
+        pullback_score = 1.0 - dist / 0.03
+    elif 0.95 <= price_vs_ma5 < 0.97:
+        pullback_score = (price_vs_ma5 - 0.95) / 0.02 * 0.5
+    elif 1.02 < price_vs_ma5 <= 1.05:
+        pullback_score = (1.05 - price_vs_ma5) / 0.03 * 0.5
+    else:
+        pullback_score = 0.0
+
+    # 4. MA5趋势: 走平或上行才能低吸
+    ma5_past = ma5_arr[max(0, idx - 5)]
+    ma5_slope = (ma5_val - ma5_past) / ma5_past if ma5_past > 0 else 0
+    trend_score = 1.0 if ma5_slope >= -0.005 else max(0.0, 1.0 + ma5_slope * 100)
+
+    # 5. 综合得分
+    score = vol_score * 0.35 + pullback_score * 0.40 + trend_score * 0.25
+    return float(np.tanh(score * 3))
+
+
 # ==================== 组合因子计算 ====================
 
 def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: float = 0.0) -> Dict[str, float]:
@@ -1791,5 +1874,8 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['ma_alignment'] = ind['ma_alignment'][idx] if not np.isnan(ind['ma_alignment'][idx]) else 0.0
     if 'ema20_slope' in ind:
         result['ema20_slope'] = ind['ema20_slope'][idx] if not np.isnan(ind['ema20_slope'][idx]) else 0.0
+
+    # === 涨停缩量回踩5日线低吸 ===
+    result['limit_pullback_score'] = _compute_limit_pullback_score(ind, idx)
 
     return result

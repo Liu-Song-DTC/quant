@@ -145,6 +145,15 @@ class MarketRegimeDetector:
                 regime_vol_list.append(min(changes / 20 * 5, 1.0))
         self.index_data['regime_volatility'] = regime_vol_list
 
+        # 市场量能环境: 成交额 vs 20日均量
+        if 'volume' in self.index_data.columns:
+            vol = self.index_data['volume']
+            vol_ma20 = vol.rolling(20, min_periods=5).mean()
+            vol_ratio = vol / (vol_ma20 + 1)
+            self.index_data['index_volume_ratio'] = vol_ratio.values
+        else:
+            self.index_data['index_volume_ratio'] = 1.0
+
         return self.index_data
 
     def _calculate_indicators(self):
@@ -363,18 +372,20 @@ class MarketRegimeDetector:
 
         confidence = min(1.0, abs(size_score) * 2)
 
-        # 风格状态判定
-        if abs(size_score) < 0.3:
-            style_regime = 'balanced'
-        elif size_score > 0.3:
-            style_regime = 'small_cap'
-        else:
-            style_regime = 'large_cap'
+        # 风格状态判定 — 组合size+style，保留两个维度
+        size_part = 'balanced'
+        if size_score > 0.3:
+            size_part = 'small_cap'
+        elif size_score < -0.3:
+            size_part = 'large_cap'
 
+        style_part = ''
         if style_score > 0.3:
-            style_regime = 'growth'
+            style_part = '_growth'
         elif style_score < -0.3:
-            style_regime = 'value'
+            style_part = '_value'
+
+        style_regime = size_part + style_part
 
         return style_regime, style_score, size_score, confidence
 

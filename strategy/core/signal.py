@@ -40,6 +40,11 @@ class Signal:
     chan_buy_point: int = 0                  # 买点类型: 0/1/2/3 (来自chan_theory)
     chan_sell_point: int = 0                 # 卖点类型: 0/1/2/3 (来自chan_theory)
     signal_level: int = 0                    # 多级别确认: 3=双级别, 2=线段级, 1=笔级, 0=无
+    b3_trend_confirmed: bool = False         # B3趋势确认: 2+同向不重叠中枢
+
+    # === 缠论信号强度 (来自多级别确认) ===
+    chan_buy_strength: float = 0.0           # 买点综合强度 [0, 1] (来自三级买点+多级别确认)
+    chan_sell_strength: float = 0.0          # 卖点综合强度 [0, 1]
 
     # === 缠论走势类型与中枢 ===
     trend_type: int = 0                     # 走势类型: 2=上涨趋势, -2=下跌趋势, 1=盘整, 0=无
@@ -122,6 +127,9 @@ class Signal:
             'chan_buy_point': self.chan_buy_point,
             'chan_sell_point': self.chan_sell_point,
             'signal_level': self.signal_level,
+            'chan_buy_strength': self.chan_buy_strength,
+            'chan_sell_strength': self.chan_sell_strength,
+            'b3_trend_confirmed': self.b3_trend_confirmed,
             'trend_type': self.trend_type,
             'chan_pivot_zg': self.chan_pivot_zg,
             'chan_pivot_zd': self.chan_pivot_zd,

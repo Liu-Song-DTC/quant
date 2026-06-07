@@ -731,6 +731,79 @@ def build_excel(result, prices, cash, today_str, stock_names):
     wb.save(output_path)
     print(f"\nExcel 已保存: {output_path}")
 
+    # ── 持仓诊断 ──
+    diagnosis = []
+    for code, pos in current_positions.items():
+        if not isinstance(pos, dict):
+            continue
+        shares = pos.get('shares', 0)
+        cost = pos.get('cost_price', 0)
+        live = prices.get(code, 0)
+        mv = shares * live if live > 0 else 0
+        pnl_pct = ((live - cost) / cost * 100) if cost > 0 and live > 0 else 0
+
+        if code in buy_codes:
+            action, advice = '买入', '新建仓位'
+        elif code in sell_codes:
+            action, advice = ('清仓', '锁定利润') if pnl_pct > 0 else ('清仓', '止损退出')
+        elif code in hold_codes:
+            if pnl_pct > 5:
+                action, advice = '持有', '盈利中，可做T'
+            elif pnl_pct > 0:
+                action, advice = '持有', '信号仍在，继续持有'
+            else:
+                action, advice = '持有', '信号仍在，等待反弹'
+        else:
+            action, advice = ('减仓', '无信号') if pnl_pct > 0 else ('清仓', '无信号且浮亏')
+
+        diagnosis.append({
+            'code': code,
+            'shares': shares,
+            'cost': round(cost, 2),
+            'price': round(live, 2),
+            'market_value': round(mv, 2),
+            'pnl_pct': round(pnl_pct, 2),
+            'action': action,
+            'advice': advice,
+        })
+
+    # ── 输出 QMT target.json ──
+    target_json_path = str(ROOT / "trade" / "target.json")
+    target_output = {
+        'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'date': today_str,
+        'cash': cash,
+        'market_regime': result.get('market_regime', {}),
+        'target_positions': result.get('target_positions', {}),
+        'buys': [{
+            'code': s.get('code', ''),
+            'weight': s.get('weight', 0),
+            'target_value': result.get('target_positions', {}).get(s.get('code', ''), 0),
+            'price': prices.get(s.get('code', ''), 0),
+            'score': s.get('score', 0),
+            'industry': s.get('industry', ''),
+            'chan_buy_point': s.get('chan_buy_point', 0),
+            'factor_name': s.get('factor_name', ''),
+        } for s in selections],
+        'sells': [{
+            'code': code,
+            'shares': current_positions[code].get('shares', 0) if isinstance(current_positions.get(code), dict) else 0,
+            'reason': '不在今日目标中',
+        } for code in sell_codes],
+        'diagnosis': diagnosis,
+        'current_positions': {code: {
+            'shares': pos.get('shares', 0) if isinstance(pos, dict) else 0,
+            'cost': pos.get('cost_price', 0) if isinstance(pos, dict) else 0,
+            'market_value': (pos.get('shares', 0) if isinstance(pos, dict) else 0) * prices.get(code, 0),
+        } for code, pos in current_positions.items()},
+        'selections': selections,
+        'prices': prices,
+    }
+    os.makedirs(os.path.dirname(target_json_path), exist_ok=True)
+    with open(target_json_path, 'w', encoding='utf-8') as f:
+        json.dump(target_output, f, ensure_ascii=False, indent=2, default=str)
+    print(f"QMT target.json 已生成: {target_json_path}")
+
     # ── 追加到选股历史CSV（增量记录，不覆盖） ──
     history_path = output_dir / "选股历史.csv"
     history_rows = []

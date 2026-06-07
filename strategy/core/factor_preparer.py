@@ -131,9 +131,15 @@ def _parse_pct(val):
 
 
 def _compute_stock_factors_worker(args):
-    """多进程 worker: 计算单只股票的因子数据（使用统一的factor_calculator）"""
+    """多进程 worker: 计算单只股票的因子数据（从文件读取，避免主进程加载全量数据）"""
     global _worker_fd
-    code, df, factor_dates, lookback, forward_period = args
+    code, filepath, factor_dates, lookback, forward_period = args
+
+    # 从文件读取数据（每个worker只持有一只股票的数据，内存可控）
+    try:
+        df = pd.read_csv(filepath, parse_dates=['datetime'])
+    except Exception:
+        return []
 
     # 使用 datetime 列而非 index
     if 'datetime' in df.columns:
@@ -145,13 +151,14 @@ def _compute_stock_factors_worker(args):
     if n < lookback + forward_period:
         return []
 
-    # 一次性提取价格数据
-    close_arr = df['close'].values
-    high_arr = df['high'].values if 'high' in df.columns else close_arr
-    low_arr = df['low'].values if 'low' in df.columns else close_arr
-    vol_arr = df['volume'].values if 'volume' in df.columns else np.ones(n)
-    open_arr = df['open'].values if 'open' in df.columns else close_arr
-    turnover_arr = df['turnover_rate'].values if 'turnover_rate' in df.columns else None
+    # 一次性提取价格数据（float64 → 计算精度优于 float32）
+    close_arr = df['close'].values.astype(np.float64, copy=False)
+    high_arr = df['high'].values.astype(np.float64, copy=False) if 'high' in df.columns else close_arr
+    low_arr = df['low'].values.astype(np.float64, copy=False) if 'low' in df.columns else close_arr
+    vol_arr = df['volume'].values.astype(np.float64, copy=False) if 'volume' in df.columns else np.ones(n)
+    open_arr = df['open'].values.astype(np.float64, copy=False) if 'open' in df.columns else close_arr
+    turnover_arr = df['turnover_rate'].values.astype(np.float64, copy=False) if 'turnover_rate' in df.columns else None
+    del df  # 释放DataFrame，仅保留numpy数组
 
     # === 使用统一的因子计算器计算所有基础指标 ===
     params = get_default_params()
@@ -232,15 +239,17 @@ def _compute_stock_factors_worker(args):
     return results
 
 
-def prepare_factor_data(stock_data: dict, fd,
+def prepare_factor_data(stock_file_map: dict, fd,
                        detailed_industries: dict,
+                       all_dates: list,
                        num_workers: int = 8) -> Tuple[pd.DataFrame, dict, list]:
     """预计算所有股票的因子数据（用于动态因子选择）
 
     Args:
-        stock_data: {code: DataFrame} 股票历史数据
+        stock_file_map: {code: filepath} 股票文件路径映射（worker从磁盘读取，避免主进程加载全量数据）
         fd: FundamentalData 实例
         detailed_industries: 行业分类配置
+        all_dates: 全市场交易日列表（可从sh000001获取，避免遍历所有股票）
         num_workers: 并行进程数
 
     Returns:
@@ -253,27 +262,18 @@ def prepare_factor_data(stock_data: dict, fd,
     lookback = config_loader.get('industry_factor_config.lookback_days', 250)
     forward_period = config_loader.get('dynamic_factor.forward_period', 20)
 
-    # 构建行业映射
+    # 构建行业映射（使用fundamental_data，无需加载价格数据）
     industry_codes = {cat: [] for cat in detailed_industries.keys()}
     unmatched_count = 0
-    all_dates = set()
-    for df in stock_data.values():
-        if 'datetime' in df.columns:
-            all_dates.update(df['datetime'].tolist())
-        else:
-            all_dates.update(df.index.tolist())
-    all_dates = sorted(all_dates)
+    mid_date = all_dates[len(all_dates) // 2] if all_dates else None
 
-    for code in stock_data.keys():
+    for code in stock_file_map.keys():
         matched = False
         try:
-            # 从日期范围中部采样（避免太早导致基本面数据未发布，也太晚导致已退市）
-            # 行业分类稳定，使用中期日期最大化匹配率
-            sample_date = all_dates[len(all_dates) // 2]
-            ind = fd.get_industry(code, sample_date) if fd else None
+            ind = fd.get_industry(code, mid_date) if fd else None
             # 如果中期日期无数据，尝试用更晚的日期
-            if ind is None:
-                for late_date in reversed(all_dates[-200:]):  # 尝试最后200个日期
+            if ind is None and len(all_dates) > 200:
+                for late_date in reversed(all_dates[-200:]):
                     ind = fd.get_industry(code, late_date) if fd else None
                     if ind:
                         break
@@ -293,17 +293,17 @@ def prepare_factor_data(stock_data: dict, fd,
     all_factor_dates = all_dates[lookback:-forward_period]
     factor_dates = all_factor_dates[::date_step]
     del all_factor_dates  # 释放中间列表
-    print(f"预计算因子数据: {len(factor_dates)} 个时间点 (每{date_step}日采样), {len(stock_data)} 只股票")
-    print(f"行业映射: 未匹配 {unmatched_count}/{len(stock_data)} 只股票")
+    print(f"预计算因子数据: {len(factor_dates)} 个时间点 (每{date_step}日采样), {len(stock_file_map)} 只股票")
+    print(f"行业映射: 未匹配 {unmatched_count}/{len(stock_file_map)} 只股票")
     for cat, codes in industry_codes.items():
         if codes:
             print(f"  {cat}: {len(codes)} 只")
 
-    # 并行计算因子 - 使用 initializer 共享父进程已加载的 FundamentalData
+    # 并行计算因子 - worker从文件读取数据，避免主进程加载全量stock_data_dict
     # fork + COW: 每个 worker 通过 _worker_fd 访问父进程已加载的基本面数据，无需重新从磁盘读取
     args_list = [
-        (code, stock_data[code], factor_dates, lookback, forward_period)
-        for code in stock_data.keys()
+        (code, stock_file_map[code], factor_dates, lookback, forward_period)
+        for code in stock_file_map.keys()
     ]
 
     # 分批构建 DataFrame：避免 list-of-dicts（~2GB 峰值内存）与 DataFrame 同时存在导致 OOM

@@ -64,20 +64,22 @@ def gate_chan_structure(grades: np.ndarray, indicators: dict, n: int):
     fx_vol = _safe_arr(indicators, 'bottom_fractal_vol_spike', n, 1.0)
 
     cond_a = (sl >= 2) & cb
-    # 标准结构确认 OR 趋势起点：底分型+放量+趋势启动(补缠论买点形成前的空窗)
-    # B分级: 标准结构确认(bp>=1 or sl>=1) → B(0.8)
-    # 趋势起点(ti+fx_q+fx_vol) → B-(0.72) 单独处理，不与标准买点同分
-    cond_b_struct = (bp >= 1) | (sl >= 1)
+    # B1底部反转 → A-(0.85), 胜率最高(55.9%)需高权重
+    # B2/B3/有信号级别 → B(0.72)
+    cond_b1 = (bp == 1)
+    cond_b_struct = ((bp >= 2) | (sl >= 1)) & ~cond_b1
     cond_b_trend_init = ((bd > 0.3) & (zy < 0.5) & (tt != 0)) | \
                         ((ti > 0.2) & (fx_q > 0.25) & (fx_vol > 1.5))
     cond_b = cond_b_struct | cond_b_trend_init
+    # B-: 结构确认但强度不够 → 0.62（新增中间档，提升区分度）
+    cond_bm = (bp >= 1) & ~cb & (sl < 2)
     cond_c = (zy > 0.5) | (pp > 0.5)
     cond_d = (tt == -2) & (bp == 0) & (sl <= 0) & (bd < 0.2) & ~(cond_b)
 
     grades[:] = np.select(
-        [cond_a, cond_b_struct, cond_b_trend_init, cond_c, cond_d],
-        [1.0, 0.8, 0.72, 0.55, 0.3],
-        default=0.5
+        [cond_a, cond_b1, cond_b_struct, cond_b_trend_init, cond_c, cond_d],
+        [1.0, 0.85, 0.72, 0.62, 0.50, 0.25],
+        default=0.45
     )
 
 
@@ -89,15 +91,15 @@ def gate_mtf_alignment(grades: np.ndarray, indicators: dict, n: int):
     w_up = _safe_arr(indicators, 'weekly_trend_up', n, False).astype(bool)
     m_up = _safe_arr(indicators, 'monthly_trend_up', n, False).astype(bool)
 
-    cond_a = (align > 0.3) | (w_up & m_up)
-    cond_b = (align > -0.05) | w_up | m_up
-    cond_c = align > -0.15
-    cond_cminus = align > -0.25  # 新增中间档: 中度偏空但非极端
+    cond_a = (align > 0.35) | (w_up & m_up)
+    cond_b = (align > 0.05) | w_up | m_up
+    cond_c = align > -0.10
+    cond_cminus = align > -0.25
 
     grades[:] = np.select(
         [cond_a, cond_b, cond_c, cond_cminus],
-        [1.0, 0.8, 0.55, 0.45],
-        default=0.3
+        [1.0, 0.72, 0.50, 0.35],
+        default=0.25
     )
 
 
@@ -136,12 +138,13 @@ def gate_trend_direction(grades: np.ndarray, indicators: dict, n: int):
     cond_a = valid & above_ma20 & ema_full_bull
     cond_b = valid & above_ma20 & ema_bull
     cond_c = valid & above_ma20
+    cond_cm = valid & ~above_ma20 & ema_bull  # 均线下但EMA多头(可能回调中)
     cond_d = valid & ~above_ma20 & ~ema_bull
 
     grades[:] = np.select(
-        [cond_a, cond_b, cond_c, cond_d],
-        [1.0, 0.8, 0.6, 0.3],
-        default=0.5
+        [cond_a, cond_b, cond_c, cond_cm, cond_d],
+        [1.0, 0.72, 0.50, 0.38, 0.25],
+        default=0.40
     )
 
 
@@ -182,16 +185,16 @@ def compute_all_gates(indicators: dict, n: int) -> Tuple[np.ndarray, np.ndarray]
     return grades, hard_rejects
 
 
-# 各Gate默认值均值: G1=0.5 G2=0.3 G3=0.4 G4=0.5 → 0.425
-_GATE_DEFAULT_MEAN = 0.425
+# 各Gate默认值均值: G1=0.45 G2=0.25 G3=0.4 G4=0.40 → 0.375
+_GATE_DEFAULT_MEAN = 0.375
 
 
 def compute_gate_quality(grades: np.ndarray) -> np.ndarray:
     """4个Gate Grade取均值 → 归一化到中性≈1.0的质量系数
 
-    各Gate默认值: G1=0.5 G2=0.3 G3=0.4 G4=0.5 → 均值0.425。
+    各Gate默认值: G1=0.45 G2=0.25 G3=0.4 G4=0.40 → 均值0.375。
     无结构股票≈1.0（中性），有结构股票获得boost，弱结构股票得到折扣。
-    Clip到[0.6, 2.0]防止极端值。
+    放宽clip到[0.5, 2.0]以提升低质量信号的区分度。
     """
     raw_avg = grades.mean(axis=1)
-    return np.clip(raw_avg / _GATE_DEFAULT_MEAN, 0.6, 2.0)
+    return np.clip(raw_avg / _GATE_DEFAULT_MEAN, 0.5, 2.0)

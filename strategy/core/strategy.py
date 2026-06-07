@@ -46,6 +46,11 @@ class Strategy:
     def generate_signal(self, code, market_data, latest_only=False):
         self.signal_engine.generate(code, market_data, self.signal_store, latest_only=latest_only)
 
+    def set_industry_mapping(self, industry_codes: dict):
+        """设置细行业映射（用于固定因子模式的行业因子选择）"""
+        if hasattr(self, 'signal_engine') and self.signal_engine:
+            self.signal_engine.set_industry_mapping(industry_codes)
+
     def set_sector_data(self, stock_data_dict: dict, industry_codes: dict):
         """设置板块轮动数据（仅industry_stock_counts，动量由signal_density驱动）"""
         self.industry_stock_counts = {
@@ -84,6 +89,7 @@ class Strategy:
         bear_risk = False
         bear_risk_fast = False
         trend_score = 0.0
+        index_volume_ratio = 1.0
         if self.index_data is not None:
             row = self.index_data[self.index_data["datetime"].dt.date == date]
             if not row.empty:
@@ -92,6 +98,7 @@ class Strategy:
                 bear_risk = bool(row["bear_risk"].values[0]) if "bear_risk" in row.columns else False
                 bear_risk_fast = bool(row["bear_risk_fast"].values[0]) if "bear_risk_fast" in row.columns else False
                 trend_score = float(row["trend_score"].values[0]) if "trend_score" in row.columns else 0.0
+                index_volume_ratio = float(row["index_volume_ratio"].values[0]) if "index_volume_ratio" in row.columns else 1.0
 
         # 再平衡日更新情绪权重
         if rebalance:
@@ -124,6 +131,7 @@ class Strategy:
             bear_risk=bear_risk,
             bear_risk_fast=bear_risk_fast,
             trend_score=trend_score,
+            index_volume_ratio=index_volume_ratio,
             cost=cost,
             rebalance=rebalance
         )

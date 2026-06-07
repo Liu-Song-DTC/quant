@@ -1,6 +1,8 @@
 # core/factors.py
+# NOTE: 2026-06-18 审查 — FactorRegistry已被factor_calculator.py替代，
+# 主策略管道不使用此模块，保留供 test_all_factors.py 兼容。
 """
-因子定义模块 - 统一管理所有单因子和组合因子
+因子定义模块 - 统一管理所有单因子和组合因子 [已废弃，见factor_calculator.py]
 """
 import numpy as np
 import pandas as pd

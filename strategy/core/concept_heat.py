@@ -36,6 +36,7 @@ class ConceptHeatCalculator:
         self._auto_edges: dict = {}  # 自动发现的产业链传导边
         self._auto_edges_computed = False
         self._scores_cache: Dict[str, tuple] = {}  # 日期→(concept_scores, chain_signals)
+        self._ema_concept_scores: Dict[str, float] = {}  # EMA平滑后的概念分数 (halflife=3天)
         self._loaded = False
 
     def load(self, hist_path: str = None):
@@ -117,10 +118,12 @@ class ConceptHeatCalculator:
 
         if concept_returns is not None:
             self._concept_scores = concept_returns
+            # 应用EMA衰减 (halflife=3天)
+            self._apply_heat_ema()
             self._chain_signals = compute_chain_signals(
-                concept_returns, auto_discovered_edges=self._auto_edges
+                self._concept_scores, auto_discovered_edges=self._auto_edges
             )
-            self._scores_cache[cache_key] = (concept_returns, self._chain_signals)
+            self._scores_cache[cache_key] = (self._concept_scores, self._chain_signals)
             return
         elif cache_key in self._scores_cache:
             self._concept_scores, self._chain_signals = self._scores_cache[cache_key]
@@ -152,7 +155,10 @@ class ConceptHeatCalculator:
                     if len(nearby) > 0:
                         self._concept_scores[name] = float(nearby.iloc[-1]['return'])
 
-        # 计算产业链传导信号
+        # 应用EMA衰减 (halflife=3天)
+        self._apply_heat_ema()
+
+        # 计算产业链传导信号 (基于EMA平滑后的分数)
         if self._concept_scores:
             self._chain_signals = compute_chain_signals(
                 self._concept_scores, auto_discovered_edges=self._auto_edges
@@ -166,6 +172,23 @@ class ConceptHeatCalculator:
             oldest = min(self._scores_cache.keys())
             del self._scores_cache[oldest]
         self._scores_cache[cache_key] = (self._concept_scores, self._chain_signals)
+
+    def _apply_heat_ema(self):
+        """对 _concept_scores 应用EMA衰减 (halflife=3天)，冷却过时的概念热度。"""
+        decay = 0.5 ** (1.0 / 3.0)  # ~0.7937, 每天衰减, 3天半衰
+        if self._ema_concept_scores:
+            for k in list(self._ema_concept_scores.keys()):
+                if k in self._concept_scores:
+                    self._ema_concept_scores[k] = self._ema_concept_scores[k] * decay + self._concept_scores[k] * (1 - decay)
+                else:
+                    self._ema_concept_scores[k] *= decay  # 无新数据时持续衰减
+            for k, v in self._concept_scores.items():
+                if k not in self._ema_concept_scores:
+                    self._ema_concept_scores[k] = v  # 新概念初始化
+        else:
+            self._ema_concept_scores = dict(self._concept_scores)
+        # 用EMA平滑后的分数替换原始分数
+        self._concept_scores = dict(self._ema_concept_scores)
 
     def get_concept_heat(self, code: str) -> float:
         """获取单只股票的题材热度 (概念涨幅 + 产业链埋伏)"""

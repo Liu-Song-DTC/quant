@@ -1,5 +1,7 @@
 # core/factor_library.py
-"""因子库 - 各种技术因子的计算函数"""
+# NOTE: 2026-06-18 审查 — 已被factor_calculator.py替代，
+# 主策略管道不使用此模块，保留供 analyze_industry_factors.py 兼容。
+"""因子库 - 各种技术因子的计算函数 [已废弃，见factor_calculator.py]"""
 
 import numpy as np
 from typing import Tuple, Dict

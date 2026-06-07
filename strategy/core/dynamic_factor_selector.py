@@ -11,6 +11,7 @@
 import numpy as np
 import pandas as pd
 import multiprocessing
+from datetime import date as date_type
 from typing import Dict, List
 
 from .config_loader import load_config
@@ -309,9 +310,21 @@ class DynamicFactorSelector:
         self._all_dates_cache = None
 
     def set_factor_cache(self, factor_cache: dict, all_dates: list):
-        """设置预计算的因子选择缓存（用于多进程共享）"""
-        self._factor_cache = factor_cache
-        self._all_dates_cache = [pd.to_datetime(d) if not isinstance(d, pd.Timestamp) else d for d in all_dates]
+        """设置预计算的因子选择缓存（用于多进程共享）
+
+        pandas 3.x修复: pd.Timestamp 继承自 datetime.date, isinstance 判断失效。
+        统一用 .date() 方法归一化, datetime.date.date() 返回自身。
+        """
+        # 归一化 cache key → datetime.date (hash/eq 跨 pickle 一致)
+        normalized = {}
+        for k, v in factor_cache.items():
+            key = k.date() if hasattr(k, 'date') else pd.to_datetime(k).date()
+            normalized[key] = v
+        self._factor_cache = normalized
+        self._all_dates_cache = [
+            d.date() if hasattr(d, 'date') else pd.to_datetime(d).date()
+            for d in all_dates
+        ]
         self._lookup_fail_count = 0
         self._lookup_fail_samples = []
         self._lookup_success_count = 0
@@ -416,23 +429,31 @@ class DynamicFactorSelector:
                 all_results.extend(r)
 
         for date, factors in all_results:
-            self._factor_cache[date] = factors
+            # pandas 3.x: pd.Timestamp is subclass of datetime.date, force .date()
+            key = date.date() if hasattr(date, 'date') else pd.to_datetime(date).date()
+            self._factor_cache[key] = factors
 
         print(f"因子选择预计算完成: {len(self._factor_cache)} 个日期")
 
         if progress_callback:
             progress_callback(total, total)
 
-    def select_factors_for_date(self, val_date: str, all_dates: List[str]) -> Dict[str, Dict]:
+    def select_factors_for_date(self, val_date: str, all_dates: List) -> Dict[str, Dict]:
         """为指定日期选择各行业的最优因子
 
         Returns:
             {industry: {'factors': [factors], 'quality': avg_quality}}
         """
-        val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
+        # P1修复: 统一归一化到 datetime.date 避免 pd.Timestamp 多进程 hash 不一致
+        if isinstance(val_date, str):
+            val_key = pd.to_datetime(val_date).date()
+        elif hasattr(val_date, 'date'):
+            val_key = val_date.date()
+        else:
+            val_key = pd.to_datetime(val_date).date()
 
-        if val_date_ts in self._factor_cache:
-            return self._factor_cache[val_date_ts]
+        if val_key in self._factor_cache:
+            return self._factor_cache[val_key]
 
         # Debug: track lookup failures
         if not hasattr(self, '_lookup_fail_count'):
@@ -441,11 +462,12 @@ class DynamicFactorSelector:
             self._lookup_success_count = 0
 
         for i in range(len(all_dates) - 1, -1, -1):
-            if all_dates[i] < val_date_ts:
-                nearest_date = all_dates[i]
-                if nearest_date in self._factor_cache:
+            d = all_dates[i]
+            d_key = d.date() if hasattr(d, 'date') else d
+            if d_key < val_key:
+                if d_key in self._factor_cache:
                     self._lookup_success_count += 1
-                    return self._factor_cache[nearest_date]
+                    return self._factor_cache[d_key]
 
         # Both exact match and fallback failed
         self._lookup_fail_count += 1
@@ -453,7 +475,7 @@ class DynamicFactorSelector:
             cache_sample_keys = list(self._factor_cache.keys())[:3] if self._factor_cache else []
             all_dates_sample = all_dates[:3] if len(all_dates) > 0 else []
             self._lookup_fail_samples.append(
-                f"date={val_date} ts={val_date_ts} type={type(val_date_ts).__name__} "
+                f"date={val_date} key={val_key} "
                 f"cache_size={len(self._factor_cache)} all_dates_size={len(all_dates)} "
                 f"cache_key_types={[type(k).__name__ for k in cache_sample_keys]} "
                 f"all_dates_types={[type(d).__name__ for d in all_dates_sample]}"

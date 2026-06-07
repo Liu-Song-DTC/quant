@@ -16,7 +16,7 @@ from core.factor_preparer import prepare_factor_data
 from core.signal_store import SignalStore
 from core.config_loader import load_config
 from core.monitor import monitor, get_logger
-from core.industry_mapping import INDUSTRY_KEYWORDS
+from core.industry_mapping import INDUSTRY_KEYWORDS, build_fine_industry_map
 from core.market_regime_detector import MarketRegimeDetector
 from core.stock_pool import get_stock_pool, get_exclusion_set
 
@@ -33,6 +33,8 @@ config = load_config()
 # 回测参数 - 从配置文件读取
 CASH = config.get('backtest.cash', 100000.0)
 COMMISSION = config.get('backtest.commission', 0.0001)  # 万1佣金
+STAMP_TAX = config.get('backtest.stamp_tax', 0.0005)  # A股印花税万5(卖出单边)
+EFFECTIVE_COMM = COMMISSION + STAMP_TAX * 0.5  # 双边均摊: 买入万1, 卖出万6, 均摊万3.5
 PERC = config.get('backtest.slippage', 0.001)
 REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
 
@@ -148,20 +150,17 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     """
     global _LIMIT_DATA, _ST_CODES, _ST_DATE_RANGES
     all_items = os.listdir(DATA_PATH)
-    stock_codes = []  # 获取回测池中的股票列表
+    stock_codes = []
 
-    # 只读取一次CSV数据，同时记录文件路径和涨跌停数据
-    # 10年回测优化: 仅加载必要列(减少~60%内存)，完整数据由worker从文件读
-    stock_data_dict = {}
-    stock_file_map = {}  # code → filepath，传给worker直接从文件读
+    # === Phase 0: 扫描文件构建路径映射（不加载数据，避免 ~200MB stock_data_dict） ===
+    stock_file_map = {}  # code → filepath
     _LIMIT_DATA = {}     # 重置涨跌停数据
     _LOAD_COLS = ['datetime', 'open', 'high', 'low', 'close', 'volume', 'change_percent', 'amplitude']
-    # float32 优化: OHLCV价格列用32位浮点(精度足够,内存减半)
     _DTYPE_MAP = {
         'open': 'float32', 'high': 'float32', 'low': 'float32', 'close': 'float32',
         'volume': 'float32', 'change_percent': 'float32', 'amplitude': 'float32',
     }
-    for item in tqdm(all_items, desc="loading data"):
+    for item in all_items:
         if item.startswith('._'):
             continue
         filepath = DATA_PATH + item
@@ -171,39 +170,41 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             name = item[:-8]
         else:
             continue
-        data = pd.read_csv(filepath, parse_dates=['datetime'], dtype=_DTYPE_MAP)
-        # 日期范围过滤（加速测试：fromdate/todate）
+        stock_file_map[name] = filepath
+
+    # 预计算涨跌停数据（流式读取，仅加载 change_percent + amplitude 列，读后即弃）
+    print("预计算涨跌停数据（流式读取）...")
+    for name, filepath in tqdm(list(stock_file_map.items()), desc="limit data"):
+        try:
+            data = pd.read_csv(filepath, parse_dates=['datetime'],
+                              usecols=['datetime', 'change_percent', 'amplitude'])
+        except Exception:
+            continue
         if FROMDATE:
             data = data[data['datetime'] >= FROMDATE]
         if TODATE:
             data = data[data['datetime'] <= TODATE]
-        # 仅保留必要列以节省内存 (10年回测 ~1.5GB→~0.8GB with float32)
-        _available_cols = [c for c in _LOAD_COLS if c in data.columns]
-        data = data[_available_cols]
-        stock_data_dict[name] = data
-        stock_file_map[name] = filepath
-
-        # 预计算涨跌停日期（基于change_percent列）
-        if 'change_percent' in data.columns and name != 'sh000001':
-            chg = data['change_percent'].values
-            amp = data['amplitude'].values if 'amplitude' in data.columns else np.ones(len(data)) * 99
-            dates = data['datetime'].values
-            for i in range(len(data)):
-                cp = chg[i]
-                if pd.isna(cp):
-                    continue
-                ap = amp[i] if not pd.isna(amp[i]) else 99
-                # 涨停: change_percent >= 9.5% (主板±10%)，且振幅很小（封死涨停）
-                if cp >= 9.5 and ap < 3.0:
-                    _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'up'
-                # 跌停: change_percent <= -9.5%
-                elif cp <= -9.5 and ap < 3.0:
-                    _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'down'
-                # ST股票5%限制: change_percent在4.5-5.5%之间且振幅<2%
-                elif 4.5 <= cp <= 5.5 and ap < 2.0:
-                    _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'up'
-                elif -5.5 <= cp <= -4.5 and ap < 2.0:
-                    _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'down'
+        if name == 'sh000001' or 'change_percent' not in data.columns:
+            continue
+        chg = data['change_percent'].values
+        amp = data['amplitude'].values if 'amplitude' in data.columns else np.ones(len(data)) * 99
+        dates = data['datetime'].values
+        for i in range(len(data)):
+            cp = chg[i]
+            if pd.isna(cp):
+                continue
+            ap = amp[i] if not pd.isna(amp[i]) else 99
+            # Fix: 原ap<3.0过严，大幅漏判真实涨停（开盘-2%拉到+10%振幅12%被漏掉）
+            # 涨幅9.5%+在A股必然触及涨停板，振幅只用排除极端尾盘逆转(ap>=20%)
+            if cp >= 9.5 and ap < 20.0:
+                _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'up'
+            elif cp <= -9.5 and ap < 20.0:
+                _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'down'
+            elif 4.5 <= cp <= 5.5 and ap < 12.0:  # ST涨停±5%, 放宽振幅
+                _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'up'
+            elif -5.5 <= cp <= -4.5 and ap < 12.0:
+                _LIMIT_DATA[(name, pd.Timestamp(dates[i]).date())] = 'down'
+        del data
     print(f"涨跌停数据: {len(_LIMIT_DATA)} 条 (涨停={sum(1 for v in _LIMIT_DATA.values() if v=='up')}, "
           f"跌停={sum(1 for v in _LIMIT_DATA.values() if v=='down')})")
 
@@ -212,40 +213,48 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     if stock_pool_enabled:
         stock_pool = get_stock_pool()
         pool_codes = stock_pool | {'sh000001'}
-        before_count = len(stock_data_dict)
-        stock_data_dict = {k: v for k, v in stock_data_dict.items() if k in pool_codes}
+        before_count = len(stock_file_map)
         stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
-        after_count = len(stock_data_dict)
+        after_count = len(stock_file_map)
         print(f"股票池过滤: {before_count} -> {after_count} 只 (全部通过质量筛选)")
     else:
-        print(f"股票池过滤: 已关闭，使用全市场 {len(stock_data_dict)} 只股票")
+        print(f"股票池过滤: 已关闭，使用全市场 {len(stock_file_map)} 只股票")
 
     # === 科创板(688xxx) 不再剔除 — 2025-2026年妖股主要集中板块 ===
     star_codes = set()
-    before_excl_star = len(stock_data_dict)
-    # stock_data_dict = {k: v for k, v in stock_data_dict.items() if k not in star_codes}
-    # stock_file_map = {k: v for k, v in stock_file_map.items() if k not in star_codes}
+    before_excl_star = len(stock_file_map)
     print(f"科创板保留: {before_excl_star} 只 (不再排除)")
 
-    # === ST股票识别（基于基本面数据） ===
+    # === ST股票识别（基于基本面数据，使用指数中间日期作为参考） ===
     _ST_CODES = set()
     _ST_DATE_RANGES = {}
-    if fundamental_data is not None:
+    # 先加载sh000001获取交易日历（所有后续步骤依赖）
+    sh000001_file = stock_file_map.get('sh000001')
+    if sh000001_file:
+        index_df = pd.read_csv(sh000001_file, parse_dates=['datetime'])
+        if FROMDATE:
+            index_df = index_df[index_df['datetime'] >= FROMDATE]
+        if TODATE:
+            index_df = index_df[index_df['datetime'] <= TODATE]
+        calendar_index = pd.DatetimeIndex(sorted(index_df['datetime']))
+    else:
+        # fallback: 从任意一只股票获取日期
+        calendar_index = None
+        for fp in list(stock_file_map.values())[:1]:
+            tmp = pd.read_csv(fp, parse_dates=['datetime'])
+            calendar_index = pd.DatetimeIndex(sorted(tmp['datetime']))
+            break
+    all_dates_for_st = sorted(calendar_index.tolist()) if calendar_index is not None else []
+    ref_mid_date = pd.Timestamp(all_dates_for_st[len(all_dates_for_st) // 2]) if all_dates_for_st else None
+
+    if fundamental_data is not None and ref_mid_date is not None:
         try:
-            # 对所有回测池中的股票检查ST状态
-            for code in tqdm(list(stock_data_dict.keys()), desc="ST detection"):
-                if code == 'sh000001':
-                    continue
-                # 取股票数据日期范围的中间点查询ST状态
-                stock_dates = stock_data_dict[code]['datetime'].values
-                if len(stock_dates) == 0:
-                    continue
-                mid_date = pd.Timestamp(stock_dates[len(stock_dates) // 2])
-                if fundamental_data.is_st(code, mid_date):
+            st_candidates = [c for c in stock_file_map.keys() if c != 'sh000001']
+            for code in tqdm(st_candidates, desc="ST detection"):
+                if fundamental_data.is_st(code, ref_mid_date):
                     _ST_CODES.add(code)
             print(f"ST股票: {len(_ST_CODES)} 只")
             if _ST_CODES:
-                # 存入strategy供BacktraderExecution使用
                 strategy.st_codes = _ST_CODES
         except Exception as e:
             print(f"ST检测跳过: {e}")
@@ -254,65 +263,65 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         strategy.st_codes = set()
 
     # 处理指数数据 - 生成市场状态 (Fix#6: 多指数风格检测)
-    # 同时构建统一交易日历（sh000001 代表全市场交易日，用于其他股票对齐）
-    if 'sh000001' in stock_data_dict:
-        index_df = stock_data_dict['sh000001']
-        if 'datetime' in index_df.columns:
-            calendar_index = pd.DatetimeIndex(sorted(index_df['datetime']))
-        else:
-            calendar_index = pd.DatetimeIndex(sorted(index_df.index))
-    else:
-        dates = set()
-        for data in stock_data_dict.values():
-            if 'datetime' in data.columns:
-                dates.update(data['datetime'])
-            else:
-                dates.update(data.index)
-        calendar_index = pd.DatetimeIndex(sorted(dates))
-        del dates
+    # calendar_index 已在上方ST检测阶段从 sh000001 构建
     regime_df = None
-    if "sh000001" in stock_data_dict:
+    # 加载小盘/成长指数（如果存在）
+    small_cap_df = None
+    growth_df = None
+    if '000852' in stock_file_map:
+        small_cap_df = pd.read_csv(stock_file_map['000852'], parse_dates=['datetime'])
+    if '399006' in stock_file_map:
+        growth_df = pd.read_csv(stock_file_map['399006'], parse_dates=['datetime'])
+
+    if sh000001_file:
         strategy.generate_market_regime(
-            stock_data_dict["sh000001"],
-            small_cap_df=stock_data_dict.get("000852"),
-            growth_df=stock_data_dict.get("399006"),
+            index_df,
+            small_cap_df=small_cap_df,
+            growth_df=growth_df,
         )
         regime_df = strategy.index_data
-        has_sc = "000852" in stock_data_dict
-        has_gr = "399006" in stock_data_dict
+        has_sc = small_cap_df is not None
+        has_gr = growth_df is not None
         print(f"市场状态数据已生成，共 {len(regime_df)} 条记录"
               f" (中证1000={'✓' if has_sc else '✗'}, 创业板指={'✓' if has_gr else '✗'})")
+    # 释放小盘/成长指数数据（已不需要）
+    del small_cap_df, growth_df
 
     # 准备动态因子数据
     factor_mode = config.config.get('factor_mode', 'both')
     factor_df = None
     industry_codes = {}
+    all_dates = sorted(calendar_index.tolist()) if calendar_index is not None else []
     # 只有当 factor_mode 不是 'fixed' 时才需要IC计算
     # reweight模式也需要IC计算（用于动态调整权重）
     if factor_mode != 'fixed':
         print(f"准备因子数据 (factor_mode={factor_mode})...")
         # 获取股票代码列表（排除指数）
-        stock_codes = [name for name in stock_data_dict.keys() if name != "sh000001"]
+        stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
         factor_df, industry_codes, all_dates = prepare_factor_data(
-            stock_data_dict,
+            stock_file_map,
             fundamental_data,
             INDUSTRY_KEYWORDS,
+            all_dates,
             NUM_WORKERS
         )
         strategy.set_factor_data(factor_df, industry_codes)
-        strategy.set_sector_data(stock_data_dict, industry_codes)
+        strategy.set_sector_data({}, industry_codes)
         print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业")
     else:
         print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
         stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
+        # 构建细行业映射（128行业，替代20个大类关键词匹配）
+        if fundamental_data is not None:
+            industry_codes = build_fine_industry_map(fundamental_data, stock_codes, min_stocks=10)
+            strategy.set_industry_mapping(industry_codes)
+            print(f"细行业映射: {len(industry_codes)} 个行业")
 
-    # === 释放 stock_data_dict（factor_df 已生成，不再需要原始数据） ===
-    # 提前释放以降低 ML 训练/因子预计算期间的内存峰值（两者共存额外占用 2-3GB）
-    stock_data_dict.clear()
-    del stock_data_dict
+    # factor_df 已由 prepare_factor_data 在工作进程中计算完成
+    # stock_data_dict 不再存在 — 数据由worker从磁盘按需读取，无需清理
     import gc
     gc.collect()
-    print("已释放 stock_data_dict 内存（因子数据已生成）")
+    print("因子数据准备完成（流式加载，无 stock_data_dict 内存峰值）")
 
     # ===================================================================
     # Phase A: ML训练 + 因子预计算（依赖 factor_df，需在 factor_df 释放前完成）
@@ -733,7 +742,7 @@ class BacktraderExecution(bt.Strategy):
                 # 跌停检查：无法卖出（封死跌停板时没有买盘）
                 if self._is_limit_down(code, date):
                     continue
-                order = self.sell(data=d, size=size)
+                order = self.sell(data=d, size=abs(size))  # Backtrader要求size为正
                 self.orders_list[date].append(order)
 
         # 计算并记录每日收益率（供组合层波动率控制使用）
@@ -835,7 +844,7 @@ if __name__ == "__main__":
 
     add_data_and_signal(cerebro, strategy, fundamental_data)
     cerebro.broker.setcash(CASH)
-    cerebro.broker.setcommission(commission=COMMISSION)
+    cerebro.broker.setcommission(commission=EFFECTIVE_COMM)
     cerebro.broker.set_slippage_perc(perc=PERC)
 
     cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='pnl')  # 返回收益率时序数据
@@ -888,6 +897,8 @@ if __name__ == "__main__":
 
     # === 妖股观察名单: 从信号中筛选潜在妖股候选 ===
     try:
+        strategy_dir = os.path.dirname(os.path.abspath(__file__))
+        signals_output_path = os.path.join(strategy_dir, 'rolling_validation_results', 'backtest_signals.csv')
         signals_df = pd.read_csv(signals_output_path)
         yg = signals_df.copy()
         yg['volume_ratio'] = pd.to_numeric(yg['volume_ratio'], errors='coerce')

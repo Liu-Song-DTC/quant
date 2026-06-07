@@ -1081,29 +1081,8 @@ def detect_buy_sell_points(
                         base_conf = 0.35 + up_count * 0.10 + div_strength * 0.3
                         sell_confidence[idx] = min(0.9, base_conf + dist_pct * 10)
 
-    # === 二买/二卖: 基于一买/一卖之后的反向运动 ===
-    # P3 fix: B2置信度基于价格位置+回调深度，不再硬编码0.5
-    for idx in range(1, n_bars):
-        if buy_point[idx - 1] == 1 and buy_point[idx] == 0:
-            for j in range(idx + 3, min(idx + 20, n_bars)):
-                # 不破一买低点 + 价格在中枢附近
-                if close[j] > close[idx] * 0.98 and pivot_position[j] <= 0:
-                    if buy_point[j] == 0:
-                        buy_point[j] = 2
-                        # 品质: 回调浅(接近一买价格) + 在中枢附近 = 更可靠
-                        pullback_depth = (close[j] - close[idx]) / close[idx]
-                        pivot_proximity = 1.0 if pivot_position[j] == 0 else 0.7
-                        buy_confidence[j] = float(np.clip(0.45 + pullback_depth * 5 + pivot_proximity * 0.1, 0.3, 0.8))
-
-        if sell_point[idx - 1] == 1 and sell_point[idx] == 0:
-            for j in range(idx + 3, min(idx + 20, n_bars)):
-                if close[j] < close[idx] * 1.02 and pivot_position[j] >= 0:
-                    if sell_point[j] == 0:
-                        sell_point[j] = 2
-                        bounce_depth = (close[idx] - close[j]) / close[idx]
-                        pivot_proximity = 1.0 if pivot_position[j] == 0 else 0.7
-                        sell_confidence[j] = float(np.clip(0.45 + bounce_depth * 5 + pivot_proximity * 0.1, 0.3, 0.8))
-
+    # === 二买/二卖: 由 detect_second_buy_point 实现 (详见函数14) ===
+    # 旧的B2/S2 crude循环已删除 — 改用MACD确认+黄金分割回调+笔确认的完整实现
     return {
         'buy_point': buy_point,
         'sell_point': sell_point,
@@ -2065,6 +2044,13 @@ def compute_enhanced_chan_output(
     base['second_buy_point'] = b2_info['second_buy_point']
     base['second_buy_confidence'] = b2_info['second_buy_confidence']
     base['second_buy_b1_ref'] = b2_info['second_buy_b1_ref']
+
+    # 合并 B2 (second_buy_point → buy_point) 以替代已删除的crude B2循环
+    b2_mask = b2_info['second_buy_point'] & (base['buy_point'] == 0)
+    base['buy_point'] = np.where(b2_mask, 2, base['buy_point'])
+    # B2置信度: 仅填充尚未有置信度的位置
+    b2_conf_mask = b2_mask & (base['buy_confidence'] == 0)
+    base['buy_confidence'] = np.where(b2_conf_mask, b2_info['second_buy_confidence'], base['buy_confidence'])
 
     # 结构止损价 (向量化: 预计算滚动min/max，避免per-bar函数调用)
     n = len(close)

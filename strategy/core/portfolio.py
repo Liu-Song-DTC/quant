@@ -177,15 +177,6 @@ class PortfolioConstructor:
         self.dist_ma60_extended_threshold = pp.get('dist_ma60_extended_threshold', 0.30)
         self.dist_ma60_extended_mult = pp.get('dist_ma60_extended_mult', 0.40)
         self.isolated_b3_penalty = pp.get('isolated_b3_penalty', -0.08)
-        self.industry_pharma_penalty = pp.get('industry_pharma_penalty', -0.05)
-        self.industry_chem_penalty = pp.get('industry_chem_penalty', -0.03)
-        self.sideways_bonus = pp.get('sideways_bonus', 0.03)
-        self.oversold_bonus = pp.get('oversold_bonus', 0.04)
-        self.vol_expand_bonus = pp.get('vol_expand_bonus', 0.03)
-        self.vol_contract_penalty = pp.get('vol_contract_penalty', -0.03)
-        self.dd20_sharp_bonus = pp.get('dd20_sharp_bonus', 0.04)
-        self.dd20_moderate_bonus = pp.get('dd20_moderate_bonus', 0.02)
-        self.b3_vol_mild_penalty = pp.get('b3_vol_mild_penalty', -0.03)
         self.b3_vol_severe_penalty = pp.get('b3_vol_severe_penalty', -0.06)
         self.exhaustion_high_threshold = pp.get('exhaustion_high_threshold', 0.30)
         self.exhaustion_moderate_threshold = pp.get('exhaustion_moderate_threshold', 0.15)
@@ -412,6 +403,7 @@ class PortfolioConstructor:
         bear_risk=False,
         bear_risk_fast=False,
         trend_score=0.0,
+        index_volume_ratio=1.0,
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
@@ -662,6 +654,14 @@ class PortfolioConstructor:
         if up_ratio > 0.60:
             target_exposure = min(1.0, target_exposure * 1.15)
 
+        # === 市场缩量降仓: 无量无行情，缩量无大牛 ===
+        if index_volume_ratio < 0.5:
+            target_exposure = min(target_exposure, 0.20)  # 极度缩量→仓位上限20%
+        elif index_volume_ratio < 0.7:
+            target_exposure = min(target_exposure, 0.35)  # 缩量→仓位上限35%
+        elif index_volume_ratio > 1.3:
+            target_exposure = min(1.0, target_exposure * 1.10)  # 放量突破→小幅加仓
+
         # === 组合止损: 回撤超过阈值时强制降仓至紧急敞口（含恢复冷却期） ===
         if self.stop_loss_enabled and drawdown > self.portfolio_stop_loss:
             target_exposure = min(target_exposure, self.emergency_exposure)
@@ -815,7 +815,9 @@ class PortfolioConstructor:
             sl = c.get('signal_level', 0)
             sig = c.get('sig')
             gate_q = getattr(sig, '_gate_quality', 0.5) if sig else 0.5
-            if sl < 1 and bp <= 0 and gate_q < 1.0:
+            # Chan买力精准替代：有强买力(buy_strength>=0.3)豁免gate门槛
+            _cbs = getattr(sig, 'chan_buy_strength', 0.0) if sig else 0.0
+            if sl < 1 and bp <= 0 and gate_q < 0.85 and _cbs < 0.30:
                 if c['code'] not in current_codes:
                     continue
             # 均线趋势检查: EMA20 > EMA60 是缠论买点的方向前提
@@ -823,6 +825,11 @@ class PortfolioConstructor:
             tt = getattr(sig, 'trend_type', 0) if sig else 0
             if bp == 3 and not ma_up:
                 continue  # B3是趋势跟随买点, 必须均线多头
+            if bp == 3:
+                _b3tc = getattr(sig, 'b3_trend_confirmed', False) if sig else False
+                if not _b3tc:
+                    # B3但只有1个同向中枢 → 趋势不稳固，加扣分但不拒绝
+                    c['b3_unconfirmed_penalty'] = -0.06
             if bp == 2 and tt == -2:
                 continue  # B2在下跌趋势中不可靠
             chan_passed.append(c)
@@ -840,7 +847,7 @@ class PortfolioConstructor:
         qualified = chan_passed
 
         # 换手控制：现有持仓给予换手惩罚加分，需超过交易成本才能被替换
-        hold_threshold = 0.3  # 已持仓股票，rank_pct>0.3即可保留 (更宽松)
+        hold_threshold = 0.2  # P2: 0.3→0.2, 更宽松的保留条件
 
         # 计算有效得分: 纯score(已含门控质量) 截面排名 + 时序调整
         # Gate 1-4已在信号层编码为adjusted_score，组合层只做时序/行业/换手微调
@@ -868,19 +875,16 @@ class PortfolioConstructor:
             if dist_ma60 > self.dist_ma60_extended_threshold:
                 multiplier *= self.dist_ma60_extended_mult
 
-            # ── 加法调整（加到rank*multiplier上） ──
+            # ── 加法调整（P3精简: 保留显著效应项, 移除量级<0.05的微调） ──
             # 板块共振: 孤立B3扣分
             if industry_chan_count.get(c.get('industry', '其他'), 0) < 2:
                 additive += self.isolated_b3_penalty
 
-            # 弱势行业惩罚 (基于历史胜率, 传媒IC=0.2018已移除)
-            ind = c.get('industry', '')
-            if '医药' in str(ind):
-                additive += self.industry_pharma_penalty
-            elif '化工' in str(ind):
-                additive += self.industry_chem_penalty
-
-            # DYN因子不再惩罚 — IC验证已筛选, 惩罚与动态选择逻辑矛盾 (Fix#8)
+            # B1买点加分: 一买是反转信号, 胜率最高(55.9%), 选股优先
+            if bp == 1 and sl >= 1:
+                additive += 0.08
+            elif bp == 2 and sl >= 2:
+                additive += 0.03  # B2强确认也有小幅加分
 
             # BOM质量加分: 高壁垒+高利润个股获得选股优先
             bom_score = self._nan_safe(getattr(sig_ref, 'bom_quality_score', 0.3))
@@ -889,32 +893,14 @@ class PortfolioConstructor:
             elif bom_score > 0.55:
                 additive += 0.03
 
-            # 横盘/超跌/波动率/回调 奖励
-            if -0.05 <= mom_60d <= 0.05:
-                additive += self.sideways_bonus
-            if dist_ma60 < -0.05:
-                additive += self.oversold_bonus
-            if vol_regime > 1.3:
-                additive += self.vol_expand_bonus
-            elif vol_regime < 0.7:
-                additive += self.vol_contract_penalty
-
-            max_dd_20d = self._nan_safe(getattr(sig_ref, 'max_dd_20d', 0.0))
-            if max_dd_20d < -0.12:
-                additive += self.dd20_sharp_bonus
-            elif max_dd_20d < -0.06:
-                additive += self.dd20_moderate_bonus
-
-            # B3缩量惩罚
+            # B3严重缩量惩罚
             bp = c.get('chan_buy_point', 0)
             if bp == 3:
                 vol_ratio = self._nan_safe(getattr(sig_ref, 'volume_ratio', 0.0))
-                if -0.20 < vol_ratio <= -0.05:
-                    additive += self.b3_vol_mild_penalty
-                elif -0.30 < vol_ratio <= -0.20:
+                if -0.30 < vol_ratio <= -0.20:
                     additive += self.b3_vol_severe_penalty
 
-            # 换手加分
+            # 换手加分 (P2增强: 持仓保留激励increased via turnover_bonus)
             turnover = self.turnover_bonus if (c['is_held'] and c['rank_pct'] > hold_threshold) else 0.0
             if c.get('chan_sell_point', 0) > 0:
                 turnover = 0.0
@@ -1023,8 +1009,9 @@ class PortfolioConstructor:
                         capped_weights[i] *= scale
 
         total_capped = sum(capped_weights) + 1e-10
-        # Fix: target_exposure already applied at line 969, don't double-count
-        weights = [w / total_capped for w in capped_weights]
+        # 重新归一化后恢复target_exposure（风险预算在原weights中，cap后保留比例）
+        weights_norm = [w / total_capped for w in capped_weights]
+        weights = [w * target_exposure for w in weights_norm]
 
         # === 最小交易单位检查: 确保每只至少1手 + 过滤买不起的 ===
         desired_value = {}
@@ -1095,6 +1082,7 @@ class PortfolioConstructor:
         bear_risk=False,
         bear_risk_fast=False,
         trend_score=0.0,
+        index_volume_ratio=1.0,
         cost=None,
         rebalance=False,
     ):
@@ -1182,12 +1170,45 @@ class PortfolioConstructor:
                                     self._entry_reasons.pop(code, None)
                                     self._peak_prices.pop(code, None)
                                     continue
-                        # 无中枢但有盈利：启动价格移动止盈
+                        # 无中枢但有盈利：启动价格移动止盈（使用分层止损率）
                         if code in self._peak_prices and self._peak_prices[code] > 0:
                             peak = self._peak_prices[code]
                             drawdown = (peak - current_price) / peak
-                            if drawdown > self.trailing_stop_pct:
+                            entry_bp = self._entry_reasons.get(code, {}).get('buy_point', 0)
+                            tiered_pct = self.trailing_stop_by_bp.get(
+                                entry_bp, self.trailing_stop_by_bp.get('default', 0.08)
+                            )
+                            if drawdown > tiered_pct:
                                 profit_reduce[code] = 0.5
+
+        # === 趋势衰减卖出: 盈利后缩量+价格回落 → 减仓（不依赖缠论卖点）===
+        for code, current_value in current_positions.items():
+            if code in chan_force_sells or code in profit_reduce:
+                continue
+            if code not in prices or current_value <= 0:
+                continue
+            if not (cost and code in cost and len(cost[code]) >= 2 and cost[code][0] > 0):
+                continue
+            avg_cost = cost[code][1]
+            profit_pct = (prices[code] - avg_cost) / avg_cost
+            # 盈利>30%且从峰值回撤>10% → 全部止盈
+            if profit_pct > 0.30 and code in self._peak_prices and self._peak_prices[code] > 0:
+                dd = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
+                if dd > 0.10:
+                    profit_reduce[code] = 0.0  # 全清
+                    continue
+            # 盈利>20%且从峰值回撤>8% → 止盈50%
+            if profit_pct > 0.20 and code in self._peak_prices and self._peak_prices[code] > 0:
+                dd = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
+                if dd > 0.08:
+                    profit_reduce[code] = 0.5
+                    continue
+            # 盈利>15% + 价格低于前高3% → 趋势衰减减仓50%
+            if profit_pct > 0.15 and code in self._peak_prices and self._peak_prices[code] > 0:
+                below_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
+                if below_peak > 0.03:
+                    profit_reduce[code] = 0.5
+                    continue
 
         # === 均值回归退出: 持仓中极端乖离 → 减仓/清仓 (非调仓日也生效) ===
         for code, current_value in current_positions.items():
@@ -1200,23 +1221,27 @@ class PortfolioConstructor:
                 continue
             mom_60d = self._nan_safe(getattr(sig, 'mom_60d', 0.0))
             dist_ma60 = self._nan_safe(getattr(sig, 'dist_ma60', 0.0))
-            # 均值回归退出阈值从配置文件读取
-            if mom_60d > self.mr_mom60_force:
+            # Regime自适应: 牛市放宽退出阈值(让利润跑)，熊市收紧(快跑)
+            _mr_regime_mult = {1: 1.30, 0: 1.0, -1: 0.80}.get(market_regime, 1.0)
+            _mr_mom60_force = self.mr_mom60_force * _mr_regime_mult
+            _mr_dist60_force = self.mr_dist60_force * _mr_regime_mult
+            _mr_mom60_reduce = self.mr_mom60_reduce * _mr_regime_mult
+            if mom_60d > _mr_mom60_force:
                 chan_force_sells[code] = 0.0
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
                 self._mr_exit_cooldown[code] = date
-            elif dist_ma60 > self.mr_dist60_force:
+            elif dist_ma60 > _mr_dist60_force:
                 chan_force_sells[code] = 0.0
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
                 self._mr_exit_cooldown[code] = date
-            elif mom_60d > self.mr_mom60_reduce:
+            elif mom_60d > _mr_mom60_reduce:
                 if code not in profit_reduce:
                     profit_reduce[code] = self.mr_reduce_pct
-            elif dist_ma60 > self.mr_dist60_reduce:
+            elif dist_ma60 > (self.mr_dist60_reduce * _mr_regime_mult):
                 if code not in profit_reduce:
                     profit_reduce[code] = self.mr_reduce_pct
 
@@ -1482,6 +1507,7 @@ class PortfolioConstructor:
                 bear_risk=bear_risk,
                 bear_risk_fast=bear_risk_fast,
                 trend_score=trend_score,
+                index_volume_ratio=index_volume_ratio,
             )
 
         # 强制卖出 (止损 + Chan卖出)
@@ -1551,14 +1577,16 @@ class PortfolioConstructor:
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
 
-            # 记录新入场持仓
+            # 再平衡日：刷新所有继续持有的持仓入场理由
             for code, target_val in adjusted.items():
-                if target_val > 0 and code not in self._entry_dates:
-                    self._entry_dates[code] = date
-                    self._peak_prices[code] = prices.get(code, 0)
-                    # 记录入场理由（买入理由消失时用于退出判断）
+                if target_val > 0:
                     sig = signal_store.get(code, date)
-                    if sig:
+                    if code not in self._entry_dates:
+                        # 新建仓：记录入场时间、峰值、理由
+                        self._entry_dates[code] = date
+                        self._peak_prices[code] = prices.get(code, 0)
+                    elif sig:
+                        # 继续持有：刷新入场理由（避免旧B1/B2数月后因"理由消失"误强制平仓）
                         self._entry_reasons[code] = {
                             'buy_point': getattr(sig, 'chan_buy_point', 0),
                             'signal_level': getattr(sig, 'signal_level', 0),
