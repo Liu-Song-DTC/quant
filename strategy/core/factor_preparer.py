@@ -13,6 +13,7 @@ import os
 from typing import Dict, List, Tuple
 import multiprocessing
 from tqdm import tqdm
+import ctypes
 
 # 全局题材热度计算器 (fork 前初始化, worker 进程继承)
 _worker_concept_calc = None
@@ -356,6 +357,10 @@ def prepare_factor_data(stock_file_map: dict, fd,
                 factor_data[col] = pd.to_numeric(factor_data[col], downcast='integer')
     import gc
     gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(ctypes.c_int(0))
+    except Exception:
+        pass
 
     # 数据清洗：过滤极端未来收益
     if 'future_ret' in factor_data.columns:

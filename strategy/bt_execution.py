@@ -8,6 +8,7 @@ import math
 from collections import defaultdict
 import multiprocessing
 from functools import partial
+import ctypes
 
 from core.strategy import Strategy
 from core.fundamental import FundamentalData
@@ -50,6 +51,18 @@ REBALANCE_BULL = DYNAMIC_REBALANCE_CONFIG.get('bull_period', 30)
 REBALANCE_NEUTRAL = DYNAMIC_REBALANCE_CONFIG.get('neutral_period', 20)
 REBALANCE_BEAR = DYNAMIC_REBALANCE_CONFIG.get('bear_period', 15)
 NUM_WORKERS = config.get('backtest.num_workers', 8)
+
+def _malloc_trim(pad=0):
+    """将 Python 已释放但未归还 OS 的内存归还给内核（Linux only）。
+
+    在 gc.collect() 之后调用，可显著降低进程 RSS，避免 fork 时子进程继承
+    inflated 内存地址空间导致 OOM。
+    """
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(ctypes.c_int(pad))
+    except Exception:
+        pass  # 非 Linux / 权限不足时静默跳过
+
 # 回测日期范围过滤 (加速测试: fromdate='2024-01-01', todate='2026-05-30')
 FROMDATE = config.get('backtest.fromdate', None)
 TODATE = config.get('backtest.todate', None)
@@ -389,7 +402,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         print("预计算因子选择...")
         main_engine.dynamic_factor_selector.precompute_all_factor_selections(
             progress_callback=lambda curr, total: print(f"\r因子选择进度: {curr}/{total}", end="", flush=True),
-            num_workers=NUM_WORKERS
+            num_workers=1  # 单线程避免fork时factor_df COW膨胀
         )
         print(f"\n因子选择预计算完成，共 {len(main_engine.dynamic_factor_selector._factor_cache)} 个日期")
 
@@ -406,7 +419,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         import gc
         gc.collect()
         gc.collect()
-        print("已释放 factor_df 内存（避免 fork 复制到 worker 进程）")
+        _malloc_trim()  # 强制归还 freed pages 给 OS, 降低后续 fork 时的 RSS
+        print("已释放 factor_df 内存（已归还 OS）")
     else:
         precomputed_cache = None
         precomputed_all_dates = None
@@ -860,6 +874,7 @@ if __name__ == "__main__":
     import gc
     gc.collect()
     gc.collect()
+    _malloc_trim()  # 归还所有碎片内存给 OS，确保 cerebro.run() 有充足空间
     print(f"启动回测引擎 (可用内存优化完毕)...")
     try:
         result = cerebro.run()
