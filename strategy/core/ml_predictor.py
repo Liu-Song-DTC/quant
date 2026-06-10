@@ -114,10 +114,20 @@ class MLFactorPredictor:
             print(f"[ML] 有效特征不足: {len(valid_features)}")
             return None
 
+        # 处理Inf值（Inf*0=NaN会污染交叉特征）
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
         train_df = df.dropna(subset=valid_features + ['future_ret'])
         if len(train_df) < 500:
-            print(f"[ML] 训练样本不足: {len(train_df)}")
-            return None
+            # 回退：只用基础特征（无交叉特征），重试
+            base_only = [c for c in self.feature_cols if not c.startswith('cross_') and not c.startswith('regime_')]
+            base_only = [c for c in base_only if c in df.columns]
+            if len(base_only) >= 3:
+                train_df = df.dropna(subset=base_only + ['future_ret'])
+                valid_features = base_only
+                print(f"[ML] 回退到基础特征: {len(valid_features)}个, 样本={len(train_df)}")
+            if len(train_df) < 500:
+                print(f"[ML] 训练样本不足: {len(train_df)} (features={len(valid_features)})")
+                return None
 
         # 时序划分：前80%训练，后20%验证（防look-ahead）
         dates = sorted(train_df['date'].unique())

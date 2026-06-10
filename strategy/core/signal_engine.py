@@ -244,6 +244,12 @@ class SignalEngine:
         self.ml_predictor = None
         self._ml_predictions = {}  # {(code, date): float}
 
+        # === 另类数据 ===
+        self._alt_data = None  # 延迟加载
+
+        # === 回测诊断 ===
+        self._diag = None  # 延迟加载
+
         # === 缠论增强配置 ===
         chan_config = config_loader.get('chan_theory', {})
         div_config = chan_config.get('divergence', {})
@@ -405,7 +411,7 @@ class SignalEngine:
                                             regimes=regimes, latest_only=latest_only)
 
         # ===== Phase 2: 向量化分数装配 =====
-        result = self._vectorized_score_assembly(scalars, indicators, n, code)
+        result = self._vectorized_score_assembly(scalars, indicators, n, code, dates)
         del scalars
 
         # ===== Phase 3: 动态阈值（用 adjusted_score 校准入阈值分布，与买入判定一致）=====
@@ -511,6 +517,57 @@ class SignalEngine:
                    (score > _effective_buy_th or chan_force_buy or vol_open_force_buy) and
                    price_ok and price_not_extended)
 
+            # 回测诊断: 记录买入信号
+            if buy and i == n - 1:  # 只记录最新bar的买入(避免重复计数)
+                try:
+                    if self._diag is None:
+                        from analysis.backtest_diagnostics import get_diagnostics
+                        self._diag = get_diagnostics()
+                    fn = str(result['factor_name'][i]) if 'factor_name' in result else ''
+                    self._diag.record_buy_signal(bp_buy, fn)
+                except Exception:
+                    pass
+
+            # === 数据驱动买入评分调整: 注入trend/mom/exhaustion维度 ===
+            # 分析结论: score几乎无区分力(P90=49.3% vs P10=49.1%)，
+            # 但trend_type(Acc差4.6%)和mom_60d(Acc差9.1%)有强区分力
+            # 在不改变score的前提下，通过调整有效阈值来利用这些维度
+            if buy and not (chan_force_buy or vol_open_force_buy):
+                _tt_val = int(result['trend_type'][i])
+                _mom60 = float(_safe_get_arr(indicators, 'mom_60d', n, 0.0)[i])
+                _exh = float(_safe_get_arr(indicators, 'exhaustion_risk', n, 0.0)[i])
+
+                # 趋势调整: 强上涨→放宽, 下跌→收紧
+                if _tt_val == 2:
+                    _trend_adj = +0.10
+                elif _tt_val == 1:
+                    _trend_adj = +0.04
+                elif _tt_val == -2:
+                    _trend_adj = -0.15
+                else:
+                    _trend_adj = 0.0
+
+                # 动量惩罚: 追高→收紧, 温和→微调
+                if _mom60 > 0.30:
+                    _mom_adj = -0.15
+                elif _mom60 > 0.15:
+                    _mom_adj = -0.06
+                elif _mom60 < -0.15:
+                    _mom_adj = -0.04  # 跌太多也扣分
+                else:
+                    _mom_adj = 0.0
+
+                # 力竭惩罚
+                if _exh > 0.30:
+                    _exh_adj = -0.10
+                elif _exh > 0.20:
+                    _exh_adj = -0.04
+                else:
+                    _exh_adj = 0.0
+
+                _adj = _trend_adj + _mom_adj + _exh_adj
+                _effective_buy_th -= _adj  # 正调整→降低门槛→更容易买
+
             # === 下跌趋势硬过滤: trend_type==-2禁止新买入 ===
             # BP=1(一买)在下跌末端触发, 是唯一允许在下跌趋势中买入的情形
             _trend_type = int(result['trend_type'][i])
@@ -532,9 +589,10 @@ class SignalEngine:
             if buy and not (chan_force_buy or vol_open_force_buy) and self.fqg_enabled:
                 is_star = code.startswith('688')  # 科创板豁免质量门控（历史短，因子标签不全）
 
-                # 兜底/默认因子(MOM/REV/SHARPE/V41)禁止生成买入信号
+                # 仅V41/NONE禁止买入(因子值无预测力)
+                # MOM/REV/SHARPE已替换为trend×均值回归×低波计算, 不再禁止
                 _raw_fn = str(result['factor_name'][i])
-                if not is_star and _raw_fn in ('MOM', 'REV', 'SHARPE', 'V41', 'NONE'):
+                if not is_star and _raw_fn in ('V41', 'NONE'):
                     buy = False
                 elif not is_star:
                     # 预计算因子标签来确定质量层级
@@ -941,7 +999,9 @@ class SignalEngine:
 
             factor_result = self._select_factor(
                 ind, last, market_info['regime'], industry_category,
-                code=code, current_date=current_date
+                code=code, current_date=current_date,
+                trend_score=market_info.get('trend_score', 0.0),
+                volatility=market_info.get('volatility', 0.15)
             )
             if factor_result is not None:
                 fn, fv, risk_info, is_ind_f = factor_result
@@ -991,11 +1051,14 @@ class SignalEngine:
             for i in range(60, n):
                 _mkt_regime_i = int(_mkt_regime_arr[i])
 
-                # 因子选择：缓存复用（regime 变化时才重算）
-                _cache_key = _mkt_regime_i
+                # 因子选择：缓存复用（regime+trend+vol 相同时复用）
+                _trend_i = float(regimes['trend_score'][i]) if regimes and 'trend_score' in regimes else 0.0
+                _vol_i = float(regimes['volatility'][i]) if regimes and 'volatility' in regimes else 0.15
+                _cache_key = (_mkt_regime_i, round(_trend_i * 5) / 5, round(_vol_i * 10) / 10)
                 if _cache_key not in _factor_cache:
                     _factor_cache[_cache_key] = self._select_factor(
-                        ind, i, _mkt_regime_i, _ind_cat, code=code, current_date=dates[i]
+                        ind, i, _mkt_regime_i, _ind_cat, code=code, current_date=dates[i],
+                        trend_score=_trend_i, volatility=_vol_i
                     )
                 factor_result = _factor_cache[_cache_key]
                 if factor_result is None:
@@ -1049,14 +1112,16 @@ class SignalEngine:
             'specific_industry': spec_ind,
         }
 
-    def _vectorized_score_assembly(self, s: dict, ind: dict, n: int, code: str = '') -> dict:
+    def _vectorized_score_assembly(self, s: dict, ind: dict, n: int, code: str = '',
+                                    dates: np.ndarray = None) -> dict:
         """向量化分数装配（门控版）：factor × gate_quality 替代6层乘法叠加。
 
         新架构:
           1. 纯因子值归一化 → score [-1, 1]
           2. 4门控Grade → gate_quality [0, 1]
-          3. adjusted_score = score * gate_quality
-          4. 不再做 Chan/MTF/共振 逐层乘法调整
+          3. adjusted_score = score + gate_quality偏移
+          4. ML预测融合 → adjusted_score = (1-w)*score + w*ml_pred
+          5. 不再做 Chan/MTF/共振 逐层乘法调整
 
         输入 s = _collect_bar_scalars 的输出 + ind指标字典。
         """
@@ -1079,6 +1144,48 @@ class SignalEngine:
         adjusted_score = score + (gate_quality - 1.0) * 0.20
         # Gate层2: 硬过滤 (portfolio — chan_passed, gate_q >= 0.85)
         # 两个层级互补：层1微调排名，层2阻止极差gate的新入场
+
+        # === 3.5 ML预测融合：XGBoost非线性因子组合 ===
+        if self.ml_enabled and self._ml_predictions and dates is not None and code:
+            ml_preds = np.zeros(n)
+            for i in range(n):
+                bar_date = pd.to_datetime(dates[i]).date()
+                ml_preds[i] = self._ml_predictions.get((code, bar_date), 0.0)
+            # ML预测值归一化到score量级（ML输出≈future_ret，需压缩到[-1,1]）
+            ml_normalized = np.tanh(ml_preds * 5)
+            # 仅在ML有非零预测时融合
+            ml_active = np.abs(ml_normalized) > 0.01
+            adjusted_score[ml_active] = (
+                (1 - self.ml_blend_weight) * adjusted_score[ml_active] +
+                self.ml_blend_weight * ml_normalized[ml_active]
+            )
+
+        # === 3.6 另类数据调整：龙虎榜个股 + 北向/融资市场级 ===
+        if self._alt_data is None:
+            try:
+                from .alternative_data import get_provider
+                self._alt_data = get_provider()
+            except Exception:
+                pass
+        if self._alt_data is not None and dates is not None:
+            try:
+                # 市场级: 北向资金+融资融券信号, 调整所有score
+                alt_market = np.zeros(n)
+                for i in range(60, n):
+                    bar_date = pd.to_datetime(dates[i]).date()
+                    nb = self._alt_data.get_northbound_signal(bar_date)
+                    mg = self._alt_data.get_margin_signal(bar_date)
+                    alt_market[i] = (nb * 0.6 + mg * 0.4) * 0.15  # 最多±0.15调整
+                adjusted_score += alt_market
+
+                # 个股级: 龙虎榜信号
+                if code:
+                    for i in range(60, n):
+                        dt_sig = self._alt_data.get_dragon_tiger_signal(code, pd.to_datetime(dates[i]).date())
+                        if abs(dt_sig) > 0.01:
+                            adjusted_score[i] += dt_sig * 0.10  # 最多±0.10调整
+            except Exception:
+                pass  # 另类数据失败不影响主流程
 
         # === 4. 常用字段 ===
         chan_sl = _safe_get_arr(ind, 'signal_level', n, 0).astype(int)
@@ -1287,8 +1394,9 @@ class SignalEngine:
         return buy_thresholds, sell_thresholds
 
     def _select_factor(self, ind: dict, idx: int, regime: int, industry_category: str = 'default',
-                       code=None, current_date=None) -> tuple:
-        """根据行业选择因子
+                       code=None, current_date=None, trend_score: float = 0.0,
+                       volatility: float = 0.15) -> tuple:
+        """根据行业选择因子 — 支持因子择时连续状态
 
         mode配置:
             - dynamic: 只用动态因子（不用固定因子）
@@ -1312,6 +1420,7 @@ class SignalEngine:
                 result = self._select_factor_dynamic(ind, idx, regime, code, current_date)
                 if result:
                     self._stats['dynamic_success'] += 1
+                    self._record_factor_selection(result[0], True, True)
                     return result
                 # 动态选择失败
                 if self.factor_mode == 'dynamic' and not self.factor_fallback_to_fixed:
@@ -1335,12 +1444,15 @@ class SignalEngine:
                     result = self._calculate_industry_factor_score(ind, idx, specific_industry,
                                                                    code=code, current_date=current_date,
                                                                    regime=regime,
-                                                                   dynamic_ic_weights=dyn_ic_weights)
+                                                                   dynamic_ic_weights=dyn_ic_weights,
+                                                                   trend_score=trend_score,
+                                                                   volatility=volatility)
                     if result:
                         self._stats['fixed_industry'] += 1
                         factor_name, factor_value, risk_info = result
                         # 不做熊市折扣：组合层用截面rank_pct排序，均匀缩放不改变排名
                         factor_name = factor_name + f'_{specific_industry[:2]}'
+                        self._record_factor_selection(factor_name, True, False)
                         return factor_name, factor_value, risk_info, True
 
         # Fix#13: 最终兜底 — 使用行业category的配置（优先）
@@ -1350,7 +1462,8 @@ class SignalEngine:
             if fallback_ind in INDUSTRY_FACTOR_CONFIG:
                 result = self._calculate_industry_factor_score(
                     ind, idx, fallback_ind, code=code, current_date=current_date,
-                    regime=0, dynamic_ic_weights=None
+                    regime=0, dynamic_ic_weights=None,
+                    trend_score=trend_score, volatility=volatility
                 )
                 if result:
                     self._stats['fixed_default'] += 1
@@ -1360,6 +1473,7 @@ class SignalEngine:
         # 绝对兜底: 原始市场状态信号(MOM/REV/SHARPE)
         self._stats['fixed_default'] += 1
         factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
+        self._record_factor_selection(factor_name, False, False)
         return factor_name, factor_value, risk_info, False
 
     def _get_dynamic_ic_weights(self, industry: str, current_date) -> Optional[dict]:
@@ -1666,53 +1780,90 @@ class SignalEngine:
             return None
 
     def _calculate_default_factor(self, ind: dict, idx: int, regime: int, industry_category: str) -> tuple:
-        """指数条件信号：指数涨=追涨，指数跌=抄底
+        """默认因子：趋势质量 × 均值回归时机 × 低波动溢价
 
-        所有输出均tanh压缩到(-1,1)，与动态因子和行业因子的量纲一致。
+        数据驱动设计依据（304万条验证数据）：
+        - trend_type=2: Acc=51.1%, MeanRet=1.10%  (最强方向信号)
+        - mom_60d IC=-0.055  (60日动量反向预测，均值回归主导)
+        - dist_ma60 IC=-0.069  (乖离MA60反向预测，最强单因子)
+        - risk_vol IC=-0.054  (低波动率溢价)
+        - exhaustion_risk IC=-0.038  (力竭风险反向预测)
+
+        核心逻辑：好股票=强趋势+回调到位+低波动+未力竭
         """
-        mom_20 = self._safe_get(ind, 'mom_20', idx, 0)
-        mom_10 = self._safe_get(ind, 'mom_10', idx, 0)
-        mom_5 = self._safe_get(ind, 'mom_5', idx, 0)
-        vol_20 = self._safe_get(ind, 'volatility', idx, 0)
-        rel_str = self._safe_get(ind, 'relative_strength', idx, 0)
-        mtf_align = self._safe_get(ind, 'mtf_alignment_score', idx, 0)
-        low_dn = self._safe_get(ind, 'low_downside', idx, 0)
-        vol_regime = self._safe_get(ind, 'vol_regime', idx, 1.0)
+        trend_type = int(self._safe_get(ind, 'trend_type', idx, 0))
+        mom_60d = self._safe_get(ind, 'mom_60d', idx, 0)
+        dist_ma60 = self._safe_get(ind, 'dist_ma60', idx, 0)
+        risk_vol = self._safe_get(ind, 'risk_vol', idx, 0.03)
+        exhaustion = self._safe_get(ind, 'exhaustion_risk', idx, 0)
+        vol_ratio = self._safe_get(ind, 'volume_ratio', idx, 0)
+        chan_div = self._safe_get(ind, 'chan_divergence_strength', idx, 0)
 
-        momentum = mom_20 * 0.5 + mom_10 * 0.3 + rel_str * 0.2
-        reversal = -(mom_20 * 0.4 + mom_10 * 0.3 + mom_5 * 0.3)
+        # === 趋势质量 (0~1) ===
+        # trend_type: -2=下跌, 0=盘整, 1=上涨初期, 2=强上涨
+        trend_quality = np.clip((trend_type + 2) / 4.0, 0.0, 1.0)  # → [0, 1]
 
-        # 用市场状态决定方向：牛追涨，熊抄底
-        if regime == 1:
-            factor_value = np.tanh(momentum * 3)
+        # === 均值回归时机 (-1~1, 正值=回调到位) ===
+        # mom_60d太高=追涨风险, 太低=下跌趋势
+        # 最优区间: mom_60d ∈ [-0.15, 0.10] (温和回调到小涨)
+        mom_score = 1.0 - abs(mom_60d - 0.0) / 0.20
+        mom_score = np.clip(mom_score, -1.0, 1.0)
+        # dist_ma60太高=严重乖离, 太低=破位
+        dist_score = 1.0 - abs(dist_ma60 - 0.02) / 0.15
+        dist_score = np.clip(dist_score, -1.0, 1.0)
+        mean_reversion = mom_score * 0.5 + dist_score * 0.5
+
+        # === 低波动溢价 (0~1, 1=最低波动) ===
+        low_vol = 1.0 - np.clip(risk_vol / 0.06, 0.0, 1.0)
+
+        # === 力竭惩罚 (-1~0, 0=无力竭) ===
+        exhaustion_penalty = -np.clip(exhaustion / 0.3, 0.0, 1.0)
+
+        # === 背离加成 (0~0.15, 底背离=加分) ===
+        divergence_bonus = np.clip(chan_div * 0.15, 0.0, 0.15)
+
+        # === 缩量回调加分 (-0.05~0.10, 上涨趋势缩量=健康) ===
+        contraction_bonus = 0.0
+        if trend_type >= 1 and vol_ratio < 0:
+            contraction_bonus = np.clip(-vol_ratio * 0.15, 0.0, 0.10)
+
+        # === 市场状态调整 ===
+        if regime == 1:  # 牛市: 趋势质量权重更高
+            composite = (trend_quality * 0.50 + mean_reversion * 0.15 +
+                        low_vol * 0.15 + exhaustion_penalty * 0.05 +
+                        divergence_bonus + contraction_bonus)
             factor_name = 'MOM'
-        elif regime == -1:
-            factor_value = np.tanh(reversal * 3)
+        elif regime == -1:  # 熊市: 均值回归+低波动权重更高
+            composite = (trend_quality * 0.15 + mean_reversion * 0.45 +
+                        low_vol * 0.25 + exhaustion_penalty * 0.05 +
+                        divergence_bonus + contraction_bonus)
             factor_name = 'REV'
-        else:
-            # 中性：动量+反转+对齐+低回撤 复合评分
-            # SHARPE_FLA (对齐+低风险) 准确率62.7%, 远高于裸SHARPE_F(47.5%)
-            vol = abs(vol_20) + 0.01
-            sharpe_raw = momentum / vol
-            # 加入反转分量：中性市场反转信号有额外预测力
-            rev_contribution = reversal * 0.3
-            # 加入MTF对齐：对齐越好，动量/反转信号越可靠
-            align_bonus = mtf_align * 0.3
-            # 加入低回撤：低 downside 的股票有更高安全边际
-            low_dn_bonus = low_dn * 0.2
-            # 波动率调整：低波动时给更多权重（低波动溢价）
-            vol_discount = 1.0 / (1.0 + vol_regime * 0.5)
-            composite = (sharpe_raw * 0.5 + rev_contribution + align_bonus + low_dn_bonus) * vol_discount
-            factor_value = np.tanh(composite)
+        else:  # 中性: 均衡
+            composite = (trend_quality * 0.35 + mean_reversion * 0.30 +
+                        low_vol * 0.20 + exhaustion_penalty * 0.05 +
+                        divergence_bonus + contraction_bonus)
             factor_name = 'SHARPE'
+
+        factor_value = np.tanh(composite * 3)
 
         risk_info = {'is_high_vol': False}
         return factor_name, factor_value, risk_info
 
+    def _record_factor_selection(self, factor_name: str, is_industry: bool, is_dynamic: bool):
+        """回测诊断：记录因子选择"""
+        try:
+            if self._diag is None:
+                from analysis.backtest_diagnostics import get_diagnostics
+                self._diag = get_diagnostics()
+            self._diag.record_factor_selection(factor_name, is_industry, is_dynamic)
+        except Exception:
+            pass
+
     def _calculate_industry_factor_score(self, ind: dict, idx: int, industry: str,
                                            code=None, current_date=None, regime=0,
-                                           dynamic_ic_weights=None) -> tuple:
-        """计算行业特定因子得分
+                                           dynamic_ic_weights=None,
+                                           trend_score=0.0, volatility=0.15) -> tuple:
+        """计算行业特定因子得分 — 市场状态连续插值版
 
         支持按市场状态选择不同的因子组合，使用IC权重加权
         支持tech_fund_combo等复合因子
@@ -1722,21 +1873,53 @@ class SignalEngine:
         if not config:
             return None
 
-        # 根据市场状态选择因子和权重
-        # regime: 1=bull, 0=neutral, -1=bear
-        if regime == 1:
-            factors = config.get('bull_factors', config.get('factors', []))
-            weights = config.get('bull_weights', None)
-        elif regime == -1:
-            # 熊市使用中性因子（熊市标定因子OOS表现极差，-4%~-9% mean ret）
-            factors = config.get('factors', [])
-            weights = config.get('weights', None)
-        else:
-            factors = config.get('factors', [])
-            weights = config.get('weights', None)
+        # === 因子择时: 市场状态连续插值替代离散切换 ===
+        # 参数来源: _collect_bar_scalars 传入的 trend_score(趋势强度) 和 volatility(波动率)
+        # trend_score ∈ [-1,1]: 正值=趋势强(偏牛因子), 负值=趋势弱(偏熊因子)
+        # volatility ∈ [0.05,0.40]: 高波=市场恐慌(偏防御), 低波=稳定(偏趋势)
+        ts = trend_score if trend_score is not None else 0.0
+        vol = volatility if volatility is not None else 0.15
+        trend_sig = 1.0 / (1.0 + np.exp(-ts * 5.0))   # sigmoid: 0~1
+        vol_factor = np.clip(vol / 0.20, 0.5, 2.0)
 
-        if not factors:
+        # 连续三状态权重
+        bull_w = trend_sig * (2.0 - vol_factor * 0.5)
+        bear_w = (1.0 - trend_sig) * vol_factor * 0.7
+        neutral_w = 1.0 - bull_w - bear_w
+        total = bull_w + neutral_w + bear_w + 1e-10
+        bull_w /= total; neutral_w /= total; bear_w /= total
+
+        # 获取三套因子
+        bf = config.get('bull_factors', config.get('factors', []))
+        bw_cfg = config.get('bull_weights', None)
+        nf = config.get('factors', [])
+        nw_cfg = config.get('weights', None)
+        # 熊市用中性因子(OOS表现差), 但通过连续权重自动降权
+        brf = config.get('bear_factors', config.get('factors', []))
+        brw_cfg = config.get('bear_weights', None)
+
+        if not nf:
             return None
+
+        # 合并三套因子: 连续加权
+        all_factor_names = list(dict.fromkeys(bf + nf + brf))  # 去重保序
+        factors = all_factor_names
+        weights = []
+        for fn in all_factor_names:
+            w = 0.0
+            if fn in bf and bw_cfg:
+                bi = bf.index(fn)
+                if bi < len(bw_cfg): w += bull_w * abs(bw_cfg[bi])
+            if fn in nf and nw_cfg:
+                ni = nf.index(fn)
+                if ni < len(nw_cfg): w += neutral_w * abs(nw_cfg[ni])
+            if fn in brf and brw_cfg:
+                bri = brf.index(fn)
+                if bri < len(brw_cfg): w += bear_w * abs(brw_cfg[bri])
+            if w > 0.001:
+                weights.append(w)
+            else:
+                weights.append(0.0)  # 占位，后续跳过
 
         # 获取基本面压缩评分（用于tech_fund_combo等复合因子）
         compressed_fund_score = 0.0
@@ -1809,9 +1992,14 @@ class SignalEngine:
             # 无权重时等权平均
             factor_value = np.mean(factor_scores)
 
-        # 添加市场状态标记到因子名称
-        regime_suffix = {1: '_B', -1: '_E', 0: ''}.get(regime, '')
-        return f'IND_{industry[:4]}{regime_suffix}', factor_value, {'is_high_vol': False, 'industry_factor': True, 'n_factors': len(factor_scores)}
+        # 因子名称: IND_{行业}_{主导状态}
+        if bull_w > neutral_w and bull_w > bear_w:
+            tag = '_B'
+        elif bear_w > neutral_w and bear_w > bull_w:
+            tag = '_E'
+        else:
+            tag = ''
+        return f'IND_{industry[:4]}{tag}', factor_value, {'is_high_vol': volatility > 0.25 if volatility else False, 'industry_factor': True, 'n_factors': len(factor_scores)}
 
     def _get_style_score(self, ind: dict, idx: int, market_info: dict) -> float:
         """获取风格因子分数"""

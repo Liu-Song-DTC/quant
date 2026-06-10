@@ -217,6 +217,33 @@ class PortfolioConstructor:
         self.sentiment_multipliers: dict = {}
         self._sector_rotation = None  # 板块轮动分析器
 
+        # === 多策略框架 ===
+        from .multi_strategy import MultiStrategyWeights
+        self._multi_strategy = MultiStrategyWeights()
+
+        # === 硬最大回撤停止 ===
+        hds_config = config.get('hard_drawdown_stop', {}) if hasattr(config, 'get') else {}
+        self.hds_enabled = hds_config.get('enabled', True)
+        self.hds_trigger = hds_config.get('trigger_drawdown', 0.20)
+        self.hds_recovery = hds_config.get('recovery_threshold', 0.10)
+        self.hds_close_days = hds_config.get('close_positions_days', 3)
+        self._hds_triggered = False
+        self._hds_close_day = 0
+        self._hds_peak_ref = None  # 触发时的峰值（锁定，不随恢复更新）
+
+        # === 连续亏损熔断 ===
+        clb_config = config.get('consecutive_loss_breaker', {}) if hasattr(config, 'get') else {}
+        self.clb_enabled = clb_config.get('enabled', True)
+        self.clb_threshold = clb_config.get('threshold', 3)
+        self.clb_loss_floor = clb_config.get('loss_floor', -0.005)
+        self.clb_win_floor = clb_config.get('win_floor', 0.005)
+        self.clb_exposure_reduction = clb_config.get('exposure_reduction', 0.50)
+        self.clb_reset_after_win = clb_config.get('reset_after_win', 2)
+        self._clb_losses = 0
+        self._clb_wins = 0
+        self._clb_triggered = False
+        self._prev_equity = None
+
     def set_sector_rotation(self, sr):
         """注入板块轮动分析器（含动量+信号密度）"""
         self._sector_rotation = sr
@@ -250,6 +277,15 @@ class PortfolioConstructor:
             "stop_loss_triggered": self._stop_loss_triggered,
             "stop_loss_recovery_days": self._stop_loss_recovery_days,
             "peak_equity": self.peak_equity,
+            # 硬回撤停止
+            "hds_triggered": self._hds_triggered,
+            "hds_close_day": self._hds_close_day,
+            "hds_peak_ref": self._hds_peak_ref,
+            # 连续亏损熔断
+            "clb_losses": self._clb_losses,
+            "clb_wins": self._clb_wins,
+            "clb_triggered": self._clb_triggered,
+            "prev_equity": self._prev_equity,
         }
         with open(filepath, 'w', encoding='utf-8') as f:
             _json.dump(state, f, ensure_ascii=False, indent=2, default=_serialize)
@@ -286,6 +322,13 @@ class PortfolioConstructor:
         self._stop_loss_triggered = state.get("stop_loss_triggered", False)
         self._stop_loss_recovery_days = state.get("stop_loss_recovery_days", 0)
         self.peak_equity = state.get("peak_equity")
+        self._hds_triggered = state.get("hds_triggered", False)
+        self._hds_close_day = state.get("hds_close_day", 0)
+        self._hds_peak_ref = state.get("hds_peak_ref")
+        self._clb_losses = state.get("clb_losses", 0)
+        self._clb_wins = state.get("clb_wins", 0)
+        self._clb_triggered = state.get("clb_triggered", False)
+        self._prev_equity = state.get("prev_equity")
 
     def set_sentiment_multipliers(self, multipliers: dict):
         """设置行业情绪乘数（含小说逆向投资调整）
@@ -404,6 +447,8 @@ class PortfolioConstructor:
         bear_risk_fast=False,
         trend_score=0.0,
         index_volume_ratio=1.0,
+        style_score=0.0,
+        regime_volatility=0.0,
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
@@ -599,6 +644,12 @@ class PortfolioConstructor:
 
         target_exposure = float(np.clip(market_signal, floor, ceiling))
 
+        # === regime_volatility: 市场状态频繁切换时降低敞口 ===
+        if regime_volatility > 0.5:
+            target_exposure *= 0.8
+        elif regime_volatility > 0.3:
+            target_exposure *= 0.9
+
         # === Chan结构信号豁免：B1/强买点出现时不因熊市过度降仓 ===
         # 缠论B1恰好在下跌末端触发，此时市场regime判定为"熊市",
         # 若按regime降仓则系统性地错失最佳买入时机
@@ -674,6 +725,45 @@ class PortfolioConstructor:
             self._stop_loss_recovery_days -= 1
             if self._stop_loss_recovery_days <= 0:
                 self._stop_loss_triggered = False
+
+        # === 硬最大回撤停止：回撤>hds_trigger → 渐进清仓 → 恢复后才允许交易 ===
+        if self.hds_enabled:
+            current_equity = total_equity
+            if self._hds_triggered:
+                # 已触发：检查是否恢复
+                recovery_dd = (self._hds_peak_ref - current_equity) / self._hds_peak_ref if self._hds_peak_ref > 0 else 0
+                if recovery_dd <= self.hds_recovery:
+                    self._hds_triggered = False
+                    self._hds_close_day = 0
+                else:
+                    self._hds_close_day += 1
+                    remain_ratio = max(0.0, 1.0 - self._hds_close_day / self.hds_close_days)
+                    target_exposure = min(target_exposure, remain_ratio)
+            elif drawdown >= self.hds_trigger:
+                self._hds_triggered = True
+                self._hds_close_day = 0
+                self._hds_peak_ref = self.peak_equity
+                # 首日直接从当前敞口开始降
+                target_exposure = min(target_exposure, 0.67)
+
+        # === 连续亏损熔断：连亏→减半敞口 → 连盈→恢复 ===
+        if self.clb_enabled and rebalance and self._prev_equity is not None:
+            period_ret = (total_equity - self._prev_equity) / (self._prev_equity + 1e-10)
+            if period_ret < self.clb_loss_floor:
+                self._clb_losses += 1
+                self._clb_wins = 0
+            elif period_ret > self.clb_win_floor:
+                self._clb_wins += 1
+                self._clb_losses = 0
+                if self._clb_triggered and self._clb_wins >= self.clb_reset_after_win:
+                    self._clb_triggered = False
+            if self._clb_losses >= self.clb_threshold:
+                self._clb_triggered = True
+            if self._clb_triggered:
+                target_exposure *= self.clb_exposure_reduction
+                self.max_single_weight *= self.clb_exposure_reduction
+        if rebalance:
+            self._prev_equity = total_equity
 
         # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）
         self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure
@@ -804,22 +894,34 @@ class PortfolioConstructor:
         if new_rejects:
             qualified = [c for c in qualified if c not in new_rejects]
 
-        # === 门控结构确认: 新入场需至少满足结构/品质二选一 ===
+        # === 门控结构确认: 新入场结构/品质二选一，无结构=软惩罚而非硬拒 ===
         # 已持仓的结构消退 → 豁免门控，给入场理由消失确认期恢复机会
-        # 路径A: 显式Chan结构 (sl>=1 or bp>0) — 传统缠论确认
-        # 路径B: 门控综合品质 (gate_quality>=0.85) — Gate评分达标
-        #    gate_quality归一化后中性≈0.94, <0.85表示多门控显著偏空
+        # 路径A: 显式Chan结构 (sl>=1 or bp>0) — 传统缠论确认 → 正常竞争
+        # 路径B: 门控品质补偿 (gate_quality高) — 无结构但品质高 → 小幅扣分
+        # 路径C: 无结构+低品质 → 深度扣分但不拒绝（因子分数可能弥补）
+        # 仅 gate_q < 0.60 且无结构时硬拒（品质太差，不可信任）
         chan_passed = []
         for c in qualified:
             bp = c.get('chan_buy_point', 0)
             sl = c.get('signal_level', 0)
             sig = c.get('sig')
             gate_q = getattr(sig, '_gate_quality', 0.5) if sig else 0.5
-            # Chan买力精准替代：有强买力(buy_strength>=0.3)豁免gate门槛
             _cbs = getattr(sig, 'chan_buy_strength', 0.0) if sig else 0.0
-            if sl < 1 and bp <= 0 and gate_q < 0.85 and _cbs < 0.30:
-                if c['code'] not in current_codes:
+
+            has_chan = sl >= 1 or bp > 0 or _cbs >= 0.30
+
+            if not has_chan:
+                if gate_q < 0.60 and c['code'] not in current_codes:
+                    # 品质极差且无结构 → 硬拒（保护资金）
                     continue
+                # 软惩罚: 无结构按gate质量分档扣分
+                if gate_q < 0.85:
+                    c['no_chan_penalty'] = c.get('no_chan_penalty', 0) - 0.10
+                elif gate_q < 1.0:
+                    c['no_chan_penalty'] = c.get('no_chan_penalty', 0) - 0.05
+                else:
+                    c['no_chan_penalty'] = c.get('no_chan_penalty', 0) - 0.02
+
             # 均线趋势检查: EMA20 > EMA60 是缠论买点的方向前提
             ma_up = getattr(sig, 'ma_trend_up', False) if sig else False
             tt = getattr(sig, 'trend_type', 0) if sig else 0
@@ -828,7 +930,6 @@ class PortfolioConstructor:
             if bp == 3:
                 _b3tc = getattr(sig, 'b3_trend_confirmed', False) if sig else False
                 if not _b3tc:
-                    # B3但只有1个同向中枢 → 趋势不稳固，加扣分但不拒绝
                     c['b3_unconfirmed_penalty'] = -0.06
             if bp == 2 and tt == -2:
                 continue  # B2在下跌趋势中不可靠
@@ -908,8 +1009,18 @@ class PortfolioConstructor:
                 c['is_held'] = False
                 turnover = 0.0
 
+            # 创业板/主板轮动加成: 当创业板指强时, 偏向300/301/688股票
+            board_bonus = 0.0
+            if abs(style_score) > 0.15:
+                code = c.get('code', '')
+                is_growth_board = code.startswith('300') or code.startswith('301') or code.startswith('688')
+                if style_score > 0.15 and is_growth_board:
+                    board_bonus = 0.08
+                elif style_score < -0.15 and not is_growth_board:
+                    board_bonus = 0.05
+
             # 无Chan结构软惩罚（Gate 1已打低分，组合层叠加确保排名靠后但不拒绝）
-            c['effective_score'] = rank * multiplier + additive + turnover + c.get('no_chan_penalty', 0.0)
+            c['effective_score'] = rank * multiplier + additive + turnover + board_bonus + c.get('no_chan_penalty', 0.0)
 
         # 排序：按有效得分降序（已持仓有换手加分）
         qualified.sort(key=lambda x: -x['effective_score'])
@@ -923,6 +1034,20 @@ class PortfolioConstructor:
                 break
             if c not in selected:
                 selected.append(c)
+
+        # === 多策略后处理: 按子策略评分调整有效得分 → 可能重排 ===
+        if self._multi_strategy.enabled and selected:
+            ms_mult = self._multi_strategy.compute_weights(
+                selected, signal_store, market_regime, drawdown)
+            for c in selected:
+                mult = ms_mult.get(c['code'], 1.0)
+                if mult <= 0.05:
+                    c['effective_score'] -= 10.0  # 强制排到末尾
+                else:
+                    c['effective_score'] *= mult
+            selected.sort(key=lambda x: -x['effective_score'])
+            # 移除被强制拒绝的
+            selected = [c for c in selected if c['effective_score'] > -5.0]
 
         # === 动态最小持仓 (Fix#9: 不达标时降级使用而非空仓) ===
         min_pos = self._get_min_positions(market_regime)
@@ -970,7 +1095,13 @@ class PortfolioConstructor:
             total_w = sum(raw_weights) + 1e-10
             weights = [w / total_w * target_exposure for w in raw_weights]
         else:
-            weights = [target_exposure / n] * n
+            # 排名加权: 信号强者多配（即使无IC数据也用排名衰减）
+            raw_weights = []
+            for i in range(n):
+                rank_w = 1.0 - self.rank_decay * (i / max(n - 1, 1))
+                raw_weights.append(rank_w)
+            total_w = sum(raw_weights) + 1e-10
+            weights = [w / total_w * target_exposure for w in raw_weights]
 
         # 单票权重上限: 候选不足时动态放宽以提升资金利用率
         max_single = self.max_single_weight_from_cfg
@@ -1083,6 +1214,8 @@ class PortfolioConstructor:
         bear_risk_fast=False,
         trend_score=0.0,
         index_volume_ratio=1.0,
+        style_score=0.0,
+        regime_volatility=0.0,
         cost=None,
         rebalance=False,
     ):
@@ -1093,6 +1226,34 @@ class PortfolioConstructor:
         stop_loss_sells = {}
         profit_reduce = {}  # 止盈减仓 (code -> target_pct_of_current)
         total_equity = cash + sum(current_positions.values())
+
+        # === 硬止损优先检查：任何路径都必须先过止损，不可被其他逻辑覆盖 ===
+        for code, current_value in current_positions.items():
+            if code not in prices or current_value <= 0:
+                continue
+            if not (cost and code in cost and len(cost[code]) >= 2 and cost[code][0] > 0):
+                continue
+            avg_cost = cost[code][1]
+            pnl_pct = (prices[code] - avg_cost) / avg_cost
+            # 绝对止损: -8%无条件全清
+            if pnl_pct <= -0.08:
+                stop_loss_sells[code] = 0.0
+                continue
+            # 时间止损: 持仓>15天且亏损>5%
+            if code in self._entry_dates:
+                if isinstance(date, date_type):
+                    days_held = (date - self._entry_dates[code]).days
+                else:
+                    days_held = 0
+                if days_held > 15 and pnl_pct <= -0.05:
+                    stop_loss_sells[code] = 0.0
+                    continue
+            # 追踪止损: 从最高点回撤>10%
+            if code in self._peak_prices and self._peak_prices[code] > 0:
+                dd_from_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
+                if dd_from_peak >= 0.10:
+                    stop_loss_sells[code] = 0.0
+                    continue
 
         # === 缠论止盈：分层退出 + 中枢移动止盈 (非调仓日也生效) ===
         chan_force_sells = {}
@@ -1508,6 +1669,8 @@ class PortfolioConstructor:
                 bear_risk_fast=bear_risk_fast,
                 trend_score=trend_score,
                 index_volume_ratio=index_volume_ratio,
+                style_score=style_score,
+                regime_volatility=regime_volatility,
             )
 
         # 强制卖出 (止损 + Chan卖出)

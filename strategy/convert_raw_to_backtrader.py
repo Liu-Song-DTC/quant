@@ -113,7 +113,7 @@ def main():
     skipped = 0
     failed = 0
 
-    ctx = multiprocessing.get_context('fork')
+    import platform; ctx = multiprocessing.get_context('fork' if platform.system() != 'Windows' else 'spawn')
     with ctx.Pool(args.workers) as pool:
         results = list(tqdm(
             pool.imap(convert_stock, work_args, chunksize=50),

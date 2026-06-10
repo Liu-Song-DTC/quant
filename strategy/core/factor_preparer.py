@@ -295,10 +295,21 @@ def prepare_factor_data(stock_file_map: dict, fd,
     factor_dates = all_factor_dates[::date_step]
     del all_factor_dates  # 释放中间列表
     print(f"预计算因子数据: {len(factor_dates)} 个时间点 (每{date_step}日采样), {len(stock_file_map)} 只股票")
-    print(f"行业映射: 未匹配 {unmatched_count}/{len(stock_file_map)} 只股票")
-    for cat, codes in industry_codes.items():
-        if codes:
-            print(f"  {cat}: {len(codes)} 只")
+
+    # === 因子数据缓存: 避免重复计算 ===
+    from .cache_manager import load_factor_cache, save_factor_cache
+    import hashlib
+    _n_stocks = len(stock_file_map)
+    _n_dates = len(factor_dates)
+    _cache_key_str = ','.join(sorted(stock_file_map.keys())[:100]) + str(_n_stocks) + \
+                     str(factor_dates[0]) + str(factor_dates[-1]) + str(date_step) + str(lookback)
+    _cache_hash = hashlib.md5(_cache_key_str.encode()).hexdigest()[:8]
+    _cached = load_factor_cache(_n_stocks, _n_dates, _cache_hash)
+    if _cached is not None and len(_cached) > 0:
+        print(f"使用因子缓存，跳过因子计算")
+        if _cached['code'].dtype != object:
+            _cached['code'] = _cached['code'].astype(str).str.zfill(6)
+        return _cached, industry_codes, all_dates
 
     # 并行计算因子 - worker从文件读取数据，避免主进程加载全量stock_data_dict
     # fork + COW: 每个 worker 通过 _worker_fd 访问父进程已加载的基本面数据，无需重新从磁盘读取
@@ -309,10 +320,17 @@ def prepare_factor_data(stock_file_map: dict, fd,
 
     # 分批构建 DataFrame：避免 list-of-dicts（~2GB 峰值内存）与 DataFrame 同时存在导致 OOM
     # chunksize=50 减少 IPC RPC 次数（4000只 / 50 = 80次，vs 10=400次）
-    BATCH_SIZE = 50000
+    BATCH_SIZE = 20000  # 降低batch size以减少内存峰值
     batch_data = []
-    df_chunks = []
     total_results = 0
+
+    # 使用临时CSV文件流式写入，避免df_chunks在内存中累积导致OOM
+    import tempfile
+    tmp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp_factor')
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_csv_path = os.path.join(tmp_dir, 'factor_data_tmp.csv')
+    tmp_csv_file = open(tmp_csv_path, 'w', encoding='utf-8')
+    header_written = False
 
     # 加载题材热度计算器（fork前, COW共享）
     concept_calc = None
@@ -324,26 +342,54 @@ def prepare_factor_data(stock_file_map: dict, fd,
     except Exception as e:
         print(f"题材热度计算器加载失败(fallback): {e}")
 
-    ctx = multiprocessing.get_context('fork')
-    with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fd, concept_calc)) as pool:
-        for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=50),
-                       total=len(args_list), desc="计算因子"):
+    def _flush_batch(batch):
+        """将一批数据写入临时CSV，避免在内存中累积DataFrame"""
+        nonlocal header_written, total_results
+        if not batch:
+            return
+        df = pd.DataFrame(batch)
+        total_results += len(df)
+        df.to_csv(tmp_csv_file, header=not header_written, index=False)
+        header_written = True
+        del df
+        batch.clear()
+
+    import platform
+    if platform.system() == 'Windows':
+        print("Windows: single-process factor computation (spawn overhead too high)")
+        _init_factor_worker(fd, concept_calc)
+        for args in tqdm(args_list, desc="计算因子"):
+            res = _compute_stock_factors_worker(args)
             batch_data.extend(res)
-            total_results += len(res)
             if len(batch_data) >= BATCH_SIZE:
-                df_chunks.append(pd.DataFrame(batch_data))
-                batch_data.clear()
+                _flush_batch(batch_data)
+    else:
+        ctx = multiprocessing.get_context('fork')
+        with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fd, concept_calc)) as pool:
+            for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=50),
+                           total=len(args_list), desc="计算因子"):
+                batch_data.extend(res)
+                if len(batch_data) >= BATCH_SIZE:
+                    _flush_batch(batch_data)
 
     # 最后一批
-    if batch_data:
-        df_chunks.append(pd.DataFrame(batch_data))
-        batch_data.clear()
+    _flush_batch(batch_data)
+    tmp_csv_file.close()
 
     del args_list, batch_data  # 释放参数列表和临时数据
 
-    # 合并所有 batch DataFrame
-    factor_data = pd.concat(df_chunks, ignore_index=True) if df_chunks else pd.DataFrame()
-    del df_chunks  # 释放 chunk 列表
+    # 从临时CSV读取合并后的因子数据（一次性加载，内存可控）
+    print(f"从临时CSV加载因子数据: {tmp_csv_path}")
+    factor_data = pd.read_csv(tmp_csv_path, parse_dates=['date'], dtype={'code': str}) if os.path.getsize(tmp_csv_path) > 0 else pd.DataFrame()
+    # 确保code保持为字符串（CSV读写可能转为int64导致与concept_map的isin不匹配）
+    if len(factor_data) > 0 and factor_data['code'].dtype != object:
+        factor_data['code'] = factor_data['code'].astype(str).str.zfill(6)
+    # 清理临时文件
+    try:
+        os.remove(tmp_csv_path)
+        os.rmdir(tmp_dir)
+    except Exception:
+        pass
     print(f"因子数据: {total_results} 条原始记录 → {len(factor_data)} 行")
 
     # === 内存优化：float64 → float32 (精度足够，内存减半) ===
@@ -407,6 +453,21 @@ def prepare_factor_data(stock_file_map: dict, fd,
     neu_config = config_loader.get('factor_neutralization', {})
     if neu_config.get('enabled', False) and len(factor_data) > 0:
         from .factor_neutralizer import neutralize_factor_df
+
+        # 删除噪声因子（|IC| < 0.01，纯噪声无预测力）
+        _NOISE_FACTORS = {
+            'turnover', 'turnover_ratio', 'turnover_5d_avg', 'turnover_20d_avg',
+            'amplitude', 'amplitude_5d_avg', 'amplitude_20d_avg',
+            'chan_divergence_strength', 'chan_buy_point',
+            'avg_up_ret', 'up_capture',
+            'max_gap_20d', 'max_ret_20d', 'gap_up_count_20d',
+            'consecutive_up', 'pos_in_range_pos_20d',
+        }
+        dropped_noise = [c for c in _NOISE_FACTORS if c in factor_data.columns]
+        if dropped_noise:
+            factor_data.drop(columns=dropped_noise, inplace=True)
+            print(f"删除噪声因子: {len(dropped_noise)} 个 (|IC|<0.01)")
+
         factor_cols = [c for c in factor_data.columns
                        if c not in ('code', 'date', 'future_ret', 'industry')
                        and c not in _CHAN_STRUCTURAL_FIELDS]
@@ -425,5 +486,11 @@ def prepare_factor_data(stock_file_map: dict, fd,
                 factor_data[fc] = factor_data[neu_col]
         factor_data.drop(columns=[c for c in factor_data.columns if c.endswith('_neu')],
                         inplace=True)
+
+    # 保存到磁盘缓存（首次 ~5s parquet 写入，后续回测跳过 ~3h 计算）
+    try:
+        save_factor_cache(factor_data, _n_stocks, _n_dates, _cache_hash)
+    except Exception:
+        pass  # 缓存写入失败不影响主流程
 
     return factor_data, industry_codes, all_dates

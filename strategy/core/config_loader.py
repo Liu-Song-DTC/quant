@@ -91,6 +91,11 @@ class ConfigLoader:
             'selection': self.get('portfolio.selection', {
                 'min_rank_pct': 0.40, 'min_absolute_score': 0.0, 'min_confidence': 0.30,
             }),
+            'params': self.get('portfolio.params', {
+                'max_positions': 5, 'risk_parity_min_weight_ratio': 0.5,
+                'rank_decay': 0.3, 'bull_market_floor': 0.85, 'bull_market_ceiling': 1.0,
+                'bear_market_floor': 0.3, 'bear_market_ceiling': 0.55,
+            }),
         }
 
     def get_industry_factor_config(self) -> Dict[str, Any]:

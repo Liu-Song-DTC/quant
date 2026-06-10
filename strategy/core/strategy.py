@@ -99,6 +99,8 @@ class Strategy:
                 bear_risk_fast = bool(row["bear_risk_fast"].values[0]) if "bear_risk_fast" in row.columns else False
                 trend_score = float(row["trend_score"].values[0]) if "trend_score" in row.columns else 0.0
                 index_volume_ratio = float(row["index_volume_ratio"].values[0]) if "index_volume_ratio" in row.columns else 1.0
+                style_score_val = float(row["style_score"].values[0]) if "style_score" in row.columns else 0.0
+                regime_vol_val = float(row["regime_volatility"].values[0]) if "regime_volatility" in row.columns else 0.0
 
         # 再平衡日更新情绪权重
         if rebalance:
@@ -132,6 +134,8 @@ class Strategy:
             bear_risk_fast=bear_risk_fast,
             trend_score=trend_score,
             index_volume_ratio=index_volume_ratio,
+            style_score=style_score_val,
+            regime_volatility=regime_vol_val,
             cost=cost,
             rebalance=rebalance
         )

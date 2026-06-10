@@ -818,6 +818,7 @@ def detect_buy_sell_points(
     - 一买 (B1): 下跌趋势最后一个中枢下方，底背离确认 → 趋势反转
     - 二买 (B2): 一买后第一次次级别回调，不破一买低点 → 二次确认
     - 三买 (B3): 突破中枢上沿(ZG)后回调，不破ZG → 趋势加速
+    - 四买 (B4): 已确立上涨趋势中的回调入场 → 趋势延续（非转折点）
 
     三类卖点:
     - 一卖 (S1): 上涨趋势最后一个中枢上方，顶背离确认 → 趋势反转
@@ -825,7 +826,7 @@ def detect_buy_sell_points(
     - 三卖 (S3): 跌破中枢下沿(ZD)后反弹，不回ZD → 趋势加速下跌
 
     Returns:
-        buy_point: 0=无, 1=一买, 2=二买, 3=三买
+        buy_point: 0=无, 1=一买, 2=二买, 3=三买, 4=四买(趋势回调), 5=五买(趋势启动)
         sell_point: 0=无, 1=一卖, 2=二卖, 3=三卖
         buy_confidence: 买点置信度 [0, 1]
         sell_confidence: 卖点置信度 [0, 1]
@@ -1083,6 +1084,97 @@ def detect_buy_sell_points(
 
     # === 二买/二卖: 由 detect_second_buy_point 实现 (详见函数14) ===
     # 旧的B2/S2 crude循环已删除 — 改用MACD确认+黄金分割回调+笔确认的完整实现
+
+    # === 四买 (B4): 趋势回调买点 — 填补42%无结构买入缺口 ===
+    # Chan B1/B2/B3是转折点检测，但大量好股票在趋势运行中没有转折结构。
+    # B4捕获: 已确立的上涨趋势中，价格回调到合理位置时入场。
+    # 条件: 均线多头(MA20>MA60) + 非追高(mom_60d<0.30) + 非力竭 + 无卖点
+    if n_bars >= 60:
+        # 计算MA20和MA60用于趋势判断
+        ma20 = np.array([np.mean(close[max(0,i-19):i+1]) for i in range(n_bars)])
+        ma60 = np.array([np.mean(close[max(0,i-59):i+1]) for i in range(n_bars)])
+        # 20日均量
+        if volume is not None:
+            vol_ma20 = np.array([np.mean(volume[max(0,i-19):i+1]) for i in range(n_bars)])
+        for idx in range(60, n_bars):
+            if buy_point[idx] != 0:
+                continue  # 已有B1/B2/B3, 不覆盖
+            if sell_point[idx] != 0:
+                continue  # 有卖点, 不买
+
+            # 条件1: 均线多头排列 (上涨趋势已确立)
+            # MA60是慢线, 强趋势回调时价格可短暂跌破MA60(如10%回调),
+            # 容忍5%的MA60偏离(价格在MA60*0.95以上即可)
+            ma_bull = ma20[idx] > ma60[idx] * 0.98 and close[idx] > ma60[idx] * 0.95
+
+            # 条件2: 非严重追高 (60日涨幅<30%)
+            mom_60d_val = (close[idx] - close[idx-60]) / (close[idx-60] + 1e-10)
+            not_extended = mom_60d_val < 0.30
+
+            # 条件3: 非力竭 (20日涨幅<20%)
+            mom_20d_val = (close[idx] - close[max(0,idx-20)]) / (close[max(0,idx-20)] + 1e-10)
+            not_exhausted = mom_20d_val < 0.20
+
+            # 条件4: 近期有回调或横盘 (近5日涨幅<5%, 不是连续大阳线追入)
+            mom_5d_val = (close[idx] - close[max(0,idx-5)]) / (close[max(0,idx-5)] + 1e-10)
+            not_chasing = mom_5d_val < 0.05
+
+            # 条件5: 缩量回调加分 (当前量<20日均量, 健康回调)
+            vol_ok = True
+            if volume is not None:
+                vol_ok = volume[idx] < vol_ma20[idx] * 1.3  # 不放量(非出货)
+
+            if ma_bull and not_extended and not_exhausted and not_chasing and vol_ok:
+                buy_point[idx] = 4
+                # 置信度: 趋势越稳固+回调越充分 → 越高
+                trend_score = min(1.0, (ma20[idx] / (ma60[idx] + 1e-10) - 1.0) * 10)  # MA20/MA60-1
+                pullback_score = max(0.0, -mom_5d_val * 5) if mom_5d_val < 0 else 0.0
+                buy_confidence[idx] = float(np.clip(0.30 + trend_score * 0.3 + pullback_score * 0.2, 0.20, 0.75))
+
+    # === 五买 (B5): 趋势启动买点 — 捕获趋势起点（V型反转+金叉+放量） ===
+    # B1-B4都要求已有结构，但趋势起点处没有任何结构。
+    # B5捕获: 价格刚上穿MA20 + MA20拐头 + 放量确认 + 短动量转正。
+    if n_bars >= 30:
+        ma20_b5 = np.array([np.mean(close[max(0,i-19):i+1]) for i in range(n_bars)])
+        vol_ma20_b5 = np.array([np.mean(volume[max(0,i-19):i+1]) for i in range(n_bars)]) if volume is not None else None
+        for idx in range(30, n_bars):
+            if buy_point[idx] != 0:
+                continue
+            if sell_point[idx] != 0:
+                continue
+
+            # 条件1: 价格刚上穿MA20 (近5日内曾低于MA20，现在>MA20*0.97)
+            was_below = np.any(close[max(0,idx-5):idx] < ma20_b5[max(0,idx-5):idx] * 0.99)
+            near_or_above_ma20 = close[idx] > ma20_b5[idx] * 0.97
+
+            # 条件2: MA20拐头向上 (当前MA20 > 5日前MA20)
+            ma20_turning_up = idx >= 5 and ma20_b5[idx] > ma20_b5[idx-5]
+
+            # 条件3: 短动量转正 (5日涨幅>0且<8%, 温和上涨非追高)
+            mom_5d_b5 = (close[idx] - close[idx-5]) / (close[idx-5] + 1e-10)
+            mild_momentum = 0.005 < mom_5d_b5 < 0.08
+
+            # 条件4: 放量确认 (当前量>20日均量*0.9, 有资金进场)
+            vol_confirm = True
+            if vol_ma20_b5 is not None:
+                vol_confirm = volume[idx] > vol_ma20_b5[idx] * 0.9
+
+            # 条件5: 非追高 (10日涨幅<15%)
+            mom_10d_b5 = (close[idx] - close[max(0,idx-10)]) / (close[max(0,idx-10)] + 1e-10)
+            not_chasing_b5 = mom_10d_b5 < 0.15
+
+            # 条件6: 前期有下跌或横盘 (20日最低价<当前价*0.92, 即有过>8%的回落)
+            low_20d = np.min(close[max(0,idx-20):idx+1])
+            had_pullback = low_20d < close[idx] * 0.92
+
+            if (was_below and near_or_above_ma20 and ma20_turning_up and
+                mild_momentum and vol_confirm and not_chasing_b5 and had_pullback):
+                buy_point[idx] = 5
+                # 置信度: MA20斜率+量比+金叉新鲜度
+                slope_score = min(1.0, (ma20_b5[idx] / (ma20_b5[idx-5] + 1e-10) - 1.0) * 50)
+                vol_score = min(1.0, volume[idx] / (vol_ma20_b5[idx] + 1e-10) - 0.9) if vol_ma20_b5 is not None else 0.5
+                buy_confidence[idx] = float(np.clip(0.20 + slope_score * 0.25 + vol_score * 0.15 + mom_5d_b5 * 2, 0.15, 0.65))
+
     return {
         'buy_point': buy_point,
         'sell_point': sell_point,
@@ -1953,6 +2045,113 @@ def detect_second_buy_point(
     }
 
 
+def detect_second_sell_point(
+    close, high, low,
+    top_fractals, top_fractal_quality, macd_hist,
+    sell_point, stroke_direction, strokes,
+):
+    """二卖 (S2) 检测 — 对称于 B2，顶部分型 + MACD 顶背离确认.
+
+    缠论 S2: S1后反弹不破前高 → 顶部确认，最可靠的卖点之一.
+    此前系统中线段级 S2 完全缺失，导致趋势末端没有标准卖点.
+
+    Returns:
+        second_sell_point: bool数组
+        second_sell_confidence: float [0, 1]
+        second_sell_s1_ref: int, 引用的S1位置
+    """
+    n = len(close)
+    second_sell = np.zeros(n, dtype=bool)
+    second_sell_conf = np.zeros(n)
+    s1_ref_idx = np.full(n, -1, dtype=int)
+    if n < 60:
+        return {'second_sell_point': second_sell, 'second_sell_confidence': second_sell_conf, 'second_sell_s1_ref': s1_ref_idx}
+
+    # Step 1: 找到所有 S1 zone
+    s1_zones = []
+    i = 20
+    while i < n:
+        if sell_point[i] == 1:
+            zone_start = i; zone_high = high[i]; zone_end = i
+            i += 1
+            while i < n and sell_point[i] == 1:
+                zone_high = max(zone_high, high[i]); zone_end = i; i += 1
+            s1_zones.append({'start': zone_start, 'end': zone_end, 'high': zone_high,
+                           'ref_idx': zone_start + np.argmax(high[zone_start:zone_end+1])})
+        else:
+            i += 1
+
+    # Step 2: 补充隐式S1
+    for i in range(40, n):
+        if not top_fractals[i] or top_fractal_quality[i] < 0.45:
+            continue
+        lb = min(i, 20)
+        if lb < 10: continue
+        mr = np.nanmean(macd_hist[max(0,i-5):i+1])
+        me = np.nanmean(macd_hist[max(0,i-10):max(0,i-5)])
+        if np.isnan(mr) or np.isnan(me) or mr >= me: continue
+        if any(abs(z['ref_idx']-i) < 10 for z in s1_zones): continue
+        s1_zones.append({'start': i, 'end': i, 'high': high[i], 'ref_idx': i})
+
+    if not s1_zones:
+        return {'second_sell_point': second_sell, 'second_sell_confidence': second_sell_conf, 'second_sell_s1_ref': s1_ref_idx}
+
+    # Step 3: 对每个S1 zone扫描S2
+    for zone in sorted(s1_zones, key=lambda z: z['ref_idx']):
+        s1_idx = zone['ref_idx']; s1_high = zone['high']
+        post_low_idx = min(s1_idx + 15, n)
+        post_low = np.min(low[s1_idx:post_low_idx])
+        if post_low >= close[s1_idx] * 0.98: continue
+
+        search_start = s1_idx + 5; search_end = min(s1_idx + 50, n)
+        if search_start >= search_end: continue
+
+        for i in range(search_start, search_end):
+            if not top_fractals[i] or top_fractal_quality[i] < 0.30: continue
+            if high[i] >= s1_high * 1.02: continue
+            if close[i] < post_low * 1.03: continue
+
+            down_stroke_ok = any(
+                s.direction == -1 and s.start_idx > s1_idx and s.end_idx < i and
+                (s.start_price - s.end_price) / (s.start_price + 1e-10) > 0.01
+                for s in strokes
+            )
+            if not down_stroke_ok: continue
+
+            lb2 = min(i, 20)
+            div_ok = False
+            if lb2 >= 10:
+                mr2 = np.nanmean(macd_hist[max(0,i-5):i+1])
+                me2 = np.nanmean(macd_hist[max(0,i-10):max(0,i-5)])
+                div_ok = not np.isnan(mr2) and not np.isnan(me2) and mr2 < me2
+
+            macd_worse = False
+            if s1_idx >= 5:
+                ms1 = np.nanmean(macd_hist[max(0,s1_idx-3):s1_idx+1])
+                mnw = np.nanmean(macd_hist[max(0,i-3):i+1])
+                macd_worse = not np.isnan(ms1) and not np.isnan(mnw) and mnw < ms1
+
+            conf = 0.30 + top_fractal_quality[i] * 0.25
+            if div_ok: conf += 0.20
+            if macd_worse: conf += 0.10
+
+            ret_range = s1_high - post_low
+            if ret_range > 0:
+                ret_pct = (high[i] - post_low) / ret_range
+                if 0.38 <= ret_pct <= 0.62: conf += 0.10
+                elif 0.3 <= ret_pct <= 0.7: conf += 0.05
+
+            dist = (s1_high - high[i]) / (s1_high + 1e-10)
+            conf += min(0.10, dist * 0.5)
+            conf = min(conf, 0.95)
+
+            if conf >= 0.45:
+                second_sell[i] = True; second_sell_conf[i] = conf; s1_ref_idx[i] = s1_idx
+                break
+
+    return {'second_sell_point': second_sell, 'second_sell_confidence': second_sell_conf, 'second_sell_s1_ref': s1_ref_idx}
+
+
 # ==================== 15. 增强信号计算 (整合所有chanlun-pro优化) ====================
 
 def compute_enhanced_chan_output(
@@ -2052,8 +2251,51 @@ def compute_enhanced_chan_output(
     b2_conf_mask = b2_mask & (base['buy_confidence'] == 0)
     base['buy_confidence'] = np.where(b2_conf_mask, b2_info['second_buy_confidence'], base['buy_confidence'])
 
-    # 结构止损价 (向量化: 预计算滚动min/max，避免per-bar函数调用)
     n = len(close)
+
+    # 顶部分型质量 (用于S2检测 — 对称于 analyze_bottom_fractal)
+    top_fx_quality = np.zeros(n)
+    top_fx_idx = np.where(base['top_fractals'])[0]
+    if len(top_fx_idx) > 0:
+        vol_sma20 = np.full(n, np.nan)
+        for j in range(19, n):
+            vol_sma20[j] = np.mean(volume[j-19:j+1] if volume is not None else [1])
+        for fx_idx in top_fx_idx:
+            if fx_idx < 1 or fx_idx >= n - 1:
+                continue
+            nh_max = max(high[fx_idx-1], high[fx_idx+1])
+            bar_rng = high[fx_idx] - low[fx_idx]
+            raw_d = (high[fx_idx] - nh_max) / (bar_rng + 1e-10) if bar_rng > 1e-10 else 0.0
+            strength = np.clip(raw_d, 0.0, 1.0) * 0.6
+            if high[fx_idx] > high[fx_idx-1] and high[fx_idx] > high[fx_idx+1]:
+                strength += 0.2
+            if close[fx_idx] < high[fx_idx]:
+                strength += 0.2
+            vr = volume[fx_idx] / (vol_sma20[fx_idx] + 1e-10) if volume is not None else 1.0
+            ema20_val = ema20[fx_idx] if ema20 is not None else close[fx_idx]
+            ema_d = abs(close[fx_idx] - ema20_val) / (ema20_val + 1e-10) if ema20_val > 0 else 0.0
+            top_fx_quality[fx_idx] = strength * 0.35 + min(vr / 3.0, 1.0) * 0.15 + min(ema_d / 0.15, 1.0) * 0.15
+            decay = 0.85
+            for k in range(fx_idx + 1, min(fx_idx + 8, n)):
+                top_fx_quality[k] = max(top_fx_quality[k], top_fx_quality[fx_idx] * decay)
+                decay *= 0.85
+
+    # 二卖检测: 顶部分型 + MACD顶背离 → S2
+    s2_info = detect_second_sell_point(
+        close, high, low,
+        base['top_fractals'], top_fx_quality,
+        macd_hist if macd_hist is not None else np.zeros(n),
+        base['sell_point'], base['stroke_direction'], strokes,
+    )
+    base['second_sell_point'] = s2_info['second_sell_point']
+    base['second_sell_confidence'] = s2_info['second_sell_confidence']
+    base['second_sell_s1_ref'] = s2_info['second_sell_s1_ref']
+    s2_mask = s2_info['second_sell_point'] & (base['sell_point'] == 0)
+    base['sell_point'] = np.where(s2_mask, 2, base['sell_point'])
+    s2_conf_mask = s2_mask & (base['sell_confidence'] == 0)
+    base['sell_confidence'] = np.where(s2_conf_mask, s2_info['second_sell_confidence'], base['sell_confidence'])
+
+    # 结构止损价 (向量化: 预计算滚动min/max，避免per-bar函数调用)
     structure_stop = np.full(n, np.nan)
     max_loss_pct = 0.07
 

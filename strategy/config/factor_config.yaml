@@ -12,7 +12,7 @@ dynamic_factor:
   min_factor_families: 2
   use_static_candidates: false
   reweight_blend: 0.5
-  date_sample_step: 3
+  date_sample_step: 6
   extra_candidate_factors:
   - smart_money_flow
   - relative_strength
@@ -37,6 +37,39 @@ dynamic_factor:
   - consec_limit_up
   - fund_pg_improve
   - fund_rg_improve
+  # === 强alpha因子（原已计算但未纳入候选池）===
+  - illiq_20
+  - overnight_ret
+  - intraday_ret
+  - short_reversal
+  - earnings_quality
+  - idiosyncratic_volatility
+  - turnover_shrink
+  - turnover_stability
+  - price_volume_corr_20
+  - tail_risk
+  # === 验证通过的优质因子 (IC>0.03, IR>0.3, IC>0月>60%) ===
+  preferred_factors:
+  - momentum_reversal
+  - trend_lowvol
+  - low_downside
+  - fund_pb
+  - fund_pe
+  - volatility
+  - mom_x_lowvol_20_20
+  - smart_money_flow
+  - relative_strength
+  - wash_sale_score
+  - rsi_vol_combo
+  - vol_confirm
+  - bb_width_20
+  - turnover_stability
+  - price_volume_corr_20
+  - illiq_20
+  - idiosyncratic_volatility
+  - short_reversal
+  - ma_golden_cross
+  - trend_initiation
 backtest_factors:
 - fund_score
 - volatility
@@ -10614,11 +10647,11 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.30
-  sell_threshold: -0.35
-  buy_threshold_pct: 0.40
-  buy_threshold_pct_bull: 0.25
-  buy_threshold_pct_bear: 0.5
+  buy_threshold: 0.35
+  sell_threshold: -0.40
+  buy_threshold_pct: 0.50
+  buy_threshold_pct_bull: 0.40
+  buy_threshold_pct_bear: 0.60
   resonance:
     sys1_buy_threshold_mult: 0.7
     sys2_cf_score_threshold: 0.5
@@ -10657,18 +10690,18 @@ regime_multiplier:
   bear: 0.9
 portfolio:
   target_volatility: 0.25
-  entry_speed: 0.8
-  exit_speed: 0.8
-  position_stop_loss: 0.12
-  portfolio_stop_loss: 0.12
+  entry_speed: 0.6
+  exit_speed: 0.6
+  position_stop_loss: 0.10
+  portfolio_stop_loss: 0.10
   dynamic_min_positions:
     bull: 3
     neutral: 2
     bear: 1
   selection:
-    min_rank_pct: 0.5
-    min_absolute_score: 0.05
-    min_confidence: 0.7
+    min_rank_pct: 0.70
+    min_absolute_score: 0.15
+    min_confidence: 0.80
     chan_gate_enabled: true
     chan_gate_min_count: 2
     chan_fallback_score: 0.4
@@ -10684,18 +10717,18 @@ portfolio:
     exposure_max: 1.0
   turnover_bonus: 0.1
   params:
-    max_positions: 5
-    risk_parity_min_weight_ratio: 0.4
+    max_positions: 4
+    risk_parity_min_weight_ratio: 0.5
     rank_decay: 0.3
     bull_market_floor: 0.85
     bull_market_ceiling: 1.0
-    bear_market_floor: 0.3
+    bear_market_floor: 0.25
     bear_market_ceiling: 0.50
     chan_bonus_sl2: 0.04
     chan_bonus_buy_point: 0.02
     chan_bonus_trend2: 0.01
     mom_60d_fomo_threshold: 0.3
-    mom_60d_fomo_mult: 0.3
+    mom_60d_fomo_mult: 0.40
     mom_60d_warn_threshold: 0.2
     mom_60d_warn_mult: 0.65
     dist_ma60_extended_threshold: 0.3
@@ -10712,6 +10745,20 @@ portfolio:
 portfolio_stop_loss:
   enabled: true
   emergency_exposure: 0.5
+# === 硬最大回撤停止：回撤超阈值→清仓→恢复后才允许重新交易 ===
+hard_drawdown_stop:
+  enabled: true
+  trigger_drawdown: 0.20        # 20%回撤触发硬停止
+  recovery_threshold: 0.10      # 回撤<10%才恢复
+  close_positions_days: 3       # 3天内线性清仓
+# === 连续亏损熔断：连亏N个调仓周期→减半敞口→连盈后恢复 ===
+consecutive_loss_breaker:
+  enabled: true
+  threshold: 3                  # 连亏3个周期触发
+  loss_floor: -0.005            # -0.5%以下算"亏损周期"
+  win_floor: 0.005              # +0.5%以上算"盈利周期"
+  exposure_reduction: 0.50      # 触发后敞口减半
+  reset_after_win: 2            # 连盈2个周期后恢复
 volatility_control:
   enabled: true
   lookback_period: 20
@@ -10735,8 +10782,8 @@ enhanced_stop_loss:
     - 30
     - -0.05
     3:
-    - 20
-    - -0.05
+    - 15
+    - -0.04
   trailing_stop_by_buy_point:
     1: 0.15
     2: 0.12
@@ -10754,9 +10801,9 @@ risk_parity:
   max_iterations: 50
 dynamic_rebalance:
   enabled: true
-  bull_period: 30
-  neutral_period: 20
-  bear_period: 15
+  bull_period: 25
+  neutral_period: 15
+  bear_period: 8
 chan_theory:
   enabled: true
   divergence:
@@ -10849,12 +10896,12 @@ chan_theory_enhanced:
     zg_hard_stop_threshold: 0.995
 stock_pool:
   enabled: true
-  size: 4600
+  size: 2000
   source: 全市场(除科创板688xxx, 价格>2元, 数据>60日)
 ml:
   enabled: true
   model_dir: strategy/models
-  blend_weight: 0.25
+  blend_weight: 0.55
   retrain_frequency: 20
   n_estimators: 200
   max_depth: 4
@@ -10891,7 +10938,35 @@ backtest:
   commission: 0.0005
   slippage: 0.0003
   stamp_tax: 0.0005
-  rebalance_days: 20
+  rebalance_days: 15
   num_workers: 4
   fromdate: '2024-01-01'
   todate: '2026-05-30'
+# === T+1结算 + 冲击成本模型 ===
+cost_model:
+  t_plus_1_enabled: true
+  impact_cost_enabled: true
+  impact_cost_base: 0.0003       # 0.03% 基础冲击(每1%ADV交易量)
+  impact_cost_exponent: 0.5      # sqrt(参与率)缩放
+  min_impact_cost: 0.00005       # 最低冲击成本
+  adv_lookback: 20               # 日均量计算窗口
+# === 实盘vs回测监控 ===
+live_monitoring:
+  enabled: true
+  reference_path: "strategy/rolling_validation_results/backtest_reference.csv"
+  divergence_threshold: 0.30     # 30%持仓偏离报警
+# === 多策略框架 ===
+multi_strategy:
+  enabled: false
+  trend:
+    weight: 0.40
+    min_chan_signal: 2
+  reversion:
+    weight: 0.30
+    max_exhaustion: 0.30
+  defensive:
+    weight: 0.30
+    max_drawdown_trigger: 0.12
+  blending:
+    bull_tilt: trend
+    bear_tilt: defensive

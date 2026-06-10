@@ -27,22 +27,23 @@ def _config_hash(config_snippet: dict) -> str:
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
-def get_factor_cache_path(stock_count: int, date_count: int) -> str:
+def get_factor_cache_path(stock_count: int, date_count: int, cache_hash: str = '') -> str:
     """获取factor_df缓存路径"""
     cache_dir = _get_cache_dir()
-    return os.path.join(cache_dir, f'factor_df_{stock_count}s_{date_count}d.parquet')
+    tag = f'_{cache_hash}' if cache_hash else ''
+    return os.path.join(cache_dir, f'factor_df_{stock_count}s_{date_count}d{tag}.parquet')
 
 
-def save_factor_cache(factor_df: pd.DataFrame, stock_count: int, date_count: int):
+def save_factor_cache(factor_df: pd.DataFrame, stock_count: int, date_count: int, cache_hash: str = ''):
     """保存factor_df缓存"""
-    path = get_factor_cache_path(stock_count, date_count)
+    path = get_factor_cache_path(stock_count, date_count, cache_hash)
     factor_df.to_parquet(path, index=False)
     print(f"因子缓存已保存: {path} ({len(factor_df)} 行)")
 
 
-def load_factor_cache(stock_count: int, date_count: int) -> pd.DataFrame:
+def load_factor_cache(stock_count: int, date_count: int, cache_hash: str = '') -> pd.DataFrame:
     """加载factor_df缓存"""
-    path = get_factor_cache_path(stock_count, date_count)
+    path = get_factor_cache_path(stock_count, date_count, cache_hash)
     if os.path.exists(path):
         df = pd.read_parquet(path)
         print(f"因子缓存已加载: {path} ({len(df)} 行)")

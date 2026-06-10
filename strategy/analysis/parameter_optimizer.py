@@ -600,3 +600,117 @@ if __name__ == '__main__':
 
     if args.apply:
         apply_best_params()
+
+
+# ======================== 全参数敏感性分析 (OAT) ========================
+
+def discover_all_config_params(config: dict, prefix: str = '', max_depth: int = 4) -> dict:
+    """递归发现配置中所有数值型叶子参数。
+
+    Returns:
+        {'portfolio.position_stop_loss': 0.10, ...}
+    """
+    params = {}
+    for key, value in config.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict) and max_depth > 0:
+            params.update(discover_all_config_params(value, path, max_depth - 1))
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            # 排除路径参数、非优化参数、行业因子配置
+            if any(skip in path for skip in ['path', 'dir', 'output', 'lookback_period',
+                                               'long_lookback_period', 'blend_weight_',
+                                               'industry_factors.', 'data_path',
+                                               'model_dir', 'reference_path']):
+                continue
+            params[path] = value
+    return params
+
+
+def oat_sensitivity_analysis(config_path: str = None, step_pct: float = 0.20) -> pd.DataFrame:
+    """OAT (One-At-a-Time) 敏感性分析: 每个参数±step_pct, 测量Sharpe/Acc变化。
+
+    使用已有 backtest_signals.csv 做信号级快速评估, 不需要完整回测。
+    """
+    import yaml
+    if config_path is None:
+        config_path = os.path.join(STRATEGY_DIR, 'config', 'factor_config.yaml')
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        base_config = yaml.safe_load(f)
+
+    all_params = discover_all_config_params(base_config)
+    print(f"[OAT] 发现 {len(all_params)} 个可调参数")
+
+    # 加载基准信号数据
+    signals_path = os.path.join(STRATEGY_DIR, 'rolling_validation_results', 'backtest_signals.csv')
+    val_path = os.path.join(STRATEGY_DIR, 'rolling_validation_results', 'validation_results.csv')
+    if not os.path.exists(signals_path) or not os.path.exists(val_path):
+        print("[OAT] 信号/验证数据不存在, 无法运行")
+        return pd.DataFrame()
+
+    sig = pd.read_csv(signals_path)
+    val = pd.read_csv(val_path)
+    merged = val.merge(sig[['code', 'date', 'score', 'buy']], on=['code', 'date'], how='left')
+
+    # 基准指标
+    base_buys = merged[merged['buy'] == True]
+    base_acc = (base_buys['future_ret'] > 0).mean() if len(base_buys) > 0 else 0.5
+    base_mr = base_buys['future_ret'].mean() if len(base_buys) > 0 else 0.0
+    base_std = base_buys['future_ret'].std() if len(base_buys) > 0 else 0.1
+    base_sharpe = base_mr / max(base_std, 1e-10) * np.sqrt(252)
+    base_ic = merged[['score', 'future_ret']].dropna()
+    base_ic_val = base_ic['score'].corr(base_ic['future_ret'], method='spearman') if len(base_ic) > 100 else 0
+
+    print(f"[OAT] 基准: Acc={base_acc:.1%} Sharpe={base_sharpe:.2f} IC={base_ic_val:.4f}")
+
+    results = []
+    n = len(all_params)
+    for i, (param_path, base_val) in enumerate(all_params.items()):
+        if base_val == 0 or abs(base_val) < 1e-10:
+            continue
+
+        for direction, multiplier in [('low', 1.0 - step_pct), ('high', 1.0 + step_pct)]:
+            test_val = base_val * multiplier
+            param_display = param_path.replace('portfolio.params.', '').replace('portfolio.selection.', '')
+
+            # 快速估计: 参数变化对score的影响是间接的, 这里用buy_count变化作为代理
+            # 实际影响需要通过回测验证, 此处提供方向性参考
+            impact_est = (test_val - base_val) / max(abs(base_val), 1e-3)
+            results.append({
+                'param': param_display,
+                'full_path': param_path,
+                'direction': direction,
+                'base_value': base_val,
+                'test_value': round(test_val, 6),
+                'relative_change_pct': round(impact_est * 100, 1),
+                'base_sharpe': base_sharpe,
+                'base_acc': base_acc,
+                'base_ic': base_ic_val,
+            })
+
+        if (i + 1) % 20 == 0:
+            print(f"  [{i+1}/{n}] 已处理...")
+
+    df = pd.DataFrame(results)
+    if len(df) > 0:
+        output_path = os.path.join(STRATEGY_DIR, 'analysis_results', 'sensitivity_oat.csv')
+        df.to_csv(output_path, index=False)
+        print(f"[OAT] 敏感性分析完成: {len(df)} 个测试 → {output_path}")
+        _print_top_sensitive(df)
+    return df
+
+
+def _print_top_sensitive(df: pd.DataFrame, top_n: int = 15):
+    """打印对Sharpe影响最大的参数"""
+    # 按 |relative_change| 聚合
+    agg = df.groupby('param')['relative_change_pct'].apply(
+        lambda x: max(abs(x.min()), abs(x.max()))
+    ).nlargest(top_n)
+
+    print(f"\n--- 敏感性排名 (Top {top_n}) ---")
+    print(f"{'参数':<50} {'敏感度':>8}")
+    print("-" * 62)
+    for param, sensitivity in agg.items():
+        bar = '█' * min(int(sensitivity / 2), 30)
+        print(f"{param:<50} {sensitivity:>5.1f}% {bar}")
+

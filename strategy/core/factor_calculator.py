@@ -165,6 +165,8 @@ def calculate_indicators(
         result[f'ema{span}'] = _ema(close_arr, span)
     # 120日EMA（缠论大级别方向判断）
     result['ema120'] = _ema(close_arr, 120)
+    # 250日EMA（年线 — A股机构资金核心趋势参考线）
+    result['ema250'] = _ema(close_arr, 250)
 
     # === MA ===
     for span in params.get('ma_periods', [5, 10, 20, 30, 60]):
@@ -245,6 +247,18 @@ def calculate_indicators(
     limit_up_mask = daily_ret >= 0.095
     limit_up_sum_20 = _sma(limit_up_mask.astype(float), 20) * 20
     result['limit_up_freq'] = np.tanh(limit_up_sum_20 * 0.5)
+
+    # === 连板数因子 (consec_limit_up) ===
+    # 连续涨停天数 — A股最强动量信号之一
+    consec = np.zeros(n, dtype=np.int32)
+    cnt = 0
+    for i in range(n):
+        if daily_ret[i] >= 0.095:
+            cnt += 1
+        else:
+            cnt = 0
+        consec[i] = cnt
+    result['consec_limit_up'] = np.tanh(consec.astype(float) * 0.3)
 
     # === 题材热度因子 (concept_heat) ===
     # 由 concept_heat.py 的 ConceptHeatCalculator 基于真实概念数据计算
@@ -537,7 +551,18 @@ def calculate_indicators(
                 short_reversal[i] = -daily_ret * 2  # 反转信号
     result['short_reversal'] = np.tanh(short_reversal)
 
-    # === 17. 盈利质量因子：低波动率+稳定换手=高质量盈利 ===
+    # === 17. 异质波动率：去除自身趋势后的残差波动率 ===
+    # 低异质波动率在A股有显著正溢价（低波动率异象）
+    if n >= 20:
+        rolling_mean_ret = _sma(returns, 20)
+        residual_ret = np.zeros(n)
+        residual_ret[20:] = returns[20:] - rolling_mean_ret[20:]
+        idio_vol = _rolling_std(residual_ret, 20)
+        result['idiosyncratic_volatility'] = np.tanh(-idio_vol * 30)
+    else:
+        result['idiosyncratic_volatility'] = np.zeros(n)
+
+    # === 18. 盈利质量因子：低波动率+稳定换手=高质量盈利 ===
     if turnover_rate is not None:
         inv_turnover = result.get('inv_turnover', np.zeros(n))
         vol_20 = result.get('volatility', np.zeros(n))
@@ -641,6 +666,9 @@ def calculate_indicators(
     result['second_buy_point'] = chan_result.get('second_buy_point', np.zeros(n, dtype=bool))
     result['second_buy_confidence'] = chan_result.get('second_buy_confidence', np.zeros(n))
     result['second_buy_b1_ref'] = chan_result.get('second_buy_b1_ref', np.full(n, -1, dtype=int))
+    result['second_sell_point'] = chan_result.get('second_sell_point', np.zeros(n, dtype=bool))
+    result['second_sell_confidence'] = chan_result.get('second_sell_confidence', np.zeros(n))
+    result['second_sell_s1_ref'] = chan_result.get('second_sell_s1_ref', np.full(n, -1, dtype=int))
     result['b3_trend_rank'] = chan_result.get('b3_trend_rank', np.zeros(n, dtype=int))
     result['b3_trend_confirmed'] = chan_result.get('b3_trend_confirmed', np.zeros(n, dtype=bool))
     result['b3_breakout_vol_ratio'] = chan_result.get('b3_breakout_vol_ratio', np.zeros(n))
@@ -1854,6 +1882,8 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
         result['short_reversal'] = ind['short_reversal'][idx] if not np.isnan(ind['short_reversal'][idx]) else 0.0
     if 'earnings_quality' in ind:
         result['earnings_quality'] = ind['earnings_quality'][idx] if not np.isnan(ind['earnings_quality'][idx]) else 0.0
+    if 'idiosyncratic_volatility' in ind:
+        result['idiosyncratic_volatility'] = ind['idiosyncratic_volatility'][idx] if not np.isnan(ind['idiosyncratic_volatility'][idx]) else 0.0
 
     # === 新增缠论增强因子 ===
     if 'gap_breakout_confirm' in ind:

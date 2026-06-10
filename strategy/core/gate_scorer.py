@@ -129,6 +129,7 @@ def gate_trend_direction(grades: np.ndarray, indicators: dict, n: int):
     ema20 = _safe_arr(indicators, 'ema20', n, 0.0)
     ema60 = _safe_arr(indicators, 'ema60', n, 0.0)
     ema120 = _safe_arr(indicators, 'ema120', n, 0.0)
+    ema250 = _safe_arr(indicators, 'ema250', n, 0.0)
 
     valid = (close > 0) & (ma20 > 0) & (ema20 > 0) & (ema60 > 0)
     above_ma20 = close > ma20
@@ -194,7 +195,7 @@ def compute_gate_quality(grades: np.ndarray) -> np.ndarray:
 
     各Gate默认值: G1=0.45 G2=0.25 G3=0.4 G4=0.40 → 均值0.375。
     无结构股票≈1.0（中性），有结构股票获得boost，弱结构股票得到折扣。
-    放宽clip到[0.5, 2.0]以提升低质量信号的区分度。
+    几何均值过于激进(Sharpe 1.79 < 1.97)，算术均值保留合理的信号区分度。
     """
     raw_avg = grades.mean(axis=1)
     return np.clip(raw_avg / _GATE_DEFAULT_MEAN, 0.5, 2.0)

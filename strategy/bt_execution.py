@@ -44,6 +44,7 @@ REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
 _LIMIT_DATA = {}   # {(code, date): 'up' | 'down'}
 _ST_CODES = set()  # ST股票代码集合
 _ST_DATE_RANGES = {}  # {code: [(start_date, end_date), ...]} ST期间
+_ADV_CACHE = {}    # {code: avg_daily_volume} 日均量缓存（冲击成本模型）
 
 # === 小说优化：动态调仓周期 ===
 DYNAMIC_REBALANCE_CONFIG = config.get('dynamic_rebalance', {})
@@ -685,6 +686,27 @@ class BacktraderExecution(bt.Strategy):
         # 涨跌停数据
         self._limit_data = _LIMIT_DATA  # 引用全局预计算数据
 
+        # === 成交率追踪 ===
+        self._fill_stats = {
+            'buy_attempted': 0, 'buy_filled': 0, 'buy_partial': 0, 'buy_rejected': 0,
+            'sell_attempted': 0, 'sell_filled': 0, 'sell_partial': 0, 'sell_rejected': 0,
+            'buy_limit_up_skip': 0, 'sell_limit_down_skip': 0,
+            'sell_tplus1_blocked': 0, 'buy_cash_insufficient': 0,
+        }
+
+        # === T+1结算 ===
+        cm_config = config.get('cost_model', {})
+        self._tplus1 = cm_config.get('t_plus_1_enabled', True)
+        self._today_buys = set()
+
+        # === 冲击成本 ===
+        self._impact_enabled = cm_config.get('impact_cost_enabled', False)
+        self._impact_base = cm_config.get('impact_cost_base', 0.0003)
+        self._impact_exp = cm_config.get('impact_cost_exponent', 0.5)
+        self._impact_min = cm_config.get('min_impact_cost', 0.00005)
+        self._adv_lookback = cm_config.get('adv_lookback', 20)
+        self._adv_cache = {}  # 由全局_ADV_CACHE填充
+
     def _is_tradable(self, d):
         """检查股票是否可交易（非停牌、价格正常、非ST/科创板）"""
         price = d.close[0]
@@ -721,6 +743,7 @@ class BacktraderExecution(bt.Strategy):
         return _LIMIT_DATA.get((code, date)) == 'down'
 
     def next(self):
+        self._today_buys = set()  # T+1: 每日重置当日买入集合
         if self.last_date is not None and self.last_date in self.orders_list:
             for order in self.orders_list[self.last_date]:
                 self.cancel(order)
@@ -814,19 +837,40 @@ class BacktraderExecution(bt.Strategy):
             size = max(int(raw), 1) * 100 if raw > 0 else min(int(raw), -1) * 100
 
             if size > 0:
-                # 涨停检查：无法买入（封死涨停板时没有卖盘）
+                # 涨停检查：无法买入
                 if self._is_limit_up(code, date):
+                    self._fill_stats['buy_attempted'] += 1
+                    self._fill_stats['buy_limit_up_skip'] += 1
                     continue
-                max_affordable = int(self.broker.getcash() / price / 100) * 100
+                # 冲击成本：从现金中预留
+                impact = self._estimate_impact(code, size, price)
+                impact_value = impact * size * price
+                effective_cash = self.broker.getcash() - impact_value
+                max_affordable = int(max(0, effective_cash) / price / 100) * 100
+                if max_affordable < 100:
+                    self._fill_stats['buy_attempted'] += 1
+                    self._fill_stats['buy_cash_insufficient'] += 1
+                    continue
                 size = min(size, max_affordable)
-                if size > 0:
-                    order = self.buy(data=d, size=size)
-                    self.orders_list[date].append(order)
+                self._fill_stats['buy_attempted'] += 1
+                if size < abs(raw) * 100 * 0.5:
+                    self._fill_stats['buy_partial'] += 1
+                order = self.buy(data=d, size=size)
+                self.orders_list[date].append(order)
+                self._today_buys.add(code)
             elif size < 0:
-                # 跌停检查：无法卖出（封死跌停板时没有买盘）
-                if self._is_limit_down(code, date):
+                # T+1: 当日买入不可卖出
+                if self._tplus1 and code in self._today_buys:
+                    self._fill_stats['sell_attempted'] += 1
+                    self._fill_stats['sell_tplus1_blocked'] += 1
                     continue
-                order = self.sell(data=d, size=abs(size))  # Backtrader要求size为正
+                # 跌停检查：无法卖出
+                if self._is_limit_down(code, date):
+                    self._fill_stats['sell_attempted'] += 1
+                    self._fill_stats['sell_limit_down_skip'] += 1
+                    continue
+                self._fill_stats['sell_attempted'] += 1
+                order = self.sell(data=d, size=abs(size))
                 self.orders_list[date].append(order)
 
         # 计算并记录每日收益率（供组合层波动率控制使用）
@@ -836,6 +880,32 @@ class BacktraderExecution(bt.Strategy):
             self.p.real_strategy.portfolio.update_returns(daily_return)
         self._prev_total_value = total_value
 
+    def _estimate_impact(self, code: str, size: int, price: float) -> float:
+        """估算冲击成本（交易量/日均量的平方根缩放）"""
+        if not self._impact_enabled:
+            return 0.0
+        adv = _ADV_CACHE.get(code, 0)
+        if adv <= 0:
+            return 0.0
+        participation = (abs(size) * price) / max(adv * price, 1)
+        impact = self._impact_base * (participation ** self._impact_exp)
+        return max(impact, self._impact_min)
+
+    def print_fill_stats(self):
+        """回测结束时输出成交率统计"""
+        s = self._fill_stats
+        print("\n" + "=" * 60)
+        print("成交率统计 (Fill Rate)")
+        print("=" * 60)
+        ba = max(s['buy_attempted'], 1)
+        sa = max(s['sell_attempted'], 1)
+        print("买入: {}/{} = {:.1f}%  (涨停跳过={}, 现金不足={}, 部分成交={})".format(
+            s['buy_filled'], s['buy_attempted'], s['buy_filled']/ba*100,
+            s['buy_limit_up_skip'], s['buy_cash_insufficient'], s['buy_partial']))
+        print("卖出: {}/{} = {:.1f}%  (跌停跳过={}, T+1拦截={})".format(
+            s['sell_filled'], s['sell_attempted'], s['sell_filled']/sa*100,
+            s['sell_limit_down_skip'], s['sell_tplus1_blocked']))
+
     def notify_order(self, order):
         # 未被处理的订单
         if order.status in [order.Submitted, order.Accepted]:
@@ -843,6 +913,8 @@ class BacktraderExecution(bt.Strategy):
         # 已经处理的订单
         if order.status in [order.Completed, order.Canceled, order.Margin]:
             if order.status == order.Completed:
+                if order.isbuy():
+                    self._fill_stats['buy_filled'] += 1
                 if order.isbuy():
                     cost = self.cost[order.data._name]
                     if len(cost) == 0:
@@ -970,6 +1042,19 @@ if __name__ == "__main__":
     print(strat.analyzers._SharpeRatio.get_analysis())
     print("--------------- DrawDown -----------------")
     print(strat.analyzers._DrawDown.get_analysis())
+
+    # 成交率统计
+    strat.print_fill_stats()
+
+    # 回测诊断报告
+    try:
+        from analysis.backtest_diagnostics import get_diagnostics
+        diag = get_diagnostics()
+        diag.record_fill_stats(strat._fill_stats)
+        diag.print_report()
+        diag.save()
+    except Exception as e:
+        print(f"[诊断] 报告生成失败: {e}")
 
     # 保存选股结果供验证使用
     if strat.portfolio_selections:
