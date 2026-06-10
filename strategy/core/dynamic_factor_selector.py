@@ -188,39 +188,46 @@ def _compute_date_chunk(args):
                 ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
 
-                # IC质量过滤（收紧：宁缺毋滥）
-                if ic_stability < 0.45:
+                # 方向感知：负IC因子取反后是强正向因子（如均值回复 vs 趋势）
+                direction = 1 if ic_mean > 0 else -1
+                abs_ic_mean = abs(ic_mean)
+                abs_ir = abs(ir)
+                combined_ir = abs_ir * (0.5 + 0.5 * ic_stability)
+
+                # IC质量过滤
+                if ic_stability < 0.20:
                     continue
-                ic_variance = ic_std / (abs(ic_mean) + 1e-10) if abs(ic_mean) > 1e-10 else 999
+                if abs_ic_mean < 0.003:
+                    continue
+                ic_variance = ic_std / (abs_ic_mean + 1e-10)
                 if ic_variance > 6.0:
                     continue
-                combined_ir = ir * (0.5 + 0.5 * ic_stability)
                 if abs(t_statistic) < 0.4:
                     continue
-                if ic_mean <= 0:
+                if combined_ir < 0.007:
                     continue
-                if combined_ir < 0.015:
+                # p_value: 正IC用右尾，负IC用左尾
+                if direction > 0:
+                    p_value = stats.norm.sf(t_statistic)
+                else:
+                    p_value = stats.norm.cdf(t_statistic)
+                if p_value > 0.55:
                     continue
-                p_value = stats.norm.sf(ic_mean / (ic_std / np.sqrt(n_dates)))
-                if p_value > 0.40:
+                # 方向一致性：正IC要求多数日IC>0，负IC要求多数日IC<0
+                if direction > 0:
+                    consistent_days = sum(1 for ic in ic_list if ic > 0)
+                else:
+                    consistent_days = sum(1 for ic in ic_list if ic < 0)
+                if consistent_days / n_dates < 0.35:
                     continue
-                n_positive = sum(1 for ic in ic_list if ic > 0)
-                if n_positive / n_dates < 0.45:
-                    continue
-                if n_dates >= 10:
-                    split_idx = int(n_dates * 0.8)
-                    oos_ic_list = ic_list[split_idx:]
-                    if len(oos_ic_list) >= 2:
-                        oos_ic = np.mean(oos_ic_list)
-                        if oos_ic <= 0:
-                            continue
 
                 factor_metrics.append({
                     'factor': fn,
-                    'ic_mean': ic_mean,
-                    'ir': ir,
+                    'ic_mean': abs_ic_mean,
+                    'ir': abs_ir,
                     'ic_stability': ic_stability,
                     'combined_ir': combined_ir,
+                    'direction': direction,
                 })
 
             if len(factor_metrics) >= 1:
@@ -265,14 +272,15 @@ def _compute_date_chunk(args):
                 if n_selected < min_factor_count:
                     continue
 
-                # 质量底线: 只保留中等以上质量的因子组合
-                if avg_quality < 0.03 or n_selected < 2:
+                # 质量底线: 放宽以提升命中率
+                if avg_quality < 0.015 or n_selected < 2:
                     continue
 
                 total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10
                 date_result[industry] = {
                     'factors': [f['factor'] for f in top_factors],
                     'weights': [f['combined_ir'] / total_quality for f in top_factors],
+                    'directions': [f.get('direction', 1) for f in top_factors],
                     'quality': avg_quality,
                 }
 

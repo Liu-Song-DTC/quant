@@ -1,3 +1,4 @@
+import platform
 import backtrader as bt
 import pandas as pd
 import numpy as np
@@ -50,7 +51,7 @@ DYNAMIC_REBALANCE_ENABLED = DYNAMIC_REBALANCE_CONFIG.get('enabled', True)
 REBALANCE_BULL = DYNAMIC_REBALANCE_CONFIG.get('bull_period', 30)
 REBALANCE_NEUTRAL = DYNAMIC_REBALANCE_CONFIG.get('neutral_period', 20)
 REBALANCE_BEAR = DYNAMIC_REBALANCE_CONFIG.get('bear_period', 15)
-NUM_WORKERS = config.get('backtest.num_workers', 8)
+NUM_WORKERS = config.get('backtest.num_workers', 2 if platform.system() == 'Windows' else 8)
 
 def _malloc_trim(pad=0):
     """将 Python 已释放但未归还 OS 的内存归还给内核（Linux only）。
@@ -77,6 +78,63 @@ FUNDAMENTAL_PATH = config.get('paths.fundamental', os.path.join(_PROJECT_DIR, 'd
 # 全局变量用于 worker 进程
 _worker_engine = None
 _worker_use_dynamic = False
+
+
+def _build_concept_industry_codes(stock_codes, min_stocks=20):
+    """从概念板块映射构建 industry_codes，与离线标定对齐。
+
+    替代 prepare_factor_data 的关键词匹配（20大类），使用 stock_concept_map.pkl
+    的精确概念板块，与 calibrate_industry_regime / factor_config.yaml 的分组方式完全一致。
+
+    Returns:
+        dict: {concept_name: [code1, code2, ...]}
+    """
+    import pickle
+    concept_map_path = os.path.join(_PROJECT_DIR, 'data', 'stock_concept_map.pkl')
+    if not os.path.exists(concept_map_path):
+        print("[WARNING] stock_concept_map.pkl 不存在，回退到关键词映射")
+        return {}
+
+    with open(concept_map_path, 'rb') as f:
+        raw = pickle.load(f)
+
+    STYLE_KW = ['融资融券', '深股通', '沪股通', '富时罗素', '标准普尔', 'MSCI',
+                '创业板综', '机构重仓', 'QFII', '破增发', '破发股', '昨日高',
+                '中证500', '深成500', '中盘股', '小盘股', '央国企改革',
+                '西部大开发', '年报预增', '专精特新', '上证380', 'HS300',
+                '微盘股', '百元股', '大盘股', '小盘成长', '小盘价值',
+                '转债标的', '长江三角', '深圳特区', '破净股', '创投',
+                # v2: 过滤投资风格/主题标签，只保留产业类概念
+                '养老金', '社保重仓', '基金重仓', '券商重仓', '保险重仓',
+                '茅指数', '央视50', '大盘价值', '大盘成长', '中盘价值', '中盘成长',
+                '价值股', '成长股', '红利股', '低市盈率', '高市盈率',
+                '证金', '汇金', '国资云', '央企改革', '地方国资',
+                '上证180', '上证50', '沪深300', '中证100', '中证1000',
+                '深证100', '创业板指', '科创50', '科创100',
+                'AB股', 'AH股', 'B股', 'ST股',
+                '昨日涨停', '昨日首板', '昨日炸板', '昨日连板',
+                '次新股', '预增', '预减', '扭亏', 'IPO受益', '壳资源',
+                '参股券商', '参股银行', '参股保险', '参股期货', '参股新三板',
+                '券商概念', '微盘精选', '百元股', '低安全分', '破发', '回购', '举牌',
+                '长期破净', '高股息', '股权转让', '送转', '高送转',
+                '新高', '权重股', '行业龙头', '近期新高', '历史新高', '百日新高',
+                ]
+    stock_codes_set = set(stock_codes)
+    concept_to_codes = defaultdict(list)
+    for code, concepts in raw.items():
+        if code not in stock_codes_set:
+            continue
+        filtered = [c for c in concepts if not any(kw in c for kw in STYLE_KW)]
+        for c in filtered:
+            concept_to_codes[c].append(code)
+
+    result = {
+        c: clist for c, clist in concept_to_codes.items()
+        if len(clist) >= min_stocks
+    }
+    print(f"概念板块映射: {len(result)} 个概念 (min_stocks={min_stocks}), "
+          f"覆盖 {len(set(c for clist in result.values() for c in clist))} 只股票")
+    return result
 
 
 def _init_worker(fundamental_data, stock_codes, use_dynamic, industry_codes, factor_cache, all_dates, regime_df,
@@ -320,15 +378,19 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         )
         strategy.set_factor_data(factor_df, industry_codes)
         strategy.set_sector_data({}, industry_codes)
-        print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业")
+        # ConceptHeat 使用概念板块（与行业映射独立，不覆盖因子选择的行业分组）
+        concept_codes = _build_concept_industry_codes(stock_codes, min_stocks=30)
+        if concept_codes:
+            strategy.set_sector_data(concept_codes, industry_codes)
+        print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业, {len(concept_codes)} 个概念")
     else:
         print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
         stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
-        # 构建细行业映射（128行业，替代20个大类关键词匹配）
-        if fundamental_data is not None:
-            industry_codes = build_fine_industry_map(fundamental_data, stock_codes, min_stocks=10)
+        # 使用关键词构建行业映射（prepare_factor_data 依赖INDUSTRY_KEYWORDS）
+        industry_codes = build_fine_industry_map(stock_codes)
+        if industry_codes:
             strategy.set_industry_mapping(industry_codes)
-            print(f"细行业映射: {len(industry_codes)} 个行业")
+            print(f"行业映射: {len(industry_codes)} 个行业")
 
     # factor_df 已由 prepare_factor_data 在工作进程中计算完成
     # stock_data_dict 不再存在 — 数据由worker从磁盘按需读取，无需清理
@@ -402,7 +464,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         print("预计算因子选择...")
         main_engine.dynamic_factor_selector.precompute_all_factor_selections(
             progress_callback=lambda curr, total: print(f"\r因子选择进度: {curr}/{total}", end="", flush=True),
-            num_workers=1  # 单线程避免fork时factor_df COW膨胀
+            num_workers=NUM_WORKERS  # 内存已通过 _malloc_trim 控制，恢复并行
         )
         print(f"\n因子选择预计算完成，共 {len(main_engine.dynamic_factor_selector._factor_cache)} 个日期")
 
@@ -488,67 +550,75 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 动态因子统计
     dynamic_factor_stats = {'hit': 0, 'miss': 0, 'factor_names': {}}
 
-    ctx = multiprocessing.get_context('fork')
-    with ctx.Pool(
-        processes=NUM_WORKERS,
-        initializer=_init_worker,
-        initargs=(fundamental_data, stock_codes, use_dynamic, industry_codes, precomputed_cache, precomputed_all_dates, regime_df,
-                  _ml_model_path, _ml_preds)
-    ) as pool:
-        for result in tqdm(
-            pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=10),
-            total=len(stock_items),
-            desc="generating signals"
-        ):
-            code, store_data = result
-            # 增量写入CSV（不在内存中累积 Signal 对象）
-            for (c, date), sig in store_data.items():
-                if hasattr(date, 'date'):
-                    date = date.date()
-                signal_csv.write(
-                    f'{c},{date},{sig.buy},{sig.sell},{sig.score},{sig.pre_discount_score},'
-                    f'{sig.factor_value},'
-                    f'{sig.factor_name},{sig.industry},'
-                    f'{getattr(sig, "factor_quality", 0.0)},'
-                    f'{getattr(sig, "chan_divergence_type", "")},'
-                    f'{getattr(sig, "chan_divergence_strength", 0.0)},'
-                    f'{getattr(sig, "chan_structure_score", 0.0)},'
-                    f'{getattr(sig, "chan_buy_point", 0)},'
-                    f'{getattr(sig, "chan_sell_point", 0)},'
-                    f'{getattr(sig, "signal_level", 0)},'
-                    f'{getattr(sig, "trend_type", 0)},'
-                    f'{getattr(sig, "chan_pivot_zg", float("nan"))},'
-                    f'{getattr(sig, "chan_pivot_zd", float("nan"))},'
-                    f'{getattr(sig, "mom_60d", 0.0)},'
-                    f'{getattr(sig, "dist_ma60", 0.0)},'
-                    f'{getattr(sig, "max_dd_20d", 0.0)},'
-                    f'{getattr(sig, "vol_regime", 1.0)},'
-                    f'{getattr(sig, "mtf_discount_factor", 1.0)},'
-                    f'{getattr(sig, "mtf_alignment_score", 0.0)},'
-                    f'{(getattr(sig, "weekly_trend_strength", 0.0) + getattr(sig, "monthly_trend_strength", 0.0)) / 2},'
-                    f'{getattr(sig, "risk_vol", 0.0)},'
-                    f'{getattr(sig, "daily_return", 0.0)},'
-                    f'{getattr(sig, "volume_ratio", 0.0)},'
-                    f'{getattr(sig, "stroke_phase", 0.0)},'
-                    f'{getattr(sig, "exhaustion_risk", 0.0)},'
-                    f'{getattr(sig, "gap_breakout_confirm", 0.0)},'
-                    f'{getattr(sig, "vol_opening_confirm", 0.0)},'
-                    f'{getattr(sig, "vol_opening_strength", 0.0)},'
-                    f'{getattr(sig, "bom_quality_score", 0.3)},'
-                    f'{getattr(sig, "_gate_quality", 0.5)},'
-                    f'{getattr(sig, "profit_declining", False)},'
-                    f'{getattr(sig, "ma_trend_up", False)}\n'
-                )
-                signal_count[0] += 1
-                # 动态因子统计
-                if sig.factor_name and sig.factor_name.startswith('DYN_'):
-                    dynamic_factor_stats['hit'] += 1
-                    fn = sig.factor_name.split('_')[1] if '_' in sig.factor_name else sig.factor_name
-                    dynamic_factor_stats['factor_names'][fn] = dynamic_factor_stats['factor_names'].get(fn, 0) + 1
-                else:
-                    dynamic_factor_stats['miss'] += 1
-            # 释放该股票返回的 dict（Signal 已写入 CSV，不再需要）
-            store_data.clear()
+    import platform
+    if platform.system() == 'Windows':
+        # Windows spawn模式序列化开销太大，改用单进程
+        print("Windows detected: using single-process signal generation (spawn overhead too high)")
+        _init_worker(fundamental_data, stock_codes, use_dynamic, industry_codes, precomputed_cache, precomputed_all_dates, regime_df, _ml_model_path, _ml_preds)
+        _sig_iter = (_generate_stock_signal_worker(item) for item in tqdm(stock_items, desc="generating signals"))
+    else:
+        ctx = multiprocessing.get_context('fork')
+        pool = ctx.Pool(
+            processes=NUM_WORKERS,
+            initializer=_init_worker,
+            initargs=(fundamental_data, stock_codes, use_dynamic, industry_codes, precomputed_cache, precomputed_all_dates, regime_df,
+                      _ml_model_path, _ml_preds)
+        )
+        _sig_iter = pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=50)
+    for result in _sig_iter:
+        code, store_data = result
+        # 增量写入CSV（不在内存中累积 Signal 对象）
+        for (c, date), sig in store_data.items():
+            if hasattr(date, 'date'):
+                date = date.date()
+            signal_csv.write(
+                f'{c},{date},{sig.buy},{sig.sell},{sig.score},{sig.pre_discount_score},'
+                f'{sig.factor_value},'
+                f'{sig.factor_name},{sig.industry},'
+                f'{getattr(sig, "factor_quality", 0.0)},'
+                f'{getattr(sig, "chan_divergence_type", "")},'
+                f'{getattr(sig, "chan_divergence_strength", 0.0)},'
+                f'{getattr(sig, "chan_structure_score", 0.0)},'
+                f'{getattr(sig, "chan_buy_point", 0)},'
+                f'{getattr(sig, "chan_sell_point", 0)},'
+                f'{getattr(sig, "signal_level", 0)},'
+                f'{getattr(sig, "trend_type", 0)},'
+                f'{getattr(sig, "chan_pivot_zg", float("nan"))},'
+                f'{getattr(sig, "chan_pivot_zd", float("nan"))},'
+                f'{getattr(sig, "mom_60d", 0.0)},'
+                f'{getattr(sig, "dist_ma60", 0.0)},'
+                f'{getattr(sig, "max_dd_20d", 0.0)},'
+                f'{getattr(sig, "vol_regime", 1.0)},'
+                f'{getattr(sig, "mtf_discount_factor", 1.0)},'
+                f'{getattr(sig, "mtf_alignment_score", 0.0)},'
+                f'{(getattr(sig, "weekly_trend_strength", 0.0) + getattr(sig, "monthly_trend_strength", 0.0)) / 2},'
+                f'{getattr(sig, "risk_vol", 0.0)},'
+                f'{getattr(sig, "daily_return", 0.0)},'
+                f'{getattr(sig, "volume_ratio", 0.0)},'
+                f'{getattr(sig, "stroke_phase", 0.0)},'
+                f'{getattr(sig, "exhaustion_risk", 0.0)},'
+                f'{getattr(sig, "gap_breakout_confirm", 0.0)},'
+                f'{getattr(sig, "vol_opening_confirm", 0.0)},'
+                f'{getattr(sig, "vol_opening_strength", 0.0)},'
+                f'{getattr(sig, "bom_quality_score", 0.3)},'
+                f'{getattr(sig, "_gate_quality", 0.5)},'
+                f'{getattr(sig, "profit_declining", False)},'
+                f'{getattr(sig, "ma_trend_up", False)}\n'
+            )
+            signal_count[0] += 1
+            # 动态因子统计
+            if sig.factor_name and sig.factor_name.startswith('DYN_'):
+                dynamic_factor_stats['hit'] += 1
+                fn = sig.factor_name.split('_')[1] if '_' in sig.factor_name else sig.factor_name
+                dynamic_factor_stats['factor_names'][fn] = dynamic_factor_stats['factor_names'].get(fn, 0) + 1
+            else:
+                dynamic_factor_stats['miss'] += 1
+        # 释放该股票返回的 dict（Signal 已写入 CSV，不再需要）
+        store_data.clear()
+
+    if platform.system() != 'Windows':
+        pool.close()
+        pool.join()
 
     signal_csv.close()
     print(f"信号数据已保存: {signal_count[0]} 条 -> {signals_output_path}")
@@ -914,18 +984,20 @@ if __name__ == "__main__":
     try:
         strategy_dir = os.path.dirname(os.path.abspath(__file__))
         signals_output_path = os.path.join(strategy_dir, 'rolling_validation_results', 'backtest_signals.csv')
-        signals_df = pd.read_csv(signals_output_path)
+        signals_df = pd.read_csv(signals_output_path, low_memory=False)
         yg = signals_df.copy()
         yg['volume_ratio'] = pd.to_numeric(yg['volume_ratio'], errors='coerce')
         yg['daily_return'] = pd.to_numeric(yg['daily_return'], errors='coerce')
         yg['score'] = pd.to_numeric(yg['score'], errors='coerce')
+        # buy列修复: CSV中为字符串 'True'/'False', 需转bool
+        yg['buy_bool'] = yg['buy'].astype(str).str.lower().map({'true': True, 'false': False})
 
-        # 妖股特征: 高量比(>2.0) + 高日收益(>3%) + 正score, 但未触发买入
+        # 妖股特征: 高量比(>0.3, arctan压缩后≈2x原始量比) + 高日收益(>3%) + 正score, 但未触发买入
         yg_candidates = yg[
-            (yg['volume_ratio'] > 2.0) &
+            (yg['volume_ratio'] > 0.3) &
             (yg['daily_return'] > 0.03) &
             (yg['score'] > 0) &
-            (yg['buy'] == False)
+            (yg['buy_bool'] == False)
         ].copy()
 
         if len(yg_candidates) > 0:
@@ -937,6 +1009,7 @@ if __name__ == "__main__":
         del yg, signals_df
     except Exception as e:
         print(f"[妖股名单] 生成失败: {e}")
+        import traceback; traceback.print_exc()
 
     # 打印因子选择统计
     strategy.signal_engine.print_factor_stats()

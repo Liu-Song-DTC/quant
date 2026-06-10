@@ -159,7 +159,7 @@ class SignalEngine:
         }
 
         # 动态买入阈值：滚动缓冲区（最近800个score值，约半年数据，提高市场风格切换响应速度）
-        self._factor_value_buffer = deque(maxlen=800)
+        self._factor_value_buffer = deque(maxlen=300)
         # 行业内因子值缓存：{industry: deque(maxlen=500)}
         self._industry_factor_cache = {}
         # 动态阈值缓存状态
@@ -1449,6 +1449,7 @@ class SignalEngine:
             return None
         selected_factors = selected_info['factors']
         factor_weights = selected_info.get('weights', None)  # IC权重列表
+        factor_directions = selected_info.get('directions', None)  # 方向符号（+1正向/-1负向）
         dyn_quality = selected_info.get('quality', 0)
 
         # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
@@ -1482,8 +1483,9 @@ class SignalEngine:
                     import warnings
                     warnings.warn(f'Extreme factor value after compression: {factor_name}={factor_val:.2e} for {code} on {current_date}')
                     factor_val = np.sign(factor_val) * np.tanh(abs(factor_val))
-                # 使用原始压缩因子值（标定IC权重已基于压缩值计算，归一化会破坏权重语义）
-                factor_scores.append(factor_val)
+                # 方向感知：负IC因子取反，使高值始终预测高收益
+                sign = factor_directions[i] if factor_directions and i < len(factor_directions) else 1
+                factor_scores.append(factor_val * sign)
                 w = factor_weights[i] if factor_weights and i < len(factor_weights) else 1.0
                 valid_weights.append(w)
                 valid_factors.append(factor_name)
@@ -1673,12 +1675,14 @@ class SignalEngine:
         mom_5 = self._safe_get(ind, 'mom_5', idx, 0)
         vol_20 = self._safe_get(ind, 'volatility', idx, 0)
         rel_str = self._safe_get(ind, 'relative_strength', idx, 0)
+        mtf_align = self._safe_get(ind, 'mtf_alignment_score', idx, 0)
+        low_dn = self._safe_get(ind, 'low_downside', idx, 0)
+        vol_regime = self._safe_get(ind, 'vol_regime', idx, 1.0)
 
         momentum = mom_20 * 0.5 + mom_10 * 0.3 + rel_str * 0.2
         reversal = -(mom_20 * 0.4 + mom_10 * 0.3 + mom_5 * 0.3)
 
         # 用市场状态决定方向：牛追涨，熊抄底
-        # tanh压缩统一量纲，与动态/行业因子对齐
         if regime == 1:
             factor_value = np.tanh(momentum * 3)
             factor_name = 'MOM'
@@ -1686,10 +1690,20 @@ class SignalEngine:
             factor_value = np.tanh(reversal * 3)
             factor_name = 'REV'
         else:
-            # 中性：用风险调整动量
+            # 中性：动量+反转+对齐+低回撤 复合评分
+            # SHARPE_FLA (对齐+低风险) 准确率62.7%, 远高于裸SHARPE_F(47.5%)
             vol = abs(vol_20) + 0.01
             sharpe_raw = momentum / vol
-            factor_value = np.tanh(sharpe_raw)
+            # 加入反转分量：中性市场反转信号有额外预测力
+            rev_contribution = reversal * 0.3
+            # 加入MTF对齐：对齐越好，动量/反转信号越可靠
+            align_bonus = mtf_align * 0.3
+            # 加入低回撤：低 downside 的股票有更高安全边际
+            low_dn_bonus = low_dn * 0.2
+            # 波动率调整：低波动时给更多权重（低波动溢价）
+            vol_discount = 1.0 / (1.0 + vol_regime * 0.5)
+            composite = (sharpe_raw * 0.5 + rev_contribution + align_bonus + low_dn_bonus) * vol_discount
+            factor_value = np.tanh(composite)
             factor_name = 'SHARPE'
 
         risk_info = {'is_high_vol': False}
@@ -1920,16 +1934,10 @@ class SignalEngine:
             return 'default'
 
     def _get_specific_industry(self, code, current_date) -> str:
-        """获取具体行业名（优先概念板块，回退细行业名）"""
-        # 优先使用概念板块标定（与离线标定对齐）
-        if code in STOCK_CONCEPT_MAP:
-            for concept in STOCK_CONCEPT_MAP[code]:
-                if concept in INDUSTRY_FACTOR_CONFIG:
-                    return concept
-
+        """获取具体行业名（优先industry_codes反向映射保证DYN缓存命中，回退概念板块）"""
         has_ic = hasattr(self, 'industry_codes') and self.industry_codes
 
-        # 尝试从 industry_codes 查找（使用预建反向索引，O(1)）
+        # P0: 优先从 industry_codes 反向映射查找（保证与DYN缓存的key一致）
         if has_ic:
             if not hasattr(self, '_industry_code_reverse_map'):
                 self._industry_code_reverse_map = {
@@ -1938,6 +1946,12 @@ class SignalEngine:
             result = self._industry_code_reverse_map.get(code)
             if result:
                 return result
+
+        # 回退：概念板块映射（与离线标定对齐）
+        if code in STOCK_CONCEPT_MAP:
+            for concept in STOCK_CONCEPT_MAP[code]:
+                if concept in INDUSTRY_FACTOR_CONFIG:
+                    return concept
 
         # 使用预加载缓存
         if hasattr(self, '_fund_cache') and self._has_fund_data_cache:
