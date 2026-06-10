@@ -6,13 +6,13 @@ dynamic_factor:
   min_train_samples: 40
   min_ic_dates: 4
   ic_decay_factor: 0.9
-  min_quality_threshold: 0.025
+  min_quality_threshold: 0.012
   fallback_to_static: true
-  min_factor_count: 3
+  min_factor_count: 2
   min_factor_families: 2
-  use_static_candidates: true
+  use_static_candidates: false
   reweight_blend: 0.5
-  date_sample_step: 5
+  date_sample_step: 3
   extra_candidate_factors:
   - smart_money_flow
   - relative_strength
@@ -34,6 +34,9 @@ dynamic_factor:
   - turnover_burst
   - limit_up_freq
   - concept_heat
+  - consec_limit_up
+  - fund_pg_improve
+  - fund_rg_improve
 backtest_factors:
 - fund_score
 - volatility
@@ -67,6 +70,9 @@ backtest_factors:
 - trend_initiation
 - ma20_slope
 - limit_pullback_score
+- consec_limit_up
+- fund_pg_improve
+- fund_rg_improve
 static_candidate_factors:
 - fund_profit_growth
 - fund_roe
@@ -74,6 +80,9 @@ static_candidate_factors:
 - smart_money_flow
 - vol_confirm
 - wash_sale_score
+- consec_limit_up
+- fund_pg_improve
+- fund_rg_improve
 - mom_x_lowvol_20_20
 industry_factor_config:
   lookback_days: 250
@@ -10605,9 +10614,9 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.3
+  buy_threshold: 0.30
   sell_threshold: -0.35
-  buy_threshold_pct: 0.3
+  buy_threshold_pct: 0.40
   buy_threshold_pct_bull: 0.25
   buy_threshold_pct_bear: 0.5
   resonance:
@@ -10620,10 +10629,11 @@ signal:
     enabled: true
     banned_suffixes:
     - _T
+    - _SM
     restricted_suffixes:
-      _FBA: 1.25
-      _FV: 1.25
-      _F: 1.2
+      _FBA: 1.30
+      _FV: 1.30
+      _F: 1.30
     premium_suffixes:
       _FLA: 1.0
       _FGR: 1.0
@@ -10631,6 +10641,7 @@ signal:
       _FLAV: 1.0
       _FSM: 1.0
       _FD: 1.0
+      _LA: 1.0
   ti_boost_scale: 2.0
   ti_boost_magnitude: 0.12
   ti_adaptive_scale: 0.3
@@ -10645,11 +10656,11 @@ regime_multiplier:
   neutral: 0.95
   bear: 0.9
 portfolio:
-  target_volatility: 0.22
-  entry_speed: 0.9
-  exit_speed: 0.9
-  position_stop_loss: 0.15
-  portfolio_stop_loss: 0.18
+  target_volatility: 0.25
+  entry_speed: 0.8
+  exit_speed: 0.8
+  position_stop_loss: 0.12
+  portfolio_stop_loss: 0.12
   dynamic_min_positions:
     bull: 3
     neutral: 2
@@ -10661,11 +10672,11 @@ portfolio:
     chan_gate_enabled: true
     chan_gate_min_count: 2
     chan_fallback_score: 0.4
-    exhaustion_max_weight: 0.05
-    exhaustion_reduce_mult: 0.6
-    industry_max_weight: 0.35
-    rank_weight_cap: 0.22
-    speculative_max_weight: 0.28
+    exhaustion_max_weight: 0.08
+    exhaustion_reduce_mult: 0.5
+    industry_max_weight: 0.40
+    rank_weight_cap: 0.35
+    speculative_max_weight: 0.40
   fv_exposure_params:
     fv_low: -0.02
     fv_high: 0.03
@@ -10673,13 +10684,13 @@ portfolio:
     exposure_max: 1.0
   turnover_bonus: 0.1
   params:
-    max_positions: 6
-    risk_parity_min_weight_ratio: 0.5
+    max_positions: 5
+    risk_parity_min_weight_ratio: 0.4
     rank_decay: 0.3
     bull_market_floor: 0.85
     bull_market_ceiling: 1.0
     bear_market_floor: 0.3
-    bear_market_ceiling: 0.55
+    bear_market_ceiling: 0.50
     chan_bonus_sl2: 0.04
     chan_bonus_buy_point: 0.02
     chan_bonus_trend2: 0.01
@@ -10695,7 +10706,7 @@ portfolio:
     exhaustion_moderate_threshold: 0.15
     mr_exit_cooldown_days: 14
     ideal_position_max_mult: 2.0
-    min_hold_days: 20
+    min_hold_days: 15
     sector_momentum_weight: 0.4
     sector_signal_density_weight: 0.6
 portfolio_stop_loss:
@@ -10712,10 +10723,10 @@ factor_neutralization:
   neutralize_market_cap: true
   min_samples_per_industry: 3
 enhanced_stop_loss:
-  time_stop_days: 20
-  time_stop_min_return: -0.04
+  time_stop_days: 15
+  time_stop_min_return: -0.03
   trailing_stop_enabled: true
-  volatility_adaptive_mult: 1.2
+  volatility_adaptive_mult: 1.0
   time_stop_by_buy_point:
     1:
     - 40
@@ -10880,7 +10891,7 @@ backtest:
   commission: 0.0005
   slippage: 0.0003
   stamp_tax: 0.0005
-  rebalance_days: 25
+  rebalance_days: 20
   num_workers: 4
   fromdate: '2024-01-01'
   todate: '2026-05-30'
