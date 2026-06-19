@@ -9,6 +9,7 @@ import math
 from collections import defaultdict
 import multiprocessing
 from functools import partial
+import gc
 import ctypes
 
 from core.strategy import Strategy
@@ -62,8 +63,8 @@ def _malloc_trim(pad=0):
     """
     try:
         ctypes.CDLL("libc.so.6").malloc_trim(ctypes.c_int(pad))
-    except Exception:
-        pass  # 非 Linux / 权限不足时静默跳过
+    except Exception as e:
+        import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()  # 非 Linux / 权限不足时静默跳过
 
 # 回测日期范围过滤 (加速测试: fromdate='2024-01-01', todate='2026-05-30')
 FROMDATE = config.get('backtest.fromdate', None)
@@ -79,6 +80,13 @@ FUNDAMENTAL_PATH = config.get('paths.fundamental', os.path.join(_PROJECT_DIR, 'd
 # 全局变量用于 worker 进程
 _worker_engine = None
 _worker_use_dynamic = False
+
+# 模块级默认值（函数内通过 global 声明赋值，后处理代码读取）
+dynamic_factor_stats = {'hit': 0, 'miss': 0, 'factor_names': {}}
+use_dynamic = False
+precomputed_cache = None
+_ml_total_preds = 0
+_ml_val_ic = None
 
 
 def _build_concept_industry_codes(stock_codes, min_stocks=20):
@@ -138,48 +146,51 @@ def _build_concept_industry_codes(stock_codes, min_stocks=20):
     return result
 
 
-def _init_worker(fundamental_data, stock_codes, use_dynamic, industry_codes, factor_cache, all_dates, regime_df,
-                 ml_model_path=None, ml_preds=None):
-    """Worker 进程初始化函数
+def _init_worker(fundamental_path, stock_codes, use_dynamic, industry_codes, factor_cache, all_dates, regime_df,
+                 ml_model_path=None, ml_preds_path=None):
+    """Worker 进程初始化函数 (spawn 模式)
 
-    注意: 不传递 factor_df (巨大DataFrame) 到每个worker，预计算的 factor_cache 已包含所有因子选择结果。
-    fundamental_data 由父进程 fork 共享（COW），每个 worker 仅触发按需加载的页面复制。
+    每个 worker 独立创建 FundamentalData 和加载 ML 预测，避免 fork 导致的
+    OpenMP/XGBoost 死锁问题。
     """
     global _worker_engine, _worker_use_dynamic
     _worker_use_dynamic = use_dynamic
 
-    # fork 后共享父进程的 fundamental_data（COW 零拷贝）
     _worker_engine = SignalEngine()
 
-    if fundamental_data is not None:
-        _worker_engine.set_fundamental_data(fundamental_data)
+    # spawn 模式：每个 worker 独立创建 FundamentalData
+    if fundamental_path is not None and stock_codes is not None:
+        from core.fundamental import FundamentalData
+        _worker_fd = FundamentalData(fundamental_path, stock_codes=stock_codes)
+        _worker_engine.set_fundamental_data(_worker_fd)
 
-    # 设置市场状态数据（关键：用于牛市优化）
     if regime_df is not None:
         _worker_engine.set_market_regime(regime_df)
 
-    # 使用预计算的因子选择缓存（不传递原始factor_df，节省 ~400MB/worker）
     if use_dynamic and factor_cache is not None and all_dates is not None:
         _worker_engine.set_industry_mapping(industry_codes)
         _worker_engine.dynamic_factor_selector.set_factor_cache(factor_cache, all_dates)
 
-    # 设置ML预测（每个worker加载模型副本）
     if ml_model_path is not None and os.path.exists(ml_model_path):
         try:
             from core.ml_predictor import MLFactorPredictor
             worker_ml = MLFactorPredictor()
             worker_ml.load_model(ml_model_path)
             _worker_engine.set_ml_predictor(worker_ml)
-        except Exception:
-            pass  # ML加载失败不阻塞回测
-    if ml_preds is not None:
-        _worker_engine.set_ml_predictions(ml_preds)
+        except Exception as e:
+            import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
+    if ml_preds_path is not None and os.path.exists(ml_preds_path):
+        import pickle
+        with open(ml_preds_path, 'rb') as f:
+            _worker_ml_preds = pickle.load(f)
+        _worker_engine.set_ml_predictions(_worker_ml_preds)
 
 
 def _generate_stock_signal_worker(args):
     """Worker 函数：为一个股票生成信号 — 直接从文件读取，避免 pickle 传大数据"""
     global _worker_engine, _worker_use_dynamic, _worker_diag_reported
     code, filepath = args
+    code = str(code).zfill(6)  # 归一化为6位字符串，确保与所有下游系统一致
 
     try:
         engine = _worker_engine
@@ -196,31 +207,75 @@ def _generate_stock_signal_worker(args):
             data = data[data['datetime'] <= TODATE]
         if len(data) < 60:
             del data
-            return (code, {})
+            return (code, {}, {})
         engine.generate(code, data, store)
 
-        # 释放该股票的基本面数据缓存（避免每个worker累积 ~1100 只股票的基本面数据）
         if hasattr(engine, 'fundamental_data') and engine.fundamental_data is not None:
             engine.fundamental_data.clear_stock_cache(code)
 
-        # 清理本股票数据，避免 worker 内 DataFrame 累积
-        result = (code, store._store)
+        dyn_fail_snapshot = {}
+        if hasattr(engine, '_dyn_fail'):
+            dyn_fail_snapshot = dict(engine._dyn_fail)
+            engine._dyn_fail = {k: 0 for k in engine._dyn_fail}
+
+        # 收集 worker 的诊断数据（因子选择、买入信号等）
+        diag_data = {}
+        if hasattr(engine, '_diag') and engine._diag is not None:
+            m = engine._diag.metrics
+            diag_data = {
+                'factor_selection': dict(m.get('factor_selection', {})),
+                'buy_signals': m.get('buy_signals', 0),
+                'buy_by_buy_point': dict(m.get('buy_by_buy_point', {})),
+                'buy_by_factor_family': dict(m.get('buy_by_factor_family', {})),
+                'gate_quality_samples': list(m.get('gate_quality_samples', [])),
+                'hard_rejects': m.get('hard_rejects', 0),
+                'alt_nb': m.get('alt_northbound_hits', 0),
+                'alt_mg': m.get('alt_margin_hits', 0),
+                'alt_dt': m.get('alt_dragon_tiger_hits', 0),
+            }
+            engine._diag.reset()
+
+        # 收集 worker 的因子选择统计
+        stats_snapshot = {}
+        if hasattr(engine, '_stats'):
+            stats_snapshot = dict(engine._stats)
+            engine._stats = {k: 0 for k in engine._stats}
+
+        # 收集 worker 的 BOM 统计
+        bom_snapshot = {}
+        if hasattr(engine, '_bom_diag'):
+            bd = engine._bom_diag
+            bom_snapshot = {
+                'total': bd.get('total', 0),
+                'hit': bd.get('hit', 0),
+                'miss': bd.get('miss', 0),
+                'moat': bd.get('moat', 0),
+                'sum_score': bd.get('sum_score', 0.0),
+                'n_unique': len(bd.get('_unique_codes', set())),
+                'n_moat_codes': len(bd.get('_moat_codes', set())),
+            }
+            # Reset worker BOM counters
+            bd['total'] = bd['hit'] = bd['miss'] = bd['moat'] = 0
+            bd['sum_score'] = 0.0
+            bd['_unique_codes'].clear()
+            bd['_moat_codes'].clear()
+
+        result = (code, store._store, dyn_fail_snapshot, diag_data, stats_snapshot, bom_snapshot)
         del data
         del store
         return result
     except Exception as e:
-        # 返回异常信息，避免worker静默失败
         print(f"[Worker Error] {code}: {e}", flush=True)
         import traceback
         traceback.print_exc()
-        return (code, {})
+        return (code, {}, {}, {}, {})
 
 
 def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     """加载数据、生成信号、添加到cerebro。
     同时预计算涨跌停数据和ST股票集合。
     """
-    global _LIMIT_DATA, _ST_CODES, _ST_DATE_RANGES
+    global _LIMIT_DATA, _ST_CODES, _ST_DATE_RANGES, _ml_total_preds, _ml_val_ic
     all_items = os.listdir(DATA_PATH)
     stock_codes = []
 
@@ -364,6 +419,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     factor_df = None
     industry_codes = {}
     all_dates = sorted(calendar_index.tolist()) if calendar_index is not None else []
+    # 因子训练需要历史数据: 扩展日期范围覆盖 lookback(250T) + IC warm-up(180T)
+    # 430个交易日 ≈ 2年日历日，确保 factor_df 从回测起点就有足够的IC训练窗口
+    _raw_sh_path = os.path.join(os.path.dirname(DATA_PATH.rstrip('/')), 'raw_data', '000001', 'qfq.csv')
+    if os.path.exists(_raw_sh_path):
+        _raw_dates = pd.to_datetime(pd.read_csv(_raw_sh_path, encoding='utf-8-sig', usecols=['日期'])['日期'])
+        _early_dates = sorted(d for d in _raw_dates if pd.Timestamp(FROMDATE) - pd.Timedelta(days=730) <= d < pd.Timestamp(FROMDATE))
+        all_dates = sorted(set(_early_dates) | set(all_dates))
     # 只有当 factor_mode 不是 'fixed' 时才需要IC计算
     # reweight模式也需要IC计算（用于动态调整权重）
     if factor_mode != 'fixed':
@@ -388,7 +450,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
         stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
         # 使用关键词构建行业映射（prepare_factor_data 依赖INDUSTRY_KEYWORDS）
-        industry_codes = build_fine_industry_map(stock_codes)
+        industry_codes = build_fine_industry_map(fundamental_data, stock_codes)
         if industry_codes:
             strategy.set_industry_mapping(industry_codes)
             print(f"行业映射: {len(industry_codes)} 个行业")
@@ -397,6 +459,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # stock_data_dict 不再存在 — 数据由worker从磁盘按需读取，无需清理
     import gc
     gc.collect()
+    _malloc_trim()
     print("因子数据准备完成（流式加载，无 stock_data_dict 内存峰值）")
 
     # ===================================================================
@@ -431,8 +494,11 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     preds = ml_predictor.predict(date_df)
                     codes = date_df['code'].values
                     for j, code in enumerate(codes):
-                        _ml_preds[(code, date)] = preds[j]
+                        code_str = str(code).zfill(6)
+                        _ml_preds[(code_str, date)] = preds[j]
                 print(f"ML预测完成: {len(_ml_preds)} 条预测")
+                _ml_total_preds = len(_ml_preds)
+                _ml_val_ic = val_ic
             else:
                 print(f"[ML] 验证IC不足({val_ic}), 跳过ML预测")
         except ImportError:
@@ -443,6 +509,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             traceback.print_exc()
 
     # 准备信号生成用的参数
+    global use_dynamic, precomputed_cache
     use_dynamic = factor_mode != 'fixed'
     stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
 
@@ -536,76 +603,113 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
     # 多进程并行生成信号
     print(f"多进程生成信号 ({NUM_WORKERS} workers)...")
-
-    # === 预fork清理: 释放主进程缓存，最小化 COW 共享内存 ===
-    if fundamental_data is not None:
-        fundamental_data.clear_stock_cache()  # 清除所有惰性加载的基本面缓存
-    if main_engine is not None:
-        main_engine.set_fundamental_data(None)  # 解除 main_engine 对 fundamental_data 的引用
-    del main_engine
-    main_engine = None
-    import gc
-    gc.collect()
-    print("预fork清理完成: 最小化COW共享内存")
+    _worker_dyn_fail_agg = {k: 0 for k in ['total_calls', 'no_code_or_date', 'no_industry',
+                                             'no_cache_data', 'no_dates', 'lookup_fail',
+                                             'low_quality', 'no_factor_score']}
 
     # 动态因子统计
+    global dynamic_factor_stats
     dynamic_factor_stats = {'hit': 0, 'miss': 0, 'factor_names': {}}
+
+    # === 保存 ML 预测到文件（spawn 模式通过文件传递大数据）===
+    _ml_preds_path = None
+    if _ml_preds:
+        import pickle
+        _ml_preds_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       'rolling_validation_results', 'ml_preds_worker.pkl')
+        with open(_ml_preds_path, 'wb') as f:
+            pickle.dump(_ml_preds, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    # 预初始化另类数据缓存（主进程单次执行，避免8个worker同时下载）
+    try:
+        from core.alternative_data import get_provider
+        alt = get_provider()
+        alt._ensure_dragon_tiger_history()
+        alt.get_northbound_signal(pd.Timestamp('2024-01-02').date())
+        alt.get_margin_signal(pd.Timestamp('2024-01-02').date())
+    except Exception:
+        pass
 
     import platform
     if platform.system() == 'Windows':
-        # Windows spawn模式序列化开销太大，改用单进程
-        print("Windows detected: using single-process signal generation (spawn overhead too high)")
-        _init_worker(fundamental_data, stock_codes, use_dynamic, industry_codes, precomputed_cache, precomputed_all_dates, regime_df, _ml_model_path, _ml_preds)
+        print("Windows detected: using single-process signal generation")
+        _init_worker(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes,
+                     precomputed_cache, precomputed_all_dates, regime_df,
+                     _ml_model_path, _ml_preds_path)
         _sig_iter = (_generate_stock_signal_worker(item) for item in tqdm(stock_items, desc="generating signals"))
     else:
-        ctx = multiprocessing.get_context('fork')
+        ctx = multiprocessing.get_context('spawn')
         pool = ctx.Pool(
             processes=NUM_WORKERS,
             initializer=_init_worker,
-            initargs=(fundamental_data, stock_codes, use_dynamic, industry_codes, precomputed_cache, precomputed_all_dates, regime_df,
-                      _ml_model_path, _ml_preds)
+            initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes,
+                      precomputed_cache, precomputed_all_dates, regime_df,
+                      _ml_model_path, _ml_preds_path)
         )
         _sig_iter = pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=50)
+    # 聚合 worker 因子选择统计
+    _worker_stats_agg = {}
+    _worker_bom_agg = {'total': 0, 'hit': 0, 'miss': 0, 'moat': 0, 'sum_score': 0.0,
+                       'n_unique': 0, 'n_moat_codes': 0}
     for result in _sig_iter:
-        code, store_data = result
+        code, store_data, dyn_fail, diag_data, stats_data, bom_data = (
+            result if len(result) >= 6 else
+            (result[0], result[1], result[2],
+             result[3] if len(result) > 3 else {},
+             result[4] if len(result) > 4 else {},
+             result[5] if len(result) > 5 else {}))
+        for k, v in dyn_fail.items():
+            if k in _worker_dyn_fail_agg:
+                _worker_dyn_fail_agg[k] += v
+        # 合并 worker 因子选择统计（跳过列表类型字段）
+        for k, v in stats_data.items():
+            if isinstance(v, (int, float)):
+                _worker_stats_agg[k] = _worker_stats_agg.get(k, 0) + v
+        # 聚合 worker BOM 统计
+        if bom_data:
+            for k in ('total', 'hit', 'miss', 'moat', 'n_unique', 'n_moat_codes'):
+                _worker_bom_agg[k] = _worker_bom_agg.get(k, 0) + bom_data.get(k, 0)
+            _worker_bom_agg['sum_score'] = _worker_bom_agg.get('sum_score', 0.0) + bom_data.get('sum_score', 0.0)
+        # 合并 worker 诊断数据到主进程
+        if diag_data:
+            try:
+                from analysis.backtest_diagnostics import get_diagnostics
+                main_diag = get_diagnostics()
+                m = main_diag.metrics
+                for k in ['factor_selection', 'buy_by_buy_point', 'buy_by_factor_family']:
+                    if k in diag_data:
+                        for kk, vv in diag_data[k].items():
+                            m[k][kk] = m[k].get(kk, 0) + vv
+                m['buy_signals'] = m.get('buy_signals', 0) + diag_data.get('buy_signals', 0)
+                m['hard_rejects'] = m.get('hard_rejects', 0) + diag_data.get('hard_rejects', 0)
+                m['gate_quality_samples'].extend(diag_data.get('gate_quality_samples', []))
+                m['alt_northbound_hits'] = m.get('alt_northbound_hits', 0) + diag_data.get('alt_nb', 0)
+                m['alt_margin_hits'] = m.get('alt_margin_hits', 0) + diag_data.get('alt_mg', 0)
+                m['alt_dragon_tiger_hits'] = m.get('alt_dragon_tiger_hits', 0) + diag_data.get('alt_dt', 0)
+            except Exception as e:
+                import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
         # 增量写入CSV（不在内存中累积 Signal 对象）
         for (c, date), sig in store_data.items():
             if hasattr(date, 'date'):
                 date = date.date()
-            signal_csv.write(
-                f'{c},{date},{sig.buy},{sig.sell},{sig.score},{sig.pre_discount_score},'
-                f'{sig.factor_value},'
-                f'{sig.factor_name},{sig.industry},'
-                f'{getattr(sig, "factor_quality", 0.0)},'
-                f'{getattr(sig, "chan_divergence_type", "")},'
-                f'{getattr(sig, "chan_divergence_strength", 0.0)},'
-                f'{getattr(sig, "chan_structure_score", 0.0)},'
-                f'{getattr(sig, "chan_buy_point", 0)},'
-                f'{getattr(sig, "chan_sell_point", 0)},'
-                f'{getattr(sig, "signal_level", 0)},'
-                f'{getattr(sig, "trend_type", 0)},'
-                f'{getattr(sig, "chan_pivot_zg", float("nan"))},'
-                f'{getattr(sig, "chan_pivot_zd", float("nan"))},'
-                f'{getattr(sig, "mom_60d", 0.0)},'
-                f'{getattr(sig, "dist_ma60", 0.0)},'
-                f'{getattr(sig, "max_dd_20d", 0.0)},'
-                f'{getattr(sig, "vol_regime", 1.0)},'
-                f'{getattr(sig, "mtf_discount_factor", 1.0)},'
-                f'{getattr(sig, "mtf_alignment_score", 0.0)},'
-                f'{(getattr(sig, "weekly_trend_strength", 0.0) + getattr(sig, "monthly_trend_strength", 0.0)) / 2},'
-                f'{getattr(sig, "risk_vol", 0.0)},'
-                f'{getattr(sig, "daily_return", 0.0)},'
-                f'{getattr(sig, "volume_ratio", 0.0)},'
-                f'{getattr(sig, "stroke_phase", 0.0)},'
-                f'{getattr(sig, "exhaustion_risk", 0.0)},'
-                f'{getattr(sig, "gap_breakout_confirm", 0.0)},'
-                f'{getattr(sig, "vol_opening_confirm", 0.0)},'
-                f'{getattr(sig, "vol_opening_strength", 0.0)},'
-                f'{getattr(sig, "bom_quality_score", 0.3)},'
-                f'{getattr(sig, "_gate_quality", 0.5)},'
-                f'{getattr(sig, "profit_declining", False)},'
-                f'{getattr(sig, "ma_trend_up", False)}\n'
+            row = (
+                f'{c},{date},'
+                f'{sig.buy},{sig.sell},{sig.score},{sig.pre_discount_score},'
+                f'{sig.factor_value},{sig.factor_name},{sig.industry},'
+                f'{sig.factor_quality},{sig.chan_divergence_type},{sig.chan_divergence_strength},'
+                f'{sig.chan_structure_score},{sig.chan_buy_point},{sig.chan_sell_point},'
+                f'{sig.signal_level},{sig.trend_type},'
+                f'{sig.chan_pivot_zg},{sig.chan_pivot_zd},'
+                f'{sig.mom_60d},{sig.dist_ma60},{sig.max_dd_20d},'
+                f'{sig.vol_regime},{sig.mtf_discount_factor},{sig.mtf_alignment_score},'
+                f'{(sig.weekly_trend_strength + sig.monthly_trend_strength) / 2},'
+                f'{sig.risk_vol},{sig.daily_return},{sig.volume_ratio},'
+                f'{sig.stroke_phase},{sig.exhaustion_risk},'
+                f'{sig.gap_breakout_confirm},{sig.vol_opening_confirm},{sig.vol_opening_strength},'
+                f'{sig.bom_quality_score},{sig._gate_quality},'
+                f'{sig.profit_declining},{sig.ma_trend_up}\n'
             )
+            signal_csv.write(row)
             signal_count[0] += 1
             # 动态因子统计
             if sig.factor_name and sig.factor_name.startswith('DYN_'):
@@ -620,6 +724,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     if platform.system() != 'Windows':
         pool.close()
         pool.join()
+        for k, v in _worker_dyn_fail_agg.items():
+            strategy.signal_engine._dyn_fail[k] = v
 
     signal_csv.close()
     print(f"信号数据已保存: {signal_count[0]} 条 -> {signals_output_path}")
@@ -659,7 +765,40 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     del stock_file_map
     import gc
     gc.collect()
+    _malloc_trim()
     print("已释放所有缓存内存")
+
+    # 注入 worker 聚合的因子选择统计到主引擎（保留 ic_values 列表）
+    if _worker_stats_agg:
+        for k, v in _worker_stats_agg.items():
+            if k != 'ic_values':
+                strategy.signal_engine._stats[k] = v
+
+    # 注入 worker 聚合的 BOM 统计到主引擎
+    if _worker_bom_agg:
+        bd = strategy.signal_engine._bom_diag
+        bd['total'] = _worker_bom_agg.get('total', 0)
+        bd['hit'] = _worker_bom_agg.get('hit', 0)
+        bd['miss'] = _worker_bom_agg.get('miss', 0)
+        bd['moat'] = _worker_bom_agg.get('moat', 0)
+        bd['sum_score'] = _worker_bom_agg.get('sum_score', 0.0)
+        bd['_unique_codes'] = set(range(_worker_bom_agg.get('n_unique', 0)))  # placeholder
+        bd['_moat_codes'] = set(range(_worker_bom_agg.get('n_moat_codes', 0)))
+
+    # 打印因子选择统计
+    strategy.signal_engine.print_factor_stats()
+    strategy.signal_engine.print_bom_stats()
+
+    # === 回测诊断报告 ===
+    try:
+        from analysis.backtest_diagnostics import get_diagnostics
+        diag = get_diagnostics()
+        if _ml_total_preds > 0:
+            diag.record_ml(total=_ml_total_preds, active=_ml_total_preds, val_ic=_ml_val_ic)
+        diag.print_report()
+        diag.save()
+    except Exception as e:
+        print(f"[诊断] 报告生成失败: {e}")
 
 class BacktraderExecution(bt.Strategy):
     params = dict(
@@ -937,6 +1076,261 @@ class BacktraderExecution(bt.Strategy):
                 print(f'SELL EXECUTED, date {date}, ref: {order.ref}, Price: {order.executed.price}, '
                       f'Cost: {order.executed.value}, Comm {order.executed.comm}, Size: {order.executed.size}, Stock: {order.data._name}')
 
+def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_cash=100000):
+    """向量化回测 — 替换 backtrader 逐 bar 循环。策略逻辑完全不变。"""
+    import numpy as np
+    from tqdm import tqdm
+
+    # 1. 构建价格矩阵
+    stock_codes = sorted([f.replace('_qfq.csv', '') for f in os.listdir(DATA_PATH)
+                         if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv' and not f.startswith('._')])
+    calendar = pd.bdate_range(start=fromdate, end=todate)
+    n_dates = len(calendar)
+    code_to_idx = {c: i for i, c in enumerate(stock_codes)}
+    idx_to_code = {i: c for i, c in enumerate(stock_codes)}
+
+    print(f"构建价格矩阵: {n_dates}天 × {len(stock_codes)}股 ...")
+    close_px = np.full((n_dates, len(stock_codes)), np.nan, dtype=np.float32)
+    volume_m = np.zeros_like(close_px)
+    tradable = np.zeros_like(close_px, dtype=bool)
+
+    for j, code in enumerate(tqdm(stock_codes, desc="loading")):
+        fp = os.path.join(DATA_PATH, f'{code}_qfq.csv')
+        if not os.path.exists(fp):
+            continue
+        df = pd.read_csv(fp, parse_dates=['datetime'], index_col='datetime',
+                        usecols=['datetime', 'close', 'volume'])
+        df = df[df.index >= pd.Timestamp(fromdate)]
+        df = df[df.index <= pd.Timestamp(todate)]
+        df = df.reindex(calendar)
+        close_px[:, j] = df['close'].ffill().values.astype(np.float32)
+        volume_m[:, j] = df['volume'].fillna(0).values.astype(np.float32)
+    del df
+
+    # 计算日均量缓存（冲击成本模型）
+    adv_cache = {}
+    for j, code in enumerate(stock_codes):
+        vol_tail = volume_m[-20:, j]
+        adv_cache[code] = float(np.mean(vol_tail[vol_tail > 0])) if np.any(vol_tail > 0) else 0.0
+
+    # 冲击成本参数
+    cm_config = config.get('cost_model', {})
+    impact_enabled = cm_config.get('impact_cost_enabled', True)
+    impact_base = cm_config.get('impact_cost_base', 0.0003)
+    impact_exp = cm_config.get('impact_cost_exponent', 0.5)
+    impact_min = cm_config.get('min_impact_cost', 0.00005)
+
+    def _impact(adv, size, price):
+        if not impact_enabled or adv <= 0:
+            return 0.0
+        participation = abs(size) / max(adv, 1)
+        return max(impact_base * (participation ** impact_exp), impact_min)
+
+    # 2. 预计算可交易矩阵（含流动性过滤：日均成交额>500万）
+    daily_value = close_px * volume_m  # 每日成交额
+    # 20日滚动均值: 用 pandas rolling (沿 time axis=0)
+    dv = pd.DataFrame(daily_value, index=calendar, columns=stock_codes)
+    avg_daily_value = dv.rolling(20, min_periods=5).mean().values
+    tradable = (~np.isnan(close_px)) & (close_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
+    # ST 过滤: 逐日检查（默认不过滤，除非 fundamental_data 可用）
+    if fundamental_data is not None and hasattr(fundamental_data, 'is_st'):
+        for i, d in enumerate(calendar):
+            for j, code in enumerate(stock_codes):
+                if tradable[i, j]:
+                    try:
+                        if fundamental_data.is_st(code, d.date()):
+                            tradable[i, j] = False
+                    except Exception as e:
+                        import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
+
+    # 3. 主循环
+    print("运行回测 ...")
+    cash = float(initial_cash)
+    positions = np.zeros(len(stock_codes), dtype=np.int32)
+    nav = np.full(n_dates, np.nan)
+    daily_ret = np.full(n_dates - 1, np.nan)
+    selections = []
+    rebalance_interval = REBALANCE_DAYS
+    cost_tracker = {}
+    PORTFOLIO_HARD_STOP = -0.05  # 日回撤>5% → 强平50%仓位
+
+    # 成交统计
+    _fill_stats = {'buy_attempted': 0, 'buy_filled': 0, 'buy_partial': 0,
+                   'sell_attempted': 0, 'sell_filled': 0, 'sell_partial': 0,
+                   'buy_limit_up_skip': 0, 'sell_limit_down_skip': 0,
+                   'sell_tplus1_blocked': 0, 'buy_cash_insufficient': 0}
+
+    # T+1 结算：当日买入的股票不可卖出
+    tplus1_enabled = config.get('cost_model', {}).get('t_plus_1_enabled', True)
+    _today_buys = set()
+
+    for i in tqdm(range(n_dates), desc="backtest"):
+        date = calendar[i].date()
+        px_today = close_px[i]
+        ok = tradable[i]
+        _today_buys.clear()  # T+1: 每日重置
+
+        # 当前持仓市值
+        pos_value = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
+        nav[i] = cash + pos_value
+        if i > 0:
+            daily_ret[i - 1] = (nav[i] - nav[i - 1]) / max(nav[i - 1], 1.0)
+        # 组合硬止损: 日回撤>5% → 减50%仓位
+        if i > 0 and daily_ret[i - 1] < PORTFOLIO_HARD_STOP:
+            for j in range(len(stock_codes)):
+                if positions[j] > 0 and ok[j]:
+                    sell_shares = int(positions[j] * 0.5 / 100) * 100
+                    if sell_shares >= 100:
+                        px = float(px_today[j])
+                        impact = _impact(adv_cache.get(stock_codes[j], 0), sell_shares, px)
+                        cash += sell_shares * px * (1.0 - COMMISSION - STAMP_TAX - impact)
+                        positions[j] -= sell_shares
+            nav[i] = cash + float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
+
+        # 调仓/止损：每天调用 generate_positions
+        # - 调仓日(rebalance=True): 全量选股+止损
+        # - 非调仓日(rebalance=False): 仅止损检查+补票(refill)
+        is_rebalance = (i == 0 or i % rebalance_interval == 0)
+        universe = [c for c in stock_codes if ok[code_to_idx[c]]]
+        prices = {c: float(px_today[code_to_idx[c]]) for c in universe}
+        cur_pos = {}
+        for j in range(len(stock_codes)):
+            if positions[j] > 0 and ok[j]:
+                cur_pos[stock_codes[j]] = float(positions[j]) * float(px_today[j])
+
+        try:
+            target = strategy.generate_positions(
+                date=date, universe=universe, current_positions=cur_pos,
+                cash=cash, prices=prices, cost=cost_tracker, rebalance=is_rebalance)
+        except Exception as e:
+            import traceback
+            print(f" [选股异常] date={date}: {e}")
+            traceback.print_exc()
+            target = {}
+
+        # 记录选股（仅调仓日）
+        if is_rebalance:
+            for c, tv in target.items():
+                if c in prices:
+                    sig_score = 0.0
+                    sig = strategy.signal_store.get(c, date)
+                    if sig is not None:
+                        sig_score = float(getattr(sig, 'score', 0.0))
+                    selections.append({'date': date, 'code': c,
+                                       'weight': tv / max(nav[i], 1.0),
+                                       'score': sig_score})
+
+            # 卖出不在目标的持仓
+            for j in range(len(stock_codes)):
+                code = stock_codes[j]
+                if positions[j] <= 0:
+                    continue
+                px = px_today[j] if ok[j] else (close_px[i - 1, j] if i > 0 else np.nan)
+                if np.isnan(px) or px <= 0:
+                    continue
+                if code not in target:
+                    _fill_stats['sell_attempted'] += 1
+                    if tplus1_enabled and code in _today_buys:
+                        _fill_stats['sell_tplus1_blocked'] += 1
+                        continue  # T+1: 当日买入禁止卖出
+                    impact = _impact(adv_cache.get(code, 0), int(positions[j]), px)
+                    cash += int(positions[j]) * px * (1.0 - COMMISSION - STAMP_TAX - impact)
+                    _fill_stats['sell_filled'] += 1
+                    positions[j] = 0
+            # 调整在目标中的持仓
+            for code, tv in target.items():
+                j = code_to_idx.get(code)
+                if j is None or not ok[j]:
+                    continue
+                px = float(px_today[j])
+                # 涨停次日惩罚: 若前一日涨停, 买入价上浮3%模拟排队失败
+                buy_px = px
+                if i > 0:
+                    prev_px = close_px[i-1, j]
+                    if not np.isnan(prev_px) and prev_px > 0 and (px / prev_px - 1) > 0.095:
+                        buy_px = px * 1.03
+                target_shares = int(tv / buy_px / 100) * 100
+                curr_shares = int(positions[j])
+                diff = target_shares - curr_shares
+                if diff >= 100:  # 买入
+                    _fill_stats['buy_attempted'] += 1
+                    impact = _impact(adv_cache.get(code, 0), diff, buy_px)
+                    cost = diff * buy_px * (1.0 + COMMISSION + impact)
+                    if cost <= cash:
+                        cash -= cost
+                        positions[j] = target_shares
+                        _fill_stats['buy_filled'] += 1
+                        if tplus1_enabled:
+                            _today_buys.add(code)
+                    elif diff < target_shares:
+                        _fill_stats['buy_cash_insufficient'] += 1
+                elif diff <= -100:  # 卖出
+                    # T+1: 当日买入禁止卖出
+                    _fill_stats['sell_attempted'] += 1
+                    if tplus1_enabled and code in _today_buys:
+                        _fill_stats['sell_tplus1_blocked'] += 1
+                        continue
+                    # 跌停惩罚: 若前一日跌停, 卖出价-3%
+                    sell_px = px
+                    if i > 0:
+                        prev_px = close_px[i-1, j]
+                        if not np.isnan(prev_px) and prev_px > 0 and (px / prev_px - 1) < -0.095:
+                            sell_px = px * 0.97
+                    impact = _impact(adv_cache.get(code, 0), abs(diff), sell_px)
+                    cash += abs(diff) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
+                    positions[j] = target_shares
+                    _fill_stats['sell_filled'] += 1
+
+    # 4. 计算指标
+    final_nav = nav[-1]
+    total_return = final_nav / initial_cash - 1.0
+    daily_ret_clean = np.nan_to_num(daily_ret, 0.0)
+    mean_daily = np.mean(daily_ret_clean)
+    std_daily = np.std(daily_ret_clean)
+    sharpe = mean_daily / max(std_daily, 1e-10) * np.sqrt(252)
+
+    peak = np.maximum.accumulate(nav)
+    dd = (nav - peak) / peak
+    max_dd = float(np.min(dd))
+
+    annual_rets = {}
+    for yr in sorted(set(d.year for d in calendar)):
+        mask = np.array([d.year == yr for d in calendar])
+        yr_nav = nav[mask]
+        if len(yr_nav) > 1:
+            annual_rets[yr] = float(yr_nav[-1] / yr_nav[0] - 1.0)
+
+    # 成交统计: 每个调仓日的买卖操作 ≈ 选股数 × 2
+    n_trades = len(selections) * 2
+
+    print(f"\n=== 向量化回测结果 ===")
+    print(f"初始资金: {initial_cash:,.0f}")
+    print(f"最终净值: {final_nav:,.0f}  (总收益 {total_return*100:.2f}%)")
+    for yr, r in sorted(annual_rets.items()):
+        print(f"  {yr}: {r*100:.2f}%")
+    print(f"Sharpe: {sharpe:.4f}")
+    print(f"最大回撤: {abs(max_dd)*100:.2f}%")
+    print(f"选股记录: {len(selections)} 次")
+    print(f"日收益序列: {len(daily_ret_clean)} 点, 均值={mean_daily:.6f}, std={std_daily:.6f}")
+    # 成交率统计
+    ba = max(_fill_stats['buy_attempted'], 1)
+    sa = max(_fill_stats['sell_attempted'], 1)
+    print(f"成交率: 买入{_fill_stats['buy_filled']}/{_fill_stats['buy_attempted']}={_fill_stats['buy_filled']/ba*100:.1f}%"
+          f" 卖出{_fill_stats['sell_filled']}/{_fill_stats['sell_attempted']}={_fill_stats['sell_filled']/sa*100:.1f}%"
+          f" 资金不足={_fill_stats['buy_cash_insufficient']}")
+    # 记录到诊断模块
+    try:
+        from analysis.backtest_diagnostics import get_diagnostics
+        get_diagnostics().record_fill_stats(_fill_stats)
+    except Exception as e:
+        import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
+
+    return {'nav': nav, 'daily_returns': daily_ret_clean, 'sharpe': sharpe,
+            'max_drawdown': max_dd, 'annual_returns': annual_rets,
+            'final_value': final_nav, 'selections': selections,
+            'n_dates': n_dates}
+
+
 if __name__ == "__main__":
     # === 日志输出：同时输出到 stdout 和文件，方便监控进度 ===
     import sys as _sys
@@ -998,67 +1392,29 @@ if __name__ == "__main__":
         sentiment_orchestrator=sentiment_orch,
     )
 
-    add_data_and_signal(cerebro, strategy, fundamental_data)
-    cerebro.broker.setcash(CASH)
-    cerebro.broker.setcommission(commission=EFFECTIVE_COMM)
-    cerebro.broker.set_slippage_perc(perc=PERC)
+    # 如果信号文件已存在且有效则直接加载，跳过信号生成（避免 fork 死锁）
+    import glob as _glob
+    _existing = _glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         'rolling_validation_results', 'backtest_signals.csv'))
+    if _existing and os.path.getsize(_existing[0]) > 200:
+        print("[快速模式] 信号文件已存在，跳过信号生成，直接加载")
+        strategy.signal_store.finalize(_existing[0])
+    else:
+        if _existing:
+            os.remove(_existing[0])
+            print("[快速模式] 信号文件为空，删除并重新生成")
+        add_data_and_signal(cerebro, strategy, fundamental_data)
 
-    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='pnl')  # 返回收益率时序数据
-    cerebro.addanalyzer(bt.analyzers.AnnualReturn, _name='_AnnualReturn')  # 年化收益率
-    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='_SharpeRatio')  # 夏普比率
-    cerebro.addanalyzer(bt.analyzers.DrawDown, _name='_DrawDown')  # 回撤
-
-    cerebro.addstrategy(
-        BacktraderExecution,
-        real_strategy=strategy,
-    )
-    # 启动回测前最终GC: 清理信号生成阶段残留的临时对象
-    import gc
+    # ======  向量化回测引擎 (替代 backtrader 逐 bar 循环) ======
+    # 释放 Backtrader datafeeds（向量化回测不依赖 cerebro），降低 OOM 风险
+    del cerebro
     gc.collect()
-    gc.collect()
-    _malloc_trim()  # 归还所有碎片内存给 OS，确保 cerebro.run() 有充足空间
-    print(f"启动回测引擎 (可用内存优化完毕)...")
-    try:
-        result = cerebro.run()
-    except MemoryError:
-        print("\n[ERROR] 内存不足！尝试减少股票数量或增大WSL2内存限制")
-        import sys
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n[ERROR] 回测异常退出: {e}")
-        import traceback
-        traceback.print_exc()
-        import sys
-        sys.exit(1)
+    _malloc_trim()
+    result = _vectorized_backtest(strategy, fundamental_data, FROMDATE, TODATE, CASH)
 
-    # 从返回的 result 中提取回测结果
-    strat = result[0]
-    # 返回日度收益率序列
-    daily_return = pd.Series(strat.analyzers.pnl.get_analysis())
-    # 打印评价指标
-    print("--------------- AnnualReturn -----------------")
-    print(strat.analyzers._AnnualReturn.get_analysis())
-    print("--------------- SharpeRatio -----------------")
-    print(strat.analyzers._SharpeRatio.get_analysis())
-    print("--------------- DrawDown -----------------")
-    print(strat.analyzers._DrawDown.get_analysis())
-
-    # 成交率统计
-    strat.print_fill_stats()
-
-    # 回测诊断报告
-    try:
-        from analysis.backtest_diagnostics import get_diagnostics
-        diag = get_diagnostics()
-        diag.record_fill_stats(strat._fill_stats)
-        diag.print_report()
-        diag.save()
-    except Exception as e:
-        print(f"[诊断] 报告生成失败: {e}")
-
-    # 保存选股结果供验证使用
-    if strat.portfolio_selections:
-        selections_df = pd.DataFrame(strat.portfolio_selections)
+    # 保存选股结果
+    if result['selections']:
+        selections_df = pd.DataFrame(result['selections'])
         strategy_dir = os.path.dirname(os.path.abspath(__file__))
         selections_path = os.path.join(strategy_dir, 'rolling_validation_results', 'portfolio_selections.csv')
         os.makedirs(os.path.dirname(selections_path), exist_ok=True)
@@ -1095,6 +1451,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[妖股名单] 生成失败: {e}")
         import traceback; traceback.print_exc()
-
-    # 打印因子选择统计
-    strategy.signal_engine.print_factor_stats()

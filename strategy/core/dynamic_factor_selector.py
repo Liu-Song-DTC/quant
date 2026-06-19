@@ -11,6 +11,7 @@
 import numpy as np
 import pandas as pd
 import multiprocessing
+from collections import Counter, defaultdict
 from datetime import date as date_type
 from typing import Dict, List
 
@@ -18,25 +19,27 @@ from .config_loader import load_config
 
 # 因子家族分类（用于分散化约束，避免单一因子家族集体霸榜）
 FACTOR_FAMILIES = {
-    'momentum':  ['mom_10', 'mom_20', 'mom_diff_5_20', 'mom_diff_10_20',
-                  'momentum_reversal', 'momentum_acceleration', 'max_ret_20',
-                  'ret_vol_ratio_10', 'ret_vol_ratio_20', 'relative_strength',
-                  'ema20_slope', 'ma_alignment', 'mom_x_lowvol_20_20'],
-    'lowvol':    ['volatility', 'volatility_5', 'volatility_10', 'volatility_20',
-                  'trend_lowvol', 'bb_width_20', 'atr_ratio_20', 'vol_confirm',
-                  'low_downside', 'volume_contraction', 'consolidation_breakout',
-                  'inv_turnover'],
-    'value':     ['fund_score', 'fund_roe', 'fund_profit_growth', 'fund_revenue_growth',
-                  'fund_eps', 'fund_cf_to_profit', 'fund_gross_margin', 'fund_debt_ratio',
-                  'fund_pg_improve', 'fund_rg_improve', 'fund_pe', 'fund_pb'],
-    'quality':   ['tech_fund_combo', 'turnover_stability', 'turnover_shrink',
-                  'rsi_vol_combo', 'bb_rsi_combo'],
-    'alpha':     ['skewness_20', 'kurtosis_20', 'tail_risk', 'volatility_skew',
-                  'overnight_ret', 'intraday_ret', 'gap_ratio',
-                  'price_volume_corr_20', 'illiq_20'],
-    'volume_price': ['wash_sale_score', 'vol_price_breakout', 'smart_money_flow',
-                     'gap_breakout_confirm', 'top_fractal_volume'],
-    'reversal':   ['exhaustion_risk', 'stroke_phase'],
+    'momentum':  ['mom_diff_5_20', 'mom_diff_10_20', 'momentum_reversal',
+                  'momentum_acceleration', 'mom_x_lowvol_20_20', 'mom_x_lowvol_10_10',
+                  'mom_quality', 'trend_quality', 'trend_initiation', 'return_risk_ratio',
+                  'momentum_reversal_chg20', 'momentum_acceleration_chg20',
+                  'mom_x_lowvol_20_20_chg20', 'trend_lowvol', 'trend_lowvol_chg20'],
+    'lowvol':    ['volatility', 'low_downside', 'inv_turnover', 'atr_ratio',
+                  'downside_risk', 'bb_rsi_combo'],
+    'value':     ['debt_ratio', 'log_operating_cf', 'log_revenue', 'log_total_assets',
+                  'fund_cf_to_profit', 'fund_score', 'fund_score_chg20',
+                  'fund_profit_growth', 'fund_revenue_growth', 'fund_pb', 'fund_pb_chg20',
+                  'fund_pe_chg20', 'fund_roe_chg20', 'profit_growth_accel',
+                  'revenue_growth_accel', 'quality_value', 'fund_gross_margin'],
+    'quality':   ['turnover_stability', 'turnover_shrink', 'turnover_stability_chg20',
+                  'volume_divergence', 'liquid_quality', 'consolidation_breakout'],
+    'alpha':     ['kurtosis_20', 'overnight_ret', 'gap_ratio', 'amplitude_expansion',
+                  'overnight_gap_raw', 'illiq_20', 'tail_risk'],
+    'volume_price': ['wash_sale_score', 'gap_breakout_confirm', 'relative_volume_ratio',
+                     'volume_dry_up', 'volume_price_resonance', 'turnover_burst',
+                     'capital_flow_score', 'volume_surge', 'short_reversal'],
+    'sentiment': ['northbound_signal', 'gate_g1', 'gate_g1_chg20', 'gate_g2',
+                  'gate_g2_chg20', 'gate_g3', 'price_position_20'],
 }
 
 
@@ -84,13 +87,15 @@ def _compute_date_chunk(args):
         args: (date_chunk, factor_df, industry_codes, config)
 
     Returns:
-        {date: {industry: {'factors': [factors], 'quality': avg_quality}}}
+        (result_dict, quality_stats) where quality_stats is {industry: Counter} or None
     """
+    date_chunk, factor_df, industry_codes, config = args
+    _dyn_fail = defaultdict(Counter)  # local: {industry: {reason: count}}
+    _dyn_pass = Counter()
+    _dyn_date_total = 0
     import pandas as pd
     from scipy import stats
     from tqdm import tqdm
-
-    date_chunk, factor_df, industry_codes, config = args
 
     if factor_df['date'].dtype != 'datetime64[ns]':
         factor_df = factor_df.copy()
@@ -115,33 +120,49 @@ def _compute_date_chunk(args):
 
     result = {}
 
-    chunk_start = date_chunk[0]
+    # 交易日索引：future_ret 按交易日偏移计算，此处也必须用交易日偏移
+    # pd.Timedelta(days=N) 用日历日会错配（20日历日≈14交易日），导致前视偏差
+    all_sorted_dates = sorted(factor_df['date'].unique())
+    _date_idx = {pd.to_datetime(d): i for i, d in enumerate(all_sorted_dates)}
+
+    def _trading_day_offset(date_val, offset):
+        """返回 date_val 往前 offset 个交易日后的日期"""
+        ts = pd.to_datetime(date_val)
+        idx = _date_idx.get(ts)
+        if idx is None:
+            for i, d in enumerate(all_sorted_dates):
+                if pd.to_datetime(d) > ts:
+                    idx = i - 1
+                    break
+            if idx is None:
+                idx = len(all_sorted_dates) - 1
+        return all_sorted_dates[max(0, idx - offset)]
+
     chunk_end = date_chunk[-1]
-    valid_end = chunk_end - pd.Timedelta(days=forward_period)
+    valid_end = _trading_day_offset(chunk_end, forward_period)
 
     valid_dates = [d for d in date_chunk if d <= valid_end]
+
+    _dyn_date_total += len(valid_dates)
+
+    # === 预 pivot 所有因子为宽表（一次 pivot per factor，所有行业+日期复用）===
+    # 行业级数据量小（~100-300股票），pivot 后缓存，在行业循环中按日期切片
+    pivot_cache = {}
 
     for val_date in tqdm(valid_dates, desc=f"IC计算({len(date_chunk)}天)", leave=False):
         val_date_ts = pd.to_datetime(val_date) if isinstance(val_date, str) else val_date
 
-        # Walk-Forward 隔离：train_end = val_date - forward_period
-        # 确保训练集不包含验证期的 future_ret 数据，防止前视偏差
-        train_start_date = val_date_ts - pd.Timedelta(days=train_window_days)
-        train_end_date = val_date_ts - pd.Timedelta(days=forward_period)
+        train_end_date = _trading_day_offset(val_date_ts, forward_period)
+        train_start_date = _trading_day_offset(train_end_date, train_window_days)
 
-        train_mask = (factor_df['date'] >= train_start_date) & (factor_df['date'] < train_end_date)
-        train_df = factor_df[train_mask]
-
-        if len(train_df) < min_train_samples:
+        date_rows = (factor_df['date'] >= train_start_date) & (factor_df['date'] < train_end_date)
+        train_dates = factor_df.loc[date_rows, 'date'].unique()
+        if len(train_dates) < min_ic_dates:
             continue
 
         date_result = {}
         for industry, codes in industry_codes.items():
             if not codes:
-                continue
-
-            ind_df = train_df[train_df['code'].isin(codes)]
-            if len(ind_df) < min_train_samples:
                 continue
 
             if use_static_candidates and industry in industry_factor_config_static:
@@ -154,17 +175,40 @@ def _compute_date_chunk(args):
             else:
                 search_factors = factor_names
 
+            # 预计算 ret_rank（同行业所有因子共享同一个 ret）
+            cache_key = (industry, 'future_ret')
+            if cache_key not in pivot_cache:
+                ind_mask = factor_df['code'].isin(codes)
+                pivot_cache[cache_key] = factor_df[ind_mask].pivot(
+                    index='date', columns='code', values='future_ret')
+            ret_wide = pivot_cache[cache_key]
+            if ret_wide is None or ret_wide.empty:
+                continue
+            ind_ret = ret_wide.loc[ret_wide.index.isin(train_dates)]
+            ind_codes_in_data = [c for c in ind_ret.columns if c in codes]
+            if len(ind_codes_in_data) < 3:
+                continue
+            ind_ret = ind_ret[ind_codes_in_data]
+            if len(ind_ret) < min_train_samples:
+                continue
+            ret_rank = ind_ret.rank(axis=1, na_option='keep')
+
+            # 预pivot行业全部因子(一次拉宽，缓存复用，避免每个日期都 pivot)
+            cache_key = (industry, 'ind_wide')
+            if cache_key not in pivot_cache:
+                ind_mask = factor_df['code'].isin(codes)
+                pivot_cache[cache_key] = factor_df[ind_mask].pivot(
+                    index='date', columns='code')  # 多级列: (factor_col, stock_code)
+            ind_wide = pivot_cache[cache_key]
+
             factor_metrics = []
             for fn in search_factors:
-                if fn not in ind_df.columns:
+                if fn not in factor_df.columns:
                     continue
 
                 try:
-                    fn_pivot = ind_df.pivot(index='date', columns='code', values=fn)
-                    ret_pivot = ind_df.pivot(index='date', columns='code', values='future_ret')
-
-                    fn_rank = fn_pivot.rank(axis=1, na_option='keep')
-                    ret_rank = ret_pivot.rank(axis=1, na_option='keep')
+                    fn_wide = ind_wide[fn].loc[ind_wide.index.isin(train_dates), ind_codes_in_data]
+                    fn_rank = fn_wide.rank(axis=1, na_option='keep')
 
                     ic_series = fn_rank.corrwith(ret_rank, axis=1)
                     ic_list = ic_series.dropna().tolist()
@@ -172,6 +216,7 @@ def _compute_date_chunk(args):
                     ic_list = []
 
                 if len(ic_list) < min_ic_dates:
+                    _dyn_fail[industry]['min_ic_dates'] += 1
                     continue
 
                 n_dates = len(ic_list)
@@ -192,33 +237,57 @@ def _compute_date_chunk(args):
                 direction = 1 if ic_mean > 0 else -1
                 abs_ic_mean = abs(ic_mean)
                 abs_ir = abs(ir)
-                combined_ir = abs_ir * (0.5 + 0.5 * ic_stability)
+
+                # === 收益差：向量化 top20%-bottom20% (避免逐日循环) ===
+                fv_rank = fn_wide.rank(axis=1, pct=True)  # (dates, stocks) 截面百分位
+                top_mask = fv_rank >= 0.80
+                bot_mask = fv_rank <= 0.20
+                # NaN-safe: 不足5只股票的日子spread=NaN→drop
+                top_ret = ind_ret.where(top_mask).mean(axis=1, skipna=True)
+                bot_ret = ind_ret.where(bot_mask).mean(axis=1, skipna=True)
+                spread_daily = (top_ret - bot_ret) * direction
+                ret_spread = float(spread_daily.mean(skipna=True)) if spread_daily.notna().any() else 0.0
+
+                # 收益修正IR: IC高的因子如果收益差为零, combined_ir不再虚高
+                ret_factor = min(1.0, max(0.0, ret_spread / 0.03))  # 3%收益差封顶
+                combined_ir = abs_ir * (0.4 + 0.3 * ic_stability + 0.3 * ret_factor)
 
                 # IC质量过滤
-                if ic_stability < 0.20:
+                if ic_stability < 0.45:
+                    _dyn_fail[industry]['ic_stability'] += 1
                     continue
-                if abs_ic_mean < 0.003:
+                if abs_ic_mean < 0.015:
+                    _dyn_fail[industry]['abs_ic_mean'] += 1
                     continue
                 ic_variance = ic_std / (abs_ic_mean + 1e-10)
                 if ic_variance > 6.0:
+                    _dyn_fail[industry]['ic_variance'] += 1
                     continue
-                if abs(t_statistic) < 0.4:
+                if abs(t_statistic) < 1.2:
+                    _dyn_fail[industry]['t_statistic'] += 1
                     continue
-                if combined_ir < 0.007:
+                # 收益差底线: 实际赚不到钱的因子不要 (0.2%×20日≈10%年化)
+                if ret_spread < 0.004:
+                    _dyn_fail[industry]['low_ret_spread'] += 1
+                    continue
+                if combined_ir < 0.01:
+                    _dyn_fail[industry]['combined_ir'] += 1
                     continue
                 # p_value: 正IC用右尾，负IC用左尾
                 if direction > 0:
                     p_value = stats.norm.sf(t_statistic)
                 else:
                     p_value = stats.norm.cdf(t_statistic)
-                if p_value > 0.55:
+                if p_value > 0.15:
+                    _dyn_fail[industry]['p_value'] += 1
                     continue
                 # 方向一致性：正IC要求多数日IC>0，负IC要求多数日IC<0
                 if direction > 0:
                     consistent_days = sum(1 for ic in ic_list if ic > 0)
                 else:
                     consistent_days = sum(1 for ic in ic_list if ic < 0)
-                if consistent_days / n_dates < 0.35:
+                if consistent_days / n_dates < 0.50:
+                    _dyn_fail[industry]['direction_consistency'] += 1
                     continue
 
                 factor_metrics.append({
@@ -227,6 +296,7 @@ def _compute_date_chunk(args):
                     'ir': abs_ir,
                     'ic_stability': ic_stability,
                     'combined_ir': combined_ir,
+                    'ret_spread': ret_spread,
                     'direction': direction,
                 })
 
@@ -270,11 +340,15 @@ def _compute_date_chunk(args):
                 avg_quality = np.mean([f['combined_ir'] for f in top_factors])
 
                 if n_selected < min_factor_count:
+                    _dyn_fail[industry]['min_factor_count'] += 1
                     continue
 
                 # 质量底线: 放宽以提升命中率
                 if avg_quality < 0.015 or n_selected < 2:
+                    _dyn_fail[industry]['avg_quality_low'] += 1
                     continue
+
+                _dyn_pass[industry] += 1
 
                 total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10
                 date_result[industry] = {
@@ -287,18 +361,34 @@ def _compute_date_chunk(args):
         if date_result:
             result[val_date] = date_result
 
-    return result
+    quality_stats = {
+        'pass': dict(_dyn_pass),
+        'fail': {k: dict(v) for k, v in _dyn_fail.items()},
+        'date_total': _dyn_date_total,
+    }
+    return result, quality_stats
 
 
 def _compute_date_chunks_worker(args):
     """Worker: compute IC for multiple overlapping chunks."""
     chunks, factor_df, industry_codes, config = args
     all_results = []
+    agg_fail = defaultdict(Counter)
+    agg_pass = Counter()
+    agg_dates = 0
     for chunk in chunks:
-        chunk_result = _compute_date_chunk((chunk, factor_df, industry_codes, config))
-        for date, factors in chunk_result.items():
+        chunk_results, qs = _compute_date_chunk((chunk, factor_df, industry_codes, config))
+        for date, factors in chunk_results.items():
             all_results.append((date, factors))
-    return all_results
+        # 合并质量统计
+        for ind, cnt in qs.get('pass', {}).items():
+            agg_pass[ind] += cnt
+        for ind, reasons in qs.get('fail', {}).items():
+            for reason, cnt in reasons.items():
+                agg_fail[ind][reason] += cnt
+        agg_dates += qs.get('date_total', 0)
+    return all_results, {'pass': dict(agg_pass), 'fail': {k: dict(v) for k, v in agg_fail.items()},
+                          'date_total': agg_dates}
 
 
 class DynamicFactorSelector:
@@ -430,18 +520,43 @@ class DynamicFactorSelector:
         ]
 
         all_results = []
+        agg_fail = defaultdict(Counter)
+        agg_pass = Counter()
+        agg_dates = 0
         ctx = multiprocessing.get_context('fork')
         with ctx.Pool(total) as pool:
-            results = pool.map(_compute_date_chunks_worker, worker_args)
-            for r in results:
-                all_results.extend(r)
+            worker_results = pool.map(_compute_date_chunks_worker, worker_args)
+            for wr in worker_results:
+                chunk_results, qs = wr
+                all_results.extend(chunk_results)
+                # 合并 worker 质量统计
+                for ind, cnt in qs.get('pass', {}).items():
+                    agg_pass[ind] += cnt
+                for ind, reasons in qs.get('fail', {}).items():
+                    for reason, cnt in reasons.items():
+                        agg_fail[ind][reason] += cnt
+                agg_dates += qs.get('date_total', 0)
 
         for date, factors in all_results:
-            # pandas 3.x: pd.Timestamp is subclass of datetime.date, force .date()
             key = date.date() if hasattr(date, 'date') else pd.to_datetime(date).date()
             self._factor_cache[key] = factors
 
-        print(f"因子选择预计算完成: {len(self._factor_cache)} 个日期")
+        non_empty = sum(1 for v in self._factor_cache.values() if v)
+        total_industries = sum(len(v) for v in self._factor_cache.values() if v)
+        print(f"因子选择预计算完成: {len(self._factor_cache)} 日期, "
+              f"{non_empty} 非空, {total_industries} 行业条目, "
+              f"日期范围={min(self._factor_cache.keys())}~{max(self._factor_cache.keys())}")
+        # 记录DYN质量过滤统计到诊断模块
+        try:
+            from analysis.backtest_diagnostics import get_diagnostics
+            merged_stats = {
+                'pass': dict(agg_pass),
+                'fail': {k: dict(v) for k, v in agg_fail.items()},
+                'date_total': agg_dates,
+            }
+            get_diagnostics().record_dyn_quality_stats(merged_stats)
+        except Exception:
+            pass
 
         if progress_callback:
             progress_callback(total, total)
@@ -452,46 +567,27 @@ class DynamicFactorSelector:
         Returns:
             {industry: {'factors': [factors], 'quality': avg_quality}}
         """
-        # P1修复: 统一归一化到 datetime.date 避免 pd.Timestamp 多进程 hash 不一致
-        if isinstance(val_date, str):
-            val_key = pd.to_datetime(val_date).date()
-        elif hasattr(val_date, 'date'):
-            val_key = val_date.date()
-        else:
-            val_key = pd.to_datetime(val_date).date()
+        # pandas 3.x: pd.Timestamp 继承 datetime.date, 用 pd.Timestamp 统一归一化
+        val_ts = pd.Timestamp(val_date)
+        val_key = val_ts.date()
 
         if val_key in self._factor_cache:
             return self._factor_cache[val_key]
 
-        # Debug: track lookup failures
-        if not hasattr(self, '_lookup_fail_count'):
-            self._lookup_fail_count = 0
-            self._lookup_fail_samples = []
-            self._lookup_success_count = 0
+        # Fallback: 直接扫描缓存 key 找最近的历史日期（不依赖 all_dates）
+        best_key = None
+        for cache_key in self._factor_cache:
+            if cache_key < val_key:
+                if best_key is None or cache_key > best_key:
+                    best_key = cache_key
+        if best_key is not None:
+            return self._factor_cache[best_key]
 
-        for i in range(len(all_dates) - 1, -1, -1):
-            d = all_dates[i]
-            d_key = d.date() if hasattr(d, 'date') else d
-            if d_key < val_key:
-                if d_key in self._factor_cache:
-                    self._lookup_success_count += 1
-                    return self._factor_cache[d_key]
-
-        # Both exact match and fallback failed
-        self._lookup_fail_count += 1
-        if len(self._lookup_fail_samples) < 5:
-            cache_sample_keys = list(self._factor_cache.keys())[:3] if self._factor_cache else []
-            all_dates_sample = all_dates[:3] if len(all_dates) > 0 else []
-            self._lookup_fail_samples.append(
-                f"date={val_date} key={val_key} "
-                f"cache_size={len(self._factor_cache)} all_dates_size={len(all_dates)} "
-                f"cache_key_types={[type(k).__name__ for k in cache_sample_keys]} "
-                f"all_dates_types={[type(d).__name__ for d in all_dates_sample]}"
-            )
-        # Print summary every 10000 failures
-        if self._lookup_fail_count % 10000 == 1 and self._lookup_fail_count > 1:
-            print(f"\n[DYN_DEBUG] lookup_fail_count={self._lookup_fail_count} lookup_success={self._lookup_success_count}", flush=True)
-            for s in self._lookup_fail_samples:
-                print(f"  [DYN_DEBUG] {s}", flush=True)
+        # Debug
+        self._lookup_fail_count = getattr(self, '_lookup_fail_count', 0) + 1
+        if self._lookup_fail_count <= 5 or self._lookup_fail_count % 5000 == 0:
+            print(f"[DYN_MISS] date={val_date} key={val_key} cache_size={len(self._factor_cache)} "
+                  f"cache_min={min(self._factor_cache.keys()) if self._factor_cache else 'EMPTY'} "
+                  f"cache_max={max(self._factor_cache.keys()) if self._factor_cache else 'EMPTY'}", flush=True)
 
         return {}
