@@ -90,6 +90,8 @@ class Strategy:
         bear_risk_fast = False
         trend_score = 0.0
         index_volume_ratio = 1.0
+        style_score_val = 0.0
+        regime_vol_val = 0.0
         if self.index_data is not None:
             row = self.index_data[self.index_data["datetime"].dt.date == date]
             if not row.empty:

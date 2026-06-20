@@ -240,8 +240,6 @@ class SignalEngine:
 
         # === 缓存 ===
         self._alt_data = None  # 延迟加载
-        self._nb_cache = {}  # 市场级北向信号缓存（跨股票复用）
-        self._mg_cache = {}  # 市场级融资信号缓存（跨股票复用）
         self._fd_sorted_cache = {}  # code → 按日期排序的基本面DataFrame
 
         # === 回测诊断 ===
@@ -1114,7 +1112,7 @@ class SignalEngine:
 
         # === 2. 门控质量系数 ===
         limit_pct = 0.195 if (code and (code.startswith('688') or code.startswith('300'))) else 0.095
-        gate_grades, hard_rejects = compute_all_gates(ind, n, limit_pct)
+        gate_grades, hard_rejects = compute_all_gates(ind, n)
         gate_quality = compute_gate_quality(gate_grades)
 
         # === 诊断: 记录门控质量分布（采样每只股票最新bar） ===
@@ -1172,45 +1170,32 @@ class SignalEngine:
                 import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
         if self._alt_data is not None and dates is not None:
             try:
-                # 市场级: 北向资金+融资融券信号，按日期缓存避免逐bar重复查询
+                # 市场级: 北向资金+融资融券信号，逐bar直接查询
                 alt_market = np.zeros(n)
+                nb = mg = 0.0
                 for i in range(60, n):
                     bar_date = pd.to_datetime(dates[i]).date()
-                    if bar_date not in self._nb_cache:
-                        self._nb_cache[bar_date] = self._alt_data.get_northbound_signal(bar_date)
-                        self._mg_cache[bar_date] = self._alt_data.get_margin_signal(bar_date)
-                    alt_market[i] = (self._nb_cache[bar_date] * 0.6 + self._mg_cache[bar_date] * 0.4) * 0.15
+                    nb = self._alt_data.get_northbound_signal(bar_date)
+                    mg = self._alt_data.get_margin_signal(bar_date)
+                    alt_market[i] = (nb * 0.6 + mg * 0.4) * 0.15
                 # NaN 兜底：replace NaN with 0 before adding to adjusted_score
                 alt_market = np.nan_to_num(alt_market, nan=0.0)
                 adjusted_score += alt_market
 
                 # 记录另类数据命中（北向/融资市场级信号）
                 if self._diag is not None and abs(alt_market[-1]) > 0.001:
-                    self._diag.record_alt_data(northbound=(self._nb_cache.get(pd.to_datetime(dates[-1]).date(), 0) != 0),
-                                               margin=(self._mg_cache.get(pd.to_datetime(dates[-1]).date(), 0) != 0))
+                    self._diag.record_alt_data(northbound=(nb != 0), margin=(mg != 0))
 
                 # 个股级: 龙虎榜独立买点信号 — 机构大买不经过因子筛选, 直接强化
                 dt_signal = np.zeros(n)
                 if code:
-                    last_sim_date = pd.to_datetime(dates[-1]).date() if len(dates) > 0 else None
-                    dt_dates = self._alt_data.get_dragon_tiger_dates(code, query_date=last_sim_date) if hasattr(
-                        self._alt_data, 'get_dragon_tiger_dates') else None
-                    if dt_dates is not None:
-                        for i in range(60, n):
-                            bar_d = pd.to_datetime(dates[i]).date()
-                            if bar_d in dt_dates and bar_d <= last_sim_date:
-                                dt_sig = self._alt_data.get_dragon_tiger_signal(code, bar_d)
-                                if abs(dt_sig) > 0.01:
-                                    dt_signal[i] = dt_sig
-                                    adjusted_score[i] += dt_sig * 0.30
-                                    if self._diag is not None and i == n - 1:
-                                        self._diag.record_alt_data(dragon_tiger=True)
-                    else:
-                        for i in range(60, n):
-                            dt_sig = self._alt_data.get_dragon_tiger_signal(code, pd.to_datetime(dates[i]).date())
-                            if abs(dt_sig) > 0.01:
-                                dt_signal[i] = dt_sig
-                                adjusted_score[i] += dt_sig * 0.30
+                    for i in range(60, n):
+                        dt_sig = self._alt_data.get_dragon_tiger_signal(code, pd.to_datetime(dates[i]).date())
+                        if abs(dt_sig) > 0.01:
+                            dt_signal[i] = dt_sig
+                            adjusted_score[i] += dt_sig * 0.30
+                            if self._diag is not None and i == n - 1:
+                                self._diag.record_alt_data(dragon_tiger=True)
             except Exception as e:
                 import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()  # 另类数据失败不影响主流程
 

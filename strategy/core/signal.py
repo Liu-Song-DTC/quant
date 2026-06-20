@@ -99,6 +99,10 @@ class Signal:
     max_dd_20d: float = 0.0                  # 20日最大回撤 (%, 负值)
     vol_regime: float = 1.0                  # 波动率区间 (短期vol/长期vol)
 
+    # === ML预测分数 ===
+    ml_score: float = 0.0                    # XGBoost预测分数(独立信号, IC≈0.28)
+    factor_score: float = 0.0                # 因子信号分数(pre_discount_score备用)
+
     # === 内部字段：向量化阈值重评估所需（不参与to_dict序列化） ===
     _chan_buy_signal: bool = False            # 缠论买入增强是否触发
     _chan_sell_signal: bool = False           # 缠论卖出增强是否触发
