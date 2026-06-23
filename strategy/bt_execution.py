@@ -1409,18 +1409,13 @@ if __name__ == "__main__":
         sentiment_orchestrator=sentiment_orch,
     )
 
-    # 如果信号文件已存在且有效则直接加载，跳过信号生成（避免 fork 死锁）
+    # 强制 fresh generation
     import glob as _glob
     _existing = _glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                          'rolling_validation_results', 'backtest_signals.csv'))
-    if _existing and os.path.getsize(_existing[0]) > 200:
-        print("[快速模式] 信号文件已存在，跳过信号生成，直接加载")
-        strategy.signal_store.finalize(_existing[0])
-    else:
-        if _existing:
-            os.remove(_existing[0])
-            print("[快速模式] 信号文件为空，删除并重新生成")
-        add_data_and_signal(cerebro, strategy, fundamental_data)
+    if _existing:
+        os.remove(_existing[0])
+    add_data_and_signal(cerebro, strategy, fundamental_data)
 
     # ======  向量化回测引擎 (替代 backtrader 逐 bar 循环) ======
     # 释放 Backtrader datafeeds（向量化回测不依赖 cerebro），降低 OOM 风险

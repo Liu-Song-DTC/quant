@@ -7466,14 +7466,14 @@ chan_theory_enhanced:
     min_bottom_div: 0.15
     min_fx_vol_spike: 1.5
   b2_gate:
-    min_confidence: 0.3
+    min_div_strength: 0.03
   b3_filter:
     enabled: true
-    gate_min_conditions: 2
-    gate_vol_breakout_min: 1.3
-    gate_vol_pullback_max: 0.85
-    gate_confirm_require_trend_or_div: true
-    gate_shallow_min: 0.5
+    gate_min_conditions: 1
+    gate_vol_breakout_min: 0.5
+    gate_vol_pullback_max: 2.0
+    gate_confirm_require_trend_or_div: false
+    gate_shallow_min: 0.0
     bear_require_anti_market_strength: 0.3
     bear_require_first_pivot: true
     neutral_require_strong_sector: true
@@ -7602,7 +7602,7 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
-  num_workers: 8
+  num_workers: 14
   fromdate: '2024-01-01'
   todate: '2026-05-30'
 cost_model:

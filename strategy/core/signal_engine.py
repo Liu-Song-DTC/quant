@@ -273,7 +273,16 @@ class SignalEngine:
         b2_cfg = chan_enh_cfg.get('b2_gate', {})
         self.chan_b1_min_bottom_div = b1_cfg.get('min_bottom_div', 0.15)
         self.chan_b1_min_fx_vol_spike = b1_cfg.get('min_fx_vol_spike', 1.5)
-        self.chan_b2_min_confidence = b2_cfg.get('min_confidence', 0.30)
+        self.chan_b2_min_div_strength = b2_cfg.get('min_div_strength', 0.10)
+
+        # === B3门控配置加载 ===
+        b3_cfg = chan_enh_cfg.get('b3_filter', {})
+        self.b3_gate_enabled = b3_cfg.get('enabled', True)
+        self.b3_gate_min_conditions = b3_cfg.get('gate_min_conditions', 2)
+        self.b3_gate_vol_breakout_min = b3_cfg.get('gate_vol_breakout_min', 1.3)
+        self.b3_gate_vol_pullback_max = b3_cfg.get('gate_vol_pullback_max', 0.85)
+        self.b3_gate_shallow_min = b3_cfg.get('gate_shallow_min', 0.5)
+        self.b3_gate_require_trend_or_div = b3_cfg.get('gate_confirm_require_trend_or_div', True)
 
         # === 统一多时间框架分析器 ===
         self.mtf_analyzer = MultiTimeframeAnalyzer(config_loader.config if config_loader.config else {})
@@ -617,6 +626,30 @@ class SignalEngine:
             # 龙虎榜独立买点: 机构大买(>0.3)直接生成buy, 不经过因子/价格/趋势筛选
             if _dt_sig > 0.3 and not hard_reject and not _is_limit_down_stock:
                 buy = True
+
+            # === B3 质量门控（龙虎榜之后，确保 gate 拒绝不被覆盖）===
+            if buy and bp_buy == 3 and self.b3_gate_enabled:
+                _b3_vol_brk = float(result['b3_breakout_vol_ratio'][i])
+                _b3_vol_pb = float(result['b3_pullback_vol_ratio'][i])
+                _b3_shallow = float(result['b3_pullback_shallowness'][i])
+                _b3_trend_ok = bool(result['b3_trend_confirmed'][i])
+                _pass = 0
+                if _b3_vol_brk >= self.b3_gate_vol_breakout_min:
+                    _pass += 1
+                if 0 < _b3_vol_pb <= self.b3_gate_vol_pullback_max:
+                    _pass += 1
+                if _b3_shallow >= self.b3_gate_shallow_min:
+                    _pass += 1
+                if self.b3_gate_require_trend_or_div and _b3_trend_ok:
+                    _pass += 1
+                if _pass < self.b3_gate_min_conditions:
+                    buy = False
+
+            # === B2 质量门控 (基于divergence_strength, IC=+0.031) ===
+            if buy and bp_buy == 2:
+                _b2_div = float(result['chan_divergence_strength'][i])
+                if _b2_div < self.chan_b2_min_div_strength:
+                    buy = False
 
             # MA60止损: 跌破MA60且score转负 → 强制卖出
             ma60_stop = (close_p < ma60_v) and score < 0 and close_p > 0 and ma60_v > 0
@@ -1320,6 +1353,11 @@ class SignalEngine:
             'chan_buy_strength': _safe_get_arr(ind, 'buy_strength', n, 0.0),
             'chan_sell_strength': _safe_get_arr(ind, 'sell_strength', n, 0.0),
             'b3_trend_confirmed': _safe_get_arr(ind, 'b3_trend_confirmed', n, 0).astype(bool),
+            'b3_trend_rank': _safe_get_arr(ind, 'b3_trend_rank', n, 0).astype(int),
+            'b3_breakout_vol_ratio': _safe_get_arr(ind, 'b3_breakout_vol_ratio', n, 0.0),
+            'b3_pullback_vol_ratio': _safe_get_arr(ind, 'b3_pullback_vol_ratio', n, 0.0),
+            'b3_pullback_shallowness': _safe_get_arr(ind, 'b3_pullback_shallowness', n, 0.0),
+            'second_buy_confidence': _safe_get_arr(ind, 'second_buy_confidence', n, 0.0),
             'resonance_systems': n_buy,  # 买入侧系统共振数（与factor_tag R{n}一致）
             'capital_flow_score': cf_score,
             'news_sentiment_score': ns_score,
