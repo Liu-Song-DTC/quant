@@ -275,14 +275,9 @@ class SignalEngine:
         self.chan_b1_min_fx_vol_spike = b1_cfg.get('min_fx_vol_spike', 1.5)
         self.chan_b2_min_div_strength = b2_cfg.get('min_div_strength', 0.10)
 
-        # === B3门控配置加载 ===
+        # === B3门控配置: 启停控制, 质量条件已改为数据驱动(signal_level+trend_type) ===
         b3_cfg = chan_enh_cfg.get('b3_filter', {})
         self.b3_gate_enabled = b3_cfg.get('enabled', True)
-        self.b3_gate_min_conditions = b3_cfg.get('gate_min_conditions', 2)
-        self.b3_gate_vol_breakout_min = b3_cfg.get('gate_vol_breakout_min', 1.3)
-        self.b3_gate_vol_pullback_max = b3_cfg.get('gate_vol_pullback_max', 0.85)
-        self.b3_gate_shallow_min = b3_cfg.get('gate_shallow_min', 0.5)
-        self.b3_gate_require_trend_or_div = b3_cfg.get('gate_confirm_require_trend_or_div', True)
 
         # === 统一多时间框架分析器 ===
         self.mtf_analyzer = MultiTimeframeAnalyzer(config_loader.config if config_loader.config else {})
@@ -627,28 +622,23 @@ class SignalEngine:
             if _dt_sig > 0.3 and not hard_reject and not _is_limit_down_stock:
                 buy = True
 
-            # === B3 质量门控（龙虎榜之后，确保 gate 拒绝不被覆盖）===
+            # === B3 质量门控: SL=0 WR=32%, TT=-2 WR=8% (数据驱动) ===
             if buy and bp_buy == 3 and self.b3_gate_enabled:
-                _b3_vol_brk = float(result['b3_breakout_vol_ratio'][i])
-                _b3_vol_pb = float(result['b3_pullback_vol_ratio'][i])
-                _b3_shallow = float(result['b3_pullback_shallowness'][i])
-                _b3_trend_ok = bool(result['b3_trend_confirmed'][i])
-                _pass = 0
-                if _b3_vol_brk >= self.b3_gate_vol_breakout_min:
-                    _pass += 1
-                if 0 < _b3_vol_pb <= self.b3_gate_vol_pullback_max:
-                    _pass += 1
-                if _b3_shallow >= self.b3_gate_shallow_min:
-                    _pass += 1
-                if self.b3_gate_require_trend_or_div and _b3_trend_ok:
-                    _pass += 1
-                if _pass < self.b3_gate_min_conditions:
+                _b3_sl = int(result['signal_level'][i])
+                _b3_tt = int(result['trend_type'][i])
+                if _b3_sl < 1 or _b3_tt < 0:
                     buy = False
 
             # === B2 质量门控 (基于divergence_strength, IC=+0.031) ===
             if buy and bp_buy == 2:
                 _b2_div = float(result['chan_divergence_strength'][i])
                 if _b2_div < self.chan_b2_min_div_strength:
+                    buy = False
+
+            # === BP8 质量门控: signal_level=0胜率仅39.1%, 过滤无结构突破 ===
+            if buy and bp_buy == 8:
+                _b8_sl = int(result['signal_level'][i])
+                if _b8_sl < 1:
                     buy = False
 
             # MA60止损: 跌破MA60且score转负 → 强制卖出
@@ -1007,6 +997,12 @@ class SignalEngine:
             fname[idx][bull] = 'MOM'
             fname[idx][bear] = 'REV'
             fname[idx][neutral] = 'SHARPE'
+            # BP8: 60日动量反相关(IC=-0.092), 高动量突破=力竭
+            bp_raw2 = _safe_get_arr(ind, 'buy_point', n, 0).astype(int)
+            bp8 = (bp_raw2[idx] == 8)
+            mom60 = _safe_get_arr(ind, 'mom_60', n, 0.0)
+            fval[idx][bp8] = np.tanh(-mom60[idx][bp8] * 2)
+            fname[idx][bp8] = 'REV60'
 
             # 最新 bar：完整链覆盖
             last = n - 1

@@ -217,3 +217,5 @@ trade/config.yaml
 trade/portfolio_state.internal.json
 trade/last_recommendations.json
 trade/reports/
+strategy/rolling_validation_results/backtest_signals.csv.bak
+strategy/rolling_validation_results/backtest_signals.csv.bak

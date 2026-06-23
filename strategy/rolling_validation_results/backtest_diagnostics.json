@@ -1,0 +1,37 @@
+{
+  "factor_selection": {},
+  "buy_signals": 617344,
+  "buy_by_buy_point": {
+    "5": 26247,
+    "4": 372487,
+    "6": 66355,
+    "8": 54653,
+    "2": 6357,
+    "1": 36881,
+    "3": 14328,
+    "7": 17399,
+    "0": 22637
+  },
+  "buy_by_factor_family": {
+    "SHARPE": 374218,
+    "MOM": 235886,
+    "REV": 7240
+  },
+  "ml_predictions_total": 0,
+  "ml_predictions_active": 0,
+  "ml_validation_ic": null,
+  "alt_hits": {
+    "northbound": 4987,
+    "margin": 4987,
+    "dragon_tiger": 2423
+  },
+  "fill_stats": {},
+  "risk_events": {
+    "hds_triggered": false,
+    "clb_triggered": false,
+    "clb_max_losses": 0
+  },
+  "warnings": [
+    "DYN因子命中率<1%，动态因子选择几乎无效"
+  ]
+}
