@@ -173,30 +173,122 @@ cd strategy && python offline_calibration.py
 
 ---
 
-## 三、执行顺序
+## 三、收益不稳定 — 专项解决方案
+
+### 根因
+
+```
+熊市: MA20 < MA60 → B4(ma_bull条件)无法触发
+         ↓
+   只剩 BP6/BP7/BP0/少量B1 凑数
+         ↓
+   信号质量不够 → portfolio "降级使用" → 硬选不够格的股票
+         ↓
+   熊市亏损 + 牛市暴涨 = 收益极端不均衡
+```
+
+portfolio已有仓位控制基础设施(line 640-680)，但关键缺陷在 line 1036-1042：
+```python
+# 当前逻辑: 选不够min_pos时"降级使用", 从不空仓
+if len(selected) < min_pos:
+    shortage_ratio = max(0.3, len(selected) / max(min_pos, 1))
+    target_exposure *= shortage_ratio  # 凑不齐也硬上, 只是降敞口
+```
+
+### 方案: 三层防御
+
+#### Layer 1: 信号质量门槛随市场浮动
+
+```yaml
+# factor_config.yaml
+min_absolute_score_by_regime:
+  bull: 0.03      # 牛市: 低门槛, 广泛参与
+  neutral: 0.08   # 震荡: 中等门槛
+  bear: 0.15      # 熊市: 高门槛, 宁缺毋滥
+```
+
+```python
+# portfolio.py 选股
+threshold = min_score_by_regime.get(market_regime, 0.05)
+qualified = [c for c in candidates if c['effective_score'] >= threshold]
+# 熊市高门槛→通过少→可能0-2只→自然减仓或空仓
+```
+
+#### Layer 2: 最大持仓随市场浮动
+
+```yaml
+max_positions_by_regime:
+  strong_bull: 8
+  bull: 6
+  neutral: 4
+  bear: 2       # 熊市最多2只, 允许0只(空仓)
+```
+
+#### Layer 3: 止损线随市场收紧
+
+```yaml
+portfolio_stop_loss_by_regime:
+  bull: 0.12
+  neutral: 0.10
+  bear: 0.07     # 熊市止损更紧
+```
+
+### 预期效果
+
+| 年份 | 市场 | 当前 | Layer1+2后 |
+|------|------|------|-----------|
+| 2021 | 震荡 | ? | 小幅± |
+| 2022 | 熊市 | ? | -3~-5% |
+| 2023 | 震荡 | ? | 小幅+ |
+| 2024 | 先跌后涨 | -2.92% | +0~5% |
+| 2025 | 牛市 | +79.88% | +60~80% |
+| 2026 | 震荡偏牛 | +19.27% | +15~25% |
+
+### 代码改动量
+
+| 改动 | 文件 | 行数 |
+|------|------|------|
+| 信号质量门槛×regime | `portfolio.py` + `factor_config.yaml` | ~30行 |
+| 最大持仓×regime | `portfolio.py` + `factor_config.yaml` | ~15行 |
+| 止损×regime | `portfolio.py` + `factor_config.yaml` | ~10行 |
+
+**总计 ~55行改动**, 不需要修改signal_engine或chan_theory。
+
+---
+
+## 四、执行顺序
 
 ```
 明天上午:
   [必做] WF基线回测 (2h)
-  [必做] 分析WF结果（年收益/买点分布/ML IC）
+  [必做] 分析WF结果, 特别是2021-2023熊市年表现
 
-明天下午（按优先级）:
-  [必做] P1: BP0龙虎榜SL>=1门控 (30min改动 + 回测)
-  [必做] P2: B4门控加trend_type>=0 (10min改动 + 回测)
-  [建议] C1: 因子重标定 (30min, 可并行)
-  [可选] P3: B4 SL>=3 (如果P1+P2后B4仍>50%)
+明天下午 — 按优先级:
+  P0-漏洞:
+    [必做] P1: BP0龙虎榜SL>=1门控 (30min)
+    [必做] P2: B4门控加trend_type>=0 (10min)
+  
+  P0-收益平滑:
+    [必做] Layer1: 信号质量门槛×regime (30min)
+    [必做] Layer2: 最大持仓×regime (15min)
+    [建议] Layer3: 止损×regime (10min)
+  
+  P1-因子:
+    [建议] C1: 因子重标定 (30min, 可并行)
+  
+  P2-买点(如时间允许):
+    [可选] P3: B4 SL>=3
+    [可选] A1: B2条件简化
+    [可选] A2: BP7扩展
 
 后续:
-  A1: B2条件简化
-  A2: BP7扩展  
   A3: B5门控
-  B1: 市场自适应
   B2: 行业分散
 ```
 
 ---
 
-## 四、执行记录
+## 五、执行记录
 
 | Exp | 日期 | 改动 | Sharpe | 收益 | B4% | 结论 |
 |-----|------|------|--------|------|-----|------|
