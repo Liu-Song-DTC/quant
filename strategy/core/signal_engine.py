@@ -271,9 +271,20 @@ class SignalEngine:
         chan_enh_cfg = config_loader.get('chan_theory_enhanced', {})
         b1_cfg = chan_enh_cfg.get('b1_gate', {})
         b2_cfg = chan_enh_cfg.get('b2_gate', {})
+        b4_cfg = chan_enh_cfg.get('b4_gate', {})
+        bp8_cfg = chan_enh_cfg.get('bp8_gate', {})
         self.chan_b1_min_bottom_div = b1_cfg.get('min_bottom_div', 0.15)
         self.chan_b1_min_fx_vol_spike = b1_cfg.get('min_fx_vol_spike', 1.5)
+        self.b1_gate_enabled = b1_cfg.get('enabled', False)
+        self.chan_b1_min_signal_level = b1_cfg.get('min_signal_level', 1)
         self.chan_b2_min_div_strength = b2_cfg.get('min_div_strength', 0.10)
+        # B4质量门控 (60%信号, 数据验证后开启)
+        self.b4_gate_enabled = b4_cfg.get('enabled', False)
+        self.chan_b4_min_signal_level = b4_cfg.get('min_signal_level', 1)
+        self.chan_b4_min_confidence = b4_cfg.get('min_confidence', 0.30)
+        # BP8质量门控
+        self.bp8_gate_enabled = bp8_cfg.get('enabled', True)
+        self.chan_bp8_min_signal_level = bp8_cfg.get('min_signal_level', 1)
 
         # === B3门控配置: 启停控制, 质量条件已改为数据驱动(signal_level+trend_type) ===
         b3_cfg = chan_enh_cfg.get('b3_filter', {})
@@ -636,9 +647,22 @@ class SignalEngine:
                     buy = False
 
             # === BP8 质量门控: signal_level=0胜率仅39.1%, 过滤无结构突破 ===
-            if buy and bp_buy == 8:
+            if buy and bp_buy == 8 and self.bp8_gate_enabled:
                 _b8_sl = int(result['signal_level'][i])
-                if _b8_sl < 1:
+                if _b8_sl < self.chan_bp8_min_signal_level:
+                    buy = False
+
+            # === B4 质量门控: 60%信号无质量控制, 与BP8同模式(默认关闭,数据验证后开) ===
+            if buy and bp_buy == 4 and self.b4_gate_enabled:
+                _b4_sl = int(result['signal_level'][i])
+                _b4_conf = float(result['buy_confidence'][i]) if 'buy_confidence' in result else 0.35
+                if _b4_sl < self.chan_b4_min_signal_level or _b4_conf < self.chan_b4_min_confidence:
+                    buy = False
+
+            # === B1 质量门控: SL=0 WR=40% MR=-1.07%, SL>=2 WR=50.8% (数据驱动) ===
+            if buy and bp_buy == 1 and self.b1_gate_enabled:
+                _b1_sl = int(result['signal_level'][i])
+                if _b1_sl < self.chan_b1_min_signal_level:
                     buy = False
 
             # MA60止损: 跌破MA60且score转负 → 强制卖出
@@ -1026,8 +1050,13 @@ class SignalEngine:
                 mkt_style_conf[last] = market_info.get('style_confidence', 0.0)
                 mkt_conf[last] = market_info.get('confidence', 0.0)
                 ind_cat[last] = industry_category
-                fname[last] = fn
-                fval[last] = fv
+                # BP8: _select_factor 不感知买点, 若为BP8则保留 REV60 覆盖
+                if bp_raw2[last] == 8:
+                    fname[last] = 'REV60'
+                    fval[last] = np.tanh(-mom60[last] * 2)
+                else:
+                    fname[last] = fn
+                    fval[last] = fv
                 risk_qual[last] = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
                 risk_hvol[last] = risk_info.get('is_high_vol', False) if risk_info else False
                 is_ind[last] = is_ind_f
@@ -1059,6 +1088,9 @@ class SignalEngine:
                           'is_extreme': False, 'style_regime': 'balanced',
                           'style_confidence': 0.0, 'trend_score': 0.0}
 
+            # BP8因子需要在循环内覆盖(fast path已做, slow path补上)
+            _bp_arr = _safe_get_arr(ind, 'buy_point', n, 0).astype(int)
+            _mom60_arr = _safe_get_arr(ind, 'mom_60', n, 0.0)
             for i in range(60, n):
                 _mkt_regime_i = int(_mkt_regime_arr[i])
                 _trend_i = float(regimes['trend_score'][i]) if regimes and 'trend_score' in regimes else 0.0
@@ -1079,8 +1111,13 @@ class SignalEngine:
                 mkt_style_conf[i] = _mkt_style_conf_arr[i]
                 mkt_conf[i] = _mkt_conf_arr[i]
                 ind_cat[i] = _ind_cat
-                fname[i] = fn
-                fval[i] = fv
+                # BP8: 60日动量反相关(IC=-0.092), 高动量突破=力竭
+                if _bp_arr[i] == 8:
+                    fname[i] = 'REV60'
+                    fval[i] = np.tanh(-_mom60_arr[i] * 2)
+                else:
+                    fname[i] = fn
+                    fval[i] = fv
                 risk_qual[i] = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
                 risk_hvol[i] = risk_info.get('is_high_vol', False) if risk_info else False
                 is_ind[i] = is_ind_f
@@ -1354,6 +1391,7 @@ class SignalEngine:
             'b3_pullback_vol_ratio': _safe_get_arr(ind, 'b3_pullback_vol_ratio', n, 0.0),
             'b3_pullback_shallowness': _safe_get_arr(ind, 'b3_pullback_shallowness', n, 0.0),
             'second_buy_confidence': _safe_get_arr(ind, 'second_buy_confidence', n, 0.0),
+            'buy_confidence': _safe_get_arr(ind, 'buy_confidence', n, 0.35),  # B4门控用
             'resonance_systems': n_buy,  # 买入侧系统共振数（与factor_tag R{n}一致）
             'capital_flow_score': cf_score,
             'news_sentiment_score': ns_score,

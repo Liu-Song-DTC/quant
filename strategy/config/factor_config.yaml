@@ -1,4 +1,4 @@
-factor_mode: fixed
+factor_mode: fixed  # 保持fixed(简单MOM/REV/SHARPE因子优于行业因子), ML由bt_execution独立启用
 dynamic_factor:
   train_window_days: 180
   forward_period: 10
@@ -7465,35 +7465,19 @@ chan_theory_enhanced:
   b1_gate:
     min_bottom_div: 0.15
     min_fx_vol_spike: 1.5
-  b2_gate:
-    min_div_strength: 0.03
-  b3_filter:
     enabled: true
-    gate_min_conditions: 1
-    gate_vol_breakout_min: 0.5
-    gate_vol_pullback_max: 2.0
-    gate_confirm_require_trend_or_div: false
-    gate_shallow_min: 0.0
-    bear_require_anti_market_strength: 0.3
-    bear_require_first_pivot: true
-    neutral_require_strong_sector: true
-    first_pivot_mult: 1.0
-    second_pivot_mult: 0.85
-    third_plus_pivot_mult: 0.6
-    unconfirmed_trend_mult: 0.7
-    bottom_div_threshold: 0.3
-    fx_quality_min: 0.25
-    fx_vol_ratio_min: 1.2
-    vol_breakout_min_ratio: 1.5
-    vol_pullback_max_ratio: 0.7
-    vol_strong_breakout_ratio: 2.0
-    vol_strong_pullback_ratio: 0.5
-    vol_marginal_pass_ratio: 1.0
-    shallow_pullback_threshold: 0.8
-    normal_pullback_threshold: 0.6
-    deep_pullback_threshold: 0.35
-    zg_hard_stop_enabled: true
-    zg_hard_stop_threshold: 0.995
+    min_signal_level: 2  # B1 SL=0 WR=40% MR=-1.07%, SL>=2 WR=50.8% MR=1.35%
+  b2_gate:
+    min_div_strength: 0.0  # 关闭B2 gate测试: Exp D2显示0.03降Sharpe 1.30→1.25
+  b3_filter:
+    enabled: false  # 关闭: 多实验证实B3 gate摧毁Sharpe, 数据驱动条件仍需改进
+  b4_gate:
+    enabled: true  # 数据验证: SL=0(20% B4) WR=47% MR=-0.15%, 过滤后B4 WR 53.9%→56.1%
+    min_signal_level: 2  # SL>=2 (SL=0 WR=47%, SL=2 WR=53%, SL=3 WR=63%, SL=4 WR=59%)
+    min_confidence: 0.20  # 宽松(chan B4 confidence min=0.20)
+  bp8_gate:
+    enabled: false  # 关闭测试: SL>=1过滤是否影响Sharpe
+    min_signal_level: 1
 stock_pool:
   enabled: true
   size: 0
@@ -7501,7 +7485,7 @@ stock_pool:
 ml:
   enabled: true
   model_dir: strategy/models
-  blend_weight: 0.7
+  blend_weight: 0.8  # 0.80最优(1.36), 0.70→1.33, 0.85→1.31
   retrain_frequency: 20
   feature_whitelist:
   - trend_lowvol

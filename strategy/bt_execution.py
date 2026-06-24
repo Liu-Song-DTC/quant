@@ -426,9 +426,11 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         _raw_dates = pd.to_datetime(pd.read_csv(_raw_sh_path, encoding='utf-8-sig', usecols=['日期'])['日期'])
         _early_dates = sorted(d for d in _raw_dates if pd.Timestamp(FROMDATE) - pd.Timedelta(days=730) <= d < pd.Timestamp(FROMDATE))
         all_dates = sorted(set(_early_dates) | set(all_dates))
-    # 只有当 factor_mode 不是 'fixed' 时才需要IC计算
-    # reweight模式也需要IC计算（用于动态调整权重）
-    if factor_mode != 'fixed':
+    # 因子数据计算需要 factor_df: 动态模式(IC选择) 或 ML训练 时需要
+    # fixed模式但ML启用时也需计算factor_df, 供ML训练使用
+    _ml_enabled = config.config.get('ml', {}).get('enabled', False)
+    _need_factor_df = factor_mode != 'fixed' or _ml_enabled
+    if _need_factor_df:
         print(f"准备因子数据 (factor_mode={factor_mode})...")
         # 获取股票代码列表（排除指数）
         stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]

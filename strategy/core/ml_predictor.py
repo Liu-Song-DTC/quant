@@ -116,7 +116,10 @@ class MLFactorPredictor:
 
         # 处理Inf值（Inf*0=NaN会污染交叉特征）
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        train_df = df.dropna(subset=valid_features + ['future_ret'])
+        # 仅数值列填充0, 避免字符串列报错
+        num_cols = df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
+        df[num_cols] = df[num_cols].fillna(0.0)
+        train_df = df.dropna(subset=['future_ret'])  # 仅要求future_ret有效
         if len(train_df) < 500:
             # 回退：只用基础特征（无交叉特征），重试
             base_only = [c for c in self.feature_cols if not c.startswith('cross_') and not c.startswith('regime_')]
