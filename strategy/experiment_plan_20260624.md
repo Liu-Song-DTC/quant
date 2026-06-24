@@ -1,79 +1,100 @@
-# 调优实验计划 — 2026-06-24 (持续优化中)
+# 调优实验计划 — 2026-06-24 (更新至下午)
 
-**目标**: Sharpe > 1.30, 收益越高越好。所有实验跑完验证有效才停。
+**目标**: Sharpe > 1.0, 收益越高越好, 零前视偏差。
 
-## 当前基线: 69367c8 (B2/B3/BP8 数据驱动门控)
+---
 
-等待回测中...
+## 一、回测结果汇总
 
-## 已做改动 (未提交, 待回测验证)
+| Exp | ML | B3 | B2 | BP8 | B4 | B1 | Sharpe | 总收益 | 2024 | 2025 | 2026 | 结论 |
+|-----|----|----|----|-----|----|----|--------|--------|------|------|------|------|
+| 1 | ❌ | ON | ON | ON | OFF | OFF | 1.09 | 48.97% | 5.61% | 21.84% | 15.77% | Gate摧毁价值 |
+| 2 | ❌ | ON | ON | ON | OFF | OFF | 0.84 | 35.21% | — | — | — | FQG_T放松有害 |
+| 3 | ❌ | ON | ON | ON | OFF | OFF | 0.83 | 32.94% | — | — | — | both模式有害 |
+| **4** | **✅0.70** | ON | ON | ON | OFF | OFF | **1.33** | 65.89% | -7.64% | 59.48% | 12.62% | **ML首次生效!** |
+| **5** | **✅0.80** | **OFF** | ON | ON | OFF | OFF | **1.36** | 61.74% | -7.64% | 60.23% | 9.29% | B3关+ML=0.80 |
+| 6 | ✅0.85 | OFF | ON | ON | OFF | OFF | 1.31 | 59.67% | -7.64% | 57.13% | 10.02% | ML=0.85过高 |
+| 7 | ✅0.80 | OFF | OFF | ON | OFF | OFF | 1.37 | 62.72% | -6.69% | 59.01% | 9.66% | B2关≈中性 |
+| 8 | ✅0.80 | OFF | OFF | OFF | OFF | OFF | 1.37 | 62.72% | -6.69% | 59.01% | 9.66% | BP8关≈中性 |
+| **9** | **✅0.80** | OFF | OFF | OFF | **SL>=2** | OFF | **1.81** | **108.28%** | -2.92% | 79.88% | 19.27% | **B4门控爆发!** |
+| 10 | ✅0.80 | OFF | OFF | OFF | SL>=2 | SL>=2 | ⏳未跑完 | — | — | — | — | 被前视偏差讨论中断 |
 
-### 1. BP8因子修复: 慢速路径覆盖 (P4)
-- **问题**: BP8的 tanh(-mom_60d*2) 仅fast path(latest_only=True)生效
-- **修复**: 慢速路径(latest_only=False)循环中检测 buy_point==8 → 覆盖 fval
-- **影响**: 回测中BP8信号之前一直用错误因子(MOM/REV/SHARPE), 现正确使用低动量因子
-- **文件**: signal_engine.py _collect_bar_scalars slow path + fast path last bar
+---
 
-### 2. Gate质量系数范围收窄 [0.5,2.0] → [0.7,1.4]
-- **数据依据**: gate_quality赢家1.686 vs 输家1.637 (Δ=-0.05, 无预测力)
-- **逻辑**: gate仅做安全网, 2x范围引入噪声; 收窄减少假阳性/假阴性
-- **文件**: gate_scorer.py compute_gate_quality
+## 二、已完成的代码改动 (已提交 ca14a3d)
 
-### 3. B4门控基础设施 (默认关闭)
-- 新增 b4_gate config: enabled/min_signal_level/min_confidence
-- buy_confidence 字段加入result dict
-- 等回测数据验证B4质量分层后开启
-- **文件**: signal_engine.py + factor_config.yaml
+### signal_engine.py
+- BP8因子修复: 慢速路径 buy_point==8 → tanh(-mom_60d*2)
+- BP8因子修复: 快速路径_last bar不被_select_factor覆盖
+- B4门控: SL>=2 (数据验证: SL=0 WR=47%/-0.15%MR)
+- B1门控基础设施: config enabled/min_signal_level
+- BP8门控可配置: bp8_gate.enabled
+- buy_confidence字段加入result dict
 
-### 4. Config清理
-- 删除 b3_filter 25个死字段(旧直觉条件, 已改为数据驱动)
-- _T 从 banned → restricted (1.3x门槛, 原完全禁止过度激进)
-- B2 min_div_strength: 0.03 → 0.02 (Exp D2显示0.03略严, Sharpe 1.30→1.25)
+### ml_predictor.py
+- NaN填充修复: select_dtypes数值列fillna(0), 字符串列保留
+- 训练样本从0→596,731, 验证IC=0.176
 
-## 待跑实验 (按优先级)
+### bt_execution.py
+- ML训练与factor_mode解耦: fixed模式+ML启用→仍创建factor_df
+- _need_factor_df = factor_mode != 'fixed' or _ml_enabled
 
-### 回测1: 基线 (进行中)
-```
-改动: BP8 slow path fix only (backtest已启动)
-预期: 与 f92a263 Sharpe 1.30 对比, B3/B2/BP8 gate + BP8 fix
-```
+### factor_config.yaml
+- factor_mode: fixed (MOM/REV/SHARPE > 行业因子)
+- ML blend_weight: 0.80 (最优: 0.70→1.33, 0.80→1.36, 0.85→1.31)
+- B3_filter: enabled=false (多实验证实摧毁Sharpe)
+- B2_gate: min_div_strength=0.0 (近乎关闭, 中性)
+- bp8_gate: enabled=false (中性)
+- b4_gate: enabled=true, min_signal_level=2
+- b1_gate: enabled=true, min_signal_level=2 (待验证)
+- FQG: _T+_SM banned (保持不变, _T放松→0.84)
+- Config清理: 删除25个b3_filter死字段
 
-### 回测2: Gate范围收窄 + FQG放松 + B2放松
-```
-改动: gate [0.7,1.4] + _T restricted + B2 0.02
-预期: 减少假阳性过滤, Sharpe应≥基线
-命令: rm backtest_signals.csv && python bt_execution.py
-```
+---
 
-### 回测3: B4门控开启 (需回测2数据验证后)
-```
-先跑 signal_validator → analysis_framework 获取B4质量分层数据
-根据 B4 signal_level vs 胜率 决定阈值
-然后: b4_gate.enabled=true + 调参
-```
+## 三、买点质量分析 (数据驱动)
 
-### 回测4: ML blend_weight 调优
-```
-当前: 0.70, ML IC=0.199唯一有效信号
-候选: 0.80, 0.85
-需回测2结果评估ML贡献后决定
-```
+| 买点 | 占比 | 总体WR | SL=0 WR | SL=0 MR | SL>=2 WR | SL>=2 MR | 门控状态 |
+|------|------|--------|---------|----------|----------|----------|----------|
+| B4 | 60.3% | 53.90% | 47.12% | -0.15% | 56.07% | +1.59% | ✅ SL>=2 |
+| B1 | 6.0% | 48.91% | 40.19% | -1.07% | 50.78% | +1.35% | 🔄 SL>=2(待验) |
+| BP7 | 2.8% | 55.61% | 42.24% | -1.19% | 57.78% | +2.43% | ❌ 待加 |
+| BP6 | 10.7% | 49.62% | — | — | — | — | ❌ 待分析 |
+| B5 | 4.3% | — | — | — | — | — | ❌ 待分析 |
+| B3 | 2.3% | — | — | — | — | — | OFF |
+| B2 | 1.0% | — | — | — | — | — | OFF |
 
-## 待分析项 (回测完成后执行)
+---
 
-1. B4 buy_point质量分层: signal_level/trend_type/buy_confidence vs future_ret
-2. B1 拒绝路径: 确认70%拒绝原因 (FQG? price_ok? hard_reject?)
-3. BP7 拒绝路径: 同B1分析
-4. 死配置清理: portfolio.py mom_60d_fomo_* 加载但未使用
+## 四、⚠️ 前视偏差问题 (已识别)
 
-## 关键数据监控
+**当前ML流程**: 全量factor_df(2024-2026)训练一次 → 预测所有日期
+**问题**: 预测2024年时模型参数已包含2025-2026数据
+**影响**: Sharpe 1.81被高估, 2025年79.88%部分来自过拟合
+**修复方向**: Walk-Forward ML, 训练集与预测集时间隔离
 
-每次回测后记录:
-| 指标 | 回测1 | 回测2 | 回测3 | 回测4 |
-|------|-------|-------|-------|-------|
-| Sharpe | ? | ? | ? | ? |
-| 总收益 | ? | ? | ? | ? |
-| 最大回撤 | ? | ? | ? | ? |
-| B1占信号% | ? | ? | ? | ? |
-| B4占信号% | ? | ? | ? | ? |
-| 年化收益 | ? | ? | ? | ? |
+---
+
+## 五、下一步计划: 数据扩容 + WF-ML
+
+### 数据层
+- backtrader数据从2024-2026扩展到2015-2026
+- 需重新生成约5270只股票的qfq数据
+- 预估磁盘: ~1GB, 生成时间: ~1-2小时
+
+### ML改造
+- 训练集: 2015-2020 factor数据
+- 回测集: 2021-2026 (覆盖完整牛熊周期)
+- ML只训练一次(在2015-2020上), 预测2021-2026
+- 彻底消除前视偏差
+
+### 预期收益
+- 真实Sharpe(无前视偏差)可能在1.0-1.3之间
+- 2021-2023熊市将暴露策略真正稳健性
+- 回测期5.5年代替当前2.5年, 统计显著
+
+### 执行步骤
+1. 数据生成: data_manager.py → 2015-2026 backtrader数据
+2. ML改造: bt_execution.py 训练/预测集时间隔离
+3. Config: fromdate→2021-01-01
+4. 回测验证: 全量跑2021-2026
