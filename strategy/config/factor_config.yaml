@@ -1,4 +1,4 @@
-factor_mode: fixed  # 保持fixed(简单MOM/REV/SHARPE因子优于行业因子), ML由bt_execution独立启用
+factor_mode: both  # DYN命中率<1%需排查根因, 不能靠fixed绕过
 dynamic_factor:
   train_window_days: 180
   forward_period: 10
@@ -7205,7 +7205,7 @@ industry_factors:
     bull_ic: 0.0697
     bull_combined_ic: 0.1019
 industry_sentiment:
-  enabled: true
+  enabled: false  # 回测期仅有2026-05-14一天数据, 引入前视偏差
   data_dir: data/sentiment_data
   deepseek_api_key: ${DEEPSEEK_API_KEY}
   analysis_frequency: daily
@@ -7256,7 +7256,7 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.3
+  buy_threshold: 0.02       # 纯因子评分(mean=-0.17), p90≈0.03
   sell_threshold: -0.35
   buy_threshold_pct: 0.4
   buy_threshold_pct_bull: 0.25
@@ -7302,15 +7302,23 @@ portfolio:
   target_volatility: 0.25
   entry_speed: 0.8
   exit_speed: 0.8
-  position_stop_loss: 0.12
+  position_stop_loss: 0.12  # 默认值, 被 portfolio_stop_loss_by_regime 覆盖
   portfolio_stop_loss: 0.12
+  portfolio_stop_loss_by_regime:  # Layer3: 止损线随市场收紧
+    bull: 0.10
+    neutral: 0.08
+    bear: 0.05    # 熊市止损更紧
   dynamic_min_positions:
     bull: 3
     neutral: 2
     bear: 1
   selection:
     min_rank_pct: 0.5
-    min_absolute_score: 0.05
+    min_absolute_score: 0.05  # 默认值, 被 min_absolute_score_by_regime 覆盖
+    min_absolute_score_by_regime:  # Layer1: 信号质量门槛随市场浮动 (适配纯因子评分范围)
+      bull: -0.05      # 牛市: 低门槛
+      neutral: 0.0     # 震荡: 中等门槛
+      bear: 0.02       # 熊市: 高门槛
     min_confidence: 0.7
     chan_gate_enabled: true
     chan_gate_min_count: 2
@@ -7318,6 +7326,7 @@ portfolio:
     exhaustion_max_weight: 0.08
     exhaustion_reduce_mult: 0.5
     industry_max_weight: 0.4
+    max_per_industry: 2   # ExpB2: 同行业最多2只, 防止过度集中
     rank_weight_cap: 0.35
     speculative_max_weight: 0.4
   fv_exposure_params:
@@ -7327,7 +7336,12 @@ portfolio:
     exposure_max: 1.0
   turnover_bonus: 0.1
   params:
-    max_positions: 5
+    max_positions: 5  # 默认值, 被 max_positions_by_regime 覆盖
+    max_positions_by_regime:  # Layer2: 最大持仓随市场浮动
+      strong_bull: 8
+      bull: 6
+      neutral: 4
+      bear: 2            # 熊市最多2只, 允许0只(空仓)
     risk_parity_min_weight_ratio: 0.4
     rank_decay: 0.3
     bull_market_floor: 0.85
@@ -7349,16 +7363,18 @@ portfolio:
     exhaustion_moderate_threshold: 0.15
     mr_exit_cooldown_days: 14
     ideal_position_max_mult: 2.0
-    min_hold_days: 15
+    min_hold_days: 10  # 15→10: 与rebalance_days对齐, 避免想换仓但换不了的配置冲突
     sector_momentum_weight: 0.4
     sector_signal_density_weight: 0.6
 portfolio_stop_loss:
   enabled: true
-  emergency_exposure: 0.5
+  emergency_exposure: 0.0        # 触发后直接清仓，不留敞口
+  recovery_days: 10              # 恢复冷却期: 10天线性恢复, 避免离场过久
+  stop_refill: false             # 止损触发期间禁止补票, 防止换股→再止损的滚雪球
 hard_drawdown_stop:
-  enabled: false
+  enabled: true                  # 启用: 20%回撤全清仓, 防止40%+极端回撤
 consecutive_loss_breaker:
-  enabled: false
+  enabled: true                  # 启用: 连续亏损周期→减半敞口, 打破连亏螺旋
 volatility_control:
   enabled: true
   lookback_period: 20
@@ -7373,7 +7389,16 @@ enhanced_stop_loss:
   time_stop_days: 15
   time_stop_min_return: -0.03
   trailing_stop_enabled: true
-  volatility_adaptive_mult: 1.0
+  volatility_adaptive_mult: 0.5       # 从1.0降到0.5: 缩小自适应放宽幅度, 上限约1.5x
+  max_adaptive_stop_mult: 1.5         # 自适应止损上限从2.0x→1.5x: 高波动股最多放宽到18%
+  # 分级移动止盈: 盈利越高, 回撤容忍越紧
+  tiered_trailing_stop:
+    0.15: 0.10    # 盈利>15%: 从峰值回撤>10%止盈
+    0.30: 0.07    # 盈利>30%: 从峰值回撤>7%止盈
+    0.50: 0.04    # 盈利>50%: 从峰值回撤>4%止盈
+  # 死钱退出: 持仓过久但无收益
+  dead_money_exit_days: 30
+  dead_money_return_band: 0.02  # 持有>30天 |收益|<2% 则退出
   time_stop_by_buy_point:
     1:
     - 40
@@ -7472,12 +7497,22 @@ chan_theory_enhanced:
   b3_filter:
     enabled: false  # 关闭: 多实验证实B3 gate摧毁Sharpe, 数据驱动条件仍需改进
   b4_gate:
-    enabled: true  # 数据验证: SL=0(20% B4) WR=47% MR=-0.15%, 过滤后B4 WR 53.9%→56.1%
-    min_signal_level: 2  # SL>=2 (SL=0 WR=47%, SL=2 WR=53%, SL=3 WR=63%, SL=4 WR=59%)
+    enabled: true  # P3收紧: SL>=3 (SL=2 WR=53%拖累, SL>=3 WR=63% MR=2.34%)
+    min_signal_level: 3  # SL>=3: 过滤47.8%的B4 SL=2信号(WR仅53%)
     min_confidence: 0.20  # 宽松(chan B4 confidence min=0.20)
+  bp7_gate:
+    enabled: true  # BP7质量最高(WR=55.6%)但SL=0占17%(WR=42%/MR=-1.19%)未过滤
+    min_signal_level: 2  # SL>=2 (SL>=2 WR=57.8%/MR=2.43%)
+  bp6_gate:
+    enabled: true  # BP6均线回踩, 占10.7%信号, WR=49.6%低于平均
+    min_signal_level: 2  # SL>=2: 收紧, SL=1的BP6没有胜率验证数据
+    min_trend_type: 0    # TT>=0: 只在盘整或上涨时允许均线回踩
+  bp5_gate:
+    enabled: true  # B5趋势启动, SL>=2: 需要清晰结构确认
+    min_signal_level: 2
   bp8_gate:
-    enabled: false  # 关闭测试: SL>=1过滤是否影响Sharpe
-    min_signal_level: 1
+    enabled: true   # REV均值回复买点, 信号量少但WR=61.7%最高
+    min_signal_level: 2  # SL>=2: SL=0/1 WR未验证, 收紧确保结构确认
 stock_pool:
   enabled: true
   size: 0
@@ -7485,8 +7520,10 @@ stock_pool:
 ml:
   enabled: true
   model_dir: strategy/models
-  blend_weight: 0.8  # 0.80最优(1.36), 0.70→1.33, 0.85→1.31
-  retrain_frequency: 20
+  blend_weight: 0.30  # ML IC=0.07, 补偿gate_quality退出评分的区分度损失
+  train_window_days: 1250      # 滚动训练窗口: 5年≈1250日
+  retrain_frequency: 60        # 每60个交易日重新训练 (季度级)
+  pred_start_date: '2021-01-01'  # ML预测集起始(2021-2026回测期)
   feature_whitelist:
   - trend_lowvol
   - momentum_reversal
@@ -7586,8 +7623,8 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
-  num_workers: 14
-  fromdate: '2024-01-01'
+  num_workers: 4  # parquet按需读取: 每worker ~8KB/股票, 消除69MB pickle OOM
+  fromdate: '2021-01-01'  # 2024→2021: 回测期扩展到5.5年覆盖完整牛熊
   todate: '2026-05-30'
 cost_model:
   t_plus_1_enabled: true

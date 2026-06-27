@@ -823,6 +823,8 @@ def detect_buy_sell_points(
     n_bars: int,
     close: np.ndarray,
     volume: np.ndarray = None,
+    high: np.ndarray = None,
+    low: np.ndarray = None,
 ) -> Dict[str, np.ndarray]:
     """
     识别三类买卖点（缠论第12-21课）。
@@ -934,51 +936,49 @@ def detect_buy_sell_points(
 
     for i in range(n_bars):
         # === B3 状态机: 逐bar处理突破→回调 ===
-        # Step 1: 检查新的突破信号（中枢完成后5bar内）
+        _h = high if high is not None else close
+        _l = low if low is not None else close
+        # Step 1: 检查新的突破信号（中枢完成后5bar内, 用最高价检测真突破）
         for pi, p in enumerate(pivots):
             p_end = p.end_idx
             if i <= p_end or i > p_end + 5 or pi in b3_pending:
                 continue
-            if pivot_position[i] == 1 and close[i] > p.zg * 1.02:
-                b3_pending[pi] = {'bar': i, 'low': close[i]}
+            if pivot_position[i] == 1 and _h[i] > p.zg * 1.02:  # 用high检测突破
+                b3_pending[pi] = {'bar': i, 'low': _l[i]}  # 用low跟踪回调
 
         # Step 2: 检查待确认的突破是否出现回调
         resolved_b3 = []
         for pi, state in b3_pending.items():
             p = pivots[pi]
             breakout_bar = state['bar']
-            if i <= breakout_bar or i > breakout_bar + 3:
+            if i <= breakout_bar or i > breakout_bar + 5:  # 3→5: 给更多确认时间
                 continue
-            # 跟踪回调最低点
-            if close[i] < state['low']:
-                state['low'] = close[i]
+            # 跟踪回调最低点 (用low)
+            if _l[i] < state['low']:
+                state['low'] = _l[i]
             near_zg = p.zg * 0.97 < close[i] < p.zg * 1.03
-            above_zg = state['low'] > p.zg
+            above_zg = state['low'] > p.zg * 0.98  # 放宽: 回调不低于ZG的98%
             if near_zg and above_zg and buy_point[i] == 0:
                 p_rank = pivot_upward_rank.get(id(p), 0)
                 p_trend_ok = len(non_overlap_up) >= 2 and p_rank >= 2
+                # 额外质量检查: 突破放量 + 回调缩量
+                qual_ok = True
+                if volume is not None and breakout_bar >= 20:
+                    vol_breakout = volume[breakout_bar]
+                    vol_20_avg = np.mean(volume[max(0,breakout_bar-20):breakout_bar])
+                    vol_pullback = np.mean(volume[breakout_bar+1:i+1]) if i > breakout_bar else vol_breakout
+                    qual_ok = (vol_breakout > vol_20_avg * 1.1 and  # 突破放量
+                              vol_pullback < vol_breakout * 0.85)     # 回调缩量
+                if not qual_ok:
+                    continue  # 量能不达标, 不标记B3
                 buy_point[i] = 3
                 b3_trend_rank[i] = p_rank
                 b3_trend_confirmed[i] = p_trend_ok
-                breakout_pct = (close[breakout_bar] - p.zg) / p.zg
+                breakout_pct = (_h[breakout_bar] - p.zg) / p.zg
                 pullback_pct = (close[i] - p.zg) / p.zg
                 buy_confidence[i] = min(0.85, 0.4 + breakout_pct * 8 + pullback_pct * 5)
-                # B3 量能分析
-                if volume is not None:
-                    vol_20_start = max(0, breakout_bar - 20)
-                    avg_vol_20 = np.mean(volume[vol_20_start:breakout_bar + 1]) if breakout_bar >= vol_20_start else volume[breakout_bar]
-                    if avg_vol_20 > 0:
-                        b3_breakout_vol_ratio[i] = volume[breakout_bar] / avg_vol_20
-                    brk_zone_vol = np.mean(volume[breakout_bar:min(breakout_bar + 3, i + 1)])
-                    pullback_zone_vol = np.mean(volume[max(breakout_bar + 1, i - 3):i + 1])
-                    if brk_zone_vol > 0:
-                        b3_pullback_vol_ratio[i] = pullback_zone_vol / brk_zone_vol
-                    zg_to_low = state['low'] - p.zg
-                    zg_range = p.zg * 0.03
-                    if zg_range > 0:
-                        b3_pullback_shallowness[i] = float(np.clip(1.0 - abs(zg_to_low) / zg_range, 0.0, 1.0))
                 resolved_b3.append(pi)
-            elif i == breakout_bar + 3:
+            elif i == breakout_bar + 5:
                 resolved_b3.append(pi)  # 超时，放弃这个待确认信号
         for pi in resolved_b3:
             b3_pending.pop(pi, None)
@@ -1114,8 +1114,10 @@ def detect_buy_sell_points(
     # === 二买/二卖: 由 detect_second_buy_point 实现 (详见函数14) ===
     # 旧的B2/S2 crude循环已删除 — 改用MACD确认+黄金分割回调+笔确认的完整实现
 
-    # === 四买 (B4): 趋势回调买点 — 必须有真实回调 ===
-    # B4只在上涨趋势中的回调到位时触发。严格区别于"无结构"。
+    # B2(二买)检测已由 detect_second_buy_point 独立函数实现, 不再在此处重复
+
+    # === 四买 (B4): 趋势回调买点 — 必须有真实回调 + 底分型 + MACD改善 ===
+    # B4只在上涨趋势中回调到位且有结构确认时触发。
     if n_bars >= 60:
         ma20 = _sma(close, 20)
         ma60 = _sma(close, 60)
@@ -1129,33 +1131,58 @@ def detect_buy_sell_points(
 
             # 条件1: 均线多头 (MA20>MA60, 趋势确立)
             ma_bull = ma20[idx] > ma60[idx] and close[idx] > ma60[idx]
+            if not ma_bull:
+                continue
 
-            # 条件2: 正在回调或刚回调完 (近5日有过下跌或横盘, 非追高)
+            # 条件2: 真实回调 (5日涨幅<1%, 不是横盘)
             mom_5d_val = (close[idx] - close[max(0,idx-5)]) / (close[max(0,idx-5)] + 1e-10)
-            is_pulling_back = mom_5d_val < 0.03  # 5日涨幅<3% → 在回调中
+            is_pulling_back = mom_5d_val < 0.01
 
-            # 条件3: 回调到均线附近 (距MA20<8%, 距MA60<15%)
+            # 条件3: 回调到均线附近 (距MA20<8%)
             dist_ma20 = (close[idx] - ma20[idx]) / (ma20[idx] + 1e-10)
             near_ma = -0.05 < dist_ma20 < 0.08
 
-            # 条件4: 缩量 (回调缩量=健康, 放量=出货)
+            # 条件4: 真实缩量 (近5日均量 < 前5日×0.95, 量价配合)
             vol_ok = True
-            if volume is not None and idx >= 5:
+            if volume is not None and idx >= 10:
                 vol_recent = np.mean(volume[max(0,idx-4):idx+1])
                 vol_prev = np.mean(volume[max(0,idx-9):max(0,idx-4)])
-                vol_ok = vol_recent < vol_prev * 1.1  # 近5日量不比前5日大10%以上
+                vol_ok = vol_recent < vol_prev * 0.95
 
-            # 条件5: 非力竭 (60日涨幅<50%, 20日<25%)
+            # 条件5: 非力竭 (60日涨幅<50%)
             mom_60d_val = (close[idx] - close[idx-60]) / (close[idx-60] + 1e-10)
             not_extended = mom_60d_val < 0.50
-            mom_20d_val = (close[idx] - close[max(0,idx-20)]) / (close[max(0,idx-20)] + 1e-10)
-            not_exhausted = mom_20d_val < 0.25
 
-            if ma_bull and is_pulling_back and near_ma and vol_ok and not_extended and not_exhausted:
+            # 条件6: 底分型确认 (回调到位, 不是悬在半空)
+            has_fractal = True
+            fractal_q = 0.5  # 默认质量
+            try:
+                if 'bottom_fractals' in dir() and bottom_fractals is not None:
+                    has_fractal = (idx < len(bottom_fractals) and bottom_fractals[idx]
+                                  and bottom_fractal_quality[idx] >= 0.20)
+                    fractal_q = bottom_fractal_quality[idx] if has_fractal else 0.0
+            except (NameError, TypeError):
+                pass  # bottom_fractals不可用时放宽条件
+
+            # 条件7: MACD改善 (动量已转, 不是死猫反弹)
+            macd_ok = True  # 默认通过
+            try:
+                if 'macd_hist' in dir() and macd_hist is not None and idx >= 10:
+                    macd_recent = np.nanmean(macd_hist[max(0, idx-5):idx+1])
+                    macd_earlier = np.nanmean(macd_hist[max(0, idx-10):max(0, idx-5)])
+                    macd_ok = (not np.isnan(macd_recent) and not np.isnan(macd_earlier)
+                              and macd_recent > macd_earlier)
+            except (NameError, TypeError):
+                pass
+
+            if (is_pulling_back and near_ma and vol_ok and not_extended
+                    and has_fractal and macd_ok):
                 buy_point[idx] = 4
                 trend_score = min(1.0, (ma20[idx] / (ma60[idx] + 1e-10) - 1.0) * 8)
                 pullback_score = max(0.0, -mom_5d_val * 8) if mom_5d_val < 0 else 0.05
-                buy_confidence[idx] = float(np.clip(0.30 + trend_score * 0.3 + pullback_score * 0.25, 0.20, 0.80))
+                base_conf = 0.30 + trend_score * 0.3 + pullback_score * 0.25
+                base_conf += fractal_q * 0.3
+                buy_confidence[idx] = float(np.clip(base_conf, 0.25, 0.85))
 
     # === 五买 (B5): 趋势启动买点 — 捕获趋势起点（V型反转+金叉+放量） ===
     # B1-B4都要求已有结构，但趋势起点处没有任何结构。
@@ -1224,17 +1251,17 @@ def detect_buy_sell_points(
             high_20d = np.max(close[max(0,idx-20):idx+1])
             had_rally = high_20d > ma20_b6[idx] * 1.05  # 20日内曾高于MA20至少5%
 
-            # 条件3: 当天收阳或近3日有反弹迹象
+            # 条件3: 当天收阳 AND 近3日有反弹 (两者都要, 防假信号)
             is_up_day = close[idx] > close[idx-1] if idx > 0 else False
-            bounce_3d = (close[idx] - close[max(0,idx-3)]) / (close[max(0,idx-3)] + 1e-10) > -0.02
+            bounce_3d = (close[idx] - close[max(0,idx-3)]) / (close[max(0,idx-3)] + 1e-10) > -0.01
 
-            # 条件4: 缩量回踩（回踩时缩量=健康调整）
+            # 条件4: 缩量回踩（回踩时缩量=健康调整, 缩到均量以下）
             vol_ok_b6 = True
             if volume is not None and idx >= 5:
                 recent_vol = np.mean(volume[max(0,idx-2):idx+1])
-                vol_ok_b6 = recent_vol < vol_ma20_b6[idx] * 1.2
+                vol_ok_b6 = recent_vol < vol_ma20_b6[idx] * 0.95  # 从1.2收紧到0.95: 必须缩量
 
-            if ma_bull_b6 and touch_ma and had_rally and (is_up_day or bounce_3d) and vol_ok_b6:
+            if ma_bull_b6 and touch_ma and had_rally and is_up_day and bounce_3d and vol_ok_b6:
                 buy_point[idx] = 6
                 dist_score = 1.0 - abs(close[idx]-ma20_b6[idx])/(ma20_b6[idx]+1e-10)*10
                 buy_confidence[idx] = float(np.clip(0.30 + dist_score * 0.2 + bounce_3d * 3, 0.20, 0.70))
@@ -1306,6 +1333,41 @@ def detect_buy_sell_points(
                 breakout_pct = (close[idx] - close[idx-1]) / (close[idx-1] + 1e-10) if idx > 0 else 0.02
                 buy_confidence[idx] = float(np.clip(0.25 + breakout_pct * 5 + (1 if vol_contracting else 0) * 0.10, 0.15, 0.65))
 
+    # === 九买 (B9): 涨停回调 — A股特有, 涨停板支撑确认后二次启动 ===
+    if n_bars >= 10:
+        daily_ret = np.diff(close, prepend=close[0]) / (np.roll(close, 1) + 1e-10)
+        daily_ret[0] = 0
+        is_limit_up = daily_ret > 0.095  # ≥9.5%即涨停
+        if volume is not None:
+            vol_ma5 = _sma(volume, 5)
+        for idx in range(8, n_bars):
+            if buy_point[idx] != 0:
+                continue
+            if sell_point[idx] != 0:
+                continue
+            # 条件1: 近5日内有涨停
+            recent = slice(max(0, idx-4), idx)
+            if not np.any(is_limit_up[recent]):
+                continue
+            lu_idx = max(i for i in range(max(0, idx-4), idx) if is_limit_up[i])
+            # 条件2: 涨停后回调1-3天, 最低价不破涨停收盘价*0.98
+            lu_close = close[lu_idx]
+            pullback_low = np.min(close[lu_idx+1:idx+1])
+            above_support = pullback_low > lu_close * 0.98
+            # 条件3: 回调缩量 (回调日均量 < 涨停日量*0.7)
+            vol_ok = True
+            if volume is not None and idx > lu_idx + 1:
+                avg_vol_pullback = np.mean(volume[lu_idx+1:idx+1])
+                vol_ok = avg_vol_pullback < volume[lu_idx] * 0.7
+            # 条件4: 今日转强 (收阳或量增)
+            turning_up = close[idx] > close[idx-1] if idx > 0 else False
+            if above_support and vol_ok and turning_up:
+                buy_point[idx] = 9
+                days_pullback = idx - lu_idx
+                pullback_depth = (lu_close - pullback_low) / (lu_close + 1e-10)
+                conf = float(np.clip(0.35 + (3 - days_pullback) * 0.08 - pullback_depth * 3, 0.20, 0.70))
+                buy_confidence[idx] = conf
+
     return {
         'buy_point': buy_point,
         'sell_point': sell_point,
@@ -1372,7 +1434,7 @@ def compute_chan_signal(
     trend_info = classify_trend_type(pivots, segments, n)
 
     # Layer 6: 买卖点
-    bsp_info = detect_buy_sell_points(pivots, segments, strokes, n, close, volume)
+    bsp_info = detect_buy_sell_points(pivots, segments, strokes, n, close, volume, high, low)
 
     # === 多级别对齐 (向量化) ===
     alignment = np.zeros(n)

@@ -8,14 +8,46 @@
 - IC计算辅助函数 (_compute_date_chunk, _compute_date_chunks_worker)
 """
 
+import os
 import numpy as np
 import pandas as pd
 import multiprocessing
 from collections import Counter, defaultdict
 from datetime import date as date_type
+from .cache_manager import load_ic_cache, save_ic_cache
 from typing import Dict, List
 
 from .config_loader import load_config
+
+
+def _extract_factor_records(all_results: list, train_window_days: int = 250) -> list:
+    """从 precompute 结果中提取所有因子评估记录, 用于 FactorStore 持久化.
+
+    all_results: [(date, {industry: {factors, weights, directions, quality, _all_metrics}})]
+    返回: list of dicts with FactorStore schema keys
+    """
+    records = []
+    for val_date, industries in all_results:
+        val_ts = pd.Timestamp(val_date)
+        for industry, ind_data in industries.items():
+            all_metrics = ind_data.get('_all_metrics', [])
+            for fm in all_metrics:
+                records.append({
+                    'eval_date': val_ts,
+                    'factor_name': fm['factor'],
+                    'window_len': train_window_days,
+                    'industry': industry,
+                    'ic_mean': fm['ic_mean'],
+                    'ir': fm['ir'],
+                    'ic_stability': fm['ic_stability'],
+                    'ret_spread': fm['ret_spread'],
+                    'direction': fm.get('direction', 1),
+                    'combined_ir': fm['combined_ir'],
+                    'coverage': 0.0,  # 暂不计算, 后续版本补充
+                    'n_dates': fm.get('n_dates', 0),
+                })
+    return records
+
 
 # 因子家族分类（用于分散化约束，避免单一因子家族集体霸榜）
 FACTOR_FAMILIES = {
@@ -202,12 +234,14 @@ def _compute_date_chunk(args):
             ind_wide = pivot_cache[cache_key]
 
             factor_metrics = []
+            # 预切片日期: 避免每个因子重复isin索引
+            ind_date_sliced = ind_wide.loc[ind_wide.index.isin(train_dates)]
             for fn in search_factors:
                 if fn not in factor_df.columns:
                     continue
 
                 try:
-                    fn_wide = ind_wide[fn].loc[ind_wide.index.isin(train_dates), ind_codes_in_data]
+                    fn_wide = ind_date_sliced[fn].loc[:, ind_codes_in_data]
                     fn_rank = fn_wide.rank(axis=1, na_option='keep')
 
                     ic_series = fn_rank.corrwith(ret_rank, axis=1)
@@ -233,13 +267,13 @@ def _compute_date_chunk(args):
                 ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
                 t_statistic = ic_mean / (ic_std / np.sqrt(n_dates))
 
-                # 方向感知：负IC因子取反后是强正向因子（如均值回复 vs 趋势）
                 direction = 1 if ic_mean > 0 else -1
                 abs_ic_mean = abs(ic_mean)
                 abs_ir = abs(ir)
 
-                # === 收益差：向量化 top20%-bottom20% (避免逐日循环) ===
-                fv_rank = fn_wide.rank(axis=1, pct=True)  # (dates, stocks) 截面百分位
+                # === 收益差: 复用fn_rank计算百分位 ===
+                max_rank = fn_rank.max(axis=1).clip(lower=1)
+                fv_rank = fn_rank.div(max_rank, axis=0)
                 top_mask = fv_rank >= 0.80
                 bot_mask = fv_rank <= 0.20
                 # NaN-safe: 不足5只股票的日子spread=NaN→drop
@@ -298,6 +332,7 @@ def _compute_date_chunk(args):
                     'combined_ir': combined_ir,
                     'ret_spread': ret_spread,
                     'direction': direction,
+                    'n_dates': n_dates,
                 })
 
             if len(factor_metrics) >= 1:
@@ -356,6 +391,7 @@ def _compute_date_chunk(args):
                     'weights': [f['combined_ir'] / total_quality for f in top_factors],
                     'directions': [f.get('direction', 1) for f in top_factors],
                     'quality': avg_quality,
+                    '_all_metrics': factor_metrics,  # 供 FactorStore 持久化
                 }
 
         if date_result:
@@ -398,7 +434,7 @@ class DynamicFactorSelector:
     动态选择IR最高的Top-N因子，避免静态配置的过拟合问题。
     """
 
-    def __init__(self, config: dict = None):
+    def __init__(self, config: dict = None, factor_library=None):
         self.config = config or {}
         self._load_config()
 
@@ -406,6 +442,7 @@ class DynamicFactorSelector:
         self.factor_df = None
         self.industry_codes = {}
         self._all_dates_cache = None
+        self.factor_library = factor_library  # FactorLibrary instance (optional)
 
     def set_factor_cache(self, factor_cache: dict, all_dates: list):
         """设置预计算的因子选择缓存（用于多进程共享）
@@ -475,22 +512,20 @@ class DynamicFactorSelector:
         all_dates = [pd.to_datetime(d) if not isinstance(d, pd.Timestamp) else d for d in all_dates]
 
         total_dates = len(all_dates)
-        n_workers = min(num_workers, total_dates // 50)
-        if n_workers < 1:
-            n_workers = 1
-
-        stride = total_dates // n_workers
+        # 分块: 每段约90天(确保有足够的IC计算窗口), 共~chunks个chunk
+        chunk_size = 90
         overlap = self.train_window_days
 
         chunks = []
-        for i in range(n_workers):
-            start = i * stride
-            end = min((i + 1) * stride + overlap, total_dates)
-            chunk_dates = all_dates[start:end]
-            chunks.append(chunk_dates)
+        start = 0
+        while start < total_dates:
+            end = min(start + chunk_size + overlap, total_dates)
+            chunks.append(all_dates[start:end])
+            start += chunk_size
 
         total = len(chunks)
-        print(f"预计算因子选择: {total} 个chunk, 每段约 {stride} 天, 重叠 {overlap} 天")
+        n_workers = min(num_workers, total, os.cpu_count() or 4)  # 用满CPU
+        print(f"预计算因子选择: {total} 个chunk, {n_workers} 个worker")
 
         if total == 0:
             return
@@ -514,17 +549,32 @@ class DynamicFactorSelector:
             'extra_candidate_factors': load_config().get('dynamic_factor', {}).get('extra_candidate_factors', []),
         }
 
-        worker_args = [
-            ([chunk], factor_df, industry_codes, config)
-            for chunk in chunks
-        ]
+        # === IC磁盘缓存: 避免每次回测重复计算 ===
+        stock_count = factor_df['code'].nunique()
+        date_count = factor_df['date'].nunique()
+        cached = load_ic_cache(stock_count, date_count, config)
+        if cached is not None:
+            all_results = cached['cache']
+            for date, factors in all_results:
+                key = date.date() if hasattr(date, 'date') else pd.to_datetime(date).date()
+                self._factor_cache[key] = factors
+            print(f"IC缓存命中: 跳过{total}个chunk计算, 直接加载{len(all_results)}个日期结果")
+            return
+
+        # 每个worker只传chunk日期范围的factor_df子集 (减少spawn pickle/内存)
+        worker_args = []
+        for chunk in chunks:
+            chunk_start = pd.to_datetime(chunk[0]) - pd.Timedelta(days=365)  # 多保留1年供训练窗口
+            chunk_end = pd.to_datetime(chunk[-1])
+            chunk_df = factor_df[(factor_df['date'] >= chunk_start) & (factor_df['date'] <= chunk_end)].copy()
+            worker_args.append(([chunk], chunk_df, industry_codes, config))
 
         all_results = []
         agg_fail = defaultdict(Counter)
         agg_pass = Counter()
         agg_dates = 0
         ctx = multiprocessing.get_context('fork')
-        with ctx.Pool(total) as pool:
+        with ctx.Pool(n_workers) as pool:
             worker_results = pool.map(_compute_date_chunks_worker, worker_args)
             for wr in worker_results:
                 chunk_results, qs = wr
@@ -537,9 +587,25 @@ class DynamicFactorSelector:
                         agg_fail[ind][reason] += cnt
                 agg_dates += qs.get('date_total', 0)
 
+        # 恢复factor_df引用
+        self.factor_df = factor_df
+
         for date, factors in all_results:
             key = date.date() if hasattr(date, 'date') else pd.to_datetime(date).date()
             self._factor_cache[key] = factors
+
+        # 保存IC缓存到磁盘, 下次回测直接加载
+        save_ic_cache(all_results, all_dates, stock_count, date_count, config)
+
+        # 保存所有因子评估指标到 FactorStore (供时变质量分析)
+        if self.factor_library is not None:
+            records = _extract_factor_records(all_results, self.train_window_days)
+            if records:
+                self.factor_library.store.save_batch(records)
+                self.factor_library.register_batch(
+                    list(set(r['factor_name'] for r in records)),
+                    {r['factor_name']: get_factor_family(r['factor_name']) for r in records}
+                )
 
         non_empty = sum(1 for v in self._factor_cache.values() if v)
         total_industries = sum(len(v) for v in self._factor_cache.values() if v)
@@ -562,14 +628,25 @@ class DynamicFactorSelector:
             progress_callback(total, total)
 
     def select_factors_for_date(self, val_date: str, all_dates: List) -> Dict[str, Dict]:
-        """为指定日期选择各行业的最优因子
+        """为指定日期选择各行业的最优因子.
+
+        优先使用 FactorLibrary 的时变评分 (有历史时),
+        回退到预计算缓存的单窗口IC排名.
 
         Returns:
-            {industry: {'factors': [factors], 'quality': avg_quality}}
+            {industry: {'factors': [factors], 'quality': avg_quality, 'weights': [...], 'directions': [...]}}
         """
-        # pandas 3.x: pd.Timestamp 继承 datetime.date, 用 pd.Timestamp 统一归一化
         val_ts = pd.Timestamp(val_date)
         val_key = val_ts.date()
+
+        # 尝试因子库时变选择 (需至少3窗口历史)
+        if self.factor_library is not None and self.factor_library.store.size > 0:
+            try:
+                result = self._select_via_library(val_date)
+                if result:
+                    return result
+            except Exception:
+                pass
 
         if val_key in self._factor_cache:
             return self._factor_cache[val_key]
@@ -591,3 +668,38 @@ class DynamicFactorSelector:
                   f"cache_max={max(self._factor_cache.keys()) if self._factor_cache else 'EMPTY'}", flush=True)
 
         return {}
+
+    def _select_via_library(self, val_date) -> Dict[str, Dict]:
+        """使用 FactorLibrary 的时变评分选择因子.
+
+        对比预计算缓存 (单窗口IC排名): 因子库使用时间加权IC,
+        能识别 "IC=0.04且在上升" vs "IC=0.04但在下降" 的因子.
+        """
+        library = self.factor_library
+        if library is None:
+            return {}
+
+        industries = list(self.industry_codes.keys()) if self.industry_codes else library.store.get_industries()
+        if not industries:
+            return {}
+
+        result = {}
+        for industry in industries:
+            selected = library.select(
+                industry, val_date, top_n=self.top_n_factors,
+                window_len=self.train_window_days,
+                min_ic=self.min_ic_dates / 100.0 if self.min_ic_dates < 100 else 0.015,
+                exclude_decaying=True,
+            )
+            if len(selected) < 1:
+                continue
+            factors = [s['factor_name'] for s in selected]
+            scores = [s['score'] for s in selected]
+            total_score = sum(scores) + 1e-10
+            result[industry] = {
+                'factors': factors,
+                'weights': [s / total_score for s in scores],
+                'directions': [1] * len(factors),
+                'quality': float(np.mean(scores)) if scores else 0.0,
+            }
+        return result

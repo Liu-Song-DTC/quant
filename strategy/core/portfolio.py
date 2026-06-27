@@ -91,10 +91,16 @@ class PortfolioConstructor:
         # === 组合止损 ===
         self.stop_loss_enabled = portfolio_config.get('portfolio_stop_loss_enabled', True)
         self.portfolio_stop_loss = portfolio_stop_loss if portfolio_stop_loss is not None else portfolio_config.get('portfolio_stop_loss', 0.08)
+        # Layer3: 止损线随市场收紧 (熊市止损更紧)
+        self.portfolio_stop_loss_by_regime = portfolio_config.get('portfolio_stop_loss_by_regime', None)
         # 组合止损 emerg_exposure: portfolio段优先, 其次顶层 portfolio_stop_loss 段
         ps_top = config.get('portfolio_stop_loss', {}) if hasattr(config, 'get') else {}
         self.emergency_exposure = portfolio_config.get('emergency_exposure',
             ps_top.get('emergency_exposure', 0.3))
+        self.stop_loss_recovery_days = portfolio_config.get('recovery_days',
+            ps_top.get('recovery_days', 20))
+        self.stop_loss_refill = portfolio_config.get('stop_refill',
+            ps_top.get('stop_refill', False))
 
         # === 动态最小持仓（小说：熊市允许空仓）===
         dyn_min_pos = portfolio_config.get('dynamic_min_positions', {})
@@ -111,12 +117,16 @@ class PortfolioConstructor:
         sel_config = portfolio_config.get('selection', {})
         self.min_rank_pct = sel_config.get('min_rank_pct', 0.5)
         self.min_absolute_score = sel_config.get('min_absolute_score', 0.15)
+        # Layer1: 信号质量门槛随市场浮动 (牛市低门槛, 熊市宁缺毋滥)
+        self.min_absolute_score_by_regime = sel_config.get('min_absolute_score_by_regime', None)
         self.min_confidence = sel_config.get('min_confidence', 0.80)
         self.exhaustion_max_weight = sel_config.get('exhaustion_max_weight', 0.03)
         self.exhaustion_reduce_mult = sel_config.get('exhaustion_reduce_mult', 0.5)
         self.industry_max_weight = sel_config.get('industry_max_weight', 0.35)
+        self.max_per_industry = sel_config.get('max_per_industry', 3)  # ExpB2: 同行业最多N只
         self.max_single_weight_from_cfg = sel_config.get('rank_weight_cap',
                                               sel_config.get('max_single_weight', 0.18))
+        self._orig_max_single_weight = self.max_single_weight_from_cfg  # CLB恢复时还原
 
         # === fv_exposure 可配置参数 ===
         fv_params = portfolio_config.get('fv_exposure_params', {})
@@ -148,6 +158,13 @@ class PortfolioConstructor:
         self.trailing_stop_pct = es_config.get('trailing_stop_pct', 0.15)
         self.trailing_stop_enabled = es_config.get('trailing_stop_enabled', True)
         self.volatility_adaptive_mult = es_config.get('volatility_adaptive_mult', 1.3)
+        self.max_adaptive_stop_mult = es_config.get('max_adaptive_stop_mult', 1.5)
+        # 分级移动止盈: {profit_pct: trail_pct}
+        self.tiered_trailing_stop = es_config.get('tiered_trailing_stop', {
+            0.15: 0.10, 0.30: 0.07, 0.50: 0.04
+        })
+        self.dead_money_exit_days = es_config.get('dead_money_exit_days', 30)
+        self.dead_money_return_band = es_config.get('dead_money_return_band', 0.02)
         # 按买点类型分层时间止损
         self.time_stop_by_bp = es_config.get('time_stop_by_buy_point', {
             1: (40, -0.08), 2: (30, -0.05), 3: (20, -0.05)
@@ -168,6 +185,8 @@ class PortfolioConstructor:
         # === 组合可调参数（从YAML加载，替代硬编码魔数） ===
         pp = portfolio_config.get('params', {})
         self.max_positions = pp.get('max_positions', 8)
+        # Layer2: 最大持仓随市场浮动
+        self.max_positions_by_regime = pp.get('max_positions_by_regime', None)
         self.rp_min_weight_ratio = pp.get('risk_parity_min_weight_ratio', 0.5)
         self.rank_decay = pp.get('rank_decay', 0.3)
         self.bull_market_floor = pp.get('bull_market_floor', 0.85)
@@ -244,7 +263,7 @@ class PortfolioConstructor:
         self.clb_threshold = clb_config.get('threshold', 3)
         self.clb_loss_floor = clb_config.get('loss_floor', -0.005)
         self.clb_win_floor = clb_config.get('win_floor', 0.005)
-        self.clb_exposure_reduction = clb_config.get('exposure_reduction', 0.50)
+        self.clb_exposure_reduction = clb_config.get('exposure_reduction', 0.50)  # 减半, 不归零(防止无法恢复)
         self.clb_reset_after_win = clb_config.get('reset_after_win', 2)
         self._clb_losses = 0
         self._clb_wins = 0
@@ -267,7 +286,6 @@ class PortfolioConstructor:
         nb = self._alt_provider.get_northbound_signal(date)
         mg = self._alt_provider.get_margin_signal(date)
         return nb * 0.6 + mg * 0.4  # 北向主导, 融资辅助
-        self._orig_max_single_weight = self.max_single_weight_from_cfg  # CLB恢复时还原
 
     def set_sector_rotation(self, sr):
         """注入板块轮动分析器（含动量+信号密度）"""
@@ -396,13 +414,19 @@ class PortfolioConstructor:
         """
         self._daily_returns.append(daily_return)
 
-    def _calc_max_position(self, total_equity: float, prices: dict) -> int:
-        """根据资金自动计算最大持仓数
+    def _calc_max_position(self, total_equity: float, prices: dict, market_regime: int = 0) -> int:
+        """根据资金自动计算最大持仓数 (Layer2: 市场自适应)
 
-        每20000资金支持1个仓位, 范围[3, max_positions]
+        每20000资金支持1个仓位, 范围[3, max_positions_by_regime]
         """
         n = int(total_equity / 20000)
-        return max(3, min(n, self.max_positions))
+        if self.max_positions_by_regime:
+            regime_key = {1: 'bull', -1: 'bear', 0: 'neutral'}.get(market_regime, 'neutral')
+            max_pos = self.max_positions_by_regime.get(regime_key, self.max_positions)
+        else:
+            max_pos = self.max_positions
+        min_pos = 1 if (market_regime == -1 and self.max_positions_by_regime) else 3
+        return max(min_pos, min(n, max_pos))
 
     def _get_min_positions(self, market_regime: int) -> int:
         """动态最小持仓数（小说：熊市允许空仓）
@@ -486,7 +510,7 @@ class PortfolioConstructor:
         import pandas as pd
 
         total_equity = cash + sum(current_positions.values())
-        n_positions = self._calc_max_position(total_equity, prices)
+        n_positions = self._calc_max_position(total_equity, prices, market_regime)
 
         # 计算峰值和回撤
         if self.peak_equity is None:
@@ -629,14 +653,58 @@ class PortfolioConstructor:
         for i, c in enumerate(candidates):
             c['rank_pct'] = float(blended_rank[i])
 
-        # === 板块轮动倾斜: 动量40% + 信号密度60% ===
-        if self._sector_rotation is not None and self._sector_rotation.is_ready():
-            for c in candidates:
-                ind = c.get('industry', '')
-                tilt = self._sector_rotation.get_composite_tilt(ind)
-                # 加法偏移而非乘法: 保留百分位语义, tilt>1给加分, tilt<1不减分
-                tilt_bonus = max(0, (tilt - 1.0) * 0.15)
-                c['rank_pct'] = float(np.clip(c['rank_pct'] + tilt_bonus, 0.0, 1.0))
+        # === 强势板块选股: 连续性确认, 不因单日波动反复 ===
+        if len(qualified) >= 5:
+            ind_stats = {}
+            for c in qualified:
+                ind = c.get('industry', '其他')
+                if ind not in ind_stats:
+                    ind_stats[ind] = {'scores': [], 'n': 0}
+                ind_stats[ind]['scores'].append(c['score'])
+                ind_stats[ind]['n'] += 1
+            ind_strength = {}
+            max_n = max(s['n'] for s in ind_stats.values())
+            for ind, stats in ind_stats.items():
+                if stats['n'] >= 2:
+                    ind_strength[ind] = (stats['n'] / max_n) * 0.3 + np.median(stats['scores']) * 0.7
+            if len(ind_strength) >= 3:
+                ranks = pd.Series(ind_strength).rank(pct=True)
+                # 连续性追踪
+                if not hasattr(self, '_ind_strong_count'):
+                    self._ind_strong_count = {}  # {ind: 连续处于前40%的次数}
+                    self._ind_weak_count = {}    # {ind: 连续处于后40%的次数}
+                allowed = set()
+                top = set()
+                force_exit_industries = set()
+                for ind, r in ranks.items():
+                    # 更新连续计数
+                    is_strong = r >= 0.60
+                    is_weak = r < 0.40
+                    self._ind_strong_count[ind] = self._ind_strong_count.get(ind, 0) + 1 if is_strong else 0
+                    self._ind_weak_count[ind] = self._ind_weak_count.get(ind, 0) + 1 if is_weak else 0
+                    # 准入: 首日强→允许(仓位打折), 2期→正常, 连续2期弱→强制清仓
+                    if self._ind_strong_count.get(ind, 0) >= 1:
+                        allowed.add(ind)
+                        if self._ind_strong_count[ind] >= 2 and r >= 0.80:
+                            top.add(ind)
+                    if self._ind_weak_count.get(ind, 0) >= 2:
+                        force_exit_industries.add(ind)
+                # 首次出现的新行业直接允许
+                for ind in ranks.index:
+                    if ind not in self._ind_strong_count or self._ind_strong_count[ind] == 0:
+                        if ranks[ind] >= 0.60:
+                            allowed.add(ind)
+                qualified = [c for c in qualified
+                           if c.get('industry', '其他') in allowed]
+                for c in qualified:
+                    ind = c.get('industry', '其他')
+                    if ind in top:
+                        c['rank_pct'] = float(np.clip(c['rank_pct'] + 0.05, 0.0, 1.0))
+                    elif self._ind_strong_count.get(ind, 0) == 1:
+                        # 首日强: 减半仓位防假突破
+                        c['rank_pct'] = float(np.clip(c['rank_pct'] * 0.7, 0.0, 1.0))
+                # 弱板块连续2期: 记录, 稍后在desired_value阶段清仓
+                self._force_exit_industries = force_exit_industries
 
         # === 市场仓位调整（v8 趋势主导）===
         # 平滑插值: trend_score ∈ [-0.5, 0.5] 线性映射到 [0.3, 1.0]
@@ -739,14 +807,24 @@ class PortfolioConstructor:
             target_exposure = min(1.0, target_exposure * 1.10)  # 放量突破→小幅加仓
 
         # === 组合止损: 回撤超过阈值时强制降仓至紧急敞口（含恢复冷却期） ===
-        if self.stop_loss_enabled and drawdown > self.portfolio_stop_loss:
+        # Layer3: 止损线随市场收紧 (bull:0.12, neutral:0.10, bear:0.07)
+        if self.portfolio_stop_loss_by_regime:
+            regime_key = {1: 'bull', -1: 'bear', 0: 'neutral'}.get(market_regime, 'neutral')
+            eff_stop_loss = self.portfolio_stop_loss_by_regime.get(regime_key, self.portfolio_stop_loss)
+        else:
+            eff_stop_loss = self.portfolio_stop_loss
+        if self.stop_loss_enabled and drawdown > eff_stop_loss:
             target_exposure = min(target_exposure, self.emergency_exposure)
-            self._stop_loss_triggered = True
-            self._stop_loss_recovery_days = 10
+            if not self._stop_loss_triggered:
+                self._stop_loss_triggered = True
+                self._stop_loss_recovery_days = self.stop_loss_recovery_days
+                # 重置峰值: 全清仓后从当前净值开始新的drawdown计算, 避免立即再次触发
+                if self.emergency_exposure < 0.01:
+                    self.peak_equity = total_equity
         elif self._stop_loss_triggered and self._stop_loss_recovery_days > 0:
             # 恢复期：逐步提升敞口，防止whipsaw
             target_exposure = min(target_exposure, self.emergency_exposure +
-                                  (1.0 - self.emergency_exposure) * (1.0 - self._stop_loss_recovery_days / 10))
+                                  (1.0 - self.emergency_exposure) * (1.0 - self._stop_loss_recovery_days / self.stop_loss_recovery_days))
             self._stop_loss_recovery_days -= 1
             if self._stop_loss_recovery_days <= 0:
                 self._stop_loss_triggered = False
@@ -769,6 +847,7 @@ class PortfolioConstructor:
                 self._hds_peak_ref = self.peak_equity
                 # P0 Fix: 触发首日立即0敞口
                 target_exposure = min(target_exposure, 0.0)
+                self.peak_equity = total_equity  # 重置峰值, 避免恢复后立即重触发
 
         # === 连续亏损熔断：连亏→减半敞口 → 连盈→恢复 ===
         if self.clb_enabled and rebalance:
@@ -806,12 +885,18 @@ class PortfolioConstructor:
         else:
             min_rank = self.min_rank_pct
 
-        # 第一轮：绝对质量门槛（龙头洁癖）
+        # 第一轮：绝对质量门槛（龙头洁癖 — 市场自适应）
         # 信号太弱的股票，截面排名再高也不选
+        # Layer1: 牛市低门槛(0.03)参与广泛, 熊市高门槛(0.15)宁缺毋滥
+        if self.min_absolute_score_by_regime:
+            regime_key = {1: 'bull', -1: 'bear', 0: 'neutral'}.get(market_regime, 'neutral')
+            min_score = self.min_absolute_score_by_regime.get(regime_key, self.min_absolute_score)
+        else:
+            min_score = self.min_absolute_score
         qualified = [
             c for c in candidates
             if c['rank_pct'] > min_rank
-            and c.get('score', 0) >= self.min_absolute_score
+            and c.get('score', 0) >= min_score
         ]
 
         # 第二轮：信心过滤
@@ -912,48 +997,17 @@ class PortfolioConstructor:
             if dist_ma60 > self.dist_ma60_extended_threshold:
                 multiplier *= self.dist_ma60_extended_mult
 
-            # ── 加法调整（P3精简: 保留显著效应项, 移除量级<0.05的微调） ──
-            # 板块共振: 孤立B3扣分
-            if industry_chan_count.get(c.get('industry', '其他'), 0) < 2:
-                additive += self.isolated_b3_penalty
-
             bp = c.get('chan_buy_point', 0)
             sl = c.get('signal_level', 0)
-            if bp == 1 and sl >= 1:
-                additive += 0.15
-            elif bp == 2:
-                additive += 0.20  # B2二买+3.37%, 最强alpha
-            elif bp == 3 and sl >= 2:
-                additive += 0.25  # B3三买+3.95%
-            elif bp == 6:
-                additive += 0.12  # B6均线回踩, 中继买点
-            elif bp == 7:
-                additive += 0.10  # B7中枢震荡, 潜在B3先导
-            elif bp == 8:
-                additive += 0.08  # B8横盘突破, 需要后续确认
 
-            # BOM质量乘数: 只认真正护城河(moat), 高壁垒(high)不算
-            moat_count = self._nan_safe(getattr(sig_ref, 'bom_moat_segments', 0))
-            bom_score = self._nan_safe(getattr(sig_ref, 'bom_quality_score', 0.30))
-            if moat_count >= 2:
-                multiplier *= 1.12   # 多护城河 → 龙头
-            elif moat_count >= 1:
-                multiplier *= 1.06   # 单护城河
-            if bom_score < 0.30:
-                multiplier *= 0.94   # 低壁垒惩罚
-
-            # B3严重缩量惩罚
+            # B3严重缩量惩罚 (唯一保留的买点特定调整, 有数据支撑)
             if bp == 3:
                 vol_ratio = self._nan_safe(getattr(sig_ref, 'volume_ratio', 0.0))
                 if -0.30 < vol_ratio <= -0.20:
                     additive += self.b3_vol_severe_penalty
 
-            # 累计入选加分: 反复被选中的股票加权重(老朋友优先)
+            # 换手保留: 已持仓有真实交易成本优势
             code = c.get('code', '')
-            sel_count = self._selection_history.get(code, 0)
-            cumulative_bonus = min(sel_count * 0.02, 0.08) if sel_count > 0 else 0.0
-
-            # 换手加分 (P2增强: 持仓保留激励increased via turnover_bonus)
             turnover = self.turnover_bonus if (c['is_held'] and c['rank_pct'] > hold_threshold) else 0.0
             if c.get('chan_sell_point', 0) > 0:
                 turnover = 0.0
@@ -961,21 +1015,11 @@ class PortfolioConstructor:
                 c['is_held'] = False
                 turnover = 0.0
 
-            # 创业板/主板轮动加成: 当创业板指强时, 偏向300/301/688股票
-            board_bonus = 0.0
-            if abs(style_score) > 0.15:
-                code = c.get('code', '')
-                is_growth_board = code.startswith('300') or code.startswith('301') or code.startswith('688')
-                if style_score > 0.15 and is_growth_board:
-                    board_bonus = 0.08
-                elif style_score < -0.15 and not is_growth_board:
-                    board_bonus = 0.05
-
-            # P3修复: 动量趋势跟随, 不再均值回归 — 赢家动量更高(+4.3pp)
+            # 动量调整: 赢家动量更高(+4.3pp), 有数据支撑
             mom_adj = (mom_60d - 0.0) * 0.18
 
-            # 无Chan结构软惩罚（Gate 1已打低分，组合层叠加确保排名靠后但不拒绝）
-            c['effective_score'] = rank * multiplier + additive + turnover + board_bonus + cumulative_bonus + mom_adj + c.get('no_chan_penalty', 0.0)
+            # effective_score: 截面排名 × 乘数 + 数据驱动微调
+            c['effective_score'] = rank * multiplier + additive + turnover + mom_adj + c.get('no_chan_penalty', 0.0)
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
@@ -991,20 +1035,25 @@ class PortfolioConstructor:
         # 排序：按有效得分降序（已持仓有换手加分, 锁仓排最前）
         qualified.sort(key=lambda x: (-x['_locked'], -x['effective_score']))
 
-        # === 纯score排序选股 + 最小行业分散 ===
+        # === 纯score排序选股 + 行业分散(同行业≤max_per_industry只) ===
         selected = []
         selected_industries = set()
+        industry_counts = {}  # ExpB2: 追踪每行业已选数量
         for c in qualified:
             if len(selected) >= n_positions:
                 break
             if c in selected:
                 continue
             ind = c.get('industry', '其他')
+            # 同行业上限约束
+            if industry_counts.get(ind, 0) >= self.max_per_industry:
+                continue
             # 最后1个名额: 强制选不同行业，确保至少2个行业分散
             if len(selected) == n_positions - 1 and len(selected_industries) == 1 and ind in selected_industries:
                 continue
             selected.append(c)
             selected_industries.add(ind)
+            industry_counts[ind] = industry_counts.get(ind, 0) + 1
 
         # === 多策略后处理: 按子策略评分调整有效得分 → 可能重排 ===
         if self._multi_strategy.enabled and selected:
@@ -1129,10 +1178,14 @@ class PortfolioConstructor:
         desired_value = {}
         valid_selected = []
         valid_weights = []
+        # 止损/HDS触发时真正空仓, 其余情况(低敞口/风险压缩/CLB)仍选最优标的
+        _force_empty = self._stop_loss_triggered or self._hds_triggered
         for c, w in zip(selected, weights):
             val = w * total_equity
             min_lot = c['price'] * 100
             if val < min_lot:
+                if _force_empty:
+                    continue  # 止损/熔断中：真正空仓
                 # 权重不够买1手: 检查是否值得提高至1手
                 if min_lot <= total_equity * max_single * 1.1:
                     val = min_lot  # 提高到1手
@@ -1194,7 +1247,9 @@ class PortfolioConstructor:
 
         print(f" [选股] date={date} universe={len(universe) if isinstance(universe, list) else '?'} "
               f"candidates={len(candidates)} qualified={len(qualified)} "
-              f"gate_passed={len(gate_filtered)} selected={len(selected)}")
+              f"gate_passed={len(gate_filtered)} selected={len(selected)}"
+              f" exposure={target_exposure:.3f} stopped={int(self._stop_loss_triggered)}"
+              f" hds={int(self._hds_triggered)} clb={int(self._clb_triggered)}")
 
         return desired_value
 
@@ -1269,6 +1324,35 @@ class PortfolioConstructor:
                     self._entry_reason_lost_count.pop(code, None)
                     self._post_sell_tracking.pop(code, None)
                     continue
+            # 分级移动止盈: 盈利越高止盈线越紧
+            if code in self._entry_dates and cost and code in cost and len(cost[code]) >= 2 and cost[code][0] > 0:
+                pnl = (prices[code] - cost[code][1]) / cost[code][1]
+                for profit_level in sorted(self.tiered_trailing_stop.keys(), reverse=True):
+                    if pnl >= profit_level:
+                        trail_pct = self.tiered_trailing_stop[profit_level]
+                        if code in self._peak_prices and self._peak_prices[code] > 0:
+                            dd = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
+                            if dd >= trail_pct:
+                                stop_loss_sells[code] = 0.0
+                                self._entry_dates.pop(code, None)
+                                self._peak_prices.pop(code, None)
+                                self._entry_reasons.pop(code, None)
+                                self._entry_reason_lost_count.pop(code, None)
+                                self._post_sell_tracking.pop(code, None)
+                        break
+            # 死钱退出: 持仓过久无收益
+            if code in self._entry_dates:
+                if isinstance(date, date_type):
+                    days_held = (date - self._entry_dates[code]).days
+                else:
+                    days_held = 0
+                if days_held > self.dead_money_exit_days and abs(pnl_pct) < self.dead_money_return_band:
+                    stop_loss_sells[code] = 0.0
+                    self._entry_dates.pop(code, None)
+                    self._peak_prices.pop(code, None)
+                    self._entry_reasons.pop(code, None)
+                    self._entry_reason_lost_count.pop(code, None)
+                    self._post_sell_tracking.pop(code, None)
 
         # === 缠论止盈：分层退出 + 中枢移动止盈 (非调仓日也生效) ===
         chan_force_sells = {}
@@ -1457,8 +1541,7 @@ class PortfolioConstructor:
                 vol = getattr(sig, 'risk_vol', 0.03) if sig else 0.03
                 adaptive_mult = self.volatility_adaptive_mult
                 adaptive_stop = self.position_stop_loss * (1 + vol * adaptive_mult * 10)
-                # 自适应上限 = 2x 基础止损，让高波动股票有合理止损空间
-                adaptive_stop = min(adaptive_stop, self.position_stop_loss * 2.0)
+                adaptive_stop = min(adaptive_stop, self.position_stop_loss * self.max_adaptive_stop_mult)
 
                 # Chan保护：B2/B3放宽1.5x(非2x), B1不放宽
                 if chan_protection:
@@ -1672,7 +1755,10 @@ class PortfolioConstructor:
 
         desired_value = {}
         # 补票：非调仓日发生止损卖出后，触发选股补满仓位
+        # 止损触发期间禁止补票，防止换股→再止损的滚雪球
         _need_refill = bool(stop_loss_sells or chan_force_sells)
+        if self._stop_loss_triggered and self.stop_loss_refill:
+            _need_refill = False
         if rebalance or _need_refill:
             desired_value = self._build_desired_value(
                 date=date,
@@ -1692,13 +1778,20 @@ class PortfolioConstructor:
                 rebalance=rebalance,
             )
 
-        # 强制卖出 (止损 + Chan卖出)
+        # 强制卖出 (止损 + Chan卖出 + 弱势板块)
         for code in stop_loss_sells:
             desired_value[code] = 0.0
             self._post_sell_tracking.pop(code, None)
         for code in chan_force_sells:
             desired_value[code] = 0.0
             self._post_sell_tracking.pop(code, None)
+        # 连续2期弱势板块: 强制清仓该行业现有持仓
+        if hasattr(self, '_force_exit_industries') and self._force_exit_industries:
+            for code in current_positions:
+                sig = signal_store.get(code, date) if signal_store else None
+                if sig and getattr(sig, 'industry', '') in self._force_exit_industries:
+                    if code not in desired_value:  # 止损优先, 不重复
+                        desired_value[code] = 0.0
 
         # 止盈减仓
         for code, reduce_pct in profit_reduce.items():
@@ -1728,11 +1821,12 @@ class PortfolioConstructor:
                     adjusted[code] = current
                 continue
 
-            # 渐进进出
+            # 渐进进出: 止损触发期间加速退出
             if diff > 0:
                 move = self.entry_speed * diff
             else:
-                move = self.exit_speed * diff
+                eff_exit_speed = 1.0 if self._stop_loss_triggered else self.exit_speed
+                move = eff_exit_speed * diff
 
             adjusted[code] = current + move
 

@@ -273,6 +273,9 @@ class SignalEngine:
         b2_cfg = chan_enh_cfg.get('b2_gate', {})
         b4_cfg = chan_enh_cfg.get('b4_gate', {})
         bp8_cfg = chan_enh_cfg.get('bp8_gate', {})
+        bp7_cfg = chan_enh_cfg.get('bp7_gate', {})
+        bp6_cfg = chan_enh_cfg.get('bp6_gate', {})
+        bp5_cfg = chan_enh_cfg.get('bp5_gate', {})
         self.chan_b1_min_bottom_div = b1_cfg.get('min_bottom_div', 0.15)
         self.chan_b1_min_fx_vol_spike = b1_cfg.get('min_fx_vol_spike', 1.5)
         self.b1_gate_enabled = b1_cfg.get('enabled', False)
@@ -284,7 +287,17 @@ class SignalEngine:
         self.chan_b4_min_confidence = b4_cfg.get('min_confidence', 0.30)
         # BP8质量门控
         self.bp8_gate_enabled = bp8_cfg.get('enabled', True)
-        self.chan_bp8_min_signal_level = bp8_cfg.get('min_signal_level', 1)
+        self.chan_bp8_min_signal_level = bp8_cfg.get('min_signal_level', 2)
+        # BP7质量门控 (质量最高买点但SL=0占17%未过滤)
+        self.bp7_gate_enabled = bp7_cfg.get('enabled', True)
+        self.chan_bp7_min_signal_level = bp7_cfg.get('min_signal_level', 2)
+        # BP6质量门控 (均线回踩, 占10.7%信号, WR=49.6%低于平均)
+        self.bp6_gate_enabled = bp6_cfg.get('enabled', True)
+        self.chan_bp6_min_signal_level = bp6_cfg.get('min_signal_level', 1)
+        self.chan_bp6_min_trend_type = bp6_cfg.get('min_trend_type', 0)  # TT>=0: 盘整或上涨才允许均线回踩
+        # B5质量门控 (趋势启动, 占4.3%信号, 待数据验证)
+        self.b5_gate_enabled = bp5_cfg.get('enabled', True)
+        self.chan_b5_min_signal_level = bp5_cfg.get('min_signal_level', 1)
 
         # === B3门控配置: 启停控制, 质量条件已改为数据驱动(signal_level+trend_type) ===
         b3_cfg = chan_enh_cfg.get('b3_filter', {})
@@ -544,12 +557,14 @@ class SignalEngine:
             price_not_extended = dist_ma20 < max_dist
 
             # 买入条件：无硬拒绝 · 分数有效 · 价格OK · 未过度乖离 · 有缠论结构
-            # Gate 过滤 + Factor 排序 在组合层完成，信号层不设绝对分数阈值
-            # P0: 过滤无结构信号(buy_point=0, 占57.5%, 未来收益≈0);
-            # B1(一买)在下跌末端允许, B4有效性存疑暂保留
+            # Gate保证质量 → 因子评分在池内做区分
+            _regime_i = int(result['risk_regime'][i])
+            # 纯因子评分范围~[-0.5,0.2], mean=-0.17, threshold设为截面中上水平
+            _abs_score_floor = {1: -0.05, 0: -0.02, -1: 0.0}.get(_regime_i, -0.05)
+            _score_ok = (score >= _abs_score_floor)
             _dt_sig = float(result['_dt_signal'][i]) if '_dt_signal' in result else 0.0
-            struct_ok = (bp_buy >= 1) or (_dt_sig > 0.3)  # 龙虎榜独立买点豁免结构要求
-            buy = (not hard_reject and not np.isnan(score) and
+            struct_ok = (bp_buy >= 1) or (_dt_sig > 0.3)
+            buy = (not hard_reject and not np.isnan(score) and _score_ok and
                    price_ok and price_not_extended and struct_ok)
 
             # 回测诊断: 记录买入信号
@@ -564,7 +579,6 @@ class SignalEngine:
                     import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
 
             # === 下跌趋势硬过滤: trend_type==-2禁止新买入 ===
-            # BP=1(一买)在下跌末端触发, 是唯一允许在下跌趋势中买入的情形
             _trend_type = int(result['trend_type'][i])
             _is_b1 = (bp_buy == 1 and chan_buy_sig and sl >= 1)
             if buy and _trend_type == -2 and not _is_b1:
@@ -629,9 +643,11 @@ class SignalEngine:
             if _is_limit_down_stock:
                 buy = False
 
-            # 龙虎榜独立买点: 机构大买(>0.3)直接生成buy, 不经过因子/价格/趋势筛选
+            # 龙虎榜独立买点: 机构大买(>0.3) + SL>=2门控(需清晰结构确认)
             if _dt_sig > 0.3 and not hard_reject and not _is_limit_down_stock:
-                buy = True
+                _bp0_sl = int(result['signal_level'][i])
+                if _bp0_sl >= 2:
+                    buy = True
 
             # === B3 质量门控: SL=0 WR=32%, TT=-2 WR=8% (数据驱动) ===
             if buy and bp_buy == 3 and self.b3_gate_enabled:
@@ -652,17 +668,40 @@ class SignalEngine:
                 if _b8_sl < self.chan_bp8_min_signal_level:
                     buy = False
 
-            # === B4 质量门控: 60%信号无质量控制, 与BP8同模式(默认关闭,数据验证后开) ===
+            # === B4 质量门控: SL>=2 + trend_type>=0 (TT=-2的670个信号WR=37%污染) ===
             if buy and bp_buy == 4 and self.b4_gate_enabled:
                 _b4_sl = int(result['signal_level'][i])
                 _b4_conf = float(result['buy_confidence'][i]) if 'buy_confidence' in result else 0.35
-                if _b4_sl < self.chan_b4_min_signal_level or _b4_conf < self.chan_b4_min_confidence:
+                _b4_tt = int(result['trend_type'][i])
+                if _b4_sl < self.chan_b4_min_signal_level or _b4_conf < self.chan_b4_min_confidence or _b4_tt < 0:
                     buy = False
 
             # === B1 质量门控: SL=0 WR=40% MR=-1.07%, SL>=2 WR=50.8% (数据驱动) ===
             if buy and bp_buy == 1 and self.b1_gate_enabled:
                 _b1_sl = int(result['signal_level'][i])
                 if _b1_sl < self.chan_b1_min_signal_level:
+                    buy = False
+
+            # === BP7 质量门控: 质量最高买点(WR=55.6%)但SL=0占17%(WR=42%/MR=-1.19%)未过滤 ===
+            if buy and bp_buy == 7 and self.bp7_gate_enabled:
+                _b7_sl = int(result['signal_level'][i])
+                if _b7_sl < self.chan_bp7_min_signal_level:
+                    buy = False
+
+            # === BP6 质量门控: 均线回踩, 占10.7%信号, WR=49.6%低于平均 ===
+            if buy and bp_buy == 6 and self.bp6_gate_enabled:
+                _b6_sl = int(result['signal_level'][i])
+                _b6_tt = int(result['trend_type'][i])
+                _b6_reject = _b6_sl < self.chan_bp6_min_signal_level
+                if self.chan_bp6_min_trend_type > -2:
+                    _b6_reject = _b6_reject or _b6_tt < self.chan_bp6_min_trend_type
+                if _b6_reject:
+                    buy = False
+
+            # === B5 质量门控: 趋势启动, 占4.3%信号, 待数据验证 ===
+            if buy and bp_buy == 5 and self.b5_gate_enabled:
+                _b5_sl = int(result['signal_level'][i])
+                if _b5_sl < self.chan_b5_min_signal_level:
                     buy = False
 
             # MA60止损: 跌破MA60且score转负 → 强制卖出
@@ -994,38 +1033,60 @@ class SignalEngine:
         style_score = np.zeros(n)
         spec_ind = np.full(n, '', dtype=object)
 
-        if latest_only and regimes is not None:
-            # ── 混合路径：向量化快速分数（与逐bar _calculate_default_factor 数学完全等价）──
+        # 始终使用逐bar完整因子选择, 回测和实盘逻辑一致
+        if False:  # 原 latest_only 快速路径已禁用, 保留代码供参考
             r = regimes['regime']
             idx = slice(60, n)
             r_idx = r[idx].astype(int)
             valid[idx] = True
             mkt_regime[idx] = r_idx
 
-            mom20 = _safe_get_arr(ind, 'mom_20', n, 0.0)
-            mom10 = _safe_get_arr(ind, 'mom_10', n, 0.0)
-            mom5 = _safe_get_arr(ind, 'mom_5', n, 0.0)
-            vol20 = _safe_get_arr(ind, 'volatility', n, 0.0)
-            rel_str = _safe_get_arr(ind, 'relative_strength', n, 0.0)
+            sl_arr = _safe_get_arr(ind, 'signal_level', n, 0).astype(int)
+            tt_arr = _safe_get_arr(ind, 'trend_type', n, 0).astype(int)
+            bp_arr = _safe_get_arr(ind, 'buy_point', n, 0).astype(int)
 
-            momentum = mom20 * 0.5 + mom10 * 0.3 + rel_str * 0.2
-            reversal = -(mom20 * 0.4 + mom10 * 0.3 + mom5 * 0.3)
-            sharpe = momentum / (np.abs(vol20) + 0.01)
+            # 纯因子评分: SL/趋势仅做门控, 分数由因子IC驱动
+            _industry = ''
+            try:
+                if code and hasattr(self, 'dynamic_factor_selector') and \
+                   self.dynamic_factor_selector is not None and \
+                   self.dynamic_factor_selector.factor_library is not None:
+                    lib = self.dynamic_factor_selector.factor_library
+                    _mid_date = dates[min(n-1, max(60, n//2))]
+                    _industry = self._get_specific_industry(code, _mid_date) if code else ''
+                    _scoring = lib.get_scoring_factors(
+                        _industry or '', as_of_date=_mid_date,
+                        fallback_config=INDUSTRY_FACTOR_CONFIG)
+                else:
+                    raise Exception("no lib")
+            except Exception:
+                _scoring = [
+                    ('trend_lowvol', 0.30), ('relative_strength', 0.25),
+                    ('low_downside', 0.25), ('momentum_reversal', 0.20),
+                ]
 
+            factor_contribution = np.zeros(n)
             bull = r_idx == 1
             bear = r_idx == -1
-            neutral = ~bull & ~bear
-            fval[idx][bull] = np.tanh(momentum[idx][bull] * 3)
-            fval[idx][bear] = np.tanh(reversal[idx][bear] * 3)
-            fval[idx][neutral] = np.tanh(sharpe[idx][neutral])
+            for fn, w in _scoring[:5]:
+                farr = _safe_get_arr(ind, fn, n, 0.0)
+                if fn == 'momentum_reversal':
+                    contrib_bear = -farr[idx] * w
+                    contrib_other = farr[idx] * w
+                    factor_contribution[idx] += contrib_bear * bear.astype(np.float64)
+                    factor_contribution[idx] += contrib_other * (~bear).astype(np.float64)
+                else:
+                    factor_contribution[idx] += farr[idx] * w
+
+            fval[idx] = factor_contribution
+
+            # Layer 5: 因子名
             fname[idx][bull] = 'MOM'
             fname[idx][bear] = 'REV'
-            fname[idx][neutral] = 'SHARPE'
-            # BP8: 60日动量反相关(IC=-0.092), 高动量突破=力竭
+            fname[idx][neutral] = 'REV'
+            # BP8: 横盘突破, 保持专用因子名
             bp_raw2 = _safe_get_arr(ind, 'buy_point', n, 0).astype(int)
             bp8 = (bp_raw2[idx] == 8)
-            mom60 = _safe_get_arr(ind, 'mom_60', n, 0.0)
-            fval[idx][bp8] = np.tanh(-mom60[idx][bp8] * 2)
             fname[idx][bp8] = 'REV60'
 
             # 最新 bar：完整链覆盖
@@ -1050,10 +1111,11 @@ class SignalEngine:
                 mkt_style_conf[last] = market_info.get('style_confidence', 0.0)
                 mkt_conf[last] = market_info.get('confidence', 0.0)
                 ind_cat[last] = industry_category
-                # BP8: _select_factor 不感知买点, 若为BP8则保留 REV60 覆盖
+                # BP8: 横盘突破用 REV60 (均值回归方向)
                 if bp_raw2[last] == 8:
                     fname[last] = 'REV60'
-                    fval[last] = np.tanh(-mom60[last] * 2)
+                    _mom60 = _safe_get_arr(ind, 'mom_60d', n, 0.0)[last]
+                    fval[last] = np.tanh(-_mom60 * 2)
                 else:
                     fname[last] = fn
                     fval[last] = fv
@@ -1090,7 +1152,12 @@ class SignalEngine:
 
             # BP8因子需要在循环内覆盖(fast path已做, slow path补上)
             _bp_arr = _safe_get_arr(ind, 'buy_point', n, 0).astype(int)
-            _mom60_arr = _safe_get_arr(ind, 'mom_60', n, 0.0)
+            _close_arr = _safe_get_arr(ind, 'close', n, 0.0)
+            _mom60_arr = np.zeros(n)
+            _c60 = np.roll(_close_arr, 60)
+            _c60[:60] = 0
+            _mask = _c60 > 0
+            _mom60_arr[_mask] = (_close_arr[_mask] - _c60[_mask]) / _c60[_mask]
             for i in range(60, n):
                 _mkt_regime_i = int(_mkt_regime_arr[i])
                 _trend_i = float(regimes['trend_score'][i]) if regimes and 'trend_score' in regimes else 0.0
@@ -1172,9 +1239,9 @@ class SignalEngine:
 
         # === 1. 纯因子分数（因子值已在[-1,1]，无需/10压缩） ===
         score = np.clip(s['factor_value'], -10.0, 10.0)
+        pre_discount_score = score.copy()  # 纯因子分快照, 不含基本面加成
         fund_mask = s['fundamental_score'] > 0
         score[fund_mask] += s['fundamental_score'][fund_mask] * self.fundamental_weight
-        pre_discount_score = score  # score 此后不再被原地修改，无需 copy
 
         # === 2. 门控质量系数 ===
         limit_pct = 0.195 if (code and (code.startswith('688') or code.startswith('300'))) else 0.095
@@ -1191,10 +1258,8 @@ class SignalEngine:
         if self._diag is not None:
             self._diag.record_gate(float(gate_quality[-1]), bool(hard_rejects[-1]))
 
-        # === 3. 门控调整分 (乘法: gate_quality直接缩放score, 保留区分度) ===
-        # gate_quality中性≈1.0, 范围[0.5,2.0]
-        # gate对5日收益无预测力(分析证实Δ=-0.005), 仅通过乘法微调score, 不改变排序
-        adjusted_score = score * gate_quality
+        # === 3. Gate仅做二元准入, gate_quality(IC≈0)不参与评分 ===
+        adjusted_score = score
 
         # === 3.4 ML预测融合：XGBoost非线性因子组合 ===
         ml_normalized = np.zeros(n)  # 默认无ML
@@ -1408,8 +1473,8 @@ class SignalEngine:
             'top_fractal_volume': _safe_get_arr(ind, 'top_fractal_volume', n, 0.0),
             'ma_trend_up': _safe_get_arr(ind, 'ema20_above_60', n, 0).astype(bool),
             'profit_declining': s['profit_declining'],
-            'mom_60d': _safe_get_arr(ind, 'mom_60d', n, 0.0),
-            'dist_ma60': _safe_get_arr(ind, 'dist_ma60', n, 0.0),
+            'mom_60d': _safe_get_arr(s, 'mom_60d', n, 0.0),
+            'dist_ma60': _safe_get_arr(s, 'dist_ma60', n, 0.0),
             'max_dd_20d': _safe_get_arr(ind, 'max_dd_20d', n, 0.0),
             'vol_regime': _safe_get_arr(ind, 'vol_regime', n, 1.0),
             'weekly_trend_up': _safe_get_arr(ind, 'weekly_trend_up', n, 0).astype(bool),
@@ -1476,7 +1541,7 @@ class SignalEngine:
             sell_vals = roll_sell.values
             valid = mask & ~np.isnan(buy_vals)
             if valid.any():
-                buy_thresholds[valid] = np.maximum(buy_vals[valid], self.buy_threshold * 0.6)
+                buy_thresholds[valid] = np.maximum(buy_vals[valid], self.buy_threshold * 0.15)  # 纯因子评分范围小, 降下限
                 sell_thresholds[valid] = np.minimum(sell_vals[valid], self.sell_threshold)
             # else: 该regime样本不足100，静默回退全局阈值
 
@@ -1540,7 +1605,9 @@ class SignalEngine:
         # fixed模式：直接使用默认因子（跳过行业配置）
         if self.factor_mode == 'fixed':
             self._stats['fixed_default'] += 1
-            factor_name, factor_value, risk_info = self._calculate_default_factor(ind, idx, regime, industry_category)
+            factor_name, factor_value, risk_info = self._calculate_default_factor(
+                ind, idx, regime, industry_category, code=code, current_date=current_date,
+                trend_score=trend_score, volatility=volatility)
             return factor_name, factor_value, risk_info, False
 
         # 动态因子优先 (仅dynamic/both模式)
@@ -1938,92 +2005,57 @@ class SignalEngine:
         except (ValueError, TypeError):
             return None
 
-    def _calculate_default_factor(self, ind: dict, idx: int, regime: int, industry_category: str) -> tuple:
-        """默认因子：趋势质量 × 均值回归时机 × 低波动溢价
+    def _calculate_default_factor(self, ind: dict, idx: int, regime: int, industry_category: str,
+                                    code=None, current_date=None, trend_score=0.0, volatility=0.15) -> tuple:
+        """多因子评分: SL定价 + 买点alpha + FactorLibrary因子(统一入口)
 
-        数据驱动设计依据（304万条验证数据）：
-        - trend_type=2: Acc=51.1%, MeanRet=1.10%  (最强方向信号)
-        - mom_60d IC=-0.055  (60日动量反向预测，均值回归主导)
-        - dist_ma60 IC=-0.069  (乖离MA60反向预测，最强单因子)
-        - risk_vol IC=-0.054  (低波动率溢价)
-        - exhaustion_risk IC=-0.038  (力竭风险反向预测)
-
-        核心逻辑：好股票=强趋势+回调到位+低波动+未力竭
+        FactorLibrary.get_scoring_factors() 是因子选择的唯一来源:
+        - 有实盘IC数据 → 用实盘IC选出的因子
+        - 有YAML行业配置 → 用行业标定因子
+        - 都没有 → 用通用因子兜底
         """
+        sl = int(self._safe_get(ind, 'signal_level', idx, 0))
         trend_type = int(self._safe_get(ind, 'trend_type', idx, 0))
-        mom_60d = self._safe_get(ind, 'mom_60d', idx, 0)
-        dist_ma60 = self._safe_get(ind, 'dist_ma60', idx, 0)
-        risk_vol = self._safe_get(ind, 'risk_vol', idx, 0.03)
-        exhaustion = self._safe_get(ind, 'exhaustion_risk', idx, 0)
-        vol_ratio = self._safe_get(ind, 'volume_ratio', idx, 0)
-        chan_div = self._safe_get(ind, 'chan_divergence_strength', idx, 0)
-        vol_oc = self._safe_get(ind, 'vol_opening_confirm', idx, 0)
-        vol_os = self._safe_get(ind, 'vol_opening_strength', idx, 0)
+        bp = int(self._safe_get(ind, 'buy_point', idx, 0))
 
-        # === 趋势质量 (0~1) ===
-        # trend_type: -2=下跌, 0=盘整, 1=上涨初期, 2=强上涨
-        trend_quality = np.clip((trend_type + 2) / 4.0, 0.0, 1.0)  # → [0, 1]
+        # === Layer 1: 因子库贡献 (IC驱动, 作为评分的唯一连续成分) ===
+        # SL/趋势/结构: 仅做门控(准入), 不参与评分(无预测力)
+        try:
+            lib = self.dynamic_factor_selector.factor_library if (
+                hasattr(self, 'dynamic_factor_selector') and
+                self.dynamic_factor_selector is not None
+            ) else None
+        except Exception:
+            lib = None
 
-        # === P3修复: 趋势跟随, 不再均值回归 ===
-        # 反事实分析: 赢家mom_60d=0.133 > 输家0.090, 动量是正向信号
-        mom_score = np.clip(mom_60d / 0.20, -1.0, 1.0)  # 动量越强=越好
-        # dist_ma60: 距均线不是越近越好 — 强势股会持续高于MA60
-        # 仅极端乖离(>30%)判为风险, 正常乖离中性
-        dist_score = 1.0 - np.clip(max(0.0, abs(dist_ma60) - 0.15) / 0.30, 0.0, 1.0)
-        dist_score = np.clip(dist_score, -1.0, 1.0)
-        momentum_trend = mom_score * 0.60 + dist_score * 0.40
-
-        # === 低波动溢价 (0~1, 1=最低波动) ===
-        low_vol = 1.0 - np.clip(risk_vol / 0.06, 0.0, 1.0)
-
-        # === 力竭惩罚 (-1~0, 0=无力竭) ===
-        exhaustion_penalty = -np.clip(exhaustion / 0.3, 0.0, 1.0)
-
-        # === 背离加成 (0~0.15, 底背离=加分) ===
-        divergence_bonus = np.clip(chan_div * 0.15, 0.0, 0.15)
-
-        # === 缩量回调加分 (-0.05~0.10, 上涨趋势缩量=健康) ===
-        contraction_bonus = 0.0
-        if trend_type >= 1 and vol_ratio < 0:
-            contraction_bonus = np.clip(-vol_ratio * 0.15, 0.0, 0.10)
-
-        # === 放量开盘确认加成 (0~0.12, 底部放量+次日跳空高开+确认收阳) ===
-        vol_open_bonus = 0.0
-        if vol_oc > 0.5 and vol_os >= 0.30:
-            vol_open_bonus = np.clip(vol_os * 0.12, 0.0, 0.12)
-
-        # === 市场状态调整 ===
-        # 稳定因子加成：trend_lowvol(IC=0.067) + momentum_reversal(IC=0.057) 替代原有噪声复合
-        stable_factor = 0.0
-        tl = self._safe_get(ind, 'trend_lowvol', idx, None)
-        mr = self._safe_get(ind, 'momentum_reversal', idx, None)
-        mlv = self._safe_get(ind, 'mom_x_lowvol_20_20', idx, None)
-        if tl is not None and mr is not None and mlv is not None:
-            stable_factor = tl * 0.40 + mr * 0.35 + mlv * 0.25
-            base_weight = 0.60  # 稳定因子权重
+        if lib is not None:
+            industry = (self._get_specific_industry(code, current_date)
+                        if (code and current_date) else '')
+            scoring_factors = lib.get_scoring_factors(
+                industry or '', as_of_date=current_date,
+                fallback_config=INDUSTRY_FACTOR_CONFIG)
         else:
-            base_weight = 1.00  # 回退到原有逻辑
+            scoring_factors = [
+                ('trend_lowvol', 0.30), ('relative_strength', 0.25),
+                ('low_downside', 0.25), ('momentum_reversal', 0.20),
+            ]
 
-        if regime == 1:  # 牛市
-            legacy = (trend_quality * 0.50 + momentum_trend * 0.15 +
-                     low_vol * 0.15 + exhaustion_penalty * 0.05 +
-                     divergence_bonus + contraction_bonus + vol_open_bonus)
+        score = 0.0
+        for factor_name, weight in scoring_factors[:5]:
+            fv = self._safe_get(ind, factor_name, idx, 0.0)
+            if regime == 1:
+                pass  # 牛市: 因子原值
+            elif regime == -1 and factor_name in ('momentum_reversal',):
+                fv = -fv  # 熊市反转
+            score += fv * weight
+
+        # === Layer 5: 因子名 ===
+        if regime == 1:
             factor_name = 'MOM'
-        elif regime == -1:  # 熊市
-            legacy = (trend_quality * 0.15 + momentum_trend * 0.45 +
-                     low_vol * 0.25 + exhaustion_penalty * 0.05 +
-                     divergence_bonus + contraction_bonus + vol_open_bonus)
+        else:
             factor_name = 'REV'
-        else:  # 中性
-            legacy = (trend_quality * 0.35 + momentum_trend * 0.30 +
-                     low_vol * 0.20 + exhaustion_penalty * 0.05 +
-                     divergence_bonus + contraction_bonus + vol_open_bonus)
-            factor_name = 'SHARPE'
 
-        composite = base_weight * legacy + (1 - base_weight) * stable_factor
-
-        factor_value = np.tanh(composite * 3)
-
+        factor_value = float(np.clip(score, -1.0, 1.0))  # 纯因子评分, 宽范围保留区分度
         risk_info = {'is_high_vol': False}
         return factor_name, factor_value, risk_info
 

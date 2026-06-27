@@ -1,265 +1,507 @@
 # core/factor_library.py
-# NOTE: 2026-06-18 审查 — 已被factor_calculator.py替代，
-# 主策略管道不使用此模块，保留供 analyze_industry_factors.py 兼容。
-"""因子库 - 各种技术因子的计算函数 [已废弃，见factor_calculator.py]"""
+"""
+因子库 — 因子评估持久化 + 时变质量追踪 + 生命周期管理
 
+核心理念: 因子有时效性。5年回测中因子的IC不是常数，随时间衰减/恢复。
+因子库按时间窗口存储IC评估结果，追踪因子质量的时间序列，支持:
+- 时间加权因子评分 (近期IC权重 > 远期IC权重)
+- 因子衰减检测 (IC trend斜率下降 -> 标记衰减)
+- 因子生命周期 (candidate -> active -> decaying -> retired)
+- 多窗口评估 (60d/120d/250d, 捕捉不同时间尺度的alpha)
+
+使用方式:
+    store = FactorStore("strategy/cache/factor_library.parquet")
+    library = FactorLibrary(store)
+
+    # 注册因子
+    library.register("mom_quality", family="momentum")
+
+    # 保存评估结果
+    store.save_batch(records)
+
+    # 查询时变质量
+    quality = library.get_quality("mom_quality", "机械设备", pd.Timestamp("2024-06-15"))
+
+    # 按时间加权评分选因子
+    selected = library.select("机械设备", pd.Timestamp("2024-06-15"), top_n=3)
+"""
+
+import json
+import os
 import numpy as np
-from typing import Tuple, Dict
+import pandas as pd
+from typing import Dict, List, Optional
+from collections import defaultdict
+
+# ============================================================
+# Factor Store - 持久化层
+# ============================================================
+
+_FACTOR_METRICS_DTYPE = {
+    'eval_date': 'datetime64[ns]',
+    'factor_name': 'str',
+    'window_len': 'int32',
+    'industry': 'str',
+    'ic_mean': 'float32',
+    'ir': 'float32',
+    'ic_stability': 'float32',
+    'ret_spread': 'float32',
+    'direction': 'int8',
+    'combined_ir': 'float32',
+    'coverage': 'float32',
+    'n_dates': 'int16',
+}
+
+_FACTOR_METRICS_COLS = list(_FACTOR_METRICS_DTYPE.keys())
 
 
+class FactorStore:
+    """因子评估结果持久化 (parquet)."""
 
-# ==================== 辅助函数 ====================
+    def __init__(self, store_path: str):
+        self.store_path = store_path
+        self._df: Optional[pd.DataFrame] = None
 
-def _rolling_std(arr: np.ndarray, window: int) -> np.ndarray:
-    """计算滚动标准差"""
-    result = np.zeros_like(arr, dtype=float)
-    result[:] = np.nan
-    for i in range(window, len(arr)):
-        result[i] = np.std(arr[i-window:i])
-    return result
+    @property
+    def df(self) -> pd.DataFrame:
+        if self._df is None:
+            self._df = self._load()
+        return self._df
 
+    def _load(self) -> pd.DataFrame:
+        if os.path.exists(self.store_path):
+            df = pd.read_parquet(self.store_path)
+            for col, dtype in _FACTOR_METRICS_DTYPE.items():
+                if col in df.columns:
+                    try:
+                        df[col] = df[col].astype(dtype)
+                    except (ValueError, TypeError):
+                        pass
+            return df
+        return pd.DataFrame(columns=_FACTOR_METRICS_COLS)
 
-def _sma(arr: np.ndarray, window: int) -> np.ndarray:
-    """简单移动平均"""
-    result = np.zeros_like(arr, dtype=float)
-    result[:] = np.nan
-    result[window-1:] = np.convolve(arr, np.ones(window)/window, mode='valid')
-    return result
+    def save_batch(self, records: List[dict]):
+        """批量保存评估记录. 同 (eval_date, factor_name, window_len, industry) 去重."""
+        if not records:
+            return
+        new_df = pd.DataFrame(records)
+        for col, dtype in _FACTOR_METRICS_DTYPE.items():
+            if col in new_df.columns:
+                try:
+                    new_df[col] = new_df[col].astype(dtype)
+                except (ValueError, TypeError):
+                    pass
+        if self._df is not None and len(self._df) > 0:
+            self._df = pd.concat([self._df, new_df], ignore_index=True)
+            self._df = self._df.drop_duplicates(
+                subset=['eval_date', 'factor_name', 'window_len', 'industry'], keep='last')
+        else:
+            self._df = new_df
+        self._df.reset_index(drop=True, inplace=True)
+        os.makedirs(os.path.dirname(self.store_path) or '.', exist_ok=True)
+        self._df.to_parquet(self.store_path, index=False)
 
+    def query(self, factor_name: str = None, industry: str = None,
+              start_date=None, end_date=None, window_len: int = None) -> pd.DataFrame:
+        df = self.df
+        if df.empty:
+            return df
+        mask = pd.Series(True, index=df.index)
+        if factor_name:
+            mask &= df['factor_name'] == factor_name
+        if industry:
+            mask &= df['industry'] == industry
+        if window_len is not None:
+            mask &= df['window_len'] == window_len
+        if start_date:
+            mask &= df['eval_date'] >= pd.Timestamp(start_date)
+        if end_date:
+            mask &= df['eval_date'] <= pd.Timestamp(end_date)
+        return df[mask].sort_values('eval_date')
 
-def _ema(arr: np.ndarray, span: int) -> np.ndarray:
-    """指数移动平均"""
-    result = np.zeros_like(arr, dtype=float)
-    result[0] = arr[0]
-    alpha = 2 / (span + 1)
-    for i in range(1, len(arr)):
-        result[i] = alpha * arr[i] + (1 - alpha) * result[i-1]
-    return result
+    def get_timeline(self, factor_name: str, industry: str,
+                     window_len: int = 250) -> List[dict]:
+        df = self.query(factor_name=factor_name, industry=industry, window_len=window_len)
+        if df.empty:
+            return []
+        return df.sort_values('eval_date').to_dict('records')
 
+    def get_all_factors(self) -> List[str]:
+        if self.df.empty:
+            return []
+        return sorted(self.df['factor_name'].unique().tolist())
 
-def _rsi(close: np.ndarray, window: int) -> np.ndarray:
-    """计算RSI"""
-    delta = np.diff(close, prepend=close[0])
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = _sma(gain, window)
-    avg_loss = _sma(loss, window)
-    rs = avg_gain / (avg_loss + 1e-10)
-    return 100 - (100 / (1 + rs))
+    def get_industries(self) -> List[str]:
+        if self.df.empty:
+            return []
+        return sorted(self.df['industry'].unique().tolist())
 
+    def get_latest_eval_date(self) -> Optional[pd.Timestamp]:
+        if self.df.empty:
+            return None
+        return self.df['eval_date'].max()
 
-def _bollinger(close: np.ndarray, window: int, num_std: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """计算布林带"""
-    middle = _sma(close, window)
-    std = np.array([np.std(close[i-window:i]) if i >= window else 0 for i in range(len(close))])
-    upper = middle + num_std * std
-    lower = middle - num_std * std
-    return upper, middle, lower
-
-
-def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, window: int) -> np.ndarray:
-    """计算ATR"""
-    tr1 = high - low
-    tr2 = np.abs(high - np.roll(close, 1))
-    tr3 = np.abs(low - np.roll(close, 1))
-    tr = np.maximum(tr1, np.maximum(tr2, tr3))
-    tr[0] = 0
-    return _sma(tr, window)
-
-
-def _shift(arr: np.ndarray, periods: int) -> np.ndarray:
-    """数组位移"""
-    result = np.zeros_like(arr, dtype=float)
-    result[periods:] = arr[:-periods]
-    result[:periods] = np.nan
-    return result
-
-
-# ==================== 波动率因子 ====================
-
-def calc_factor_volatility_10(close: np.ndarray) -> np.ndarray:
-    """计算10日波动率因子"""
-    returns = np.diff(close, prepend=close[0]) / close
-    return _rolling_std(returns, 10)
-
-
-def calc_factor_volatility_5(close: np.ndarray) -> np.ndarray:
-    """计算5日波动率因子"""
-    returns = np.diff(close, prepend=close[0]) / close
-    return _rolling_std(returns, 5)
-
-
-def calc_factor_volatility_20(close: np.ndarray) -> np.ndarray:
-    """计算20日波动率因子"""
-    returns = np.diff(close, prepend=close[0]) / close
-    return _rolling_std(returns, 20)
-
-
-# ==================== RSI因子 ====================
-
-def calc_factor_rsi_8(close: np.ndarray) -> np.ndarray:
-    """计算RSI-8因子"""
-    return _rsi(close, 8)
+    @property
+    def size(self) -> int:
+        return len(self.df) if self._df is not None else (
+            len(self._load()) if os.path.exists(self.store_path) else 0)
 
 
-def calc_factor_rsi_14(close: np.ndarray) -> np.ndarray:
-    """计算RSI-14因子"""
-    return _rsi(close, 14)
+# ============================================================
+# Factor Library - 时变质量分析 + 生命周期管理
+# ============================================================
 
+class FactorLibrary:
+    """因子知识库: 时间加权评分 / 衰减检测 / 因子选择."""
 
-def calc_factor_rsi_6(close: np.ndarray) -> np.ndarray:
-    """计算RSI-6因子"""
-    return _rsi(close, 6)
+    def __init__(self, store: FactorStore, config: dict = None):
+        self.store = store
+        self.config = config or {}
+        self.registry: Dict[str, dict] = {}
+        self._load_registry()
 
+        # 可配置参数
+        self.decay_lookback = self.config.get('decay_lookback', 5)
+        self.decay_slope_threshold = self.config.get('decay_slope_threshold', -0.003)
+        self.time_weight_halflife = self.config.get('time_weight_halflife', 4)
+        self.min_active_ic = self.config.get('min_active_ic', 0.015)
+        self.promotion_windows = self.config.get('promotion_windows', 3)
+        self.retirement_windows = self.config.get('retirement_windows', 2)
 
-def calc_factor_rsi_10(close: np.ndarray) -> np.ndarray:
-    """计算RSI-10因子"""
-    return _rsi(close, 10)
+    # -- Registry --
 
+    def _registry_path(self) -> str:
+        return self.store.store_path.replace('.parquet', '_registry.json')
 
-# ==================== 布林带因子 ====================
+    def _load_registry(self):
+        path = self._registry_path()
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                self.registry = json.load(f)
 
-def calc_factor_bb_width_20(close: np.ndarray) -> np.ndarray:
-    """计算布林带宽度因子"""
-    bb_upper, bb_middle, bb_lower = _bollinger(close, 20, 2)
-    bb_std = np.zeros_like(close)
-    bb_std[20:] = np.array([np.std(close[max(0, i-20):i]) for i in range(20, len(close))])
-    bb_width = 4 * bb_std / (bb_middle + 1e-10)
-    return bb_width
+    def _save_registry(self):
+        path = self._registry_path()
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(self.registry, f, indent=2, ensure_ascii=False)
 
+    def register(self, name: str, family: str = 'other'):
+        if name in self.registry:
+            return
+        self.registry[name] = {
+            'family': family,
+            'status': 'candidate',
+            'registered_at': str(pd.Timestamp.now()),
+            'promoted_at': None,
+            'decay_detected_at': None,
+            'retired_at': None,
+        }
+        self._save_registry()
 
-# ==================== 动量因子 ====================
+    def register_batch(self, factor_names: List[str], family_map: dict = None):
+        family_map = family_map or {}
+        changed = False
+        for name in factor_names:
+            if name not in self.registry:
+                self.registry[name] = {
+                    'family': family_map.get(name, 'other'),
+                    'status': 'candidate',
+                    'registered_at': str(pd.Timestamp.now()),
+                    'promoted_at': None,
+                    'decay_detected_at': None,
+                    'retired_at': None,
+                }
+                changed = True
+        if changed:
+            self._save_registry()
 
-def calc_factor_momentum_10(close: np.ndarray) -> np.ndarray:
-    """计算10日动量"""
-    return close / _shift(close, 10) - 1
+    def get_status(self, name: str) -> str:
+        return self.registry.get(name, {}).get('status', 'candidate')
 
+    # -- Time-Weighted Quality --
 
-def calc_factor_momentum_20(close: np.ndarray) -> np.ndarray:
-    """计算20日动量"""
-    return close / _shift(close, 20) - 1
+    def get_quality(self, factor_name: str, industry: str,
+                    as_of_date, window_len: int = 250) -> Optional[dict]:
+        """计算因子在指定日期的时变质量评分.
 
+        时间权重: 指数衰减, 近期窗口权重高.
+        时变IC能区分 "IC=0.04且在上升" vs "IC=0.04但在下降" 的因子.
+        """
+        as_of_ts = pd.Timestamp(as_of_date)
+        timeline = self.store.get_timeline(factor_name, industry, window_len)
+        if not timeline:
+            return None
 
-# ==================== ATR因子 ====================
+        past = [t for t in timeline if pd.Timestamp(t['eval_date']) < as_of_ts]
+        if not past:
+            return None
 
-def calc_factor_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
-    """计算ATR因子"""
-    return _atr(high, low, close, period)
+        recent = past[-self.decay_lookback:]
+        n = len(recent)
 
+        weights = np.array([0.5 ** ((n - 1 - i) / self.time_weight_halflife)
+                           for i in range(n)])
+        weights = weights / weights.sum()
 
-# ==================== 组合因子 ====================
+        ic_values = np.array([r['ic_mean'] for r in recent])
+        ir_values = np.array([r['ir'] for r in recent])
+        spread_values = np.array([r['ret_spread'] for r in recent])
 
-def calc_factor_composite(
-    close: np.ndarray,
-    weights: Dict[str, float] = None
-) -> np.ndarray:
-    """计算组合因子 - 与原代码逻辑一致
+        time_weighted_ic = float(np.sum(ic_values * weights))
+        time_weighted_ir = float(np.sum(ir_values * weights))
+        time_weighted_spread = float(np.sum(spread_values * weights))
+        raw_latest_ic = float(ic_values[-1])
+        raw_latest_ir = float(ir_values[-1])
 
-    使用配置文件的权重计算组合因子值
-    """
-    if weights is None:
-        weights = {
-            'volatility_10': 0.30,
-            'rsi_average': 0.25,
-            'bb_width': 0.15,
-            'momentum': 0.30,
+        if n >= 3:
+            slope = float(np.polyfit(np.arange(n), ic_values, 1)[0])
+        else:
+            slope = 0.0
+
+        ic_volatility = float(np.std(ic_values)) if n >= 2 else 0.0
+
+        # 衰减分数: 综合斜率+近端vs历史+波动
+        decay_score = float(
+            0.5 * (slope / max(abs(raw_latest_ic), 0.001)) +
+            0.3 * (1.0 if raw_latest_ic < time_weighted_ic else -0.5) +
+            0.2 * (1.0 if ic_volatility < 0.02 else -0.5)
+        )
+
+        # 仅从当前可见数据推断状态, 不引用 registry 的全局状态(含未来信息)
+        if raw_latest_ic < 0 and n >= 2 and ic_values[-2] < 0:
+            status = 'decaying'
+        elif decay_score < -0.2 or (slope < -0.005 and raw_latest_ic < 0.03 and n >= 3):
+            status = 'decaying'
+        elif raw_latest_ic > self.min_active_ic and slope >= -0.001 and n >= 3:
+            status = 'active'
+        else:
+            status = 'candidate'
+
+        return {
+            'time_weighted_ic': time_weighted_ic,
+            'time_weighted_ir': time_weighted_ir,
+            'time_weighted_spread': time_weighted_spread,
+            'raw_latest_ic': raw_latest_ic,
+            'raw_latest_ir': raw_latest_ir,
+            'ic_trend_slope': slope,
+            'ic_volatility': ic_volatility,
+            'decay_score': decay_score,
+            'status': status,
+            'n_windows': n,
         }
 
-    # 计算各基础因子
-    vol_10 = calc_factor_volatility_10(close)
-    rsi_6 = calc_factor_rsi_6(close)
-    rsi_8 = calc_factor_rsi_8(close)
-    rsi_10 = calc_factor_rsi_10(close)
-    bb_width = calc_factor_bb_width_20(close)
-    mom_10 = calc_factor_momentum_10(close)
+    # -- Factor Selection --
 
-    # 计算组合因子
-    result = np.zeros_like(close, dtype=float)
-    for i in range(len(close)):
-        if np.isnan(vol_10[i]):
-            result[i] = 0
-            continue
+    def select(self, industry: str, as_of_date, top_n: int = 3,
+               window_len: int = 250, min_ic: float = 0.015,
+               exclude_decaying: bool = True) -> List[dict]:
+        """为指定日期+行业选择最优因子, 使用时间加权评分."""
+        all_factors = self.store.get_all_factors()
+        as_of_ts = pd.Timestamp(as_of_date)
+        if not all_factors:
+            return []
 
-        # 波动率因子 (放大到类似动量)
-        vol_factor = vol_10[i] * 10
+        candidates = []
+        for fn in all_factors:
+            q = self.get_quality(fn, industry, as_of_ts, window_len)
+            if q is None:
+                continue
+            if q['raw_latest_ic'] < min_ic:
+                continue
+            if exclude_decaying and q['status'] in ('decaying', 'retired'):
+                continue
 
-        # 多周期RSI平均
-        rsi_avg = (rsi_6[i] + rsi_8[i] + rsi_10[i]) / 3
-        rsi_avg_val = (rsi_avg - 50) / 50
+            if q['n_windows'] >= 3:
+                score = q['time_weighted_ic'] * 0.6 + q['raw_latest_ic'] * 0.4
+                if q['decay_score'] < -0.2:
+                    score *= 0.7
+            else:
+                score = q['raw_latest_ic']
 
-        # 布林带因子
-        bb_val = bb_width[i]
+            candidates.append({
+                'factor_name': fn,
+                'score': round(score, 5),
+                'time_weighted_ic': round(q['time_weighted_ic'], 5),
+                'raw_latest_ic': round(q['raw_latest_ic'], 5),
+                'ic_trend_slope': round(q['ic_trend_slope'], 5),
+                'status': q['status'],
+                'decay_score': round(q['decay_score'], 3),
+                'family': self.registry.get(fn, {}).get('family', 'other'),
+            })
 
-        # 动量因子
-        mom_val = mom_10[i] * 2
+        candidates.sort(key=lambda x: x['score'], reverse=True)
 
-        # 组合
-        factor_value = (
-            vol_factor * weights.get('volatility_10', 0.30) +
-            rsi_avg_val * weights.get('rsi_average', 0.25) +
-            bb_val * weights.get('bb_width', 0.15) +
-            mom_val * weights.get('momentum', 0.30)
-        )
-        result[i] = factor_value
+        # 家族分散化
+        selected = []
+        used_families = set()
+        for c in candidates:
+            if c['family'] not in used_families and len(selected) < top_n:
+                used_families.add(c['family'])
+                selected.append(c)
+            elif len(selected) >= top_n:
+                break
+        return selected
 
-    return result
+    # -- 统一因子选择入口 (YAML种子 → 实盘IC渐进替代) --
+
+    def get_scoring_factors(self, industry: str, as_of_date=None,
+                            top_n: int = 5, fallback_config: dict = None,
+                            ic_weighted: bool = True
+                            ) -> List[tuple]:
+        """为评分公式提供最优因子列表 [(factor_name, weight), ...]
+
+        优先级: 实盘IC数据 > YAML种子数据 > 通用因子兜底
+        ic_weighted=True: 权重=因子IC得分(不归一化), 好因子自然高权重
+        """
+        # 1) 尝试从 store 取实盘IC数据
+        if as_of_date is not None and self.store.get_all_factors():
+            selected = self.select(industry, as_of_date, top_n=top_n)
+            if selected:
+                if ic_weighted:
+                    return [(s['factor_name'], s['score']) for s in selected]
+                else:
+                    total_score = sum(s['score'] for s in selected) + 1e-10
+                    return [(s['factor_name'], s['score'] / total_score) for s in selected]
+
+        # 2) YAML种子数据
+        if fallback_config and industry in fallback_config:
+            cfg = fallback_config[industry]
+            factors = cfg.get('factors', [])
+            weights = cfg.get('weights', [])
+            if factors and weights and len(factors) == len(weights):
+                total_w = sum(abs(w) for w in weights) + 1e-10
+                return list(zip(factors, [abs(w) / total_w for w in weights]))
+
+        # 3) 通用因子兜底
+        default_factors = [
+            ('trend_lowvol', 0.30),
+            ('relative_strength', 0.25),
+            ('low_downside', 0.25),
+            ('momentum_reversal', 0.20),
+        ]
+        return default_factors
+
+    # -- Lifecycle Management --
+
+    def update_lifecycles(self, industry: str = None):
+        """扫描所有因子, 更新生命周期状态."""
+        all_factors = self.store.get_all_factors()
+        industries = [industry] if industry else self.store.get_industries()
+        if not all_factors or not industries:
+            return
+
+        latest_date = self.store.get_latest_eval_date()
+        if latest_date is None:
+            return
+
+        for fn in all_factors:
+            for ind in industries:
+                q = self.get_quality(fn, ind, latest_date + pd.Timedelta(days=1))
+                if q is None:
+                    continue
+
+                current = self.get_status(fn)
+                new_status = current
+                recent_ics = self._get_recent_ics(fn, ind, max(self.promotion_windows, self.retirement_windows))
+
+                if current == 'candidate':
+                    if len(recent_ics) >= self.promotion_windows:
+                        if all(ic > self.min_active_ic for ic in recent_ics[-self.promotion_windows:]) \
+                           and q['ic_trend_slope'] >= -0.001:
+                            new_status = 'active'
+
+                elif current == 'active':
+                    if q['decay_score'] < -0.3:
+                        new_status = 'decaying'
+                    elif q['raw_latest_ic'] < 0:
+                        if len(recent_ics) >= self.retirement_windows \
+                           and all(ic < 0 for ic in recent_ics[-self.retirement_windows:]):
+                            new_status = 'retired'
+
+                elif current == 'decaying':
+                    if q['decay_score'] > 0.1 and q['raw_latest_ic'] > self.min_active_ic:
+                        new_status = 'active'
+                    elif q['raw_latest_ic'] < 0:
+                        if len(recent_ics) >= self.retirement_windows \
+                           and all(ic < 0 for ic in recent_ics[-self.retirement_windows:]):
+                            new_status = 'retired'
+
+                elif current == 'retired':
+                    retired_at = self.registry.get(fn, {}).get('retired_at')
+                    if retired_at:
+                        try:
+                            if latest_date - pd.Timestamp(retired_at) > pd.Timedelta(days=180):
+                                if q['raw_latest_ic'] > self.min_active_ic:
+                                    new_status = 'candidate'
+                        except (ValueError, TypeError):
+                            pass
+
+                if new_status != current:
+                    self.registry[fn]['status'] = new_status
+                    if new_status == 'active':
+                        self.registry[fn]['promoted_at'] = str(latest_date)
+                    elif new_status == 'decaying':
+                        self.registry[fn]['decay_detected_at'] = str(latest_date)
+                    elif new_status == 'retired':
+                        self.registry[fn]['retired_at'] = str(latest_date)
+
+        self._save_registry()
+
+    def _get_recent_ics(self, factor_name: str, industry: str, n: int) -> List[float]:
+        timeline = self.store.get_timeline(factor_name, industry)
+        if not timeline:
+            return []
+        return [r['ic_mean'] for r in timeline[-n:]]
+
+    # -- Summary --
+
+    def get_summary(self, industry: str = None) -> pd.DataFrame:
+        """因子库概览: 所有因子的当前状态和评分."""
+        latest_date = self.store.get_latest_eval_date()
+        if latest_date is None:
+            return pd.DataFrame()
+
+        all_factors = self.store.get_all_factors()
+        industries = [industry] if industry else self.store.get_industries()
+        if not all_factors or not industries:
+            return pd.DataFrame()
+
+        rows = []
+        for fn in all_factors:
+            for ind in industries:
+                q = self.get_quality(fn, ind, latest_date + pd.Timedelta(days=1))
+                if q is None:
+                    continue
+                rows.append({
+                    'factor_name': fn,
+                    'industry': ind,
+                    'status': self.get_status(fn),
+                    'family': self.registry.get(fn, {}).get('family', 'other'),
+                    'time_weighted_ic': q['time_weighted_ic'],
+                    'raw_latest_ic': q['raw_latest_ic'],
+                    'ic_trend_slope': q['ic_trend_slope'],
+                    'decay_score': q['decay_score'],
+                    'n_windows': q['n_windows'],
+                })
+
+        return pd.DataFrame(rows).sort_values('time_weighted_ic', ascending=False)
 
 
-# ==================== Alpha 因子 ====================
+# ============================================================
+# Factory
+# ============================================================
 
-def calc_factor_skewness_20(close: np.ndarray) -> np.ndarray:
-    """20日收益偏度：正偏度=上涨集中"""
-    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
-    result = np.zeros_like(close)
-    for i in range(20, len(close)):
-        r = returns[i-20:i]
-        if np.std(r) > 1e-10:
-            result[i] = ((r - np.mean(r)) ** 3).mean() / (np.std(r) ** 3 + 1e-10)
-    return np.tanh(result)
+def create_factor_library(store_path: str = None, config: dict = None) -> FactorLibrary:
+    if store_path is None:
+        strategy_dir = os.path.dirname(os.path.abspath(__file__))
+        store_path = os.path.normpath(os.path.join(strategy_dir, '..', 'cache', 'factor_library.parquet'))
 
+    store = FactorStore(store_path)
+    library = FactorLibrary(store, config or {})
 
-def calc_factor_kurtosis_20(close: np.ndarray) -> np.ndarray:
-    """20日收益峰度：低峰度=正信号（尾部风险小）"""
-    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
-    result = np.zeros_like(close)
-    for i in range(20, len(close)):
-        r = returns[i-20:i]
-        if np.std(r) > 1e-10:
-            result[i] = ((r - np.mean(r)) ** 4).mean() / (np.std(r) ** 4 + 1e-10) - 3
-    return np.tanh(-result / 3)
+    if store.size > 0:
+        all_factors = store.get_all_factors()
+        from .dynamic_factor_selector import get_factor_family
+        library.register_batch(all_factors, {fn: get_factor_family(fn) for fn in all_factors})
 
-
-def calc_factor_max_ret_20(close: np.ndarray) -> np.ndarray:
-    """20日最大单日涨幅：动量突破捕捉"""
-    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
-    result = np.zeros_like(close)
-    for i in range(20, len(close)):
-        result[i] = np.max(returns[i-20:i])
-    return np.tanh(result * 3)
-
-
-def calc_factor_tail_risk(close: np.ndarray) -> np.ndarray:
-    """尾部风险（CVaR-like）：最差5日平均收益"""
-    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
-    result = np.zeros_like(close)
-    for i in range(20, len(close)):
-        r = returns[i-20:i]
-        result[i] = np.mean(np.sort(r)[:5])
-    return np.tanh(result * 5)
-
-
-def calc_factor_volatility_skew(close: np.ndarray) -> np.ndarray:
-    """波动率偏度：上行波动/下行波动 - 1"""
-    returns = np.diff(close, prepend=close[0]) / (close + 1e-10)
-    result = np.zeros_like(close)
-    for i in range(20, len(close)):
-        r = returns[i-20:i]
-        up_r = r[r > 0]
-        down_r = r[r < 0]
-        up_vol = np.std(up_r) if len(up_r) > 2 else 0
-        down_vol = np.std(down_r) if len(down_r) > 2 else 0
-        if down_vol > 1e-10:
-            result[i] = up_vol / down_vol - 1
-    return np.tanh(result)
-
-
+    return library

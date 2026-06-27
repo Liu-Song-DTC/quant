@@ -43,8 +43,6 @@ REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
 
 # A股涨跌停限制数据（预计算，供BacktraderExecution使用）
 _LIMIT_DATA = {}   # {(code, date): 'up' | 'down'}
-_ST_CODES = set()  # ST股票代码集合
-_ST_DATE_RANGES = {}  # {code: [(start_date, end_date), ...]} ST期间
 _ADV_CACHE = {}    # {code: avg_daily_volume} 日均量缓存（冲击成本模型）
 
 # === 小说优化：动态调仓周期 ===
@@ -53,7 +51,7 @@ DYNAMIC_REBALANCE_ENABLED = DYNAMIC_REBALANCE_CONFIG.get('enabled', True)
 REBALANCE_BULL = DYNAMIC_REBALANCE_CONFIG.get('bull_period', 30)
 REBALANCE_NEUTRAL = DYNAMIC_REBALANCE_CONFIG.get('neutral_period', 20)
 REBALANCE_BEAR = DYNAMIC_REBALANCE_CONFIG.get('bear_period', 15)
-NUM_WORKERS = config.get('backtest.num_workers', 2 if platform.system() == 'Windows' else 8)
+NUM_WORKERS = config.get('backtest.num_workers', 2 if platform.system() == 'Windows' else 2)
 
 def _malloc_trim(pad=0):
     """将 Python 已释放但未归还 OS 的内存归还给内核（Linux only）。
@@ -150,11 +148,13 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, industry_codes, fac
                  ml_model_path=None, ml_preds_path=None):
     """Worker 进程初始化函数 (spawn 模式)
 
-    每个 worker 独立创建 FundamentalData 和加载 ML 预测，避免 fork 导致的
+    每个 worker 独立创建 FundamentalData 和 ML 预测器，避免 fork 导致的
     OpenMP/XGBoost 死锁问题。
+    ML 预测量改为按股票代码按需从 parquet 读取（不再加载 69MB pickle/进程）。
     """
-    global _worker_engine, _worker_use_dynamic
+    global _worker_engine, _worker_use_dynamic, _worker_ml_preds_path
     _worker_use_dynamic = use_dynamic
+    _worker_ml_preds_path = ml_preds_path  # 只记路径, 按需读取
 
     _worker_engine = SignalEngine()
 
@@ -179,16 +179,11 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, industry_codes, fac
             _worker_engine.set_ml_predictor(worker_ml)
         except Exception as e:
             import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
-    if ml_preds_path is not None and os.path.exists(ml_preds_path):
-        import pickle
-        with open(ml_preds_path, 'rb') as f:
-            _worker_ml_preds = pickle.load(f)
-        _worker_engine.set_ml_predictions(_worker_ml_preds)
 
 
 def _generate_stock_signal_worker(args):
     """Worker 函数：为一个股票生成信号 — 直接从文件读取，避免 pickle 传大数据"""
-    global _worker_engine, _worker_use_dynamic, _worker_diag_reported
+    global _worker_engine, _worker_use_dynamic, _worker_diag_reported, _worker_ml_preds_path
     code, filepath = args
     code = str(code).zfill(6)  # 归一化为6位字符串，确保与所有下游系统一致
 
@@ -197,6 +192,19 @@ def _generate_stock_signal_worker(args):
 
         if engine is None:
             engine = SignalEngine()
+
+        # 按需加载本股票的 ML 预测（~500条, <10KB）, 替代 69MB 全量 pickle
+        if _worker_ml_preds_path is not None and os.path.exists(_worker_ml_preds_path):
+            _stock_preds_df = pd.read_parquet(_worker_ml_preds_path,
+                                              filters=[('code', '==', code)])
+            if len(_stock_preds_df) > 0:
+                _stock_preds = {
+                    (str(row['code']).zfill(6), pd.Timestamp(row['date'])): float(row['ml_pred'])
+                    for _, row in _stock_preds_df.iterrows()
+                }
+                engine.set_ml_predictions(_stock_preds)
+            else:
+                engine.set_ml_predictions({})
 
         store = SignalStore()
         data = pd.read_csv(filepath, parse_dates=['datetime'])
@@ -275,7 +283,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     """加载数据、生成信号、添加到cerebro。
     同时预计算涨跌停数据和ST股票集合。
     """
-    global _LIMIT_DATA, _ST_CODES, _ST_DATE_RANGES, _ml_total_preds, _ml_val_ic
+    global _LIMIT_DATA, _ml_total_preds, _ml_val_ic
     all_items = os.listdir(DATA_PATH)
     stock_codes = []
 
@@ -298,6 +306,18 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         else:
             continue
         stock_file_map[name] = filepath
+
+    # === 股票池过滤（先过滤再预计算，避免读不需要的文件） ===
+    stock_pool_enabled = config.get('stock_pool.enabled', True)
+    if stock_pool_enabled:
+        stock_pool = get_stock_pool()
+        pool_codes = stock_pool | {'sh000001'}
+        before_count = len(stock_file_map)
+        stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
+        after_count = len(stock_file_map)
+        print(f"股票池过滤: {before_count} -> {after_count} 只 (全部通过质量筛选)")
+    else:
+        print(f"股票池过滤: 已关闭，使用全市场 {len(stock_file_map)} 只股票")
 
     # 预计算涨跌停数据（流式读取，仅加载 change_percent + amplitude 列，读后即弃）
     print("预计算涨跌停数据（流式读取）...")
@@ -335,26 +355,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     print(f"涨跌停数据: {len(_LIMIT_DATA)} 条 (涨停={sum(1 for v in _LIMIT_DATA.values() if v=='up')}, "
           f"跌停={sum(1 for v in _LIMIT_DATA.values() if v=='down')})")
 
-    # === 股票池过滤 ===
-    stock_pool_enabled = config.get('stock_pool.enabled', True)
-    if stock_pool_enabled:
-        stock_pool = get_stock_pool()
-        pool_codes = stock_pool | {'sh000001'}
-        before_count = len(stock_file_map)
-        stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
-        after_count = len(stock_file_map)
-        print(f"股票池过滤: {before_count} -> {after_count} 只 (全部通过质量筛选)")
-    else:
-        print(f"股票池过滤: 已关闭，使用全市场 {len(stock_file_map)} 只股票")
-
     # === 科创板(688xxx) 不再剔除 — 2025-2026年妖股主要集中板块 ===
     star_codes = set()
     before_excl_star = len(stock_file_map)
     print(f"科创板保留: {before_excl_star} 只 (不再排除)")
 
-    # === ST股票识别（基于基本面数据，使用指数中间日期作为参考） ===
-    _ST_CODES = set()
-    _ST_DATE_RANGES = {}
+    # ST股票不再静态排除 — 改为向量化回测中逐日调用 fundamental_data.is_st() (line ~1177)
     # 先加载sh000001获取交易日历（所有后续步骤依赖）
     sh000001_file = stock_file_map.get('sh000001')
     if sh000001_file:
@@ -371,26 +377,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             tmp = pd.read_csv(fp, parse_dates=['datetime'])
             calendar_index = pd.DatetimeIndex(sorted(tmp['datetime']))
             break
-    all_dates_for_st = sorted(calendar_index.tolist()) if calendar_index is not None else []
-    ref_mid_date = pd.Timestamp(all_dates_for_st[len(all_dates_for_st) // 2]) if all_dates_for_st else None
-
-    if fundamental_data is not None and ref_mid_date is not None:
-        try:
-            st_candidates = [c for c in stock_file_map.keys() if c != 'sh000001']
-            for code in tqdm(st_candidates, desc="ST detection"):
-                if fundamental_data.is_st(code, ref_mid_date):
-                    _ST_CODES.add(code)
-            print(f"ST股票: {len(_ST_CODES)} 只")
-            if _ST_CODES:
-                strategy.st_codes = _ST_CODES
-        except Exception as e:
-            print(f"ST检测跳过: {e}")
-            strategy.st_codes = set()
-    else:
-        strategy.st_codes = set()
 
     # 处理指数数据 - 生成市场状态 (Fix#6: 多指数风格检测)
-    # calendar_index 已在上方ST检测阶段从 sh000001 构建
+    # calendar_index 已在上方从 sh000001 构建
     regime_df = None
     # 加载小盘/成长指数（如果存在）
     small_cap_df = None
@@ -469,40 +458,81 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 先于 Backtrader datafeed 创建，避免 reindexed 数据(~2GB) 与 factor_df(~4GB) 共存
     # ===================================================================
 
-    # === ML预测层训练 ===
+    # === ML预测层训练 (滚动窗口 Walk-Forward) ===
     ml_config = config.config.get('ml', {})
     _ml_model_path = None
     _ml_preds = {}
     if ml_config.get('enabled', False) and factor_df is not None:
         try:
             from core.ml_predictor import MLFactorPredictor
-            print("训练XGBoost预测模型...")
-            ml_predictor = MLFactorPredictor(config.config)
-            val_ic = ml_predictor.train(factor_df)
-            if val_ic is not None and val_ic > 0:
-                strategy_dir = os.path.dirname(os.path.abspath(__file__))
-                model_dir = os.path.join(strategy_dir, 'models')
-                os.makedirs(model_dir, exist_ok=True)
-                _ml_model_path = os.path.join(model_dir, 'xgb_strategy_model.json')
-                ml_predictor.save_model(_ml_model_path)
+
+            _train_window = ml_config.get('train_window_days', 750)  # 3年窗口
+            _retrain_freq = ml_config.get('retrain_frequency', 60)   # 季度重训
+            _pred_start = pd.Timestamp(ml_config.get('pred_start_date', '2021-01-01'))
+
+            # 预测期: pred_start 之后的所有日期
+            _all_dates = sorted(factor_df['date'].unique())
+            _pred_dates = [d for d in _all_dates if d >= _pred_start]
+
+            if len(_pred_dates) == 0:
+                print("[ML] 无预测日期, 跳过")
+            else:
+                print(f"ML滚动窗口: train_window={_train_window}日 "
+                      f"retrain_every={_retrain_freq}日 "
+                      f"pred_dates={len(_pred_dates)}")
+
+                # 按 retrain_frequency 分 chunk, 每 chunk 用前 train_window 日训练
+                chunk_starts = list(range(0, len(_pred_dates), _retrain_freq))
+                _val_ics = []
+                _total_preds = 0
+
+                for chunk_idx, chunk_start in enumerate(tqdm(chunk_starts, desc="ML滚动训练")):
+                    chunk_end = min(chunk_start + _retrain_freq, len(_pred_dates))
+                    chunk_dates = _pred_dates[chunk_start:chunk_end]
+                    first_pred_date = chunk_dates[0]
+
+                    # 训练集: first_pred_date 之前 train_window 日
+                    train_start = first_pred_date - pd.Timedelta(days=_train_window)
+                    train_mask = (factor_df['date'] >= train_start) & \
+                                 (factor_df['date'] < first_pred_date)
+                    train_df = factor_df[train_mask]
+
+                    if len(train_df) < 50000:  # 最少5万样本
+                        print(f"  chunk {chunk_idx}: 训练样本不足({len(train_df)}), 跳过")
+                        continue
+
+                    # 训练
+                    ml_predictor = MLFactorPredictor(config.config)
+                    val_ic = ml_predictor.train(train_df)
+                    if val_ic is None or val_ic <= 0:
+                        continue
+                    _val_ics.append(val_ic)
+
+                    # 保存最新模型
+                    strategy_dir = os.path.dirname(os.path.abspath(__file__))
+                    model_dir = os.path.join(strategy_dir, 'models')
+                    os.makedirs(model_dir, exist_ok=True)
+                    _ml_model_path = os.path.join(model_dir, 'xgb_strategy_model.json')
+                    ml_predictor.save_model(_ml_model_path)
+
+                    # 预测当前 chunk
+                    for date in chunk_dates:
+                        date_df = factor_df[factor_df['date'] == date]
+                        if len(date_df) == 0:
+                            continue
+                        preds = ml_predictor.predict(date_df)
+                        codes = date_df['code'].values
+                        for j, code in enumerate(codes):
+                            _ml_preds[(str(code).zfill(6), date)] = preds[j]
+                    _total_preds += sum(1 for d in chunk_dates
+                                        if d in factor_df['date'].values)
+
+                _ml_total_preds = len(_ml_preds)
+                _ml_val_ic = float(np.mean(_val_ics)) if _val_ics else 0.0
+                print(f"ML滚动训练完成: {len(chunk_starts)} chunks, "
+                      f"avg_IC={_ml_val_ic:.4f}, preds={_ml_total_preds:,}")
                 print(f"ML模型已保存: {_ml_model_path}")
 
-                print("生成ML预测...")
-                all_dates_sorted = sorted(factor_df['date'].unique())
-                for date in tqdm(all_dates_sorted, desc="ML预测"):
-                    date_df = factor_df[factor_df['date'] == date]
-                    if len(date_df) == 0:
-                        continue
-                    preds = ml_predictor.predict(date_df)
-                    codes = date_df['code'].values
-                    for j, code in enumerate(codes):
-                        code_str = str(code).zfill(6)
-                        _ml_preds[(code_str, date)] = preds[j]
-                print(f"ML预测完成: {len(_ml_preds)} 条预测")
-                _ml_total_preds = len(_ml_preds)
-                _ml_val_ic = val_ic
-            else:
-                print(f"[ML] 验证IC不足({val_ic}), 跳过ML预测")
         except ImportError:
             print("[ML] xgboost未安装，跳过ML预测")
         except Exception as e:
@@ -529,6 +559,11 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             main_engine.set_ml_predictor(ml_predictor)
             main_engine.set_ml_predictions(_ml_preds)
         print(f"主引擎已设置动态因子数据")
+
+        # 初始化因子库 (持久化IC评估 + 时变质量追踪)
+        from core.factor_library import create_factor_library
+        _factor_lib = create_factor_library()
+        main_engine.dynamic_factor_selector.factor_library = _factor_lib
 
         # 预计算所有日期的因子选择（避免多进程中重复计算）
         print("预计算因子选择...")
@@ -613,14 +648,17 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     global dynamic_factor_stats
     dynamic_factor_stats = {'hit': 0, 'miss': 0, 'factor_names': {}}
 
-    # === 保存 ML 预测到文件（spawn 模式通过文件传递大数据）===
+    # === 保存 ML 预测到 parquet（按code索引, worker按需读取, 避免69MB/进程pickle OOM）===
     _ml_preds_path = None
     if _ml_preds:
-        import pickle
-        _ml_preds_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                       'rolling_validation_results', 'ml_preds_worker.pkl')
-        with open(_ml_preds_path, 'wb') as f:
-            pickle.dump(_ml_preds, f, protocol=pickle.HIGHEST_PROTOCOL)
+        strategy_dir = os.path.dirname(os.path.abspath(__file__))
+        _ml_preds_path = os.path.join(strategy_dir, 'rolling_validation_results', 'ml_preds_worker.parquet')
+        ml_preds_df = pd.DataFrame(
+            [{'code': c, 'date': d, 'ml_pred': v} for (c, d), v in _ml_preds.items()],
+            columns=['code', 'date', 'ml_pred']
+        )
+        ml_preds_df.to_parquet(_ml_preds_path, index=False)
+        del ml_preds_df
 
     # 预初始化另类数据缓存（主进程单次执行，避免8个worker同时下载）
     try:
@@ -1171,7 +1209,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     selections = []
     rebalance_interval = REBALANCE_DAYS
     cost_tracker = {}
-    PORTFOLIO_HARD_STOP = -0.05  # 日回撤>5% → 强平50%仓位
+    PORTFOLIO_HARD_STOP = -0.04  # 日回撤>4% → 直接清仓
 
     # 成交统计
     _fill_stats = {'buy_attempted': 0, 'buy_filled': 0, 'buy_partial': 0,
@@ -1198,7 +1236,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         if i > 0 and daily_ret[i - 1] < PORTFOLIO_HARD_STOP:
             for j in range(len(stock_codes)):
                 if positions[j] > 0 and ok[j]:
-                    sell_shares = int(positions[j] * 0.5 / 100) * 100
+                    sell_shares = positions[j]  # 直接清仓
                     if sell_shares >= 100:
                         px = float(px_today[j])
                         impact = _impact(adv_cache.get(stock_codes[j], 0), sell_shares, px)
