@@ -227,6 +227,7 @@ class BacktestDiagnostics:
 
         data = {
             'factor_selection': dict(self.metrics['factor_selection']),
+            'factor_family': dict(self.metrics['factor_family']),
             'buy_signals': self.metrics['buy_signals'],
             'buy_by_buy_point': dict(self.metrics['buy_by_buy_point']),
             'buy_by_factor_family': dict(self.metrics['buy_by_factor_family']),

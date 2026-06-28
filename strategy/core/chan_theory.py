@@ -1134,24 +1134,24 @@ def detect_buy_sell_points(
             if not ma_bull:
                 continue
 
-            # 条件2: 真实回调 (5日涨幅<1%, 不是横盘)
+            # 条件2: 真实回调 (5日涨幅<-2%, 不是横盘, 要求实质性下跌)
             mom_5d_val = (close[idx] - close[max(0,idx-5)]) / (close[max(0,idx-5)] + 1e-10)
-            is_pulling_back = mom_5d_val < 0.01
+            is_pulling_back = mom_5d_val < -0.02
 
-            # 条件3: 回调到均线附近 (距MA20<8%)
+            # 条件3: 回调到均线附近 (距MA20在-5%~+5%之间)
             dist_ma20 = (close[idx] - ma20[idx]) / (ma20[idx] + 1e-10)
-            near_ma = -0.05 < dist_ma20 < 0.08
+            near_ma = -0.05 < dist_ma20 < 0.05
 
-            # 条件4: 真实缩量 (近5日均量 < 前5日×0.95, 量价配合)
+            # 条件4: 显著缩量 (近5日均量 < 前5日×0.85, 量价配合)
             vol_ok = True
             if volume is not None and idx >= 10:
                 vol_recent = np.mean(volume[max(0,idx-4):idx+1])
                 vol_prev = np.mean(volume[max(0,idx-9):max(0,idx-4)])
-                vol_ok = vol_recent < vol_prev * 0.95
+                vol_ok = vol_recent < vol_prev * 0.85
 
-            # 条件5: 非力竭 (60日涨幅<50%)
+            # 条件5: 非力竭 (60日涨幅<35%, 收紧以防止追高)
             mom_60d_val = (close[idx] - close[idx-60]) / (close[idx-60] + 1e-10)
-            not_extended = mom_60d_val < 0.50
+            not_extended = mom_60d_val < 0.35
 
             # 条件6: 底分型确认 (回调到位, 不是悬在半空)
             has_fractal = True
@@ -2117,6 +2117,10 @@ def detect_second_buy_point(
             continue
         macd_recent = macd_hist[max(0, i-5):i+1]
         macd_earlier = macd_hist[max(0, i-10):max(0, i-5)]
+        if len(macd_recent) == 0 or len(macd_earlier) == 0:
+            continue
+        if np.all(np.isnan(macd_recent)) or np.all(np.isnan(macd_earlier)):
+            continue
         r_mean = np.nanmean(macd_recent)
         e_mean = np.nanmean(macd_earlier)
         if np.isnan(r_mean) or np.isnan(e_mean) or r_mean <= e_mean:
@@ -2278,6 +2282,10 @@ def detect_second_sell_point(
             continue
         lb = min(i, 20)
         if lb < 10: continue
+        if len(macd_hist[max(0,i-5):i+1]) == 0 or len(macd_hist[max(0,i-10):max(0,i-5)]) == 0:
+            continue
+        if np.all(np.isnan(macd_hist[max(0,i-5):i+1])) or np.all(np.isnan(macd_hist[max(0,i-10):max(0,i-5)])):
+            continue
         mr = np.nanmean(macd_hist[max(0,i-5):i+1])
         me = np.nanmean(macd_hist[max(0,i-10):max(0,i-5)])
         if np.isnan(mr) or np.isnan(me) or mr >= me: continue

@@ -39,6 +39,7 @@ from .factor_calculator import calculate_indicators as calc_indicators, compute_
 from .multi_timeframe import MultiTimeframeAnalyzer
 from .gate_scorer import compute_all_gates, compute_gate_quality
 from .bom_chain import compute_stock_bom_score
+from .pipeline_logger import plog
 import yaml
 import os
 
@@ -138,9 +139,6 @@ class SignalEngine:
         # 因子选择统计
         self._stats = {
             'dynamic_success': 0,
-            'dynamic_skip_low_ic': 0,  # 低IC行业跳过动态因子
-            'dynamic_fallback_fixed': 0,
-            'dynamic_fallback_default': 0,
             'dynamic_fallback_none': 0,  # 无高质量因子时不产生信号
             'fixed_industry': 0,
             'fixed_default': 0,
@@ -182,12 +180,7 @@ class SignalEngine:
         self.trend_sell_ti_relax = signal_config.get('trend_sell_ti_relax', -0.20)
 
         # Fix#4: 动态阈值百分位 — 从YAML正确读取 (self.config可能为{})
-        self._buy_threshold_pct_map = {
-            1: signal_config.get('buy_threshold_pct_bull', 0.50),
-            0: signal_config.get('buy_threshold_pct', 0.45),  # YAML默认0.45
-            -1: signal_config.get('buy_threshold_pct_bear', 0.70),
-        }
-        self._buy_threshold_pct = self._buy_threshold_pct_map[0]
+        self._buy_threshold_pct = signal_config.get('buy_threshold_pct', 0.45)
 
         # === 三系统共振阈值 ===
         resonance_cfg = signal_config.get('resonance', {})
@@ -316,6 +309,52 @@ class SignalEngine:
         """
         self.dynamic_factor_selector.set_factor_data(factor_df)
 
+    # === 截面排名数据（worker 按需加载，用于因子组合评分） ===
+    def set_rank_parquet(self, path: str):
+        """记录排名 parquet 路径，供主进程信号引擎使用"""
+        self._rank_parquet_path = path
+        self._stock_rank_data = {}  # {code: DataFrame}
+
+    def set_stock_rank_data(self, code: str, df):
+        """设置单只股票的排名数据（worker 进程调用）
+
+        Args:
+            code: 股票代码
+            df: DataFrame with columns [date, factor1_rank, factor2_rank, ...] 或 None
+        """
+        if not hasattr(self, '_stock_rank_data'):
+            self._stock_rank_data = {}
+        if df is not None and len(df) > 0:
+            self._stock_rank_data[code] = df.set_index('date')
+        else:
+            self._stock_rank_data.pop(code, None)
+
+    def _lookup_rank(self, code: str, date, factor_name: str) -> float:
+        """查询某股票某日期的因子截面排名值
+
+        Args:
+            code: 股票代码
+            date: 日期 (datetime or date)
+            factor_name: 因子名（不需要 _rank 后缀）
+
+        Returns:
+            排名值 [-3, 3]，查不到返回 nan
+        """
+        if not hasattr(self, '_stock_rank_data'):
+            return float('nan')
+        rank_df = self._stock_rank_data.get(code)
+        if rank_df is None or len(rank_df) == 0:
+            return float('nan')
+        rank_col = f'{factor_name}_rank'
+        if rank_col not in rank_df.columns:
+            return float('nan')
+        # 找 ≤ date 的最新日期（前向填充）
+        dt = pd.Timestamp(date)
+        before = rank_df.index[rank_df.index <= dt]
+        if len(before) == 0:
+            return float('nan')
+        return float(rank_df.loc[before[-1], rank_col])
+
     def set_industry_mapping(self, industry_codes: Dict[str, List[str]]):
         """设置行业映射（用于动态因子选择）
 
@@ -366,9 +405,6 @@ class SignalEngine:
         else:
             print("\n========== 因子选择统计 ==========")
             print(f"动态因子成功:     {stats['dynamic_success']:6d} ({100*stats['dynamic_success']/total:.1f}%)")
-            print(f"动态跳过(低IC):   {stats['dynamic_skip_low_ic']:6d} ({100*stats['dynamic_skip_low_ic']/total:.1f}%)")
-            print(f"动态->固定fallback: {stats['dynamic_fallback_fixed']:6d} ({100*stats['dynamic_fallback_fixed']/total:.1f}%)")
-            print(f"动态->默认fallback: {stats['dynamic_fallback_default']:6d} ({100*stats['dynamic_fallback_default']/total:.1f}%)")
             print(f"动态->无信号: {stats['dynamic_fallback_none']:6d} ({100*stats['dynamic_fallback_none']/total:.1f}%)")
             print(f"固定行业因子:    {stats['fixed_industry']:6d} ({100*stats['fixed_industry']/total:.1f}%)")
             print(f"固定默认因子:    {stats['fixed_default']:6d} ({100*stats['fixed_default']/total:.1f}%)")
@@ -558,10 +594,7 @@ class SignalEngine:
 
             # 买入条件：无硬拒绝 · 分数有效 · 价格OK · 未过度乖离 · 有缠论结构
             # Gate保证质量 → 因子评分在池内做区分
-            _regime_i = int(result['risk_regime'][i])
-            # 纯因子评分范围~[-0.5,0.2], mean=-0.17, threshold设为截面中上水平
-            _abs_score_floor = {1: -0.05, 0: -0.02, -1: 0.0}.get(_regime_i, -0.05)
-            _score_ok = (score >= _abs_score_floor)
+            _score_ok = (score >= -0.02)  # 统一门槛，不再分regime
             _dt_sig = float(result['_dt_signal'][i]) if '_dt_signal' in result else 0.0
             struct_ok = (bp_buy >= 1) or (_dt_sig > 0.3)
             buy = (not hard_reject and not np.isnan(score) and _score_ok and
@@ -569,6 +602,8 @@ class SignalEngine:
 
             # 回测诊断: 记录买入信号
             if buy:
+                plog.log_signal(True, False, score, gate_q, bp_buy,
+                                str(result['industry'][i]), str(result['factor_name'][i]))
                 try:
                     if self._diag is None:
                         from analysis.backtest_diagnostics import get_diagnostics
@@ -646,26 +681,34 @@ class SignalEngine:
             # 龙虎榜独立买点: 机构大买(>0.3) + SL>=2门控(需清晰结构确认)
             if _dt_sig > 0.3 and not hard_reject and not _is_limit_down_stock:
                 _bp0_sl = int(result['signal_level'][i])
-                if _bp0_sl >= 2:
+                _bp0_pass = _bp0_sl >= 2
+                plog.log_buy_point_gate('BP0', not _bp0_pass)
+                if _bp0_pass:
                     buy = True
 
             # === B3 质量门控: SL=0 WR=32%, TT=-2 WR=8% (数据驱动) ===
             if buy and bp_buy == 3 and self.b3_gate_enabled:
                 _b3_sl = int(result['signal_level'][i])
                 _b3_tt = int(result['trend_type'][i])
-                if _b3_sl < 1 or _b3_tt < 0:
+                _b3_reject = _b3_sl < 1 or _b3_tt < 0
+                plog.log_buy_point_gate('B3', _b3_reject)
+                if _b3_reject:
                     buy = False
 
             # === B2 质量门控 (基于divergence_strength, IC=+0.031) ===
             if buy and bp_buy == 2:
                 _b2_div = float(result['chan_divergence_strength'][i])
-                if _b2_div < self.chan_b2_min_div_strength:
+                _b2_reject = _b2_div < self.chan_b2_min_div_strength
+                plog.log_buy_point_gate('B2', _b2_reject)
+                if _b2_reject:
                     buy = False
 
             # === BP8 质量门控: signal_level=0胜率仅39.1%, 过滤无结构突破 ===
             if buy and bp_buy == 8 and self.bp8_gate_enabled:
                 _b8_sl = int(result['signal_level'][i])
-                if _b8_sl < self.chan_bp8_min_signal_level:
+                _b8_reject = _b8_sl < self.chan_bp8_min_signal_level
+                plog.log_buy_point_gate('BP8', _b8_reject)
+                if _b8_reject:
                     buy = False
 
             # === B4 质量门控: SL>=2 + trend_type>=0 (TT=-2的670个信号WR=37%污染) ===
@@ -673,19 +716,25 @@ class SignalEngine:
                 _b4_sl = int(result['signal_level'][i])
                 _b4_conf = float(result['buy_confidence'][i]) if 'buy_confidence' in result else 0.35
                 _b4_tt = int(result['trend_type'][i])
-                if _b4_sl < self.chan_b4_min_signal_level or _b4_conf < self.chan_b4_min_confidence or _b4_tt < 0:
+                _b4_reject = _b4_sl < self.chan_b4_min_signal_level or _b4_conf < self.chan_b4_min_confidence or _b4_tt < 0
+                plog.log_buy_point_gate('B4', _b4_reject)
+                if _b4_reject:
                     buy = False
 
             # === B1 质量门控: SL=0 WR=40% MR=-1.07%, SL>=2 WR=50.8% (数据驱动) ===
             if buy and bp_buy == 1 and self.b1_gate_enabled:
                 _b1_sl = int(result['signal_level'][i])
-                if _b1_sl < self.chan_b1_min_signal_level:
+                _b1_reject = _b1_sl < self.chan_b1_min_signal_level
+                plog.log_buy_point_gate('B1', _b1_reject)
+                if _b1_reject:
                     buy = False
 
             # === BP7 质量门控: 质量最高买点(WR=55.6%)但SL=0占17%(WR=42%/MR=-1.19%)未过滤 ===
             if buy and bp_buy == 7 and self.bp7_gate_enabled:
                 _b7_sl = int(result['signal_level'][i])
-                if _b7_sl < self.chan_bp7_min_signal_level:
+                _b7_reject = _b7_sl < self.chan_bp7_min_signal_level
+                plog.log_buy_point_gate('BP7', _b7_reject)
+                if _b7_reject:
                     buy = False
 
             # === BP6 质量门控: 均线回踩, 占10.7%信号, WR=49.6%低于平均 ===
@@ -695,13 +744,16 @@ class SignalEngine:
                 _b6_reject = _b6_sl < self.chan_bp6_min_signal_level
                 if self.chan_bp6_min_trend_type > -2:
                     _b6_reject = _b6_reject or _b6_tt < self.chan_bp6_min_trend_type
+                plog.log_buy_point_gate('BP6', _b6_reject)
                 if _b6_reject:
                     buy = False
 
             # === B5 质量门控: 趋势启动, 占4.3%信号, 待数据验证 ===
             if buy and bp_buy == 5 and self.b5_gate_enabled:
                 _b5_sl = int(result['signal_level'][i])
-                if _b5_sl < self.chan_b5_min_signal_level:
+                _b5_reject = _b5_sl < self.chan_b5_min_signal_level
+                plog.log_buy_point_gate('B5', _b5_reject)
+                if _b5_reject:
                     buy = False
 
             # MA60止损: 跌破MA60且score转负 → 强制卖出
@@ -713,6 +765,9 @@ class SignalEngine:
             sell_confirmed = sell_confirmed or (gate_q < 0.75 and score < 0)
             sell_confirmed = sell_confirmed or (score < -0.10 and gate_q < 1.0)
             sell = not np.isnan(score) and (score < sell_th or (score < 0 and sell_confirmed))
+
+            if sell:
+                plog.log_signal(False, True, score, gate_q, 0)
 
             # 因子标签
             factor_tags = []
@@ -806,7 +861,8 @@ class SignalEngine:
         """计算技术指标（委托给factor_calculator）"""
         params = self.indicator_params
         dates = data['datetime'].values
-        close = data['close'].values
+        close = data['close'].values.astype(float)
+        close[close == 0] = np.nan  # 新股上市前padding的0替换为NaN，避免除零
         high = data['high'].values
         low = data['low'].values
         volume = data['volume'].values
@@ -1248,6 +1304,14 @@ class SignalEngine:
         gate_grades, hard_rejects = compute_all_gates(ind, n)
         gate_quality = compute_gate_quality(gate_grades)
 
+        # 记录Gate分项质量 (最新bar)
+        if n > 60 and not np.isnan(gate_quality[-1]):
+            plog.log_gate_dimensions(
+                float(gate_grades[-1, 0]), float(gate_grades[-1, 1]),
+                float(gate_grades[-1, 2]), float(gate_grades[-1, 3]),
+                float(gate_quality[-1]), not bool(hard_rejects[-1]),
+            )
+
         # === 诊断: 记录门控质量分布（采样每只股票最新bar） ===
         if self._diag is None:
             try:
@@ -1500,92 +1564,31 @@ class SignalEngine:
         }
 
     def _compute_dynamic_thresholds(self, scores: np.ndarray, regimes: np.ndarray) -> tuple:
-        """向量化动态阈值：rolling quantile替代逐bar buffer/counter。
+        """向量化动态阈值：单一百分位 rolling quantile。
 
-        原逻辑等价转换：
-        - deque(maxlen=800) → rolling(window=800, min_periods=100)
-        - 每20根K线重算 → 每根K线直接重算（原为性能折衷，向量化后无此必要）
-        - 按市场状态选择百分位 → 按regime分组计算不同分位数
-
-        Args:
-            scores: shape (n,), 含NaN表示无有效分数
-            regimes: shape (n,), 市场状态编码 {1:bull, 0:neutral, -1:bear}
+        对全部有效分数计算 rolling quantile，不再按 regime 分组。
+        shift(1) 排除当前bar避免前视；min_periods=100 确保统计显著。
 
         Returns:
             buy_thresholds: shape (n,), 各bar的买入阈值
             sell_thresholds: shape (n,), 各bar的卖出阈值
         """
         n = len(scores)
-        # 默认阈值（rolling quantile不足100根时使用）
         buy_thresholds = np.full(n, self.buy_threshold)
         sell_thresholds = np.full(n, self.sell_threshold)
 
-        # 逐regime计算rolling quantile（regime种类少，循环开销可忽略）
-        for regime, pct_raw in self._buy_threshold_pct_map.items():
-            mask = regimes == regime
-            if not mask.any():
-                continue
+        pct = self._buy_threshold_pct
+        s_shifted = pd.Series(np.where(~np.isnan(scores), scores, np.nan)).shift(1)
+        roll_buy = s_shifted.rolling(window=800, min_periods=100).quantile(pct)
+        roll_sell = s_shifted.rolling(window=800, min_periods=100).quantile(1.0 - pct)
 
-            pct = pct_raw  # e.g. 0.45
-            # NaN-mask non-matching bars so rolling quantile only sees this regime
-            s_regime = pd.Series(np.where(mask, scores, np.nan))
-            # rolling quantile: shift(1)排除当前bar，避免未来函数
-            # 只用当前bar之前的数据计算阈值，与实盘行为一致
-            # min_periods=100 等价于 len(buffer) > 100
-            s_shifted = s_regime.shift(1)
-            roll_buy = s_shifted.rolling(window=800, min_periods=100).quantile(pct)
-            roll_sell = s_shifted.rolling(window=800, min_periods=100).quantile(1.0 - pct)
-
-            # 只覆写rolling quantile有效的bar（>=100根），其余保留默认阈值
-            buy_vals = roll_buy.values
-            sell_vals = roll_sell.values
-            valid = mask & ~np.isnan(buy_vals)
-            if valid.any():
-                buy_thresholds[valid] = np.maximum(buy_vals[valid], self.buy_threshold * 0.15)  # 纯因子评分范围小, 降下限
-                sell_thresholds[valid] = np.minimum(sell_vals[valid], self.sell_threshold)
-            # else: 该regime样本不足100，静默回退全局阈值
+        buy_vals = roll_buy.values
+        sell_vals = roll_sell.values
+        valid = ~np.isnan(buy_vals)
+        buy_thresholds[valid] = np.maximum(buy_vals[valid], self.buy_threshold * 0.15)
+        sell_thresholds[valid] = np.minimum(sell_vals[valid], self.sell_threshold)
 
         return buy_thresholds, sell_thresholds
-
-    def _recompute_factor_value(self, ind: dict, idx: int, cached_result: tuple) -> tuple:
-        """用缓存的因子选择配置，在指定 bar 重新计算 factor_value。
-
-        缓存存储的是 (factor_name_template, factor_value_at_cache_time, risk_info, is_industry_factor)。
-        DYN 因子名格式: DYN_{industry}_{n}F → 提取 industry + valid_factors 由来，
-        但无法从缓存中完全恢复 selected_factors。因此对 DYN 因子简单重新执行完整选择。
-        对 IND/MOM/REV/SHARPE 因子则调用对应的计算函数重新算值。
-
-        性能权衡: DYN 命中率 88%，cache miss 时才完整计算；cache hit 时只需重新执行便宜的重算。
-        """
-        fn, fv_cached, risk_info, is_ind_f = cached_result
-        if fn is None:
-            return None
-
-        # DYN 因子: 缓存键命中时完整重新计算（需要 selected_factors 列表，缓存里没有）
-        # 简单回退: cache miss 即可，不重复 _select_factor 的复杂逻辑
-        if isinstance(fn, str) and fn.startswith('DYN_'):
-            # DYN 因子名包含 industry 前缀，但无法从名字恢复完整的 selected_factors
-            # 返回缓存的原始结果（小幅妥协：DYN 因子值在相同 regime/trend/vol 下复用）
-            return cached_result
-
-        # IND 因子 (IND_xxx): 重新调用 _calculate_industry_factor_score
-        if isinstance(fn, str) and fn.startswith('IND_'):
-            industry = '_'.join(fn.split('_')[1:3]) if len(fn.split('_')) >= 3 else ''
-            if industry:
-                result = self._calculate_industry_factor_score(ind, idx, industry, regime=0)
-                if result:
-                    new_fn, new_fv, new_risk = result
-                    return (new_fn, new_fv, new_risk, is_ind_f)
-
-        # MOM/REV/SHARPE/default: 重新调用 _calculate_default_factor
-        if fn in ('MOM', 'REV', 'SHARPE'):
-            _mi = _mi_simple if '_mi_simple' in dir() else {}
-            regime = _mi.get('regime', 0) if isinstance(_mi := {}, dict) else 0
-            new_fn, new_fv, new_risk = self._calculate_default_factor(ind, idx, regime, '')
-            return (new_fn, new_fv, new_risk, False)
-
-        # 兜底: 返回缓存结果
-        return cached_result
 
     def _select_factor(self, ind: dict, idx: int, regime: int, industry_category: str = 'default',
                        code=None, current_date=None, trend_score: float = 0.0,
@@ -1617,6 +1620,8 @@ class SignalEngine:
                 if result:
                     self._stats['dynamic_success'] += 1
                     self._record_factor_selection(result[0], True, True)
+                    _dyn_qual = result[2].get('dyn_quality', 0) if result[2] else 0
+                    plog.log_factor_sel(result[0], True, specific_industry or 'unknown', _dyn_qual, 0)
                     return result
                 # 动态选择失败
                 if self.factor_mode == 'dynamic' and not self.factor_fallback_to_fixed:
@@ -1649,6 +1654,7 @@ class SignalEngine:
                         # 不做熊市折扣：组合层用截面rank_pct排序，均匀缩放不改变排名
                         factor_name = factor_name + f'_{specific_industry[:2]}'
                         self._record_factor_selection(factor_name, True, False)
+                        plog.log_factor_sel(factor_name, False, specific_industry, 0, 0)
                         return factor_name, factor_value, risk_info, True
 
         # Fix#13: 最终兜底 — 使用行业category的配置（优先）
@@ -1724,45 +1730,31 @@ class SignalEngine:
             self._dyn_fail['no_code_or_date'] += 1
             return None
 
-        # P1修复: 统一用 pd.to_datetime 归一化 → YYYY-MM-DD 格式
         current_date_str = pd.to_datetime(current_date).strftime('%Y-%m-%d')
 
-        # 获取股票所属行业
-        specific_industry = self._get_specific_industry(code, current_date)
-        if not specific_industry:
-            self._dyn_fail['no_industry'] += 1
-            return None
-
-        # 检查因子数据是否存在（factor_df 或预计算的 factor_cache 至少有一个）
+        # 检查因子数据是否存在
         if self.dynamic_factor_selector.factor_df is None and not self.dynamic_factor_selector._factor_cache:
             self._dyn_fail['no_cache_data'] += 1
             return None
 
-        # 获取动态选择的因子
+        # 获取全局动态选择的因子
         try:
             all_dates = self.dynamic_factor_selector._all_dates_cache
             if not all_dates:
                 self._dyn_fail['no_dates'] += 1
                 return None
-            industry_factors = self.dynamic_factor_selector.select_factors_for_date(current_date_str, all_dates)
+            selected_info = self.dynamic_factor_selector.select_factors_for_date(current_date_str, all_dates)
         except Exception:
             self._dyn_fail['lookup_fail'] += 1
             return None
 
-        if not industry_factors or specific_industry not in industry_factors:
+        if not selected_info or 'factors' not in selected_info:
             self._dyn_fail['lookup_fail'] += 1
-            if not hasattr(self, '_dyn_lookup_miss_by_ind'):
-                self._dyn_lookup_miss_by_ind = defaultdict(int)
-            self._dyn_lookup_miss_by_ind[specific_industry] += 1
             return None
 
-        # 提取因子列表和质量指标（新返回格式）
-        selected_info = industry_factors[specific_industry]
-        if not selected_info or 'factors' not in selected_info:
-            return None
         selected_factors = selected_info['factors']
-        factor_weights = selected_info.get('weights', None)  # IC权重列表
-        factor_directions = selected_info.get('directions', None)  # 方向符号（+1正向/-1负向）
+        factor_weights = selected_info.get('weights', None)
+        factor_directions = selected_info.get('directions', None)
         dyn_quality = selected_info.get('quality', 0)
 
         # 条件fallback: DYN质量过低时返回None，触发fallback到FIXED
@@ -2042,11 +2034,14 @@ class SignalEngine:
 
         score = 0.0
         for factor_name, weight in scoring_factors[:5]:
-            fv = self._safe_get(ind, factor_name, idx, 0.0)
-            if regime == 1:
-                pass  # 牛市: 因子原值
-            elif regime == -1 and factor_name in ('momentum_reversal',):
-                fv = -fv  # 熊市反转
+            # 优先用截面排名值（消除因子间量级差异, IC权重才能真正主导）
+            fv = float('nan')
+            if code and current_date:
+                fv = self._lookup_rank(code, current_date, factor_name)
+            if np.isnan(fv):
+                fv = self._safe_get(ind, factor_name, idx, 0.0)
+            if regime == -1 and factor_name in ('momentum_reversal',):
+                fv = -fv  # 熊市反转: 低动量(均值回归)股票获得高分
             score += fv * weight
 
         # === Layer 5: 因子名 ===
@@ -2166,8 +2161,12 @@ class SignalEngine:
                 # 基本面因子：使用统一压缩函数
                 factor_val = self._get_fundamental_factor_value(code, current_date, factor_name)
             else:
-                # 技术因子：从 ind 字典获取
-                factor_val = self._safe_get(ind, factor_name, idx, None)
+                # 技术因子：优先用截面排名值，无排名则从 ind 字典获取
+                factor_val = float('nan')
+                if code and current_date:
+                    factor_val = self._lookup_rank(code, current_date, factor_name)
+                if np.isnan(factor_val):
+                    factor_val = self._safe_get(ind, factor_name, idx, None)
 
             # 因子标定归一化：跟踪量级 → 归一化 → IC权重主导贡献
             if factor_val is not None and not np.isnan(factor_val):
@@ -2420,6 +2419,8 @@ class SignalEngine:
                 return entry.get('score', 0.0)
 
         if not hasattr(self, 'fundamental_data') or not self.fundamental_data or not code:
+            if code:
+                plog.log_data_quality(code, 'no_fundamental_data')
             return 0.0
 
         from .factor_calculator import compute_fundamental_score

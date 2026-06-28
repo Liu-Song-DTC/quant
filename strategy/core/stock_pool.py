@@ -28,6 +28,18 @@ def _get_metadata_dir():
     return str(base / 'data' / 'stock_data' / 'stock_metadata')
 
 
+def _load_market_cap_whitelist():
+    """加载市值白名单（>=500亿总市值），用于加速回测"""
+    import os as _os
+    base = Path(__file__).parent.parent
+    whitelist_path = str(base / 'config' / 'large_cap_whitelist.txt')
+    if not _os.path.exists(whitelist_path):
+        return None  # 无白名单文件 → 不过滤
+    with open(whitelist_path, 'r') as f:
+        codes = {line.strip() for line in f if line.strip()}
+    return codes if codes else None
+
+
 def get_stock_pool(min_price: float = 2.0,
                    data_dir: str = None) -> set:
     """获取股票池 — 全市场除科创板外全部纳入
@@ -80,10 +92,14 @@ def get_stock_pool(min_price: float = 2.0,
             if last_price <= 0 or np.isnan(last_price) or last_price < min_price:
                 continue
 
-            # 流动性过滤: 近20日日均成交额
-            # 科创板(688): 1000万（妖股启动前成交额较低）
-            # 主板: 3000万（排除僵尸股）
-            min_amount = 10_000_000 if code.startswith('688') else 30_000_000
+            # 流动性过滤: 近20日日均成交额(过滤500亿市值以下, 500亿×0.5%换手≈2.5亿)
+            # 主板: 2亿 | 创业板(300): 1亿 | 科创板(688): 5000万
+            if code.startswith('688'):
+                min_amount = 50_000_000
+            elif code.startswith('300'):
+                min_amount = 100_000_000
+            else:
+                min_amount = 200_000_000
             min_vol = 300_000 if code.startswith('688') else 1_000_000
             if 'amount' in df.columns and len(df) >= 20:
                 avg_amount = df['amount'].iloc[-20:].mean()
@@ -103,32 +119,44 @@ def get_stock_pool(min_price: float = 2.0,
             continue
 
     selected.add('sh000001')
-    print(f"股票池: {len(valid_files)} 总文件 -> 排除科创板{len(exclusion_set)} | 异常{data_errors} | 流动性过滤{liquidity_filtered} -> {len(selected)} 只 (含sh000001)")
+    print(f"股票池: {len(valid_files)} 总文件 -> 科创板{len(exclusion_set)} | 异常{data_errors} | 流动性{liquidity_filtered} -> {len(selected)} 只 (含sh000001)")
     return selected
 
 
 def load_st_stocks() -> set:
-    """从stock_list.csv加载ST股票代码
+    """从stock_list_full.csv加载ST股票代码（含*ST和ST前缀的股票）
 
     Returns:
         set of ST stock codes (不含前缀, 如 '000001')
     """
     metadata_dir = _get_metadata_dir()
-    stock_list_path = os.path.join(metadata_dir, 'stock_list.csv')
+    # stock_list_full.csv 包含ST标记, stock_list.csv 不包含
+    stock_list_path = os.path.join(metadata_dir, 'stock_list_full.csv')
 
     if not os.path.exists(stock_list_path):
-        print("警告: stock_list.csv 不存在，无法过滤ST股票")
-        return set()
+        # 回退到 stock_list.csv
+        stock_list_path = os.path.join(metadata_dir, 'stock_list.csv')
+        if not os.path.exists(stock_list_path):
+            print("警告: 未找到 stock_list，无法过滤ST股票")
+            return set()
 
     df = pd.read_csv(stock_list_path, dtype={'symbol': str})
     st_codes = set()
     for _, row in df.iterrows():
         name = str(row.get('name', ''))
         symbol = str(row.get('symbol', ''))
-        if 'ST' in name and symbol:
+        # ST命名: '*ST香雪', 'ST逸飞' 等
+        if ('ST' in name or '*ST' in name) and symbol:
             st_codes.add(symbol)
 
-    print(f"ST股票过滤: 识别 {len(st_codes)} 只ST股票")
+    # 同时过滤退市股票（名称含"退市"）
+    for _, row in df.iterrows():
+        name = str(row.get('name', ''))
+        symbol = str(row.get('symbol', ''))
+        if '退市' in name and symbol:
+            st_codes.add(symbol)
+
+    print(f"ST股票过滤: 识别 {len(st_codes)} 只ST/退市股票")
     return st_codes
 
 
@@ -138,17 +166,17 @@ def is_star_board(code: str) -> bool:
 
 
 def get_exclusion_set() -> set:
-    """获取需要排除的股票集合: 仅ST
+    """获取需要排除的股票集合.
+
+    ST不再静态排除 — ST状态随时间变化(每年有新增/摘帽)，静态快照会错误排除非ST期的股票。
+    改为在回测中由 fundamental_data.is_st() 逐日判断（bt_execution 向量化路径已实现）。
 
     Returns:
         set of stock codes to exclude
     """
-    st_codes = load_st_stocks()
-
     # 科创板(688xxx) 不再排除 — 2025-2026年妖股主要集中在科创板
-    star_codes = set()  # 保留变量但不填充，方便将来可配置
+    star_codes = set()
 
-    excluded = st_codes | star_codes
-    overlap = len(st_codes & star_codes)
-    print(f"股票排除: ST {len(st_codes)} + 科创板 {len(star_codes)} - 重叠{overlap} = 共排除 {len(excluded)} 只")
+    excluded = star_codes
+    print(f"股票排除: 科创板 {len(star_codes)} = 共排除 {len(excluded)} 只 (ST改为逐日判断)")
     return excluded

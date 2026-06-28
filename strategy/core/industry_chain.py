@@ -256,6 +256,30 @@ def discover_chain_edges(
     return edges
 
 
+# ── 反向索引: concept → chain_name → set of all concepts in that chain ──
+_CHAIN_INDEX: Dict[str, set] = None
+
+
+def _build_chain_index() -> Dict[str, set]:
+    """构建反向索引: concept_name → {all concepts in same chain}"""
+    idx = {}
+    for chain_name, tiers in INDUSTRY_CHAINS.items():
+        for tier_name, concepts in tiers.items():
+            for c in concepts:
+                if c not in idx:
+                    idx[c] = set()
+                # 收集该链条所有概念
+                for tier2, concepts2 in tiers.items():
+                    idx[c].update(concepts2)
+    return idx
+
+
+def get_chain_concepts(concept_name: str) -> Optional[set]:
+    """返回 concept_name 所属产业链的所有概念板块名称，找不到返回 None"""
+    global _CHAIN_INDEX
+    if _CHAIN_INDEX is None:
+        _CHAIN_INDEX = _build_chain_index()
+    return _CHAIN_INDEX.get(concept_name)
 def get_chain_lead_score(
     code: str,
     stock_concepts: Dict[str, List[str]],

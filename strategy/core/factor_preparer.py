@@ -21,6 +21,7 @@ _worker_concept_calc = None
 from .config_loader import load_config
 from .fundamental import FundamentalData
 from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor
+from scipy.special import erfinv
 
 
 # 全局变量用于 worker 进程 - 每个 worker 创建一个 FundamentalData 实例供所有股票复用
@@ -193,8 +194,18 @@ def _compute_stock_factors_worker(args):
         # 使用 factor_calculator 计算所有组合因子（含 tech_fund_combo）
         combo_factors = compute_composite_factors(ind, idx, fund_score=compressed_fund_score)
 
-        row = {'code': code, 'date': sample_date, 'industry': stock_industry}
+        row = {'code': code, 'date': sample_date, 'industry': stock_industry or ''}
         row.update(combo_factors)
+
+        # 市值因子 (size): A股小盘效应, 流通市值≈成交额/换手率
+        if idx < n:
+            amt = float(ind['amount'][idx]) if 'amount' in ind and idx < len(ind['amount']) else 0
+            to_rate = float(ind['turnover_rate'][idx]) if 'turnover_rate' in ind and idx < len(ind['turnover_rate']) else 0
+            if amt > 0 and to_rate > 0.001:
+                est_circ_mv = amt / (to_rate / 100.0)
+                row['ln_cap'] = float(np.tanh(np.log(max(est_circ_mv, 1e6)) / 10.0 - 0.5))
+            else:
+                row['ln_cap'] = 0.0
 
         # 题材热度因子 - 从真实概念数据计算
         global _worker_concept_calc
@@ -380,7 +391,7 @@ def prepare_factor_data(stock_file_map: dict, fd,
 
     # 从临时CSV读取合并后的因子数据（一次性加载，内存可控）
     print(f"从临时CSV加载因子数据: {tmp_csv_path}")
-    factor_data = pd.read_csv(tmp_csv_path, parse_dates=['date'], dtype={'code': str}) if os.path.getsize(tmp_csv_path) > 0 else pd.DataFrame()
+    factor_data = pd.read_csv(tmp_csv_path, parse_dates=['date'], dtype={'code': str, 'industry': str}) if os.path.getsize(tmp_csv_path) > 0 else pd.DataFrame()
     # 确保code保持为字符串（CSV读写可能转为int64导致与concept_map的isin不匹配）
     if len(factor_data) > 0 and factor_data['code'].dtype != object:
         factor_data['code'] = factor_data['code'].astype(str).str.zfill(6)
@@ -486,6 +497,33 @@ def prepare_factor_data(stock_file_map: dict, fd,
                 factor_data[fc] = factor_data[neu_col]
         factor_data.drop(columns=[c for c in factor_data.columns if c.endswith('_neu')],
                         inplace=True)
+
+    # === 截面排名标准化：每个因子按日期 groupby → rank_pct → Normal变换 → [-1,1] ===
+    # 解决原始因子量级差异导致的加权组合失效问题（IC权重被量级差异淹没）
+    # 参考 Qlib/WorldQuant: cross-sectional ranking before factor combination
+    if len(factor_data) > 0:
+        _RANK_FACTORS = [c for c in factor_data.columns
+                         if c not in ('code', 'date', 'future_ret', 'industry')
+                         and c not in _CHAN_STRUCTURAL_FIELDS
+                         and not c.endswith('_rank')]
+        _rank_cols = [f'{fc}_rank' for fc in _RANK_FACTORS]
+        for rc in _rank_cols:
+            if rc not in factor_data.columns:
+                factor_data[rc] = np.nan
+
+        for date_key, grp in tqdm(factor_data.groupby('date'), desc="截面排名标准化"):
+            valid_mask = grp[_RANK_FACTORS].notna().all(axis=1)
+            n_valid = valid_mask.sum()
+            if n_valid < 5:
+                continue
+            for fc in _RANK_FACTORS:
+                vals = grp.loc[valid_mask, fc].values.astype(np.float64)
+                rank_pct = pd.Series(vals).rank(pct=True).values
+                clipped = np.clip(rank_pct, 0.001, 0.999)
+                normal_rank = np.sqrt(2.0) * erfinv(2.0 * clipped - 1.0)
+                factor_data.loc[grp.index[valid_mask], f'{fc}_rank'] = np.clip(normal_rank, -3.0, 3.0)
+        if _rank_cols:
+            print(f"截面排名标准化: {len(_RANK_FACTORS)} 个因子 → {len(_rank_cols)} 个 _rank 列 ([-3,3])")
 
     # 保存到磁盘缓存（首次 ~5s parquet 写入，后续回测跳过 ~3h 计算）
     try:

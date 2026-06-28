@@ -47,6 +47,7 @@ dynamic_factor:
   - turnover_stability
   - price_volume_corr_20
   - tail_risk
+  - ln_cap  # 市值因子: ln(流通市值), 小盘溢价
   preferred_factors:
   - momentum_reversal
   - trend_lowvol
@@ -7258,9 +7259,7 @@ indicator_params:
 signal:
   buy_threshold: 0.02       # 纯因子评分(mean=-0.17), p90≈0.03
   sell_threshold: -0.35
-  buy_threshold_pct: 0.4
-  buy_threshold_pct_bull: 0.25
-  buy_threshold_pct_bear: 0.5
+  buy_threshold_pct: 0.45
   composite_bias: 0.0
   resonance:
     sys1_buy_threshold_mult: 0.7
@@ -7302,24 +7301,12 @@ portfolio:
   target_volatility: 0.25
   entry_speed: 0.8
   exit_speed: 0.8
-  position_stop_loss: 0.12  # 默认值, 被 portfolio_stop_loss_by_regime 覆盖
-  portfolio_stop_loss: 0.12
-  portfolio_stop_loss_by_regime:  # Layer3: 止损线随市场收紧
-    bull: 0.10
-    neutral: 0.08
-    bear: 0.05    # 熊市止损更紧
-  dynamic_min_positions:
-    bull: 3
-    neutral: 2
-    bear: 1
+  position_stop_loss: 0.10
+  portfolio_stop_loss: 0.10
   selection:
     min_rank_pct: 0.5
-    min_absolute_score: 0.05  # 默认值, 被 min_absolute_score_by_regime 覆盖
-    min_absolute_score_by_regime:  # Layer1: 信号质量门槛随市场浮动 (适配纯因子评分范围)
-      bull: -0.05      # 牛市: 低门槛
-      neutral: 0.0     # 震荡: 中等门槛
-      bear: 0.02       # 熊市: 高门槛
-    min_confidence: 0.7
+    min_absolute_score: 0.0
+    min_confidence: 0.80
     chan_gate_enabled: true
     chan_gate_min_count: 2
     chan_fallback_score: 0.4
@@ -7336,18 +7323,9 @@ portfolio:
     exposure_max: 1.0
   turnover_bonus: 0.1
   params:
-    max_positions: 5  # 默认值, 被 max_positions_by_regime 覆盖
-    max_positions_by_regime:  # Layer2: 最大持仓随市场浮动
-      strong_bull: 8
-      bull: 6
-      neutral: 4
-      bear: 2            # 熊市最多2只, 允许0只(空仓)
+    max_positions: 6
     risk_parity_min_weight_ratio: 0.4
     rank_decay: 0.3
-    bull_market_floor: 0.85
-    bull_market_ceiling: 1.0
-    bear_market_floor: 0.3
-    bear_market_ceiling: 0.5
     chan_bonus_sl2: 0.04
     chan_bonus_buy_point: 0.02
     chan_bonus_trend2: 0.01
@@ -7366,13 +7344,13 @@ portfolio:
     min_hold_days: 10  # 15→10: 与rebalance_days对齐, 避免想换仓但换不了的配置冲突
     sector_momentum_weight: 0.4
     sector_signal_density_weight: 0.6
+base_exposure: 1.0               # 满仓运行, 止损控风险, 不扣现金
 portfolio_stop_loss:
-  enabled: true
-  emergency_exposure: 0.0        # 触发后直接清仓，不留敞口
-  recovery_days: 10              # 恢复冷却期: 10天线性恢复, 避免离场过久
-  stop_refill: false             # 止损触发期间禁止补票, 防止换股→再止损的滚雪球
+  enabled: false
 hard_drawdown_stop:
-  enabled: true                  # 启用: 20%回撤全清仓, 防止40%+极端回撤
+  enabled: true
+  trigger_drawdown: 0.15          # 15%触发, 只防熊市, 不控日常回撤
+  recovery_threshold: 0.08        # 恢复到8%以内恢复满仓
 consecutive_loss_breaker:
   enabled: true                  # 启用: 连续亏损周期→减半敞口, 打破连亏螺旋
 volatility_control:
@@ -7385,6 +7363,8 @@ factor_neutralization:
   neutralize_industry: true
   neutralize_market_cap: true
   min_samples_per_industry: 3
+# 退出: 仅成本止损+调仓换仓+HDS (参考Qlib/Zipline机构级做法)
+# 复杂退出(时间/移动/分级止盈/均值回归/缠论)已移除 — 开源实证: 简单退出占优
 enhanced_stop_loss:
   time_stop_days: 15
   time_stop_min_return: -0.03
@@ -7401,8 +7381,8 @@ enhanced_stop_loss:
   dead_money_return_band: 0.02  # 持有>30天 |收益|<2% 则退出
   time_stop_by_buy_point:
     1:
-    - 40
-    - -0.08
+    - 20
+    - -0.05     # B1不再放宽40天(反转失败率最高,宽止损=浪费资金)
     2:
     - 30
     - -0.05
@@ -7623,7 +7603,7 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
-  num_workers: 4  # parquet按需读取: 每worker ~8KB/股票, 消除69MB pickle OOM
+  num_workers: 4   # 16GB内存, 4 worker防止OOM
   fromdate: '2021-01-01'  # 2024→2021: 回测期扩展到5.5年覆盖完整牛熊
   todate: '2026-05-30'
 cost_model:

@@ -18,8 +18,15 @@ class ConfigLoader:
         return cls._instance
 
     def __init__(self, config_path: Optional[str] = None):
+        if config_path is None and self._config is None:
+            config_path = self._resolve_default_path()
         if config_path and self._config is None:
             self.load(config_path)
+
+    @staticmethod
+    def _resolve_default_path() -> str:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_dir, 'config', 'factor_config.yaml')
 
     def load(self, config_path: str) -> Dict[str, Any]:
         """加载YAML配置文件"""
@@ -72,8 +79,8 @@ class ConfigLoader:
             'target_volatility': self.get('portfolio.target_volatility', 0.15),
             'entry_speed': self.get('portfolio.entry_speed', 0.8),
             'exit_speed': self.get('portfolio.exit_speed', 1.0),
-            'position_stop_loss': self.get('portfolio.position_stop_loss', 0.07),
-            'portfolio_stop_loss': self.get('portfolio.portfolio_stop_loss', 0.12),
+            'position_stop_loss': self.get('portfolio.position_stop_loss', 0.10),
+            'portfolio_stop_loss': self.get('portfolio.portfolio_stop_loss', 0.10),
             'max_single_weight': self.get('portfolio.max_single_weight', 0.12),
             'enable_industry_weighting': self.get('portfolio.enable_industry_weighting', True),
             'volatility_control_enabled': self.get('volatility_control.enabled', True),
@@ -84,17 +91,12 @@ class ConfigLoader:
                 'fv_low': -0.01, 'fv_high': 0.02, 'exposure_min': 0.4, 'exposure_max': 1.0,
             }),
             'turnover_bonus': self.get('portfolio.turnover_bonus', 0.05),
-            # === 小说优化新增 ===
-            'dynamic_min_positions': self.get('portfolio.dynamic_min_positions', {
-                'bull': 2, 'neutral': 1, 'bear': 0,
-            }),
             'selection': self.get('portfolio.selection', {
-                'min_rank_pct': 0.40, 'min_absolute_score': 0.0, 'min_confidence': 0.30,
+                'min_rank_pct': 0.50, 'min_absolute_score': 0.0, 'min_confidence': 0.80,
             }),
             'params': self.get('portfolio.params', {
-                'max_positions': 5, 'risk_parity_min_weight_ratio': 0.5,
-                'rank_decay': 0.3, 'bull_market_floor': 0.85, 'bull_market_ceiling': 1.0,
-                'bear_market_floor': 0.3, 'bear_market_ceiling': 0.55,
+                'max_positions': 6, 'risk_parity_min_weight_ratio': 0.5,
+                'rank_decay': 0.3,
             }),
         }
 

@@ -58,14 +58,14 @@ class MarketRegimeDetector:
 
     def _init_params(self):
         """初始化参数"""
-        # 熊市阈值 (Fix#7: 2%→5%, 避免频繁切换)
-        self.mom5_bear = -0.05    # 5日动量 < -5%
-        self.mom_bear = -0.05     # 20日动量 < -5%
-        self.mom_bear_sustained = -0.08  # 持续熊市：20日动量 < -8%
+        # 熊市阈值 (ExpB1: 收窄中性区间, 5%→3%, 减少SHARPE因子误用)
+        self.mom5_bear = -0.03    # 5日动量 < -3%
+        self.mom_bear = -0.03     # 20日动量 < -3%
+        self.mom_bear_sustained = -0.06  # 持续熊市：20日动量 < -6%
 
-        # 牛市阈值 (Fix#7: 2%→5%, 需要有意义的上行趋势)
-        self.mom_bull = 0.05      # 20日动量 > 5%
-        self.mom60_bull = 0.05    # 60日动量 > 5%
+        # 牛市阈值 (A股急涨急跌, 60日动量3%太高→MOM因子从未触发)
+        self.mom_bull = 0.025     # 20日动量 > 2.5% (3%→2.5%)
+        self.mom60_bull = 0.0     # 60日动量 > 0% (1%→0%: 任何正60日动量配合即可)
 
         # 极端波动阈值
         self.vol_extreme_high = 0.30
@@ -251,7 +251,7 @@ class MarketRegimeDetector:
             regime = -1
             confidence = 0.8
 
-        # 牛市判断：要求至少2/3周期确认
+        # 牛市判断：多路径捕获（A股急涨特性，60日动量常滞后）
         elif mom > self.mom_bull and mom_60 > self.mom60_bull:
             regime = 1
             confidence = 1.0
@@ -259,6 +259,14 @@ class MarketRegimeDetector:
             # 动量较好 + 均线多头排列 = 牛市
             regime = 1
             confidence = 0.7
+        elif mom > self.mom_bull * 0.67 and ema20_above_60:
+            # 短期趋势已确立, 无需等60>120 (捕捉V形反弹)
+            regime = 1
+            confidence = 0.55
+        elif mom_5 > self.mom_bull * 1.5 and mom > self.mom_bull * 0.5:
+            # 短期爆发: 5日动量强 + 20日确认 (捕捉急涨启动)
+            regime = 1
+            confidence = 0.45
 
         # === 极端状态判断 ===
         is_extreme = vol > self.vol_extreme_high or vol < self.vol_extreme_low
@@ -275,19 +283,28 @@ class MarketRegimeDetector:
         bear_risk_fast = (drawdown_60 < -self.bear_risk_drawdown_fast and
                           mom_60_val < self.bear_risk_momentum_fast)
 
-        # === 风格状态检测 ===
-        # 中性市场置信度评估: 信号分歧度越低, 中性判定越可靠
+        # === 中性→熊市: A股无真正中性, 中性信号WR=45.2%系统亏损 ===
+        # 回测数据: REV因子(熊市) WR=61.7% Avg=+3.42% >> SHARPE(中性) WR=45.2%
+        # 不确定时默认判熊, 利用REV因子的均值回归优势
+        # 但偏多信号不再强制判熊 → 让MOM因子(WR=56%)有机会触发
         if regime == 0 and confidence == 0.0:
-            # 评估多空信号的分歧程度
             bull_signals = sum([mom_5 > 0.01, mom > 0.01, mom_60 > 0.02, ema20_above_60])
             bear_signals = sum([mom_5 < -0.01, mom < -0.01, mom_60 < -0.02, not ema20_above_60])
             total_signals = max(bull_signals + bear_signals, 1)
-            # 信号分歧度: 0=完全分歧(混战), 1=信号一致但力度不足
             signal_agreement = abs(bull_signals - bear_signals) / total_signals
             if signal_agreement < 0.3:
-                confidence = 0.5  # 高置信中性: 信号完全分歧, 典型的震荡市
+                confidence = 0.5  # 完全分歧→真震荡, 保持中性
+            elif bear_signals > bull_signals:
+                # 偏空信号→判为熊市(REV因子, WR=61.7%)
+                regime = -1
+                confidence = 0.45
+            elif bull_signals >= 3:
+                # 偏多信号且多头信号≥3→弱牛市(MOM因子, WR=56%)
+                regime = 1
+                confidence = 0.35
             else:
-                confidence = 0.25  # 低置信中性: 信号偏向一侧但未达阈值, 可能即将转势
+                # 偏多但不够强→中性(不再强制判熊), 让结构信号自行筛选
+                confidence = 0.30
 
         style_regime, style_score, size_score, style_confidence = self._detect_style_regime(i)
 

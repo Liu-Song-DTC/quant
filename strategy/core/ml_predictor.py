@@ -58,6 +58,11 @@ class MLFactorPredictor:
         base_features = [c for c in df.columns if c not in exclude
                          and df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
 
+        # 白名单过滤: 只用已验证的因子, 避免噪声因子混入特征空间
+        whitelist = self.config.get('ml', {}).get('feature_whitelist', None)
+        if whitelist:
+            base_features = [f for f in base_features if f in whitelist]
+
         if len(base_features) < 2:
             self.feature_cols = base_features
             return df
@@ -90,21 +95,43 @@ class MLFactorPredictor:
                              if c in df.columns and c not in exclude]
         return df
 
+    @staticmethod
+    def _cross_sectional_zscore(df: pd.DataFrame, cols: List[str]):
+        """截面标准化: 每个日期内 (x - mean) / std, 消除市场量级干扰"""
+        if 'date' not in df.columns:
+            return df
+        for col in cols:
+            if col not in df.columns:
+                continue
+            grouped = df.groupby('date')[col]
+            mean_s = grouped.transform('mean')
+            std_s = grouped.transform('std').replace(0, 1.0)
+            df[col] = (df[col] - mean_s) / std_s
+        return df
+
     def train(self, factor_df: pd.DataFrame,
               regime_info: dict = None) -> Optional[float]:
         """训练XGBoost模型，返回验证集IC"""
         try:
             from xgboost import XGBRegressor
         except ImportError:
-            print("[ML] xgboost未安装（需 libomp: brew install libomp）")
+            print("[ML] xgboost未安装")
             return None
 
-        # 只复制数值型特征列（而非全量 factor_df），减少内存占用
+        # 只复制数值型特征列
         exclude_set = {'code', 'date', 'future_ret', 'industry'}
         numeric_cols = [c for c in factor_df.columns if c not in exclude_set
                        and factor_df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
         meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry'] if c in factor_df.columns]
-        df = self.prepare_features(factor_df[meta_cols + numeric_cols].copy(), regime_info, is_train=True)
+        df = factor_df[meta_cols + numeric_cols].copy()
+
+        # 截面标准化: 消除跨日期量级差异, 模型学习相对排名而非绝对量级
+        df = self._cross_sectional_zscore(df, numeric_cols)
+        if 'future_ret' in df.columns:
+            df = self._cross_sectional_zscore(df, ['future_ret'])
+
+        # 特征工程 (基于标准化后的因子值)
+        df = self.prepare_features(df, regime_info, is_train=True)
         if 'future_ret' not in df.columns:
             print("[ML] 训练数据缺少future_ret列")
             return None
@@ -114,25 +141,23 @@ class MLFactorPredictor:
             print(f"[ML] 有效特征不足: {len(valid_features)}")
             return None
 
-        # 处理Inf值（Inf*0=NaN会污染交叉特征）
+        # 处理Inf/NaN
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        # 仅数值列填充0, 避免字符串列报错
         num_cols = df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
         df[num_cols] = df[num_cols].fillna(0.0)
-        train_df = df.dropna(subset=['future_ret'])  # 仅要求future_ret有效
+        train_df = df.dropna(subset=['future_ret'])
         if len(train_df) < 500:
-            # 回退：只用基础特征（无交叉特征），重试
-            base_only = [c for c in self.feature_cols if not c.startswith('cross_') and not c.startswith('regime_')]
+            base_only = [c for c in self.feature_cols
+                        if not c.startswith('cross_') and not c.startswith('regime_')]
             base_only = [c for c in base_only if c in df.columns]
             if len(base_only) >= 3:
                 train_df = df.dropna(subset=base_only + ['future_ret'])
                 valid_features = base_only
-                print(f"[ML] 回退到基础特征: {len(valid_features)}个, 样本={len(train_df)}")
             if len(train_df) < 500:
-                print(f"[ML] 训练样本不足: {len(train_df)} (features={len(valid_features)})")
+                print(f"[ML] 训练样本不足: {len(train_df)}")
                 return None
 
-        # 时序划分：前80%训练，后20%验证（防look-ahead）
+        # 时序划分: 前80%训练, 后20%验证
         dates = sorted(train_df['date'].unique())
         split_idx = int(len(dates) * 0.8)
         train_dates = set(dates[:split_idx])
@@ -151,26 +176,18 @@ class MLFactorPredictor:
             return None
 
         self.model = XGBRegressor(**self.xgb_params)
-        self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False,
-        )
+        self.model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         self._last_train_date = dates[-1]
 
-        # 验证集IC
         y_pred = self.model.predict(X_val)
         val_ic = np.corrcoef(y_pred, y_val)[0, 1] if len(y_val) > 1 else 0
 
-        # 特征重要性
-        importances = self.model.feature_importances_
         self._feature_importances = dict(sorted(
-            zip(valid_features, importances), key=lambda x: -x[1]
-        ))
+            zip(valid_features, self.model.feature_importances_),
+            key=lambda x: -x[1]))
 
         print(f"[ML] 训练完成: 样本={len(train_df)}, "
               f"特征={len(valid_features)}, 验证IC={val_ic:.4f}")
-
         return val_ic
 
     def predict(self, df: pd.DataFrame,
@@ -178,14 +195,17 @@ class MLFactorPredictor:
         if self.model is None:
             return np.zeros(len(df))
 
-        # 只复制数值型特征列（而非全量 df），减少内存占用
         exclude_set = {'code', 'date', 'future_ret', 'industry'}
         numeric_cols = [c for c in df.columns if c not in exclude_set
                        and df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
         meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry'] if c in df.columns]
-        df = self.prepare_features(df[meta_cols + numeric_cols].copy(), regime_info)
-        valid_features = [c for c in self.feature_cols if c in df.columns]
+        df = df[meta_cols + numeric_cols].copy()
 
+        # 截面标准化 (与训练一致)
+        df = self._cross_sectional_zscore(df, numeric_cols)
+
+        df = self.prepare_features(df, regime_info)
+        valid_features = [c for c in self.feature_cols if c in df.columns]
         if not valid_features:
             return np.zeros(len(df))
 

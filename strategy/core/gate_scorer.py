@@ -187,7 +187,9 @@ def compute_all_gates(indicators: dict, n: int) -> Tuple[np.ndarray, np.ndarray]
 
 
 # 各Gate默认值均值: G1=0.45 G2=0.25 G3=0.4 G4=0.40 → 0.375
-_GATE_DEFAULT_MEAN = 0.375
+# 归一化除数取0.55而非0.375: 使得全默认信号 gate_quality≈0.68 < GATE_FLOOR_NEW=0.70
+# 确保至少一个Gate有明确正向信号才能通过新入场门槛
+_GATE_DEFAULT_MEAN = 0.55
 
 
 def compute_gate_quality(grades: np.ndarray) -> np.ndarray:

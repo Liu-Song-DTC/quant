@@ -82,12 +82,8 @@ class Strategy:
         cash,
         prices,
         cost,
-        rebalance,
     ):
-        market_regime = 0
         momentum_score = 0.0
-        bear_risk = False
-        bear_risk_fast = False
         trend_score = 0.0
         index_volume_ratio = 1.0
         style_score_val = 0.0
@@ -95,24 +91,20 @@ class Strategy:
         if self.index_data is not None:
             row = self.index_data[self.index_data["datetime"].dt.date == date]
             if not row.empty:
-                market_regime = int(row["regime"].values[0])
                 momentum_score = float(row["momentum_score"].values[0])
-                bear_risk = bool(row["bear_risk"].values[0]) if "bear_risk" in row.columns else False
-                bear_risk_fast = bool(row["bear_risk_fast"].values[0]) if "bear_risk_fast" in row.columns else False
                 trend_score = float(row["trend_score"].values[0]) if "trend_score" in row.columns else 0.0
                 index_volume_ratio = float(row["index_volume_ratio"].values[0]) if "index_volume_ratio" in row.columns else 1.0
                 style_score_val = float(row["style_score"].values[0]) if "style_score" in row.columns else 0.0
                 regime_vol_val = float(row["regime_volatility"].values[0]) if "regime_volatility" in row.columns else 0.0
 
-        # 再平衡日更新情绪权重
-        if rebalance:
-            self.set_sentiment_multipliers(date, market_regime)
+        # 每日更新情绪权重
+        self.set_sentiment_multipliers(date, 0)
 
         # 注入板块轮动分析器（含信号密度领先指标）
         self.portfolio._sector_rotation = self.sector_rotation
 
         # 计算当日买入信号密度（领先指标，无滞后）
-        if rebalance and hasattr(self, 'industry_stock_counts'):
+        if hasattr(self, 'industry_stock_counts'):
             buy_signals = []
             for code in universe:
                 sig = self.signal_store.get(code, date)
@@ -130,14 +122,11 @@ class Strategy:
             signal_store=self.signal_store,
             cash=cash,
             prices=prices,
-            market_regime=market_regime,
+            market_regime=0,
             momentum_score=momentum_score,
-            bear_risk=bear_risk,
-            bear_risk_fast=bear_risk_fast,
             trend_score=trend_score,
             index_volume_ratio=index_volume_ratio,
             style_score=style_score_val,
             regime_volatility=regime_vol_val,
             cost=cost,
-            rebalance=rebalance
         )
