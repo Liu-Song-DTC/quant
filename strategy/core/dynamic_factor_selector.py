@@ -585,3 +585,113 @@ class DynamicFactorSelector:
             'directions': [1] * len(factors),
             'quality': float(np.mean(scores)) if scores else 0.0,
         }
+
+    def extend_to_date(self, target_date, new_factor_df: pd.DataFrame = None,
+                       num_workers: int = 1):
+        """增量更新因子缓存到目标日期 — 与回测使用相同的 _compute_date_chunk 逻辑。
+
+        实盘每日调用, 只计算新日期的IC, 追加到现有缓存。
+        无缓存时自动回退到 precompute_all_factor_selections。
+
+        Args:
+            target_date: 目标日期 (str/datetime/date)
+            new_factor_df: 新增的因子数据行 (可选, 不传则使用 self.factor_df)
+            num_workers: worker 数量 (默认1, 实盘单进程足够)
+        """
+        import pandas as pd
+        target_ts = pd.Timestamp(target_date)
+
+        # 更新 self.factor_df
+        if new_factor_df is not None:
+            if self.factor_df is not None:
+                self.factor_df = pd.concat([self.factor_df, new_factor_df], ignore_index=True)
+            else:
+                self.factor_df = new_factor_df
+            self._all_dates_cache = sorted(self.factor_df['date'].unique().tolist())
+
+        if self.factor_df is None:
+            return
+
+        # 首次: 全量预计算
+        if not self._factor_cache:
+            print("[实盘] 首次初始化, 执行全量IC预计算...")
+            self.precompute_all_factor_selections(num_workers=num_workers)
+            return
+
+        latest_cached = max(self._factor_cache.keys()) if self._factor_cache else None
+        if latest_cached and target_ts.date() <= latest_cached:
+            return  # 已是最新
+
+        all_dates = self._all_dates_cache
+        if not all_dates:
+            return
+
+        # 找新日期: 缓存最新之后 + 今天
+        new_dates = [d for d in all_dates
+                     if pd.Timestamp(d).date() > (latest_cached or pd.Timestamp('2000-01-01').date())]
+
+        if not new_dates:
+            return
+
+        # 构建配置 (与 precompute_all_factor_selections 完全一致)
+        cfg = load_config()
+        config = {
+            'train_window_days': self.train_window_days,
+            'forward_period': self.forward_period,
+            'top_n_factors': self.top_n_factors,
+            'min_train_samples': self.min_train_samples,
+            'min_ic_dates': self.min_ic_dates,
+            'ic_decay_factor': self.ic_decay_factor,
+            'min_factor_count': self.min_factor_count,
+            'min_factor_families': cfg.get('dynamic_factor', {}).get('min_factor_families', 2),
+            'reweight_blend': self.reweight_blend,
+            'extra_candidate_factors': cfg.get('dynamic_factor', {}).get('extra_candidate_factors', []),
+        }
+
+        factor_df = self.factor_df
+        if factor_df['date'].dtype != 'datetime64[ns]':
+            factor_df = factor_df.copy()
+            factor_df['date'] = pd.to_datetime(factor_df['date'])
+
+        # 用最近一个 chunk 覆盖新日期 + 足够的训练窗口
+        chunk_start = pd.Timestamp(new_dates[0]) - pd.Timedelta(days=self.train_window_days + 365)
+        chunk = [d for d in all_dates if pd.Timestamp(d) >= chunk_start]
+        chunk_df = factor_df[(factor_df['date'] >= chunk_start - pd.Timedelta(days=365))
+                            & (factor_df['date'] <= pd.Timestamp(new_dates[-1]))].copy()
+
+        result, _qs = _compute_date_chunk((chunk, chunk_df, config))
+        if result:
+            for date, factors in result.items():
+                key = date.date() if hasattr(date, 'date') else pd.to_datetime(date).date()
+                self._factor_cache[key] = factors
+            print(f"[实盘] IC缓存已更新: +{len(result)} 日期, "
+                  f"最新={max(self._factor_cache.keys())}, 总缓存={len(self._factor_cache)}")
+
+
+def init_live_factor_cache(factor_df: pd.DataFrame, industry_codes: Dict[str, List[str]] = None,
+                           num_workers: int = 4) -> DynamicFactorSelector:
+    """实盘初始化: 用历史数据构建因子选择器并预计算全局IC。
+
+    与回测使用完全相同的 _compute_date_chunk 逻辑, 保证等价性。
+
+    Args:
+        factor_df: 历史因子数据 DataFrame (columns: code, date, factor1, factor2, ..., future_ret)
+        industry_codes: 行业映射 (可选, 用于 portfolio 行业分散)
+        num_workers: 预计算并行度
+
+    Returns:
+        已初始化的 DynamicFactorSelector, 可直接用于 signal_engine
+
+    Usage:
+        from core.dynamic_factor_selector import init_live_factor_cache
+
+        selector = init_live_factor_cache(factor_df, industry_codes)
+        engine = SignalEngine()
+        engine.dynamic_factor_selector = selector
+    """
+    selector = DynamicFactorSelector()
+    selector.set_factor_data(factor_df)
+    if industry_codes:
+        selector.set_industry_mapping(industry_codes)
+    selector.precompute_all_factor_selections(num_workers=num_workers)
+    return selector

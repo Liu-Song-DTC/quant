@@ -1,3 +1,6 @@
+# ⚠️ 回测入口 — 修改因子选择/信号生成/组合构建逻辑时,
+#    务必同步更新 core/live_init.py 的 init_live_engine/update_live_engine
+#    确保回测与实盘等价。
 import platform
 import backtrader as bt
 import pandas as pd
