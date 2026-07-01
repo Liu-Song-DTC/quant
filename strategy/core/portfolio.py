@@ -798,8 +798,8 @@ class PortfolioConstructor:
         # 已覆盖原有的 sl/chan_sell/trend=-2/B3回踩/放量下跌/力竭 等全部维度
         # Gate硬门槛仅排除极端无效信号（gate通过score×gate_quality软性影响排名）
         # _GATE_DEFAULT_MEAN=0.55, 全默认gate_quality≈0.68, 需至少一个Gate有信号才能>0.7
-        GATE_FLOOR_NEW = 0.70   # 新入场: 至少一个Gate非默认
-        GATE_FLOOR_HOLD = 0.60  # 持仓: 更宽松
+        GATE_FLOOR_NEW = 0.65   # 新入场: 略低于全默认0.68, 允许中性Gate通过
+        GATE_FLOOR_HOLD = 0.55  # 持仓: 更宽松
         gate_filtered = []
         for c in qualified:
             sig = c.get('sig')

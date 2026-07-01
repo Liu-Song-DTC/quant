@@ -176,7 +176,10 @@ class ConfigLoader:
 
 
 def load_config(config_path: str = None) -> ConfigLoader:
-    """加载配置的便捷函数 (支持 FACTOR_CONFIG_PATH 环境变量覆盖)"""
+    """加载配置的便捷函数 (支持 FACTOR_CONFIG_PATH 环境变量覆盖)
+
+    注意: 使用单例模式, 第二次调用不会重新加载, 保留 set() 修改.
+    """
     if config_path is None:
         config_path = os.environ.get('FACTOR_CONFIG_PATH')
     if config_path is None:
@@ -184,5 +187,8 @@ def load_config(config_path: str = None) -> ConfigLoader:
         config_path = os.path.join(base_dir, 'config', 'factor_config.yaml')
 
     loader = ConfigLoader()
-    loader.load(config_path)
+    # 仅在首次加载或显式指定新路径时重新读取
+    if loader._config is None or config_path != getattr(loader, '_loaded_path', None):
+        loader.load(config_path)
+        loader._loaded_path = config_path
     return loader

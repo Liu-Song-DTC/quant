@@ -68,8 +68,8 @@ def run_backtest_from_signals(signals_csv: str, portfolio_overrides: dict,
     STAMP_TAX = cfg.get('backtest.stamp_tax', 0.0005)
 
     # 从信号CSV获取股票清单
-    sig_df = pd.read_csv(signals_csv, usecols=['code'])
-    stock_codes_all = sorted(sig_df['code'].unique().tolist())
+    sig_df = pd.read_csv(signals_csv, usecols=['code'], dtype={'code': str})
+    stock_codes_all = sorted(sig_df['code'].str.zfill(6).unique().tolist())
     print(f"[参数扫描] 信号: {len(sig_df)}条, {len(stock_codes_all)}只股票")
 
     # 加载价格数据

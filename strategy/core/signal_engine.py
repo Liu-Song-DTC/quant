@@ -556,6 +556,7 @@ class SignalEngine:
             # 使用门控调整后的分数
             gate_score = float(result['adjusted_score'][i])
             score = gate_score
+            gate_q = float(result['_gate_quality'][i])  # 提前提取，买卖信号共用
 
             vol_oc = float(_safe_get_arr(indicators, 'vol_opening_confirm', n, 0.0)[i])
             vol_os = float(_safe_get_arr(indicators, 'vol_opening_strength', n, 0.0)[i])
@@ -596,7 +597,9 @@ class SignalEngine:
             # Gate保证质量 → 因子评分在池内做区分
             _score_ok = (score >= -0.02)  # 统一门槛，不再分regime
             _dt_sig = float(result['_dt_signal'][i]) if '_dt_signal' in result else 0.0
-            struct_ok = (bp_buy >= 1) or (_dt_sig > 0.3)
+            # 结构门控: 需缠论买点/龙虎榜确认, 但高分信号可豁免(score>0.05且>buy_th*1.5)
+            has_structure = (bp_buy >= 1) or (_dt_sig > 0.3)
+            struct_ok = has_structure or (score > max(buy_th * 1.5, 0.05))
             buy = (not hard_reject and not np.isnan(score) and _score_ok and
                    price_ok and price_not_extended and struct_ok)
 
@@ -1616,7 +1619,7 @@ class SignalEngine:
         # 动态因子优先 (仅dynamic/both模式)
         if self.factor_mode in ['dynamic', 'both']:
             if self.dynamic_factor_selector.enabled and code and current_date:
-                result = self._select_factor_dynamic(ind, idx, regime, code, current_date)
+                result = self._select_factor_dynamic(ind, idx, regime, code, current_date, specific_industry)
                 if result:
                     self._stats['dynamic_success'] += 1
                     self._record_factor_selection(result[0], True, True)
@@ -1717,7 +1720,8 @@ class SignalEngine:
         return {f: w for f, w in zip(factors, weights)}
 
     def _select_factor_dynamic(self, ind: dict, idx: int, regime: int,
-                                code=None, current_date=None) -> Optional[tuple]:
+                                code=None, current_date=None,
+                                specific_industry: str = '') -> Optional[tuple]:
         """动态因子选择
 
         使用DynamicFactorSelector在每个时点动态选择最优因子

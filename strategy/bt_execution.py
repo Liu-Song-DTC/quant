@@ -13,6 +13,8 @@ from collections import defaultdict
 import multiprocessing
 from functools import partial
 import gc
+import warnings
+warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
 import ctypes
 
 from core.strategy import Strategy
@@ -563,6 +565,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
     # 创建带动态因子的 SignalEngine + 预计算因子选择（如果启用）
     main_engine = None
+    _rank_parquet_path = None  # 预定义，避免 use_dynamic=False 时 UnboundLocalError
     if use_dynamic:
         main_engine = SignalEngine()
         main_engine.set_factor_data(factor_df)
@@ -578,7 +581,6 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
         # === 截面排名缓存：从 factor_df 提取 _rank 列，写入 parquet 供 worker 按需读取 ===
         _rank_cols = [c for c in factor_df.columns if c.endswith('_rank')]
-        _rank_parquet_path = None
         if _rank_cols:
             strategy_dir = os.path.dirname(os.path.abspath(__file__))
             _rank_parquet_path = os.path.join(strategy_dir, 'rolling_validation_results',
@@ -699,8 +701,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         pass
 
     import platform
-    if platform.system() == 'Windows':
-        print("Windows detected: using single-process signal generation")
+    _use_multiprocessing = NUM_WORKERS > 1 and platform.system() != 'Windows'
+    if not _use_multiprocessing:
+        print(f"单进程信号生成 ({len(stock_items)} 只股票)...")
         _init_worker(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes,
                      precomputed_cache, precomputed_all_dates, regime_df,
                      _ml_model_path, _ml_preds_path, _rank_parquet_path)
@@ -715,6 +718,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                       _ml_model_path, _ml_preds_path, _rank_parquet_path)
         )
         _sig_iter = pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=50)
+        _pool_join_timeout = 30  # 30秒超时, 防止spawn信号量泄漏死锁
     # 聚合 worker 因子选择统计
     _worker_stats_agg = {}
     _worker_bom_agg = {'total': 0, 'hit': 0, 'miss': 0, 'moat': 0, 'sum_score': 0.0,
@@ -806,9 +810,20 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         # 释放该股票返回的 dict（Signal 已写入 CSV，不再需要）
         store_data.clear()
 
-    if platform.system() != 'Windows':
+    if _use_multiprocessing:
         pool.close()
-        pool.join()
+        import time as _time, threading as _th
+        _t0 = _time.time()
+        # spawn worker join带超时: 30秒后强制terminate, 避免信号量泄漏死锁
+        _join_thread = _th.Thread(target=pool.join)
+        _join_thread.start()
+        _join_thread.join(timeout=30)
+        if _join_thread.is_alive():
+            print(f"Worker pool join timeout after {_time.time()-_t0:.1f}s, terminating")
+            pool.terminate()
+            _join_thread.join(timeout=5)
+        else:
+            print(f"Worker pool closed in {_time.time()-_t0:.1f}s")
         for k, v in _worker_dyn_fail_agg.items():
             strategy.signal_engine._dyn_fail[k] = v
 
