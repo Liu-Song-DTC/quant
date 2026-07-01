@@ -1,7 +1,6 @@
 # ⚠️ 回测入口 — 修改因子选择/信号生成/组合构建逻辑时,
 #    务必同步更新 core/live_init.py 的 init_live_engine/update_live_engine
 #    确保回测与实盘等价。
-import platform
 import backtrader as bt
 import pandas as pd
 import numpy as np
@@ -50,7 +49,7 @@ REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
 # A股涨跌停限制数据（预计算，供BacktraderExecution使用）
 _LIMIT_DATA = {}   # {(code, date): 'up' | 'down'}
 
-NUM_WORKERS = config.get('backtest.num_workers', 2 if platform.system() == 'Windows' else 2)
+NUM_WORKERS = config.get('backtest.num_workers', 2)
 
 def _malloc_trim(pad=0):
     """将 Python 已释放但未归还 OS 的内存归还给内核（Linux only）。
@@ -700,23 +699,15 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     except Exception:
         pass
 
-    import platform
-    if platform.system() == 'Windows':
-        print("Windows detected: using single-process signal generation")
-        _init_worker(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes,
-                     precomputed_cache, precomputed_all_dates, regime_df,
-                     _ml_model_path, _ml_preds_path, _rank_parquet_path)
-        _sig_iter = (_generate_stock_signal_worker(item) for item in tqdm(stock_items, desc="generating signals"))
-    else:
-        ctx = multiprocessing.get_context('spawn')
-        pool = ctx.Pool(
-            processes=NUM_WORKERS,
-            initializer=_init_worker,
-            initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes,
-                      precomputed_cache, precomputed_all_dates, regime_df,
-                      _ml_model_path, _ml_preds_path, _rank_parquet_path)
-        )
-        _sig_iter = pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=50)
+    ctx = multiprocessing.get_context('spawn')
+    pool = ctx.Pool(
+        processes=NUM_WORKERS,
+        initializer=_init_worker,
+        initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes,
+                  precomputed_cache, precomputed_all_dates, regime_df,
+                  _ml_model_path, _ml_preds_path, _rank_parquet_path)
+    )
+    _sig_iter = pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=50)
     # 聚合 worker 因子选择统计
     _worker_stats_agg = {}
     _worker_bom_agg = {'total': 0, 'hit': 0, 'miss': 0, 'moat': 0, 'sum_score': 0.0,
@@ -808,11 +799,10 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         # 释放该股票返回的 dict（Signal 已写入 CSV，不再需要）
         store_data.clear()
 
-    if platform.system() != 'Windows':
-        pool.close()
-        pool.join()
-        for k, v in _worker_dyn_fail_agg.items():
-            strategy.signal_engine._dyn_fail[k] = v
+    pool.close()
+    pool.join()
+    for k, v in _worker_dyn_fail_agg.items():
+        strategy.signal_engine._dyn_fail[k] = v
 
     signal_csv.close()
     print(f"信号数据已保存: {signal_count[0]} 条 -> {signals_output_path}")
