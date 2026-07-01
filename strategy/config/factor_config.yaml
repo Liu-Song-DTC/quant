@@ -7600,7 +7600,7 @@ backtest:
   stamp_tax: 0.0005
   rebalance_days: 10
   num_workers: 4   # spawn多进程 + 30s超时, 防死锁
-  fromdate: '2024-06-01'  # 快速迭代: 2年区间, 验证修复+参数扫描
+  fromdate: '2021-01-01'  # 全量基线: 5.5年覆盖完整牛熊
   todate: '2026-05-30'
 cost_model:
   t_plus_1_enabled: true
