@@ -7433,7 +7433,7 @@ chan_theory:
     buy_zone_stop_protection: 1.5
     volume_divergence_exit: true
   take_profit:
-    enabled: true
+    enabled: false
     s1_reduce_pct: 0.75
     s2_reduce_pct: 0.5
     s3_reduce_pct: 1.0

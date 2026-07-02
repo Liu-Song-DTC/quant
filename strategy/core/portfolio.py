@@ -82,8 +82,7 @@ class PortfolioConstructor:
         self.position_stop_loss = position_stop_loss if position_stop_loss is not None else portfolio_config.get('position_stop_loss', 0.12)
         self.entry_speed = entry_speed if entry_speed is not None else portfolio_config.get('entry_speed', 0.5)
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 0.5)
-        # 退出模式: 仅成本止损+调仓换仓 (参考Qlib/Zipline — 简单退出占优)
-        self.exit_mode = 'simple'
+        self.exit_mode = 'simple'  # 仅成本止损, 让利润奔跑, 保持高资金利用率
 
         # === 波动率控制 ===
         self.vol_control_enabled = portfolio_config.get('volatility_control_enabled', True)
@@ -1155,7 +1154,19 @@ class PortfolioConstructor:
                 self._entry_reason_lost_count.pop(code, None)
                 self._post_sell_tracking.pop(code, None)
                 continue
-            # simple模式: 仅成本止损, 跳过时间/移动/死钱/分级止盈等复杂退出
+            # 最高点回落5%无条件清仓 (不受exit_mode限制)
+            if code in self._peak_prices and self._peak_prices[code] > 0:
+                dd_from_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
+                if dd_from_peak >= 0.05:
+                    stop_loss_sells[code] = 0.0
+                    _exit_tags[code] = 'peak_trail'
+                    self._entry_dates.pop(code, None)
+                    self._entry_reasons.pop(code, None)
+                    self._peak_prices.pop(code, None)
+                    self._entry_reason_lost_count.pop(code, None)
+                    self._post_sell_tracking.pop(code, None)
+                    continue
+            # simple模式: 仅成本止损+峰值回撤, 跳过其他复杂退出
             if self.exit_mode == 'simple':
                 continue
             # 时间止损: 持仓>15天且亏损>5%
