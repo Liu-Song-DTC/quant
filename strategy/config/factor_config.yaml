@@ -1,4 +1,4 @@
-factor_mode: fixed  # IC cache已用新FactorLibrary重新生成, 切回fixed模式使用walk-forward因子
+factor_mode: both  # 用新FactorLibrary的walk-forward因子选择
 dynamic_factor:
   train_window_days: 180
   forward_period: 10
