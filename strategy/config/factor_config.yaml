@@ -7297,7 +7297,7 @@ portfolio:
   target_volatility: 0.25
   entry_speed: 0.8
   exit_speed: 0.8
-  position_stop_loss: 0.10
+  position_stop_loss: 0.05
   portfolio_stop_loss: 0.10
   selection:
     min_rank_pct: 0.5  # R3: revert to baseline
@@ -7344,9 +7344,7 @@ base_exposure: 1.0               # 满仓运行, 止损控风险, 不扣现金
 portfolio_stop_loss:
   enabled: false
 hard_drawdown_stop:
-  enabled: true
-  trigger_drawdown: 0.05          # 5%回撤触发清仓
-  recovery_threshold: 0.02        # 回到2%以内恢复
+  enabled: false
   recovery_threshold: 0.08        # 恢复到8%以内恢复满仓
 consecutive_loss_breaker:
   enabled: true                  # 启用: 连续亏损周期→减半敞口, 打破连亏螺旋

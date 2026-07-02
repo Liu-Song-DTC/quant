@@ -726,20 +726,6 @@ class PortfolioConstructor:
             if self._stop_loss_recovery_days <= 0:
                 self._stop_loss_triggered = False
 
-        # === 硬最大回撤停止：回撤>hds_trigger → 渐进清仓 → 恢复后才允许交易 ===
-        if self.hds_enabled:
-            current_equity = total_equity
-            if self._hds_triggered:
-                # 已清仓, 重置峰值后恢复正常选股
-                self._hds_triggered = False
-                self._hds_close_day = 0
-            elif drawdown >= self.hds_trigger:
-                # 触发: 清仓, 重置峰值, 下个调仓日正常选股
-                self._hds_triggered = True
-                self._hds_close_day = 0
-                self.peak_equity = total_equity
-                target_exposure = 0.0  # 本期清仓
-
         # === 连续亏损熔断：连亏→减半敞口 → 连盈→恢复（每日检查，非仅调仓日）===
         if self.clb_enabled:
             if self._prev_equity is not None:
@@ -1642,8 +1628,6 @@ class PortfolioConstructor:
             cash + sum(current_positions.values()), prices)
         _need_refill = (len(current_positions) - len(stop_loss_sells) < _effective_n_positions
                         or bool(stop_loss_sells))
-        if self._hds_triggered:
-            _need_refill = False
         if _need_refill:
             desired_value = self._build_desired_value(
                 date=date,
