@@ -267,12 +267,19 @@ class FactorLibrary:
             0.2 * (1.0 if ic_volatility < 0.02 else -0.5)
         )
 
-        # 仅从当前可见数据推断状态, 不引用 registry 的全局状态(含未来信息)
-        if raw_latest_ic < 0 and n >= 2 and ic_values[-2] < 0:
+        # 衰减判断用IC量级: |IC|持续下降=预测力衰减
+        # 负IC因子(如IC=-0.08)方向取反即可, 量级大说明预测力强
+        abs_ic = abs(raw_latest_ic)
+        abs_prev_ic = abs(ic_values[-2]) if n >= 2 else 0
+        abs_slope = float(np.polyfit(np.arange(n), np.abs(ic_values), 1)[0]) if n >= 3 else 0.0
+
+        if n >= 3 and abs_slope < -0.003 and abs_ic < 0.02:
             status = 'decaying'
-        elif decay_score < -0.2 or (slope < -0.005 and raw_latest_ic < 0.03 and n >= 3):
+        elif n >= 2 and abs_ic < abs_prev_ic * 0.5:
             status = 'decaying'
-        elif raw_latest_ic > self.min_active_ic and slope >= -0.001 and n >= 3:
+        elif decay_score < -0.2 and abs_ic < 0.03:
+            status = 'decaying'
+        elif abs_ic > self.min_active_ic and abs_slope >= -0.001 and n >= 3:
             status = 'active'
         else:
             status = 'candidate'
@@ -295,7 +302,10 @@ class FactorLibrary:
     def select(self, industry: str, as_of_date, top_n: int = 3,
                window_len: int = 250, min_ic: float = 0.015,
                exclude_decaying: bool = True) -> List[dict]:
-        """为指定日期+行业选择最优因子, 使用时间加权评分."""
+        """为指定日期+行业选择最优因子, 使用时间加权评分.
+
+        使用绝对值IC排名(保留符号做方向), 负IC因子通过取反同样有效.
+        """
         all_factors = self.store.get_all_factors()
         as_of_ts = pd.Timestamp(as_of_date)
         if not all_factors:
@@ -306,21 +316,24 @@ class FactorLibrary:
             q = self.get_quality(fn, industry, as_of_ts, window_len)
             if q is None:
                 continue
-            if q['raw_latest_ic'] < min_ic:
+            if abs(q['raw_latest_ic']) < min_ic:
                 continue
             if exclude_decaying and q['status'] in ('decaying', 'retired'):
                 continue
 
+            # 用绝对值排名(量级=预测力), 保留符号做方向
+            direction = 1 if q['raw_latest_ic'] > 0 else -1
             if q['n_windows'] >= 3:
-                score = q['time_weighted_ic'] * 0.6 + q['raw_latest_ic'] * 0.4
+                score = abs(q['time_weighted_ic']) * 0.6 + abs(q['raw_latest_ic']) * 0.4
                 if q['decay_score'] < -0.2:
                     score *= 0.7
             else:
-                score = q['raw_latest_ic']
+                score = abs(q['raw_latest_ic'])
 
             candidates.append({
                 'factor_name': fn,
                 'score': round(score, 5),
+                'direction': direction,
                 'time_weighted_ic': round(q['time_weighted_ic'], 5),
                 'raw_latest_ic': round(q['raw_latest_ic'], 5),
                 'ic_trend_slope': round(q['ic_trend_slope'], 5),
@@ -348,7 +361,7 @@ class FactorLibrary:
                             top_n: int = 5, fallback_config: dict = None,
                             ic_weighted: bool = True
                             ) -> List[tuple]:
-        """为评分公式提供最优因子列表 [(factor_name, weight), ...]
+        """为评分公式提供最优因子列表 [(factor_name, weight, direction), ...]
 
         优先级: 实盘IC数据 > YAML种子数据 > 通用因子兜底
         ic_weighted=True: 权重=因子IC得分(不归一化), 好因子自然高权重
@@ -358,10 +371,12 @@ class FactorLibrary:
             selected = self.select(industry, as_of_date, top_n=top_n)
             if selected:
                 if ic_weighted:
-                    return [(s['factor_name'], s['score']) for s in selected]
+                    return [(s['factor_name'], s['score'], s.get('direction', 1))
+                            for s in selected]
                 else:
                     total_score = sum(s['score'] for s in selected) + 1e-10
-                    return [(s['factor_name'], s['score'] / total_score) for s in selected]
+                    return [(s['factor_name'], s['score'] / total_score, s.get('direction', 1))
+                            for s in selected]
 
         # 2) YAML种子数据
         if fallback_config and industry in fallback_config:
@@ -370,14 +385,14 @@ class FactorLibrary:
             weights = cfg.get('weights', [])
             if factors and weights and len(factors) == len(weights):
                 total_w = sum(abs(w) for w in weights) + 1e-10
-                return list(zip(factors, [abs(w) / total_w for w in weights]))
+                return [(fn, abs(w) / total_w, 1) for fn, w in zip(factors, weights)]
 
         # 3) 通用因子兜底
         default_factors = [
-            ('trend_lowvol', 0.30),
-            ('relative_strength', 0.25),
-            ('low_downside', 0.25),
-            ('momentum_reversal', 0.20),
+            ('trend_lowvol', 0.30, 1),
+            ('relative_strength', 0.25, 1),
+            ('low_downside', 0.25, 1),
+            ('momentum_reversal', 0.20, 1),
         ]
         return default_factors
 

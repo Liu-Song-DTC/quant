@@ -237,7 +237,6 @@ class PortfolioConstructor:
         self.hds_close_days = hds_config.get('close_positions_days', 3)
         self._hds_triggered = False
         self._hds_close_day = 0
-        self._hds_peak_ref = None  # 触发时的峰值（锁定，不随恢复更新）
 
         # === 连续亏损熔断 ===
         clb_config = config.get('consecutive_loss_breaker', {}) if hasattr(config, 'get') else {}
@@ -731,19 +730,15 @@ class PortfolioConstructor:
         if self.hds_enabled:
             current_equity = total_equity
             if self._hds_triggered:
-                # 已触发：检查是否恢复
-                recovery_dd = (self._hds_peak_ref - current_equity) / self._hds_peak_ref if self._hds_peak_ref > 0 else 0
-                if recovery_dd <= self.hds_recovery:
-                    self._hds_triggered = False
-                    self._hds_close_day = 0
-                else:
-                    target_exposure = 0.0
+                # 已清仓, 重置峰值后恢复正常选股
+                self._hds_triggered = False
+                self._hds_close_day = 0
             elif drawdown >= self.hds_trigger:
+                # 触发: 清仓, 重置峰值, 下个调仓日正常选股
                 self._hds_triggered = True
                 self._hds_close_day = 0
-                self._hds_peak_ref = self.peak_equity
-                target_exposure = 0.0
-                self.peak_equity = total_equity  # 重置峰值, 避免恢复后立即重触发
+                self.peak_equity = total_equity
+                target_exposure = 0.0  # 本期清仓
 
         # === 连续亏损熔断：连亏→减半敞口 → 连盈→恢复（每日检查，非仅调仓日）===
         if self.clb_enabled:
@@ -798,8 +793,8 @@ class PortfolioConstructor:
         # 已覆盖原有的 sl/chan_sell/trend=-2/B3回踩/放量下跌/力竭 等全部维度
         # Gate硬门槛仅排除极端无效信号（gate通过score×gate_quality软性影响排名）
         # _GATE_DEFAULT_MEAN=0.55, 全默认gate_quality≈0.68, 需至少一个Gate有信号才能>0.7
-        GATE_FLOOR_NEW = 0.65   # 新入场: 略低于全默认0.68, 允许中性Gate通过
-        GATE_FLOOR_HOLD = 0.55  # 持仓: 更宽松
+        GATE_FLOOR_NEW = 0.65   # R3: revert to baseline
+        GATE_FLOOR_HOLD = 0.55  # R3: revert to baseline
         gate_filtered = []
         for c in qualified:
             sig = c.get('sig')

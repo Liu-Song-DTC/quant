@@ -1318,11 +1318,14 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 positions[j] = target_shares
                 _fill_stats['sell_filled'] += 1
 
+        # 跟踪回撤
+        running_peak = np.maximum.accumulate(nav[:i+1])
+        running_dd = (nav[i] - running_peak[-1]) / max(running_peak[-1], 1.0)
         # 记录每日状态 (每20个交易日采样一次)
         if i % 20 == 0 or i == n_dates - 1:
             pos_count = int(np.sum(positions > 0))
             exposure_val = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0))) / max(nav[i], 1.0)
-            plog.log_backtest_daily(calendar[i].date(), nav[i], float(dd[i]),
+            plog.log_backtest_daily(calendar[i].date(), nav[i], float(running_dd),
                                     pos_count, exposure_val, float(daily_ret[i-1]) if i > 0 else 0.0)
 
     # 记录执行成交汇总
@@ -1331,7 +1334,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         sell_filled=_fill_stats['sell_filled'],
         buy_attempted=_fill_stats['buy_attempted'],
         sell_attempted=_fill_stats['sell_attempted'],
-        buy_limit_skip=_fill_stats['buy_limit_skip'],
+        buy_limit_skip=_fill_stats['buy_limit_up_skip'],
         sell_limit_skip=_fill_stats['sell_limit_down_skip'],
         cash_insufficient=_fill_stats['buy_cash_insufficient'],
         tplus1_blocked=_fill_stats['sell_tplus1_blocked'],

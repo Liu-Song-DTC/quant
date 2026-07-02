@@ -163,6 +163,10 @@ class SignalEngine:
                                            'sum_score': 0.0, '_unique_codes': set(),
                                            '_moat_codes': set()}
 
+        # IC缓存: fixed模式用动态因子选择历史
+        self._ic_factor_cache: Dict[str, list] = {}
+        self._load_ic_cache()
+
     def _load_config(self):
         """从配置文件加载参数"""
         config_loader = load_config()
@@ -1608,7 +1612,7 @@ class SignalEngine:
         """
         specific_industry = self._get_specific_industry(code, current_date) if code else ''
 
-        # fixed模式：直接使用默认因子（跳过行业配置）
+        # fixed模式: 直接用IC cache的walk-forward因子(无过拟合风险)
         if self.factor_mode == 'fixed':
             self._stats['fixed_default'] += 1
             factor_name, factor_value, risk_info = self._calculate_default_factor(
@@ -2024,6 +2028,7 @@ class SignalEngine:
         except Exception:
             lib = None
 
+        factor_names = []  # 实际使用的因子名(诊断用)
         if lib is not None:
             industry = (self._get_specific_industry(code, current_date)
                         if (code and current_date) else '')
@@ -2031,32 +2036,92 @@ class SignalEngine:
                 industry or '', as_of_date=current_date,
                 fallback_config=INDUSTRY_FACTOR_CONFIG)
         else:
-            scoring_factors = [
-                ('trend_lowvol', 0.30), ('relative_strength', 0.25),
-                ('low_downside', 0.25), ('momentum_reversal', 0.20),
-            ]
+            # 从IC缓存读取当前日期的最优因子 (无FactorLibrary时)
+            scoring_factors = self._get_cached_scoring_factors(current_date) if current_date else []
+            if not scoring_factors:
+                mom_dir = -1 if regime == -1 else 1  # 熊市动量反转
+                scoring_factors = [
+                    ('trend_lowvol', 0.30, 1), ('relative_strength', 0.25, 1),
+                    ('low_downside', 0.25, 1), ('momentum_reversal', 0.20, mom_dir),
+                ]
 
         score = 0.0
-        for factor_name, weight in scoring_factors[:5]:
-            # 优先用截面排名值（消除因子间量级差异, IC权重才能真正主导）
+        for item in scoring_factors[:5]:
+            fn, weight = item[0], item[1]
+            direction = item[2] if len(item) >= 3 else 1
             fv = float('nan')
             if code and current_date:
-                fv = self._lookup_rank(code, current_date, factor_name)
+                fv = self._lookup_rank(code, current_date, fn)
             if np.isnan(fv):
-                fv = self._safe_get(ind, factor_name, idx, 0.0)
-            if regime == -1 and factor_name in ('momentum_reversal',):
-                fv = -fv  # 熊市反转: 低动量(均值回归)股票获得高分
+                if fn.startswith('fund_'):
+                    fv = self._get_fundamental_factor_value(code, current_date, fn)
+                    if fv is None:
+                        fv = 0.0
+                else:
+                    fv = self._safe_get(ind, fn, idx, 0.0)
+            if direction < 0:
+                fv = -fv
             score += fv * weight
+            if abs(weight) > 0.001:
+                factor_names.append(fn)
 
-        # === Layer 5: 因子名 ===
-        if regime == 1:
-            factor_name = 'MOM'
-        else:
-            factor_name = 'REV'
+        # 因子名反映实际使用的因子(诊断+FQG可见)
+        factor_name = '+'.join(factor_names[:3]) if factor_names else 'REV'
 
-        factor_value = float(np.clip(score, -1.0, 1.0))  # 纯因子评分, 宽范围保留区分度
+        factor_value = float(np.clip(score, -1.0, 1.0))
         risk_info = {'is_high_vol': False}
         return factor_name, factor_value, risk_info
+
+    def _load_ic_cache(self):
+        """加载IC缓存, 构建日期→因子查找表
+
+        同一日期有多条cache(不同行业), 取quality最高的条目
+        """
+        import glob, pickle
+        self._ic_factor_cache: Dict[str, list] = {}
+        try:
+            cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'cache')
+            candidates = glob.glob(os.path.join(cache_dir, 'ic_cache_*.pkl'))
+            if not candidates:
+                return
+            cache_path = max(candidates, key=os.path.getmtime)
+            with open(cache_path, 'rb') as f:
+                raw = pickle.load(f)
+            if not isinstance(raw, dict) or 'cache' not in raw:
+                return
+            for ts, data in raw['cache']:
+                if 'factors' not in data or 'directions' not in data:
+                    continue
+                date_str = str(ts)[:10] if hasattr(ts, 'strftime') else str(ts)[:10]
+                items = []
+                for i, fn in enumerate(data['factors']):
+                    w = data['weights'][i] if i < len(data['weights']) else 1.0
+                    direction = data['directions'][i] if i < len(data['directions']) else 1
+                    items.append((fn, w, direction))
+                if not items:
+                    continue
+                quality = data.get('quality', 0)
+                # 同日期多条: 保留quality最高的
+                existing = self._ic_factor_cache.get(date_str)
+                if existing is None or quality > existing[1]:
+                    self._ic_factor_cache[date_str] = (items, quality)
+        except Exception:
+            pass
+
+    def _get_cached_scoring_factors(self, date) -> list:
+        """从IC缓存获取某日期的因子列表 [(name, weight, direction), ...]"""
+        if not self._ic_factor_cache:
+            return []
+        date_str = str(date)[:10] if hasattr(date, 'strftime') else str(date)[:10]
+        if date_str in self._ic_factor_cache:
+            return self._ic_factor_cache[date_str][0]  # (items, quality) → items
+        best = None
+        for d in sorted(self._ic_factor_cache.keys()):
+            if d <= date_str:
+                best = d
+        if best:
+            return self._ic_factor_cache[best][0]
+        return []
 
     def _record_factor_selection(self, factor_name: str, is_industry: bool, is_dynamic: bool):
         """回测诊断：记录因子选择"""

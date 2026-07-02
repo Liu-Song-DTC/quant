@@ -1,4 +1,4 @@
-factor_mode: fixed  # DYN动态因子Sharpe 0.89 < V41固定因子 1.42, 先固定验证  # DYN命中率<1%需排查根因, 不能靠fixed绕过
+factor_mode: both  # 临时: 用新FactorLibrary重新生成IC cache
 dynamic_factor:
   train_window_days: 180
   forward_period: 10
@@ -7257,7 +7257,7 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.02       # 纯因子评分(mean=-0.17), p90≈0.03
+  buy_threshold: 0.02       # R5: restore baseline, factor fix should improve signal quality
   sell_threshold: -0.35
   buy_threshold_pct: 0.45
   composite_bias: 0.0
@@ -7300,7 +7300,7 @@ portfolio:
   position_stop_loss: 0.10
   portfolio_stop_loss: 0.10
   selection:
-    min_rank_pct: 0.5
+    min_rank_pct: 0.5  # R3: revert to baseline
     min_absolute_score: 0.0
     min_confidence: 0.80
     chan_gate_enabled: true
@@ -7309,7 +7309,7 @@ portfolio:
     exhaustion_max_weight: 0.08
     exhaustion_reduce_mult: 0.5
     industry_max_weight: 0.4
-    max_per_industry: 2   # ExpB2: 同行业最多2只, 防止过度集中
+    max_per_industry: 2   # R2: 3→2, 行业分散控制
     rank_weight_cap: 0.35
     speculative_max_weight: 0.4
   fv_exposure_params:
@@ -7319,7 +7319,7 @@ portfolio:
     exposure_max: 1.0
   turnover_bonus: 0.1
   params:
-    max_positions: 5  # Exp验证: 5最优(Sharpe 1.12), 4过度集中(0.56), 6/8分散(1.09/1.07)
+    max_positions: 5  # R5: restore baseline, factor fix is the key change
     risk_parity_min_weight_ratio: 0.4
     rank_decay: 0.3
     chan_bonus_sl2: 0.04
@@ -7337,7 +7337,7 @@ portfolio:
     exhaustion_moderate_threshold: 0.15
     mr_exit_cooldown_days: 14
     ideal_position_max_mult: 2.0
-    min_hold_days: 10  # 15→10: 与rebalance_days对齐, 避免想换仓但换不了的配置冲突
+    min_hold_days: 10  # R2: 5→10, 减少过度换手
     sector_momentum_weight: 0.4
     sector_signal_density_weight: 0.6
 base_exposure: 1.0               # 满仓运行, 止损控风险, 不扣现金
@@ -7345,7 +7345,8 @@ portfolio_stop_loss:
   enabled: false
 hard_drawdown_stop:
   enabled: true
-  trigger_drawdown: 0.15          # 15%触发, 只防熊市, 不控日常回撤
+  trigger_drawdown: 0.05          # 5%回撤触发清仓
+  recovery_threshold: 0.02        # 回到2%以内恢复
   recovery_threshold: 0.08        # 恢复到8%以内恢复满仓
 consecutive_loss_breaker:
   enabled: true                  # 启用: 连续亏损周期→减半敞口, 打破连亏螺旋
@@ -7496,10 +7497,19 @@ stock_pool:
 ml:
   enabled: true
   model_dir: strategy/models
-  blend_weight: 0.30  # ML IC=0.07, 补偿gate_quality退出评分的区分度损失
-  train_window_days: 1250      # 滚动训练窗口: 5年≈1250日
-  retrain_frequency: 60        # 每60个交易日重新训练 (季度级)
+  blend_weight: 0.15  # IC波动大(0.034-0.099), 降低权重保护低IC期
+  train_window_days: 500       # 2年窗口, 更快适应市场状态切换
+  retrain_frequency: 30        # 月度重训, 减少IC波动
   pred_start_date: '2021-01-01'  # ML预测集起始(2021-2026回测期)
+  # XGBoost超参: 原保守(深度4/树200)→更强表达力, 降低低IC期
+  n_estimators: 300
+  max_depth: 6
+  learning_rate: 0.03
+  subsample: 0.8
+  colsample_bytree: 0.7
+  reg_lambda: 1.5
+  reg_alpha: 0.5
+  min_child_weight: 3
   feature_whitelist:
   - trend_lowvol
   - momentum_reversal
@@ -7599,8 +7609,8 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
-  num_workers: 4   # spawn多进程 + 30s超时, 防死锁
-  fromdate: '2021-01-01'  # 全量基线: 5.5年覆盖完整牛熊
+  num_workers: 8
+  fromdate: '2021-01-01'
   todate: '2026-05-30'
 cost_model:
   t_plus_1_enabled: true
