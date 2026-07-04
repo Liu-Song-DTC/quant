@@ -162,6 +162,10 @@ class SignalEngine:
         self._bom_diag: Dict[str, Any] = {'total': 0, 'hit': 0, 'miss': 0, 'moat': 0,
                                            'sum_score': 0.0, '_unique_codes': set(),
                                            '_moat_codes': set()}
+        # 评分公式质量诊断: 跟踪各分项贡献
+        self._score_diag: Dict[str, list] = {'factor': [], 'fund': [], 'gate_q': [],
+                                              'ml': [], 'bom_mult': [], 'final': [],
+                                              'n_samples': 0}
 
         # IC缓存: fixed模式用动态因子选择历史
         self._ic_factor_cache: Dict[str, list] = {}
@@ -454,6 +458,36 @@ class SignalEngine:
         print(f"平均BOM分:    {avg_score:.4f}")
         print("==========================================\n")
 
+    def print_score_diagnostics(self):
+        """打印评分公式质量诊断: 各分项贡献度 + 分布"""
+        d = self._score_diag
+        n = d['n_samples']
+        if n == 0:
+            print("[评分诊断] 无数据")
+            return
+        import numpy as np
+        comp = {k: np.array(v) for k, v in d.items() if k != 'n_samples'}
+        print(f"\n========== 评分公式质量诊断 (n={n}) ==========")
+        print(f"{'分项':<12} {'均值':>8} {'标准差':>8} {'P10':>8} {'P50':>8} {'P90':>8}")
+        print("-" * 52)
+        labels = {'factor': '纯因子', 'fund': '基本面', 'gate_q': '门控质量',
+                  'ml': 'ML预测', 'bom_mult': 'BOM乘数', 'final': '最终得分'}
+        for key, label in labels.items():
+            arr = comp[key]
+            print(f"{label:<12} {np.mean(arr):>8.4f} {np.std(arr):>8.4f} "
+                  f"{np.percentile(arr, 10):>8.4f} {np.percentile(arr, 50):>8.4f} "
+                  f"{np.percentile(arr, 90):>8.4f}")
+        # 相关性: 各分项与最终得分的Spearman
+        print(f"\n{'分项 vs 最终得分 Spearman 相关系数':-^52}")
+        from scipy.stats import spearmanr
+        final = comp['final']
+        for key, label in labels.items():
+            if key == 'final':
+                continue
+            r, _ = spearmanr(comp[key], final)
+            print(f"  {label:<12} → final: {r:+.4f}")
+        print("=" * 52 + "\n")
+
     def generate(self, code: str, market_data: pd.DataFrame, signal_store: SignalStore,
                  latest_only: bool = False):
         """生成信号（向量化批处理：收集标量→数组装配→向量化阈值→买卖判定）
@@ -495,12 +529,16 @@ class SignalEngine:
         # 向量化预计算市场状态（避免逐 bar _get_market_info）
         regimes = self._precompute_regimes(dates, n)
 
+        # ===== Phase 0: BOM产业链质量分 (高壁垒+高利润段) =====
+        bom_score = self._get_bom_score(code) if code else 0.3
+
         # ===== Phase 1: 逐bar收集复杂方法调用的标量结果 =====
         scalars = self._collect_bar_scalars(indicators, code, dates, n,
                                             regimes=regimes, latest_only=latest_only)
 
         # ===== Phase 2: 向量化分数装配 =====
-        result = self._vectorized_score_assembly(scalars, indicators, n, code, dates)
+        result = self._vectorized_score_assembly(scalars, indicators, n, code, dates,
+                                                  bom_score=bom_score)
         del scalars
 
         # ===== Phase 3: 动态阈值（用 adjusted_score 校准入阈值分布，与买入判定一致）=====
@@ -830,7 +868,7 @@ class SignalEngine:
                 gap_breakout_confirm=float(result['gap_breakout_confirm'][i]),
                 vol_opening_confirm=float(vol_oc),
                 vol_opening_strength=float(vol_os),
-                bom_quality_score=float(self._get_bom_score(code)),
+                bom_quality_score=float(bom_score),
                 stroke_phase=float(result['stroke_phase'][i]),
                 top_fractal_volume=float(result['top_fractal_volume'][i]),
                 ma_trend_up=bool(result['ma_trend_up'][i]),
@@ -1286,7 +1324,7 @@ class SignalEngine:
         }
 
     def _vectorized_score_assembly(self, s: dict, ind: dict, n: int, code: str = '',
-                                    dates: np.ndarray = None) -> dict:
+                                    dates: np.ndarray = None, bom_score: float = 0.3) -> dict:
         """向量化分数装配（门控版）：factor × gate_quality 替代6层乘法叠加。
 
         新架构:
@@ -1496,6 +1534,21 @@ class SignalEngine:
             for i in np.where(mask)[0]:
                 div_type[i] = f'bi{bi_buy[i]}_seg{buy_point_raw[i]}_buy'
 
+        # === 6.5 BOM产业链质量乘数: 高壁垒高利润段加分, 低壁垒不变 ===
+        bom_mult_arr = np.full(n, 0.85 + 0.15 * bom_score)
+        adjusted_score *= bom_mult_arr
+
+        # === 6.6 评分诊断采样 (每100只股票采样1次, 只记录有效bar) ===
+        if n > 60 and valid[-1] and self._score_diag['n_samples'] < 5000:
+            self._score_diag['factor'].append(float(pre_discount_score[-1]))
+            self._score_diag['fund'].append(
+                float(s['fundamental_score'][-1]) if s['fundamental_score'][-1] > 0 else 0.0)
+            self._score_diag['gate_q'].append(float(gate_quality[-1]))
+            self._score_diag['ml'].append(float(ml_normalized[-1]))
+            self._score_diag['bom_mult'].append(float(bom_mult_arr[-1]))
+            self._score_diag['final'].append(float(adjusted_score[-1]))
+            self._score_diag['n_samples'] += 1
+
         # === 7. 组装返回 ===
         return {
             'valid': valid,
@@ -1544,8 +1597,8 @@ class SignalEngine:
             'top_fractal_volume': _safe_get_arr(ind, 'top_fractal_volume', n, 0.0),
             'ma_trend_up': _safe_get_arr(ind, 'ema20_above_60', n, 0).astype(bool),
             'profit_declining': s['profit_declining'],
-            'mom_60d': _safe_get_arr(s, 'mom_60d', n, 0.0),
-            'dist_ma60': _safe_get_arr(s, 'dist_ma60', n, 0.0),
+            'mom_60d': _safe_get_arr(ind, 'mom_60d', n, 0.0),
+            'dist_ma60': _safe_get_arr(ind, 'dist_ma60', n, 0.0),
             'max_dd_20d': _safe_get_arr(ind, 'max_dd_20d', n, 0.0),
             'vol_regime': _safe_get_arr(ind, 'vol_regime', n, 1.0),
             'weekly_trend_up': _safe_get_arr(ind, 'weekly_trend_up', n, 0).astype(bool),

@@ -7257,7 +7257,7 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.02       # R5: restore baseline, factor fix should improve signal quality
+  buy_threshold: 0.05     # 匹配DYN因子score量级(0.07~0.55), 过滤弱信号
   sell_threshold: -0.35
   buy_threshold_pct: 0.45
   composite_bias: 0.0
@@ -7300,8 +7300,8 @@ portfolio:
   position_stop_loss: 0.05
   portfolio_stop_loss: 0.10
   selection:
-    min_rank_pct: 0.5  # R3: revert to baseline
-    min_absolute_score: 0.0
+    min_rank_pct: 0.5  # R5: revert, 放松过滤导致2022崩盘
+    min_absolute_score: 0.05  # 恢复2.04值, DYN因子score量级0.07~0.55下过滤弱信号
     min_confidence: 0.80
     chan_gate_enabled: true
     chan_gate_min_count: 2
@@ -7319,7 +7319,7 @@ portfolio:
     exposure_max: 1.0
   turnover_bonus: 0.1
   params:
-    max_positions: 5  # R5: restore baseline, factor fix is the key change
+    max_positions: 5  # R6: revert, 放松过滤伤害>帮助, 保持5
     risk_parity_min_weight_ratio: 0.4
     rank_decay: 0.3
     chan_bonus_sl2: 0.04
@@ -7496,7 +7496,8 @@ ml:
   enabled: true
   model_dir: strategy/models
   blend_weight: 0.15  # IC波动大(0.034-0.099), 降低权重保护低IC期
-  train_window_days: 500       # 2年窗口, 更快适应市场状态切换
+  min_val_ic: 0.02      # 安全底线: <2%的chunk纯噪声, 不参与ML预测
+  train_window_days: 750       # 2.5年窗口, 覆盖更多市场regime, 降低单regime过拟合
   retrain_frequency: 30        # 月度重训, 减少IC波动
   pred_start_date: '2021-01-01'  # ML预测集起始(2021-2026回测期)
   # XGBoost超参: 原保守(深度4/树200)→更强表达力, 降低低IC期

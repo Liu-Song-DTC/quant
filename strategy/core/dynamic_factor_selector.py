@@ -322,12 +322,14 @@ def _compute_date_chunk(args):
             n_selected = len(top_factors)
             avg_quality = np.mean([f['combined_ir'] for f in top_factors])
 
-            if n_selected >= min_factor_count and avg_quality >= 0.015 and n_selected >= 2:
+            if n_selected >= min_factor_count and avg_quality >= 0.015:
                 _dyn_pass += 1
-                total_quality = sum(f['combined_ir'] for f in top_factors) + 1e-10
+                # R6: 平方加权 — 让IC最高的因子占主导, 避免次优因子稀释
+                ir_sq = np.array([f['combined_ir'] ** 2 for f in top_factors])
+                total_sq = ir_sq.sum() + 1e-10
                 result[val_date] = {
                     'factors': [f['factor'] for f in top_factors],
-                    'weights': [f['combined_ir'] / total_quality for f in top_factors],
+                    'weights': (ir_sq / total_sq).tolist(),
                     'directions': [f.get('direction', 1) for f in top_factors],
                     'quality': avg_quality,
                     '_all_metrics': factor_metrics,
@@ -491,7 +493,7 @@ class DynamicFactorSelector:
             worker_args.append(([chunk], chunk_df, config))
 
         all_results = []
-        ctx = multiprocessing.get_context('fork')
+        ctx = multiprocessing.get_context('spawn')
         with ctx.Pool(n_workers) as pool:
             worker_results = pool.map(_compute_date_chunks_worker, worker_args)
             for wr in worker_results:

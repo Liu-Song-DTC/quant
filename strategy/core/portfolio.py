@@ -607,11 +607,16 @@ class PortfolioConstructor:
                 _chain_concepts = get_chain_concepts(_dom_industry)
                 if _chain_concepts:
                     _before = len(candidates)
-                    candidates = [c for c in candidates
+                    _chained = [c for c in candidates
                                 if c.get('industry', '') in _chain_concepts
                                 or c.get('industry', '') == _dom_industry]
-                    print(f" [产业链] {_dom_industry} → {len(_chain_concepts)}个关联概念, "
-                          f"候选 {_before}→{len(candidates)}")
+                    # 保护: 产业链过滤后候选<3只 → 退回不限行业, 避免过度收缩
+                    if len(_chained) >= 3:
+                        candidates = _chained
+                        print(f" [产业链] {_dom_industry} → {len(_chain_concepts)}个关联概念, "
+                              f"候选 {_before}→{len(candidates)}")
+                    else:
+                        print(f" [产业链] {_dom_industry} 过滤后仅{len(_chained)}只(<3) → 退回不限行业")
                 else:
                     plog.alert(f"产业链缺失: \"{_dom_industry}\" 未在 INDUSTRY_CHAINS 中定义, 请补充")
                     print(f" [产业链] ⚠ \"{_dom_industry}\" 缺少产业链定义 → 退回不限行业")
@@ -649,64 +654,43 @@ class PortfolioConstructor:
         for i, c in enumerate(candidates):
             c['rank_pct'] = float(blended_rank[i])
 
-        # === 强势板块选股: 连续性确认, 不因单日波动反复 ===
+        # R6: 关闭行业强势过滤 — 纯score驱动选股，不做行业干预
         force_exit_industries = set()
-        if len(candidates) >= 5:
-            ind_stats = {}
-            for c in candidates:
-                ind = c.get('industry', '其他')
-                if ind not in ind_stats:
-                    ind_stats[ind] = {'scores': [], 'n': 0}
-                ind_stats[ind]['scores'].append(c['score'])
-                ind_stats[ind]['n'] += 1
-            ind_strength = {}
-            max_n = max(s['n'] for s in ind_stats.values())
-            for ind, stats in ind_stats.items():
-                if stats['n'] >= 2:
-                    ind_strength[ind] = (stats['n'] / max_n) * 0.3 + np.median(stats['scores']) * 0.7
-            if len(ind_strength) >= 1:
-                ranks = pd.Series(ind_strength).rank(pct=True)
-                # 连续性追踪
-                if not hasattr(self, '_ind_strong_count'):
-                    self._ind_strong_count = {}  # {ind: 连续处于前40%的次数}
-                    self._ind_weak_count = {}    # {ind: 连续处于后40%的次数}
-                allowed = set()
-                top = set()
-                force_exit_industries = set()
-                for ind, r in ranks.items():
-                    # 更新连续计数
-                    is_strong = r >= 0.75   # 只有top25%的行业算强势
-                    is_weak = r < 0.25      # bottom25%算弱势
-                    self._ind_strong_count[ind] = self._ind_strong_count.get(ind, 0) + 1 if is_strong else 0
-                    self._ind_weak_count[ind] = self._ind_weak_count.get(ind, 0) + 1 if is_weak else 0
-                    # 准入: 首日强→允许(仓位打折), 2期→正常, 连续2期弱→强制清仓
-                    if self._ind_strong_count.get(ind, 0) >= 1:
-                        allowed.add(ind)
-                        if self._ind_strong_count[ind] >= 2 and r >= 0.80:
-                            top.add(ind)
-                    if self._ind_weak_count.get(ind, 0) >= 2:
-                        force_exit_industries.add(ind)
-                # 首次出现的新行业直接允许
-                for ind in ranks.index:
-                    if ind not in self._ind_strong_count or self._ind_strong_count[ind] == 0:
-                        if ranks[ind] >= 0.75:
-                            allowed.add(ind)
-                candidates = [c for c in candidates
-                           if c.get('industry', '其他') in allowed]
-                for c in candidates:
-                    ind = c.get('industry', '其他')
-                    if ind in top:
-                        c['rank_pct'] = float(np.clip(c['rank_pct'] + 0.05, 0.0, 1.0))
-                    elif self._ind_strong_count.get(ind, 0) == 1:
-                        # 首日强: 减半仓位防假突破
-                        c['rank_pct'] = float(np.clip(c['rank_pct'] * 0.7, 0.0, 1.0))
-                # 弱板块连续2期: 记录, 稍后在desired_value阶段清仓
         self._force_exit_industries = force_exit_industries
 
-        # === v11: 恒定目标敞口, 不做市场状态择时 ===
-        # 买入信号在所有市场状态均为正期望(avg=+1.16%, WR=51%),
-        # 仓位择时在A股历史上弊大于利(2025牛市仅38%利用率)
-        target_exposure = self.base_exposure  # default: 0.85
+        # === 市场仓位调整: 趋势驱动, 替代v11恒定敞口 ===
+        # trend_score ∈ [-0.5, 0.5] 线性映射到 [0.3, 1.0]
+        # 恢复2.04逻辑: 熊市降低敞口, 牛市适度加仓
+        if trend_score > 0.5:
+            target_exposure = self.base_exposure  # 牛市满仓
+        elif trend_score > -0.5:
+            t = (trend_score + 0.5)  # [-0.5, 0.5] → [0, 1.0]
+            signal = float(0.3 + t * 0.7)  # [0.3, 1.0]
+            target_exposure = float(np.clip(signal, 0.3, 1.0)) * self.base_exposure
+        else:
+            target_exposure = 0.3 * self.base_exposure  # 熊市最低30%敞口
+
+        # === 市场缩量降仓: 无量无行情 ===
+        if index_volume_ratio < 0.5:
+            target_exposure = min(target_exposure, 0.20)
+        elif index_volume_ratio < 0.7:
+            target_exposure = min(target_exposure, 0.35)
+
+        # === Chan强买点熊市豁免: >=2只强买点出现时最低敞口0.6, 不错过底部 ===
+        chan_strong_buys = sum(
+            1 for c in candidates
+            if c.get('signal_level', 0) >= 2 or c.get('chan_buy_point', 0) == 1
+        )
+        if chan_strong_buys >= 2 and target_exposure < 0.6:
+            target_exposure = max(target_exposure, 0.6)
+
+        # === 波动率控制: realized_vol > target → 降仓 ===
+        if self.vol_control_enabled and len(self._daily_returns) >= self.vol_lookback:
+            recent_rets = list(self._daily_returns)[-self.vol_lookback:]
+            realized_vol = float(np.std(recent_rets) * np.sqrt(252))
+            if realized_vol > 0.01:
+                vol_scale = float(np.clip(self.target_volatility / realized_vol, 0.75, 1.0))
+                target_exposure *= vol_scale
 
         # === 硬止损: 回撤超过阈值时强制降仓（含恢复冷却期）===
         if self.stop_loss_enabled and drawdown > self.portfolio_stop_loss:
@@ -778,7 +762,7 @@ class PortfolioConstructor:
         # 已覆盖原有的 sl/chan_sell/trend=-2/B3回踩/放量下跌/力竭 等全部维度
         # Gate硬门槛仅排除极端无效信号（gate通过score×gate_quality软性影响排名）
         # _GATE_DEFAULT_MEAN=0.55, 全默认gate_quality≈0.68, 需至少一个Gate有信号才能>0.7
-        GATE_FLOOR_NEW = 0.65   # R3: revert to baseline
+        GATE_FLOOR_NEW = 0.65   # R5: revert, 放松导致信号质量下降
         GATE_FLOOR_HOLD = 0.55  # R3: revert to baseline
         gate_filtered = []
         for c in qualified:
@@ -856,6 +840,48 @@ class PortfolioConstructor:
             bp = c.get('chan_buy_point', 0)
             sl = c.get('signal_level', 0)
 
+            # === 短期趋势质量扣分 (恢复2.04的12条件, 改为扣分制保留候选资格) ===
+            vol_ratio_pen = self._nan_safe(getattr(sig_ref, 'volume_ratio', 0.0))
+            daily_ret_pen = self._nan_safe(getattr(sig_ref, 'daily_return', 0.0))
+            trend_type_pen = int(self._nan_safe(getattr(sig_ref, 'trend_type', 0)))
+            stroke_phase_pen = self._nan_safe(getattr(sig_ref, 'stroke_phase', 0.0))
+            exhaustion_pen = self._nan_safe(getattr(sig_ref, 'exhaustion_risk', 0.0))
+            div_type_pen = str(getattr(sig_ref, 'chan_divergence_type', '') or '')
+            div_strength_pen = self._nan_safe(getattr(sig_ref, 'chan_divergence_strength', 0.0))
+            gbc_pen = self._nan_safe(getattr(sig_ref, 'gap_breakout_confirm', 0.0))
+            profit_d_pen = getattr(sig_ref, 'profit_declining', False)
+
+            # 顶部背离: 2.04数据 top→-6.38%, hidden_top→-4.46%
+            if 'top' in div_type_pen.lower():
+                additive -= 0.08
+            # 利润持续下滑: 基本面恶化
+            if profit_d_pen:
+                additive -= 0.10
+            # 放量下跌: ret<-1.5%且vol_ratio>0.5 → 不是健康回调
+            if daily_ret_pen < -0.015 and vol_ratio_pen > 0.5:
+                additive -= 0.06
+            # 涨停附近不追: 接盘风险
+            if daily_ret_pen > 0.09:
+                additive -= 0.05
+            # 力竭追高: exhaustion>0.5
+            if exhaustion_pen > 0.5:
+                additive -= 0.10
+            # B1需底背离确认
+            if bp == 1 and 'bottom' not in div_type_pen.lower():
+                additive -= 0.06
+            # 下跌趋势中加速下行
+            if trend_type_pen == -2 and stroke_phase_pen > 0.2 and not (bp == 3 and sl >= 2):
+                additive -= 0.05
+            # 非上升趋势+弱势阴跌
+            if trend_type_pen != 2 and stroke_phase_pen > 0.2 and daily_ret_pen < 0:
+                additive -= 0.04
+            # 极端追高: mom>50%且无结构
+            if mom_60d > 0.50 and bp == 0:
+                additive -= 0.06
+            # 严重乖离MA60: dist>45%且无结构
+            if dist_ma60 > 0.45 and bp == 0:
+                additive -= 0.06
+
             # B3严重缩量惩罚 (唯一保留的买点特定调整, 有数据支撑)
             if bp == 3:
                 vol_ratio = self._nan_safe(getattr(sig_ref, 'volume_ratio', 0.0))
@@ -870,6 +896,19 @@ class PortfolioConstructor:
             if c['is_held'] and c['rank_pct'] <= hold_threshold:
                 c['is_held'] = False
                 turnover = 0.0
+
+            # B1买点加分: 一买是反转信号, 胜率最高
+            if bp == 1 and sl >= 1:
+                additive += 0.08
+            elif bp == 2 and sl >= 2:
+                additive += 0.03  # B2强确认小幅加分
+
+            # BOM质量加分: 高壁垒+高利润个股优先
+            bom_score = self._nan_safe(getattr(sig_ref, 'bom_quality_score', 0.3))
+            if bom_score > 0.70:
+                additive += 0.06
+            elif bom_score > 0.55:
+                additive += 0.03
 
             # 动量调整: 赢家动量更高(+4.3pp), 有数据支撑
             mom_adj = (mom_60d - 0.0) * 0.18

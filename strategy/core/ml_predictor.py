@@ -75,11 +75,14 @@ class MLFactorPredictor:
                 for i, f1 in enumerate(top_features):
                     for f2 in top_features[i+1:]:
                         self._cross_feature_pairs.append((f1, f2))
+            # Rank-based交叉: 先转截面百分位再相乘, 对异常值和分布漂移更鲁棒
             for f1, f2 in self._cross_feature_pairs:
                 col = f'cross_{f1}_{f2}'
                 if col not in df.columns:
                     if f1 in df.columns and f2 in df.columns:
-                        df[col] = df[f1].fillna(0) * df[f2].fillna(0)
+                        r1 = df.groupby('date')[f1].rank(pct=True).fillna(0.5)
+                        r2 = df.groupby('date')[f2].rank(pct=True).fillna(0.5)
+                        df[col] = r1 * r2
                         if col not in base_features:
                             base_features.append(col)
 
@@ -141,6 +144,15 @@ class MLFactorPredictor:
             print(f"[ML] 有效特征不足: {len(valid_features)}")
             return None
 
+        # 特征稳定性过滤: 跨时间段IC_sharpe < 0.2 的特征视为噪声, 移除
+        if len(valid_features) > 15 and 'date' in df.columns:
+            stable_features = self._filter_stable_features(df, valid_features)
+            n_dropped = len(valid_features) - len(stable_features)
+            if n_dropped > 0 and len(stable_features) >= 8:
+                valid_features = stable_features
+                if n_dropped > 10:
+                    print(f"  [ML] 特征稳定性过滤: {n_dropped} 个噪声特征已移除, 保留 {len(stable_features)}")
+
         # 处理Inf/NaN
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         num_cols = df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
@@ -179,6 +191,9 @@ class MLFactorPredictor:
         self.model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         self._last_train_date = dates[-1]
 
+        # 固化训练特征: predict时复用, 避免prepare_features覆盖导致shape mismatch
+        self._trained_features = valid_features
+
         y_pred = self.model.predict(X_val)
         val_ic = np.corrcoef(y_pred, y_val)[0, 1] if len(y_val) > 1 else 0
 
@@ -205,7 +220,9 @@ class MLFactorPredictor:
         df = self._cross_sectional_zscore(df, numeric_cols)
 
         df = self.prepare_features(df, regime_info)
-        valid_features = [c for c in self.feature_cols if c in df.columns]
+        # 使用训练时固化的特征列表, 避免prepare_features重建的feature_cols与模型不匹配
+        trained_cols = getattr(self, '_trained_features', self.feature_cols)
+        valid_features = [c for c in trained_cols if c in df.columns]
         if not valid_features:
             return np.zeros(len(df))
 
@@ -231,6 +248,7 @@ class MLFactorPredictor:
         with open(meta_path, 'wb') as f:
             pickle.dump({
                 'feature_cols': self.feature_cols,
+                'trained_features': getattr(self, '_trained_features', self.feature_cols),
                 'cross_feature_pairs': self._cross_feature_pairs,
                 'feature_importances': getattr(self, '_feature_importances', {}),
             }, f)
@@ -247,20 +265,73 @@ class MLFactorPredictor:
             with open(meta_path, 'rb') as f:
                 data = pickle.load(f)
             self.feature_cols = data['feature_cols']
+            self._trained_features = data.get('trained_features', data['feature_cols'])
             self._cross_feature_pairs = data['cross_feature_pairs']
             self._feature_importances = data['feature_importances']
 
-    def _select_top_features(self, df: pd.DataFrame,
-                              features: List[str], k: int = 8) -> List[str]:
-        if 'future_ret' not in df.columns:
-            return features[:k]
-        ics = []
+    @staticmethod
+    def _filter_stable_features(df: pd.DataFrame, features: List[str],
+                                 min_ic_sharpe: float = 0.2,
+                                 n_windows: int = 5) -> List[str]:
+        """过滤IC不稳定的噪声特征: 分n_windows时间段, IC_sharpe < min_ic_sharpe 则移除"""
+        if 'future_ret' not in df.columns or 'date' not in df.columns:
+            return features
+        dates = sorted(df['date'].unique())
+        if len(dates) < n_windows * 2:
+            return features
+        window_size = len(dates) // n_windows
+        stable = []
         for f in features:
             if f not in df.columns:
                 continue
-            valid = df[[f, 'future_ret']].dropna()
-            if len(valid) >= 30:
-                ic = valid[f].corr(valid['future_ret'], method='spearman')
-                ics.append((f, abs(ic)))
-        ics.sort(key=lambda x: -x[1])
-        return [f for f, _ in ics[:k]]
+            window_ics = []
+            for w in range(n_windows):
+                w_start = w * window_size
+                w_end = (w + 1) * window_size if w < n_windows - 1 else len(dates)
+                w_dates = set(dates[w_start:w_end])
+                valid = df[df['date'].isin(w_dates)][[f, 'future_ret']].dropna()
+                if len(valid) >= 30:
+                    ic = valid[f].corr(valid['future_ret'], method='spearman')
+                    window_ics.append(ic)
+            if len(window_ics) >= 3:
+                ic_sharpe = np.mean(window_ics) / (np.std(window_ics) + 1e-10)
+                if ic_sharpe >= min_ic_sharpe:
+                    stable.append(f)
+        # 至少保留8个特征 — 特征太少反而过拟合
+        if len(stable) < 8:
+            return features
+        return stable
+
+    def _select_top_features(self, df: pd.DataFrame,
+                              features: List[str], k: int = 8) -> List[str]:
+        """选IC稳定且高的特征，而非仅按|IC|排序。IC_sharpe = mean(IC) / std(IC)"""
+        if 'future_ret' not in df.columns:
+            return features[:k]
+        dates = sorted(df['date'].unique())
+        if len(dates) < 5:
+            return features[:k]
+        # 分5段时间窗口计算IC，取IC_sharpe最高的k个
+        n_windows = min(5, len(dates))
+        window_size = len(dates) // n_windows
+        scores = []
+        for f in features:
+            if f not in df.columns:
+                continue
+            window_ics = []
+            for w in range(n_windows):
+                w_start = w * window_size
+                w_end = (w + 1) * window_size if w < n_windows - 1 else len(dates)
+                w_dates = set(dates[w_start:w_end])
+                valid = df[df['date'].isin(w_dates)][[f, 'future_ret']].dropna()
+                if len(valid) >= 30:
+                    ic = valid[f].corr(valid['future_ret'], method='spearman')
+                    window_ics.append(ic)
+            if len(window_ics) >= 3:
+                ic_mean = np.mean(window_ics)
+                ic_std = np.std(window_ics) + 1e-10
+                ic_sharpe = ic_mean / ic_std
+                # 综合得分: IC_sharpe为主 + |IC|为辅
+                score = ic_sharpe * 0.7 + abs(ic_mean) * 0.3
+                scores.append((f, score, ic_mean, ic_sharpe))
+        scores.sort(key=lambda x: -x[1])
+        return [f for f, _, _, _ in scores[:k]]

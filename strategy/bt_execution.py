@@ -521,7 +521,10 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     # 训练
                     ml_predictor = MLFactorPredictor(config.config)
                     val_ic = ml_predictor.train(train_df)
-                    if val_ic is None or val_ic <= 0:
+                    _min_val_ic = ml_config.get('min_val_ic', 0.03)
+                    if val_ic is None or val_ic < _min_val_ic:
+                        if val_ic is not None and val_ic > 0:
+                            print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} < {_min_val_ic}, 跳过ML预测")
                         continue
                     _val_ics.append(val_ic)
 
@@ -588,6 +591,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             main_engine.set_rank_parquet(_rank_parquet_path)
             strategy.signal_engine.set_rank_parquet(_rank_parquet_path)
             print(f"截面排名缓存: {len(_rank_cols)} 个排名因子 → {_rank_parquet_path}")
+            # 释放 _rank 列内存 (~920MB)，已写入 parquet 供 worker 按需读取
+            factor_df.drop(columns=_rank_cols, inplace=True)
+
+        # 转换 float64 → float32 节省 ~1.1GB 内存 (IC/ML 均兼容 float32)
+        _f64_cols = [c for c in factor_df.columns if factor_df[c].dtype == 'float64']
+        if _f64_cols:
+            factor_df[_f64_cols] = factor_df[_f64_cols].astype('float32')
 
         # 初始化因子库 (持久化IC评估 + 时变质量追踪)
         from core.factor_library import create_factor_library
@@ -865,6 +875,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 打印因子选择统计
     strategy.signal_engine.print_factor_stats()
     strategy.signal_engine.print_bom_stats()
+    strategy.signal_engine.print_score_diagnostics()
 
     # === 回测诊断报告 ===
     try:
