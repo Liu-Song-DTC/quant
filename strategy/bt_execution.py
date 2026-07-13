@@ -498,6 +498,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                       f"retrain_every={_retrain_freq}日 "
                       f"pred_dates={len(_pred_dates)}")
 
+                # 构建 date→regime 映射 (用于ML regime交互特征)
+                _regime_map = {}
+                if regime_df is not None and 'regime' in regime_df.columns:
+                    for _idx, _row in regime_df.iterrows():
+                        k = _idx.strftime('%Y-%m-%d') if isinstance(_idx, pd.Timestamp) else str(_idx)
+                        _regime_map[k] = int(_row['regime'])
+
                 # 按 retrain_frequency 分 chunk, 每 chunk 用前 train_window 日训练
                 chunk_starts = list(range(0, len(_pred_dates), _retrain_freq))
                 _val_ics = []
@@ -518,9 +525,14 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                         print(f"  chunk {chunk_idx}: 训练样本不足({len(train_df)}), 跳过")
                         continue
 
-                    # 训练
+                    # 训练 (传入训练期内主导regime作为regime_info)
                     ml_predictor = MLFactorPredictor(config.config)
-                    val_ic = ml_predictor.train(train_df)
+                    _train_regime = 0
+                    if _regime_map:
+                        _train_regs = [_regime_map.get(d.strftime('%Y-%m-%d'), 0)
+                                       for d in train_df['date'].unique()]
+                        _train_regime = int(np.median(_train_regs)) if _train_regs else 0
+                    val_ic = ml_predictor.train(train_df, regime_info={'regime': _train_regime})
                     _min_val_ic = ml_config.get('min_val_ic', 0.03)
                     if val_ic is None or val_ic < _min_val_ic:
                         if val_ic is not None and val_ic > 0:
@@ -540,7 +552,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                         date_df = factor_df[factor_df['date'] == date]
                         if len(date_df) == 0:
                             continue
-                        preds = ml_predictor.predict(date_df)
+                        _regime_val = _regime_map.get(date.strftime('%Y-%m-%d'), 0) if _regime_map else 0
+                        preds = ml_predictor.predict(date_df, regime_info={'regime': _regime_val})
                         codes = date_df['code'].values
                         for j, code in enumerate(codes):
                             _ml_preds[(str(code).zfill(6), date)] = preds[j]
@@ -1287,34 +1300,41 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                                    'weight': tv / max(nav[i], 1.0),
                                    'score': sig_score})
 
-        # 事件驱动: 不强制卖出不在目标的持仓，只按 target 调整（仅止损卖出 + 新买入）
+        # 调仓执行: 先卖出不在目标的持仓, 再买入目标仓位
+        # Step 1: 卖出不在target中的当前持仓
+        for j in range(len(stock_codes)):
+            if positions[j] <= 0:
+                continue
+            code = stock_codes[j]
+            if code in target:
+                continue  # 仍在目标中, 下一步调整
+            if not ok[j]:
+                continue
+            _fill_stats['sell_attempted'] += 1
+            if tplus1_enabled and code in _today_buys:
+                _fill_stats['sell_tplus1_blocked'] += 1
+                continue
+            sell_px = float(px_today[j])
+            if i > 0:
+                prev_px = close_px[i-1, j]
+                if not np.isnan(prev_px) and prev_px > 0 and (sell_px / prev_px - 1) < -0.095:
+                    sell_px = sell_px * 0.97
+            impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
+            cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
+            positions[j] = 0
+            _fill_stats['sell_filled'] += 1
+
+        # Step 2: 先处理所有减仓(释放现金), 再处理加仓
+        # 2a: 减仓
         for code, tv in target.items():
             j = code_to_idx.get(code)
             if j is None or not ok[j]:
                 continue
             px = float(px_today[j])
-            # 涨停当日排队失败惩罚: 若当日涨停(≥9.5%), 买入价上浮3%模拟无法成交的排队成本
-            buy_px = px
-            if i > 0:
-                prev_px = close_px[i-1, j]
-                if not np.isnan(prev_px) and prev_px > 0 and (px / prev_px - 1) > 0.095:
-                    buy_px = px * 1.03
-            target_shares = int(tv / buy_px / 100) * 100
+            target_shares = int(tv / px / 100) * 100
             curr_shares = int(positions[j])
             diff = target_shares - curr_shares
-            if diff >= 100:  # 买入
-                _fill_stats['buy_attempted'] += 1
-                impact = _impact(_adv_matrix[i, j], diff, buy_px)
-                cost = diff * buy_px * (1.0 + COMMISSION + impact)
-                if cost <= cash:
-                    cash -= cost
-                    positions[j] = target_shares
-                    _fill_stats['buy_filled'] += 1
-                    if tplus1_enabled:
-                        _today_buys.add(code)
-                elif diff < target_shares:
-                    _fill_stats['buy_cash_insufficient'] += 1
-            elif diff <= -100:  # 卖出（仅止损卖出，不强制换仓）
+            if diff <= -100:  # 减仓 → 释放现金
                 _fill_stats['sell_attempted'] += 1
                 if tplus1_enabled and code in _today_buys:
                     _fill_stats['sell_tplus1_blocked'] += 1
@@ -1328,6 +1348,34 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 cash += abs(diff) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
                 positions[j] = target_shares
                 _fill_stats['sell_filled'] += 1
+
+        # 2b: 加仓 (现金已从2a释放)
+        for code, tv in target.items():
+            j = code_to_idx.get(code)
+            if j is None or not ok[j]:
+                continue
+            px = float(px_today[j])
+            # 涨停当日排队失败惩罚
+            buy_px = px
+            if i > 0:
+                prev_px = close_px[i-1, j]
+                if not np.isnan(prev_px) and prev_px > 0 and (px / prev_px - 1) > 0.095:
+                    buy_px = px * 1.03
+            target_shares = int(tv / buy_px / 100) * 100
+            curr_shares = int(positions[j])
+            diff = target_shares - curr_shares
+            if diff >= 100:  # 加仓
+                _fill_stats['buy_attempted'] += 1
+                impact = _impact(_adv_matrix[i, j], diff, buy_px)
+                cost = diff * buy_px * (1.0 + COMMISSION + impact)
+                if cost <= cash:
+                    cash -= cost
+                    positions[j] = target_shares
+                    _fill_stats['buy_filled'] += 1
+                    if tplus1_enabled:
+                        _today_buys.add(code)
+                else:
+                    _fill_stats['buy_cash_insufficient'] += 1
 
         # 跟踪回撤
         running_peak = np.maximum.accumulate(nav[:i+1])

@@ -48,7 +48,7 @@ class MLFactorPredictor:
 
         self._use_cross_features = ml_cfg.get('use_cross_features', True)
         self._use_regime_features = ml_cfg.get('use_regime_features', True)
-        self.blend_weight = ml_cfg.get('blend_weight', 0.30)
+        self.blend_weight = ml_cfg.get('blend_weight', 0.50)
         self._cross_feature_pairs = []  # 训练时固化，预测时复用
 
     def prepare_features(self, df: pd.DataFrame,
@@ -88,10 +88,21 @@ class MLFactorPredictor:
 
         if self._use_regime_features and regime_info:
             regime_val = regime_info.get('regime', 0)
+            # 支持逐行regime: list/array/Series按行使用, 标量广播
+            if isinstance(regime_val, (list, np.ndarray)):
+                regime_arr = np.asarray(regime_val, dtype=float)
+                if len(regime_arr) != len(df):
+                    regime_arr = np.full(len(df), float(np.mean(regime_arr)))
+            elif isinstance(regime_val, pd.Series):
+                regime_arr = regime_val.values.astype(float)
+                if len(regime_arr) != len(df):
+                    regime_arr = np.full(len(df), float(regime_arr.mean()))
+            else:
+                regime_arr = np.full(len(df), float(regime_val))
             for f in base_features[:10]:
                 col = f'regime_{f}'
                 if col not in df.columns and f in df.columns:
-                    df[col] = df[f].fillna(0) * regime_val
+                    df[col] = df[f].fillna(0).values * regime_arr
                     base_features.append(col)
 
         self.feature_cols = [c for c in base_features

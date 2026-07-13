@@ -235,7 +235,7 @@ class SignalEngine:
         # === ML预测层 ===
         ml_config = config_loader.get('ml', {})
         self.ml_enabled = ml_config.get('enabled', False)
-        self.ml_blend_weight = ml_config.get('blend_weight', 0.30)
+        self.ml_blend_weight = ml_config.get('blend_weight', 0.50)
         self.ml_predictor = None
         self._ml_predictions = {}  # {(code, date): float}
 
@@ -1663,7 +1663,7 @@ class SignalEngine:
         Returns:
             (factor_name, factor_value, risk_info, is_industry_factor)
         """
-        specific_industry = self._get_specific_industry(code, current_date) if code else ''
+        specific_industry = (self._get_specific_industry(code, current_date) or '') if code else ''
 
         # fixed模式: 直接用IC cache的walk-forward因子(无过拟合风险)
         if self.factor_mode == 'fixed':

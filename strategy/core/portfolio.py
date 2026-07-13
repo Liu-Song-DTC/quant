@@ -95,7 +95,7 @@ class PortfolioConstructor:
         self.stop_loss_enabled = ps_top.get('enabled', True)
         self.portfolio_stop_loss = portfolio_stop_loss if portfolio_stop_loss is not None else ps_top.get('trigger_drawdown', 0.10)
         self.base_exposure = portfolio_config.get('base_exposure', 0.85)
-        self.emergency_exposure = ps_top.get('emergency_exposure', 0.50)
+        self.emergency_exposure = ps_top.get('emergency_exposure', 0.65)
         self.stop_loss_recovery_days = ps_top.get('recovery_days', 10)
         self.stop_loss_refill = ps_top.get('stop_refill', False)
 
@@ -124,7 +124,7 @@ class PortfolioConstructor:
 
         # === 换手惩罚 ===
         self.turnover_bonus = portfolio_config.get('turnover_bonus', 0.04)
-        self.max_turnover_ratio = portfolio_config.get('max_turnover_ratio', 0.40)
+        self.max_turnover_ratio = portfolio_config.get('max_turnover_ratio', 0.60)
         self.min_hold_days = portfolio_config.get('min_hold_days', 5)
 
         # === 累计入选追踪：老朋友优先 ===
@@ -665,16 +665,16 @@ class PortfolioConstructor:
             target_exposure = self.base_exposure  # 牛市满仓
         elif trend_score > -0.5:
             t = (trend_score + 0.5)  # [-0.5, 0.5] → [0, 1.0]
-            signal = float(0.3 + t * 0.7)  # [0.3, 1.0]
-            target_exposure = float(np.clip(signal, 0.3, 1.0)) * self.base_exposure
+            signal = float(0.4 + t * 0.6)  # [0.4, 1.0] 抬高地板
+            target_exposure = float(np.clip(signal, 0.4, 1.0)) * self.base_exposure
         else:
-            target_exposure = 0.3 * self.base_exposure  # 熊市最低30%敞口
+            target_exposure = 0.4 * self.base_exposure  # 熊市最低40%敞口(原30%)
 
-        # === 市场缩量降仓: 无量无行情 ===
+        # === 市场缩量降仓: 无量无行情(放松底线) ===
         if index_volume_ratio < 0.5:
-            target_exposure = min(target_exposure, 0.20)
-        elif index_volume_ratio < 0.7:
             target_exposure = min(target_exposure, 0.35)
+        elif index_volume_ratio < 0.7:
+            target_exposure = min(target_exposure, 0.50)
 
         # === Chan强买点熊市豁免: >=2只强买点出现时最低敞口0.6, 不错过底部 ===
         chan_strong_buys = sum(
@@ -762,8 +762,8 @@ class PortfolioConstructor:
         # 已覆盖原有的 sl/chan_sell/trend=-2/B3回踩/放量下跌/力竭 等全部维度
         # Gate硬门槛仅排除极端无效信号（gate通过score×gate_quality软性影响排名）
         # _GATE_DEFAULT_MEAN=0.55, 全默认gate_quality≈0.68, 需至少一个Gate有信号才能>0.7
-        GATE_FLOOR_NEW = 0.65   # R5: revert, 放松导致信号质量下降
-        GATE_FLOOR_HOLD = 0.55  # R3: revert to baseline
+        GATE_FLOOR_NEW = 0.60   # 放松门槛: ML主导评分, gate仅二元安全网
+        GATE_FLOOR_HOLD = 0.50  # 持仓放宽: gate质量下降不急于清仓
         gate_filtered = []
         for c in qualified:
             sig = c.get('sig')
@@ -1193,10 +1193,10 @@ class PortfolioConstructor:
                 self._entry_reason_lost_count.pop(code, None)
                 self._post_sell_tracking.pop(code, None)
                 continue
-            # 最高点回落5%无条件清仓 (不受exit_mode限制)
+            # 最高点回落8%无条件清仓 (不受exit_mode限制, 对齐position_stop_loss)
             if code in self._peak_prices and self._peak_prices[code] > 0:
                 dd_from_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
-                if dd_from_peak >= 0.05:
+                if dd_from_peak >= 0.08:
                     stop_loss_sells[code] = 0.0
                     _exit_tags[code] = 'peak_trail'
                     self._entry_dates.pop(code, None)
@@ -1673,12 +1673,20 @@ class PortfolioConstructor:
                 self._peak_prices[code] = max(self._peak_prices.get(code, 0), current_price)
 
         desired_value = {}
-        # 事件驱动: 每天止损后若持仓不足则补票，HDS触发期间禁止补票
-        _effective_n_positions = self._calc_max_position(
-            cash + sum(current_positions.values()), prices)
-        _need_refill = (len(current_positions) - len(stop_loss_sells) < _effective_n_positions
-                        or bool(stop_loss_sells))
-        if _need_refill:
+        # 调仓频率控制: 每10个交易日做一次完整选股, 非调仓日仅止损
+        _rebalance_interval = 10
+        _should_rebalance = False
+        if not hasattr(self, '_last_rebalance_date'):
+            self._last_rebalance_date = None
+        if self._last_rebalance_date is None:
+            _should_rebalance = True
+        elif hasattr(date, 'timetuple'):
+            # 计算交易日差(近似: 日历日差*0.7≈交易日)
+            _calendar_days = (date - self._last_rebalance_date).days
+            _should_rebalance = _calendar_days >= _rebalance_interval
+        # HDS触发期间禁止新买入
+        if _should_rebalance and not self._hds_triggered:
+            self._last_rebalance_date = date
             desired_value = self._build_desired_value(
                 date=date,
                 universe=universe,

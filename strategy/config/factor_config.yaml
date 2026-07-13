@@ -1,4 +1,4 @@
-factor_mode: both  # 用新FactorLibrary的walk-forward因子选择
+factor_mode: fixed  # 7/1实验: fixed Sharpe 1.12 >> DYN 0.89, walk-forward IC过拟合
 dynamic_factor:
   train_window_days: 180
   forward_period: 10
@@ -7257,9 +7257,9 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.05     # 匹配DYN因子score量级(0.07~0.55), 过滤弱信号
+  buy_threshold: 0.02     # 匹配DYN因子score量级(0.07~0.55), 过滤弱信号
   sell_threshold: -0.35
-  buy_threshold_pct: 0.45
+  buy_threshold_pct: 0.40
   composite_bias: 0.0
   resonance:
     sys1_buy_threshold_mult: 0.7
@@ -7294,10 +7294,10 @@ regime_multiplier:
   neutral: 0.95
   bear: 0.9
 portfolio:
-  target_volatility: 0.25
+  target_volatility: 0.28
   entry_speed: 0.8
   exit_speed: 0.8
-  position_stop_loss: 0.05
+  position_stop_loss: 0.08
   portfolio_stop_loss: 0.10
   selection:
     min_rank_pct: 0.5  # R5: revert, 放松过滤导致2022崩盘
@@ -7315,7 +7315,7 @@ portfolio:
   fv_exposure_params:
     fv_low: -0.02
     fv_high: 0.03
-    exposure_min: 0.25
+    exposure_min: 0.35
     exposure_max: 1.0
   turnover_bonus: 0.1
   params:
@@ -7326,7 +7326,7 @@ portfolio:
     chan_bonus_buy_point: 0.02
     chan_bonus_trend2: 0.01
     mom_60d_fomo_threshold: 0.3
-    mom_60d_fomo_mult: 0.3
+    mom_60d_fomo_mult: 0.50
     mom_60d_warn_threshold: 0.2
     mom_60d_warn_mult: 0.65
     dist_ma60_extended_threshold: 0.3
@@ -7495,7 +7495,7 @@ stock_pool:
 ml:
   enabled: true
   model_dir: strategy/models
-  blend_weight: 0.15  # IC波动大(0.034-0.099), 降低权重保护低IC期
+  blend_weight: 0.50  # IC波动大(0.034-0.099), 降低权重保护低IC期
   min_val_ic: 0.02      # 安全底线: <2%的chunk纯噪声, 不参与ML预测
   train_window_days: 750       # 2.5年窗口, 覆盖更多市场regime, 降低单regime过拟合
   retrain_frequency: 30        # 月度重训, 减少IC波动
@@ -7608,7 +7608,7 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
-  num_workers: 8
+  num_workers: 4
   fromdate: '2021-01-01'
   todate: '2026-05-30'
 cost_model:
