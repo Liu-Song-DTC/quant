@@ -813,6 +813,7 @@ class PortfolioConstructor:
         # Gate 1-4已在信号层编码为adjusted_score，组合层只做时序/行业/换手微调
         scores = np.array([c['score'] for c in qualified])
         score_rank = pd.Series(scores).rank(pct=True).values
+        pool_median_score = float(np.median(scores)) if len(scores) > 0 else 0.3
 
         for i, c in enumerate(qualified):
             c['is_held'] = c['code'] in current_codes
@@ -888,9 +889,20 @@ class PortfolioConstructor:
                 if -0.30 < vol_ratio <= -0.20:
                     additive += self.b3_vol_severe_penalty
 
-            # 换手保留: 已持仓有真实交易成本优势
+            # 换手保留: 已持仓有交易成本优势, 但弱于候选池中位数时减少保护
+            # 用候选池score中位数作基准: 持仓强→保护, 持仓弱→放开让位
             code = c.get('code', '')
-            turnover = self.turnover_bonus if (c['is_held'] and c['rank_pct'] > hold_threshold) else 0.0
+            turnover = 0.0
+            if c['is_held'] and c['rank_pct'] > hold_threshold:
+                held_score = c.get('score', 0.0)
+                if held_score > pool_median_score * 1.2:
+                    turnover = self.turnover_bonus              # 明显强于中位数 → 保留
+                elif held_score > pool_median_score:
+                    turnover = self.turnover_bonus * 0.5        # 略强 → 减半保护
+                elif held_score > pool_median_score * 0.8:
+                    turnover = self.turnover_bonus * 0.15       # 略弱 → 几乎不保护
+                else:
+                    turnover = 0.0                               # 远弱 → 不保护
             if c.get('chan_sell_point', 0) > 0:
                 turnover = 0.0
             if c['is_held'] and c['rank_pct'] <= hold_threshold:
@@ -919,11 +931,18 @@ class PortfolioConstructor:
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
         # 持仓>=min_hold_days才允许被替换
+        # 动态锁定: 新信号显著强于入场信号时可提前解锁
         for c in qualified:
             code = c.get('code', '')
             if c['is_held'] and code in self._position_entry_dates:
                 held_days = (date - self._position_entry_dates[code]).days if hasattr(date, 'days') else 999
-                c['_locked'] = held_days < self.min_hold_days
+                lock_bypass = False
+                if held_days < self.min_hold_days:
+                    # 持仓score显著弱于候选池中位数 → 提前解锁, 允许被替换
+                    held_score = c.get('score', 0.0)
+                    if held_score < pool_median_score * 0.7:
+                        lock_bypass = True   # 远弱于中位数 → 解锁
+                c['_locked'] = (held_days < self.min_hold_days) and not lock_bypass
             else:
                 c['_locked'] = False
 

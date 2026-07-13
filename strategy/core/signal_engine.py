@@ -641,7 +641,7 @@ class SignalEngine:
             _dt_sig = float(result['_dt_signal'][i]) if '_dt_signal' in result else 0.0
             # 结构门控: 需缠论买点/龙虎榜确认, 但高分信号可豁免(score>0.05且>buy_th*1.5)
             has_structure = (bp_buy >= 1) or (_dt_sig > 0.3)
-            struct_ok = has_structure or (score > max(buy_th * 1.5, 0.05))
+            struct_ok = has_structure or (score > max(buy_th * 1.5, 0.10))
             buy = (not hard_reject and not np.isnan(score) and _score_ok and
                    price_ok and price_not_extended and struct_ok)
 
