@@ -7297,7 +7297,7 @@ portfolio:
   target_volatility: 0.28
   entry_speed: 0.8
   exit_speed: 0.8
-  position_stop_loss: 0.06  # 紧止损: 10%→6%, 减少单次大亏
+  position_stop_loss: 0.10  # 放宽止损: 8%→10%, A股波动大避免频繁止损
   portfolio_stop_loss: 0.10
   selection:
     min_rank_pct: 0.40  # 放松: 0.5→0.40, 扩大候选池

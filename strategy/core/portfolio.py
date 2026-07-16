@@ -461,9 +461,6 @@ class PortfolioConstructor:
         index_volume_ratio=1.0,
         style_score=0.0,
         regime_volatility=0.0,
-        market_regime=0,
-        bear_risk=False,
-        bear_risk_fast=False,
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
@@ -1721,9 +1718,6 @@ class PortfolioConstructor:
                 index_volume_ratio=index_volume_ratio,
                 style_score=style_score,
                 regime_volatility=regime_volatility,
-                market_regime=market_regime,
-                bear_risk=bear_risk,
-                bear_risk_fast=bear_risk_fast,
             )
 
         # 强制卖出 (止损 + Chan卖出 + 弱势板块)
