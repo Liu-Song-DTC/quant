@@ -7257,9 +7257,9 @@ indicator_params:
   - 20
   volume_ma_period: 20
 signal:
-  buy_threshold: 0.02     # 匹配DYN因子score量级(0.07~0.55), 过滤弱信号
+  buy_threshold: 0.0      # 零门槛: portfolio层做市场状态过滤, 信号层不截断候选
   sell_threshold: -0.35
-  buy_threshold_pct: 0.40
+  buy_threshold_pct: 0.30
   composite_bias: 0.0
   resonance:
     sys1_buy_threshold_mult: 0.7
@@ -7297,12 +7297,12 @@ portfolio:
   target_volatility: 0.28
   entry_speed: 0.8
   exit_speed: 0.8
-  position_stop_loss: 0.08
+  position_stop_loss: 0.10  # 放宽止损: 8%→10%, A股波动大避免频繁止损
   portfolio_stop_loss: 0.10
   selection:
-    min_rank_pct: 0.5  # R5: revert, 放松过滤导致2022崩盘
-    min_absolute_score: 0.05  # 恢复2.04值, DYN因子score量级0.07~0.55下过滤弱信号
-    min_confidence: 0.80
+    min_rank_pct: 0.40  # 放松: 0.5→0.40, 扩大候选池
+    min_absolute_score: 0.0   # 零门槛: 让score截面排名决定, 不做绝对截断
+    min_confidence: 0.60  # 降低信心门槛: 0.80→0.60, 让portfolio层排名决定
     chan_gate_enabled: true
     chan_gate_min_count: 2
     chan_fallback_score: 0.4
@@ -7310,7 +7310,7 @@ portfolio:
     exhaustion_reduce_mult: 0.5
     industry_max_weight: 0.4
     max_per_industry: 2   # R2: 3→2, 行业分散控制
-    rank_weight_cap: 0.35
+    rank_weight_cap: 0.20   # 降低单票集中: 0.35→0.20, 避免大票耗光现金
     speculative_max_weight: 0.4
   fv_exposure_params:
     fv_low: -0.02
@@ -7337,7 +7337,7 @@ portfolio:
     exhaustion_moderate_threshold: 0.15
     mr_exit_cooldown_days: 14
     ideal_position_max_mult: 2.0
-    min_hold_days: 10  # R2: 5→10, 减少过度换手
+    min_hold_days: 5  # 降低锁仓: 10→5, 加速优胜劣汰
     sector_momentum_weight: 0.4
     sector_signal_density_weight: 0.6
 base_exposure: 1.0               # 满仓运行, 止损控风险, 不扣现金
@@ -7495,7 +7495,7 @@ stock_pool:
 ml:
   enabled: true
   model_dir: strategy/models
-  blend_weight: 0.50  # IC波动大(0.034-0.099), 降低权重保护低IC期
+  blend_weight: 0.50  # 最优权重: IC=0.0565, 贡献70%总收益, 熊市减权适得其反
   min_val_ic: 0.02      # 安全底线: <2%的chunk纯噪声, 不参与ML预测
   train_window_days: 750       # 2.5年窗口, 覆盖更多市场regime, 降低单regime过拟合
   retrain_frequency: 30        # 月度重训, 减少IC波动
@@ -7608,7 +7608,7 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
-  num_workers: 4
+  num_workers: 8
   fromdate: '2021-01-01'
   todate: '2026-05-30'
 cost_model:

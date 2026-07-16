@@ -571,10 +571,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                       f"avg_IC={_ml_val_ic:.4f}, preds={_ml_total_preds:,}")
                 print(f"ML模型已保存: {_ml_model_path}")
 
-        except ImportError:
-            print("[ML] xgboost未安装，跳过ML预测")
+        except ImportError as e:
+            print(f"[ML] ImportError: {e}")
+            import traceback; traceback.print_exc()
         except Exception as e:
             print(f"[ML] 训练失败: {e}")
+            import traceback; traceback.print_exc()
             import traceback
             traceback.print_exc()
 
@@ -1294,6 +1296,15 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             traceback.print_exc()
             target = {}
 
+        # 现金流约束: target按total_equity算但实际只有cash可用, 缩放total到cash能支持的范围
+        if target:
+            _target_total = sum(target.values())
+            _cur_pos_value = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
+            _available = cash + _cur_pos_value  # max deployable = cash + current holdings
+            if _target_total > _available * 0.98:
+                _scale = (_available * 0.98) / max(_target_total, 1.0)
+                target = {c: v * _scale for c, v in target.items()}
+
         # 记录选股
         for c, tv in target.items():
             if c in prices and c not in cur_pos:
@@ -1354,13 +1365,14 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 positions[j] = target_shares
                 _fill_stats['sell_filled'] += 1
 
-        # 2b: 加仓 (现金已从2a释放)
+        # 2b: 加仓 — 先计算总需资金, 按比例缩放确保不超现金
+        _buy_plan = []
+        _total_buy_cost = 0.0
         for code, tv in target.items():
             j = code_to_idx.get(code)
             if j is None or not ok[j]:
                 continue
             px = float(px_today[j])
-            # 涨停当日排队失败惩罚
             buy_px = px
             if i > 0:
                 prev_px = close_px[i-1, j]
@@ -1369,18 +1381,32 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             target_shares = int(tv / buy_px / 100) * 100
             curr_shares = int(positions[j])
             diff = target_shares - curr_shares
-            if diff >= 100:  # 加仓
-                _fill_stats['buy_attempted'] += 1
+            if diff >= 100:
                 impact = _impact(_adv_matrix[i, j], diff, buy_px)
                 cost = diff * buy_px * (1.0 + COMMISSION + impact)
-                if cost <= cash:
-                    cash -= cost
-                    positions[j] = target_shares
+                _buy_plan.append((code, j, buy_px, target_shares, curr_shares, diff, impact, cost))
+                _total_buy_cost += cost
+
+        # 现金不足时按比例缩放所有买入
+        _buy_scale = 1.0
+        if _total_buy_cost > 0 and _total_buy_cost > cash:
+            _buy_scale = cash / _total_buy_cost
+        _buy_plan.sort(key=lambda x: -x[5])  # sort by diff descending
+        for (code, j, buy_px, target_shares, curr_shares, diff, impact, cost) in _buy_plan:
+            _fill_stats['buy_attempted'] += 1
+            scaled_diff = max(int(diff * _buy_scale / 100) * 100, 0)
+            if scaled_diff >= 100:
+                scaled_cost = scaled_diff * buy_px * (1.0 + COMMISSION + impact)
+                if scaled_cost <= cash + 1e-6:
+                    cash -= scaled_cost
+                    positions[j] = curr_shares + scaled_diff
                     _fill_stats['buy_filled'] += 1
                     if tplus1_enabled:
                         _today_buys.add(code)
                 else:
                     _fill_stats['buy_cash_insufficient'] += 1
+            else:
+                _fill_stats['buy_cash_insufficient'] += 1
 
         # 跟踪回撤
         running_peak = np.maximum.accumulate(nav[:i+1])
@@ -1520,7 +1546,6 @@ if __name__ == "__main__":
     add_data_and_signal(cerebro, strategy, fundamental_data)
 
     # ======  向量化回测引擎 (替代 backtrader 逐 bar 循环) ======
-    # 释放 Backtrader datafeeds（向量化回测不依赖 cerebro），降低 OOM 风险
     del cerebro
     gc.collect()
     _malloc_trim()

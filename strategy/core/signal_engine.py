@@ -127,7 +127,7 @@ class SignalEngine:
 
     def __init__(self, config: dict = None):
         self.config = config or {}
-        self.min_score = 0.35
+        self.min_score = 0.25  # B模式宽松, portfolio按市场切换过滤
 
         # 加载配置
         self._load_config()
@@ -612,9 +612,7 @@ class SignalEngine:
             if code.startswith('688'):
                 price_ok = price_above_ma20
             else:
-                # 原三重条件(>MA20+>MA60+MA20>MA60)淘汰太多股票
-                # 仅要求>MA60防止深熊, 均值回归分析: 低动量+距MA60近=最佳
-                price_ok = price_above_ma60
+                price_ok = price_above_ma20  # B模式: 仅需>MA20, portfolio层按市场过滤
 
             # B1/B3 乖离容忍度（结构越好，允许离MA20越远）
             b1_strong = (bp_buy == 1 and chan_buy_sig and sl >= 2)
@@ -635,15 +633,17 @@ class SignalEngine:
                 max_dist = 0.30
             price_not_extended = dist_ma20 < max_dist
 
-            # 买入条件：无硬拒绝 · 分数有效 · 价格OK · 未过度乖离 · 有缠论结构
-            # Gate保证质量 → 因子评分在池内做区分
-            _score_ok = (score >= -0.02)  # 统一门槛，不再分regime
+            # 买入条件：无硬拒绝 · 分数有效 · 有缠论结构OR正分数
+            # portfolio层做Gate/行业/排名过滤, 信号层尽量不截断候选
+            _score_ok = (score >= -0.05)  # 极低门槛: 让portfolio判断
             _dt_sig = float(result['_dt_signal'][i]) if '_dt_signal' in result else 0.0
-            # 结构门控: 需缠论买点/龙虎榜确认, 但高分信号可豁免(score>0.05且>buy_th*1.5)
+            # 结构门控: 需缠论买点/龙虎榜, 或分数>0即可(portfolio做Gate筛选)
             has_structure = (bp_buy >= 1) or (_dt_sig > 0.3)
-            struct_ok = has_structure or (score > max(buy_th * 1.5, 0.10))
+            struct_ok = has_structure or (score > 0.0)
+            # 价格宽松: 无结构时仅需>MA20, 有结构时不做MA20限制
+            _price_ok = price_above_ma20 if not has_structure else True
             buy = (not hard_reject and not np.isnan(score) and _score_ok and
-                   price_ok and price_not_extended and struct_ok)
+                   _price_ok and price_not_extended and struct_ok)
 
             # 回测诊断: 记录买入信号
             if buy:
@@ -658,10 +658,11 @@ class SignalEngine:
                 except Exception as e:
                     import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
 
-            # === 下跌趋势硬过滤: trend_type==-2禁止新买入 ===
+            # === 下跌趋势放宽: 仅无结构+trend_type==-2才禁止, 有结构/底背离可以买 ===
             _trend_type = int(result['trend_type'][i])
-            _is_b1 = (bp_buy == 1 and chan_buy_sig and sl >= 1)
-            if buy and _trend_type == -2 and not _is_b1:
+            _has_bottom_div = float(bottom_div_arr[i]) > 0.3
+            _has_chan_structure = (bp_buy >= 1 and chan_buy_sig) or _has_bottom_div
+            if buy and _trend_type == -2 and not _has_chan_structure:
                 buy = False
 
             # === 因子质量门控: 禁止低质量因子生成买入信号 ===
@@ -1534,8 +1535,8 @@ class SignalEngine:
             for i in np.where(mask)[0]:
                 div_type[i] = f'bi{bi_buy[i]}_seg{buy_point_raw[i]}_buy'
 
-        # === 6.5 BOM产业链质量乘数: 高壁垒高利润段加分, 低壁垒不变 ===
-        bom_mult_arr = np.full(n, 0.85 + 0.15 * bom_score)
+        # === 6.5 BOM产业链质量乘数: 中位BOM(0.5)→1.0, 高BOM(1.0)→+30%, 低BOM(0.3)→-12% ===
+        bom_mult_arr = np.full(n, 0.7 + 0.6 * bom_score)
         adjusted_score *= bom_mult_arr
 
         # === 6.6 评分诊断采样 (每100只股票采样1次, 只记录有效bar) ===
