@@ -962,26 +962,11 @@ class PortfolioConstructor:
             elif bom_score > 0.55:
                 additive += 0.03
 
-            # 动量调整: 熊市反转逻辑
-            if bear_risk:
-                mom_adj = (mom_60d - 0.0) * (-0.20)  # 熊市惩罚高动量(反转)
-            elif bear_risk_fast:
-                mom_adj = (mom_60d - 0.0) * 0.05   # 预警期中性
-            else:
-                mom_adj = (mom_60d - 0.0) * 0.18    # 正常偏好动量
-
-            # === 熊市风险惩罚: 高波动降权, 高BOM/强结构加分 ===
-            bear_penalty = 0.0
-            if bear_risk or bear_risk_fast:
-                risk_vol = self._nan_safe(getattr(sig_ref, 'risk_vol', 0.03))
-                bear_penalty -= max(0, risk_vol - 0.03) * 1.5  # 高波惩罚
-                if bom_score > 0.70:
-                    bear_penalty += 0.08  # 高壁垒熊市加分
-                if c.get('chan_buy_point', 0) in (1, 2):
-                    bear_penalty += 0.05  # B1/B2结构支撑加分
+            # 动量调整: 赢家动量更高(+4.3pp), 有数据支撑
+            mom_adj = (mom_60d - 0.0) * 0.18
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
-            c['effective_score'] = rank * multiplier + additive + turnover + mom_adj + bear_penalty + c.get('no_chan_penalty', 0.0)
+            c['effective_score'] = rank * multiplier + additive + turnover + mom_adj + c.get('no_chan_penalty', 0.0)
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
