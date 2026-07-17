@@ -209,6 +209,7 @@ class PortfolioConstructor:
         self._peak_prices: dict = {}  # {code: peak_price_since_entry}
         self._entry_reasons: dict = {}  # {code: {buy_point, signal_level, trend_type}}
         self._mr_exit_cooldown: dict = {}  # {code: exit_date} 均值回归退出冷却期(Fix#7)
+        self._bear_stop_cooldown: dict = {}  # {code: exit_date} 熊市止损冷却期
         self._entry_reason_lost_count: dict = {}  # Fix#10: 买入理由消失确认期计数
         self._post_sell_tracking: dict = {}  # {code: {'trigger_price': float, 'reason': str}}
 
@@ -519,6 +520,19 @@ class PortfolioConstructor:
                 else:
                     del self._mr_exit_cooldown[code]  # 冷却期满,清除记录
 
+            # 熊市止损冷却: 同只股票止损后20天内禁止重新买入
+            if (bear_risk or bear_risk_fast) and code in self._bear_stop_cooldown:
+                exit_date = self._bear_stop_cooldown[code]
+                if isinstance(date, date_type) and isinstance(exit_date, date_type):
+                    days_since = (date - exit_date).days
+                else:
+                    days_since = 999
+                if days_since < 20:
+                    _rej['cooldown'] += 1
+                    continue
+                else:
+                    del self._bear_stop_cooldown[code]
+
             factor_value = getattr(sig, 'factor_value', None)
             if factor_value is None or (isinstance(factor_value, float) and np.isnan(factor_value)):
                 _rej['bad_factor'] += 1
@@ -827,6 +841,24 @@ class PortfolioConstructor:
                 continue  # B3需均线多头
             if bp == 2 and tt == -2:
                 continue  # B2在下跌趋势不可靠
+
+            # === 熊市硬过滤: 排除高风险个股 ===
+            if bear_risk or bear_risk_fast:
+                _mom60 = self._nan_safe(getattr(sig, 'mom_60d', 0.0))
+                _vol = self._nan_safe(getattr(sig, 'risk_vol', 0.03))
+                _dist = self._nan_safe(getattr(sig, 'dist_ma60', 0.0))
+                if bear_risk:
+                    if _mom60 > 0.25:
+                        continue
+                    if _vol > 0.05 and bp not in (1, 2):
+                        continue
+                    if _dist > 0.25 and bp == 0:
+                        continue
+                elif bear_risk_fast:
+                    if _mom60 > 0.40:
+                        continue
+                    if _vol > 0.06 and bp not in (1, 2):
+                        continue
 
             # P0: gate对收益预测力IC≈0, 不再参与评分, 仅做二元安全网(通过硬门槛即可)
             gate_filtered.append(c)
@@ -1258,6 +1290,8 @@ class PortfolioConstructor:
                 self._peak_prices.pop(code, None)
                 self._entry_reason_lost_count.pop(code, None)
                 self._post_sell_tracking.pop(code, None)
+                if bear_risk or bear_risk_fast:
+                    self._bear_stop_cooldown[code] = date
                 continue
             # 最高点回落同步收紧(熊市5%→正常8%)
             if code in self._peak_prices and self._peak_prices[code] > 0:
