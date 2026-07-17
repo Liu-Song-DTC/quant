@@ -326,7 +326,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     if stock_pool_enabled:
         stock_pool = get_stock_pool()
-        pool_codes = stock_pool | {'sh000001'}
+        pool_codes = stock_pool | {'sh000001', '000001'}
         before_count = len(stock_file_map)
         stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
         after_count = len(stock_file_map)
@@ -377,7 +377,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
     # ST股票不再静态排除 — 改为向量化回测中逐日调用 fundamental_data.is_st() (line ~1177)
     # 先加载sh000001获取交易日历（所有后续步骤依赖）
-    sh000001_file = stock_file_map.get('sh000001')
+    sh000001_file = stock_file_map.get('sh000001') or stock_file_map.get('000001')
     if sh000001_file:
         index_df = pd.read_csv(sh000001_file, parse_dates=['datetime'])
         if FROMDATE:
@@ -1544,6 +1544,8 @@ if __name__ == "__main__":
         print(f"复用已有信号: {_signals_csv}")
         strategy.signal_store.finalize(_signals_csv)
         _idx_path = os.path.join(DATA_PATH, 'sh000001_qfq.csv')
+        if not os.path.exists(_idx_path):
+            _idx_path = os.path.join(DATA_PATH, '000001_qfq.csv')
         if os.path.exists(_idx_path):
             import pandas as pd
             _idx_df = pd.read_csv(_idx_path, parse_dates=['datetime'])
