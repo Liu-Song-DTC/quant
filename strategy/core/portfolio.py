@@ -471,6 +471,19 @@ class PortfolioConstructor:
         total_equity = cash + sum(current_positions.values())
         n_positions = self._calc_max_position(total_equity, prices)
 
+        # === 熊市: 减少持仓数量 + 提高质量门槛 ===
+        if bear_risk:
+            n_positions = max(2, n_positions // 2)  # 砍半持仓, 集中火力
+            _eff_min_rank = max(self.min_rank_pct, 0.55)  # 提高排名门槛
+            _eff_min_score = max(self.min_absolute_score, 0.10)  # 提高分数门槛
+        elif bear_risk_fast:
+            n_positions = max(3, int(n_positions * 0.7))
+            _eff_min_rank = max(self.min_rank_pct, 0.50)
+            _eff_min_score = max(self.min_absolute_score, 0.05)
+        else:
+            _eff_min_rank = self.min_rank_pct
+            _eff_min_score = self.min_absolute_score
+
         # 计算峰值和回撤
         if self.peak_equity is None:
             self.peak_equity = total_equity
@@ -766,13 +779,11 @@ class PortfolioConstructor:
 
         # === 选股: 绝对质量门槛 + 截面排名 ===
         # 两步过滤：1) 绝对分数门槛 2) 截面排名门槛
-        min_rank = self.min_rank_pct
-        min_score = self.min_absolute_score
-
+        # 熊市自动收紧(_eff_min_rank/_eff_min_score已在上面根据bear_risk设定)
         qualified = [
             c for c in candidates
-            if c['rank_pct'] > min_rank
-            and c.get('score', 0) >= min_score
+            if c['rank_pct'] > _eff_min_rank
+            and c.get('score', 0) >= _eff_min_score
         ]
 
         # 信心过滤: V因子兜底加成
@@ -1223,6 +1234,13 @@ class PortfolioConstructor:
         profit_reduce = {}  # 止盈减仓 (code -> target_pct_of_current)
         total_equity = cash + sum(current_positions.values())
 
+        # === 熊市动态止损: 预警期适度收紧, 确认熊市靠敞口控制而非紧止损 ===
+        if bear_risk_fast and not bear_risk:
+            _eff_stop_loss = 0.07  # 仅预警→7%
+        else:
+            _eff_stop_loss = self.position_stop_loss  # 正常/确认熊市→10%
+        _eff_peak_trail = max(_eff_stop_loss * 0.8, 0.04)
+
         # === 硬止损优先检查：任何路径都必须先过止损，不可被其他逻辑覆盖 ===
         for code, current_value in current_positions.items():
             if code not in prices or current_value <= 0:
@@ -1231,8 +1249,8 @@ class PortfolioConstructor:
                 continue
             avg_cost = cost[code][1]
             pnl_pct = (prices[code] - avg_cost) / avg_cost
-            # 绝对止损: -position_stop_loss 无条件全清
-            if pnl_pct <= -self.position_stop_loss:
+            # 绝对止损: 熊市收紧(5-7%), 正常10%
+            if pnl_pct <= -_eff_stop_loss:
                 stop_loss_sells[code] = 0.0
                 _exit_tags[code] = 'cost_stop'
                 self._entry_dates.pop(code, None)
@@ -1241,10 +1259,10 @@ class PortfolioConstructor:
                 self._entry_reason_lost_count.pop(code, None)
                 self._post_sell_tracking.pop(code, None)
                 continue
-            # 最高点回落8%无条件清仓 (不受exit_mode限制, 对齐position_stop_loss)
+            # 最高点回落同步收紧(熊市5%→正常8%)
             if code in self._peak_prices and self._peak_prices[code] > 0:
                 dd_from_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
-                if dd_from_peak >= 0.08:
+                if dd_from_peak >= _eff_peak_trail:
                     stop_loss_sells[code] = 0.0
                     _exit_tags[code] = 'peak_trail'
                     self._entry_dates.pop(code, None)
