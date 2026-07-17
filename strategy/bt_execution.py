@@ -1537,13 +1537,25 @@ if __name__ == "__main__":
         sentiment_orchestrator=sentiment_orch,
     )
 
-    # 强制 fresh generation
-    import glob as _glob
-    _existing = _glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                         'rolling_validation_results', 'backtest_signals.csv'))
-    if _existing:
-        os.remove(_existing[0])
-    add_data_and_signal(cerebro, strategy, fundamental_data)
+    # 复用已有信号CSV(仅portfolio/执行变更时), 否则重新生成
+    _signals_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'rolling_validation_results', 'backtest_signals.csv')
+    if os.path.exists(_signals_csv):
+        print(f"复用已有信号: {_signals_csv}")
+        strategy.signal_store.finalize(_signals_csv)
+        _idx_path = os.path.join(DATA_PATH, 'sh000001_qfq.csv')
+        if os.path.exists(_idx_path):
+            import pandas as pd
+            _idx_df = pd.read_csv(_idx_path, parse_dates=['datetime'])
+            if FROMDATE: _idx_df = _idx_df[_idx_df['datetime'] >= FROMDATE]
+            if TODATE: _idx_df = _idx_df[_idx_df['datetime'] <= TODATE]
+            strategy.generate_market_regime(_idx_df)
+            del _idx_df
+    else:
+        import glob as _glob
+        _existing = _glob.glob(_signals_csv)
+        if _existing: os.remove(_existing[0])
+        add_data_and_signal(cerebro, strategy, fundamental_data)
 
     # ======  向量化回测引擎 (替代 backtrader 逐 bar 循环) ======
     del cerebro

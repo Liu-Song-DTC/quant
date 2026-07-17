@@ -461,6 +461,9 @@ class PortfolioConstructor:
         index_volume_ratio=1.0,
         style_score=0.0,
         regime_volatility=0.0,
+        market_regime=0,
+        bear_risk=False,
+        bear_risk_fast=False,
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
@@ -659,16 +662,36 @@ class PortfolioConstructor:
         self._force_exit_industries = force_exit_industries
 
         # === 市场仓位调整: 趋势驱动, 替代v11恒定敞口 ===
-        # trend_score ∈ [-0.5, 0.5] 线性映射到 [0.3, 1.0]
-        # 恢复2.04逻辑: 熊市降低敞口, 牛市适度加仓
+        # trend_score ∈ [-1, 1], 使用分段映射控制敞口
+        # 2022年实证: trend_score<-0.5占70%交易日, 但40%地板太宽→年损28%
+        # 策略: 熊市激进降仓保护本金, 牛市满仓追求收益
         if trend_score > 0.5:
-            target_exposure = self.base_exposure  # 牛市满仓
+            target_exposure = self.base_exposure  # 强牛 → 满仓
+        elif trend_score > 0:
+            # (0, 0.5]: 温和牛 → 70%-100%
+            target_exposure = (0.70 + 0.30 * trend_score / 0.5) * self.base_exposure
+        elif trend_score > -0.3:
+            # (-0.3, 0]: 弱震荡 → 50%-70%
+            target_exposure = (0.50 + 0.20 * (trend_score + 0.3) / 0.3) * self.base_exposure
         elif trend_score > -0.5:
-            t = (trend_score + 0.5)  # [-0.5, 0.5] → [0, 1.0]
-            signal = float(0.4 + t * 0.6)  # [0.4, 1.0] 抬高地板
-            target_exposure = float(np.clip(signal, 0.4, 1.0)) * self.base_exposure
+            # (-0.5, -0.3]: 恶化 → 30%-50%
+            target_exposure = (0.30 + 0.20 * (trend_score + 0.5) / 0.2) * self.base_exposure
         else:
-            target_exposure = 0.4 * self.base_exposure  # 熊市最低40%敞口(原30%)
+            # <= -0.5: 熊市 → 20% 保命模式(原40%太宽)
+            target_exposure = 0.20 * self.base_exposure
+
+        # === 熊市指数风险控制: bear_risk来自market_regime_detector, 基于指数回撤+动量+EMA ===
+        # bear_risk: 120日回撤>15% + 120日动量<-10% + 空头EMA排列 (确认熊市)
+        # bear_risk_fast: 60日回撤>10% + 60日动量<-6% (快速预警)
+        if bear_risk and bear_risk_fast:
+            bear_cap = 0.25  # 双重确认→强制低仓, 保命模式
+        elif bear_risk:
+            bear_cap = 0.40  # 确认熊市→最多40%仓位
+        elif bear_risk_fast:
+            bear_cap = 0.55  # 预警→降至55%, 防患未然
+        else:
+            bear_cap = 1.0
+        target_exposure = min(target_exposure, bear_cap)
 
         # === 市场缩量降仓: 无量无行情(放松底线) ===
         if index_volume_ratio < 0.5:
@@ -676,13 +699,19 @@ class PortfolioConstructor:
         elif index_volume_ratio < 0.7:
             target_exposure = min(target_exposure, 0.50)
 
-        # === Chan强买点熊市豁免: >=2只强买点出现时最低敞口0.6, 不错过底部 ===
+        # === Chan强买点熊市豁免: >=2只强买点出现时提高敞口, 但熊市风险下限制豁免力度 ===
         chan_strong_buys = sum(
             1 for c in candidates
             if c.get('signal_level', 0) >= 2 or c.get('chan_buy_point', 0) == 1
         )
         if chan_strong_buys >= 2 and target_exposure < 0.6:
-            target_exposure = max(target_exposure, 0.6)
+            if bear_risk:
+                chan_floor = 0.30  # 确认熊市: 即使有强买点也最多30%, 保护本金
+            elif bear_risk_fast:
+                chan_floor = 0.45  # 预警: 提高至45%, 博弈反弹
+            else:
+                chan_floor = 0.60  # 正常: 不错过底部
+            target_exposure = max(target_exposure, chan_floor)
 
         # === 波动率控制: realized_vol > target → 降仓 ===
         if self.vol_control_enabled and len(self._daily_returns) >= self.vol_lookback:
@@ -961,7 +990,7 @@ class PortfolioConstructor:
         # === 多策略后处理: 按子策略评分调整有效得分 → 可能重排 ===
         if self._multi_strategy.enabled and selected:
             ms_mult = self._multi_strategy.compute_weights(
-                selected, signal_store, 0, drawdown)
+                selected, signal_store, market_regime, drawdown)
             for c in selected:
                 mult = ms_mult.get(c['code'], 1.0)
                 if mult <= 0.05:
@@ -1718,6 +1747,9 @@ class PortfolioConstructor:
                 index_volume_ratio=index_volume_ratio,
                 style_score=style_score,
                 regime_volatility=regime_volatility,
+                market_regime=market_regime,
+                bear_risk=bear_risk,
+                bear_risk_fast=bear_risk_fast,
             )
 
         # 强制卖出 (止损 + Chan卖出 + 弱势板块)

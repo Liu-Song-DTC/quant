@@ -85,11 +85,11 @@ class MarketRegimeDetector:
         # === 新增：熊市风险检测参数 ===
         # 用于风险管理的熊市检测（不同于短期超跌检测）
         self.bear_risk_ma_period = 120  # 均线周期
-        self.bear_risk_drawdown = 0.15  # 回撤阈值 15%
-        self.bear_risk_momentum = -0.10  # 120日动量阈值 -10%
+        self.bear_risk_drawdown = 0.10  # 回撤阈值 10% (原15%过严, 2%触发率)
+        self.bear_risk_momentum = -0.05  # 120日动量阈值 -5% (原-10%)
         # === 快速熊市检测：60日维度，捕捉急跌（120日动量滞后）===
-        self.bear_risk_momentum_fast = -0.06  # 60日动量阈值 -6%
-        self.bear_risk_drawdown_fast = 0.10   # 60日回撤阈值 10%
+        self.bear_risk_momentum_fast = -0.03  # 60日动量阈值 -3% (原-6%)
+        self.bear_risk_drawdown_fast = 0.07   # 60日回撤阈值 7% (原10%)
 
     def generate(self, index_df: pd.DataFrame,
                  small_cap_df: pd.DataFrame = None,      # 中证1000 (000852)

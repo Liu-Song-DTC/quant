@@ -808,8 +808,8 @@ class SignalEngine:
             # 卖出：分数低于动态阈值强制卖, 或分数转负+确认信号可卖
             gate_q = float(result['_gate_quality'][i])
             sell_confirmed = (chan_sell_sig and sl <= -1) or ma60_stop
-            sell_confirmed = sell_confirmed or (gate_q < 0.75 and score < 0)
-            sell_confirmed = sell_confirmed or (score < -0.10 and gate_q < 1.0)
+            sell_confirmed = sell_confirmed or (gate_q < 0.55 and score < 0)
+            sell_confirmed = sell_confirmed or (score < -0.20 and gate_q < 0.75)
             sell = not np.isnan(score) and (score < sell_th or (score < 0 and sell_confirmed))
 
             if sell:

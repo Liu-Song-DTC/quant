@@ -7619,7 +7619,7 @@ live_monitoring:
   reference_path: strategy/rolling_validation_results/backtest_reference.csv
   divergence_threshold: 0.3
 multi_strategy:
-  enabled: false
+  enabled: true
   trend:
     weight: 0.4
     min_chan_signal: 2
