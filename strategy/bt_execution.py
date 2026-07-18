@@ -1194,8 +1194,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         fp = os.path.join(DATA_PATH, f'{code}_qfq.csv')
         if not os.path.exists(fp):
             continue
-        df = pd.read_csv(fp, parse_dates=['datetime'], index_col='datetime',
-                        usecols=['datetime', 'close', 'volume'])
+        df = pd.read_csv(fp, usecols=['datetime', 'close', 'volume'])
+        df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+        df = df.dropna(subset=['datetime'])
+        df = df.set_index('datetime')
         df = df[df.index >= pd.Timestamp(fromdate)]
         df = df[df.index <= pd.Timestamp(todate)]
         df = df.reindex(calendar)
@@ -1443,11 +1445,15 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     max_dd = float(np.min(dd))
 
     annual_rets = {}
+    annual_mdd = {}
     for yr in sorted(set(d.year for d in calendar)):
         mask = np.array([d.year == yr for d in calendar])
         yr_nav = nav[mask]
         if len(yr_nav) > 1:
             annual_rets[yr] = float(yr_nav[-1] / yr_nav[0] - 1.0)
+            yr_peak = np.maximum.accumulate(yr_nav)
+            yr_dd = (yr_nav - yr_peak) / yr_peak
+            annual_mdd[yr] = float(np.min(yr_dd))
 
     # 成交统计: 每个调仓日的买卖操作 ≈ 选股数 × 2
     n_trades = len(selections) * 2
@@ -1456,7 +1462,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     print(f"初始资金: {initial_cash:,.0f}")
     print(f"最终净值: {final_nav:,.0f}  (总收益 {total_return*100:.2f}%)")
     for yr, r in sorted(annual_rets.items()):
-        print(f"  {yr}: {r*100:.2f}%")
+        mdd = annual_mdd.get(yr, 0)
+        print(f"  {yr}: {r*100:.2f}%  (最大回撤 {abs(mdd)*100:.1f}%)")
     print(f"Sharpe: {sharpe:.4f}")
     print(f"最大回撤: {abs(max_dd)*100:.2f}%")
     print(f"选股记录: {len(selections)} 次")
@@ -1476,6 +1483,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
 
     return {'nav': nav, 'daily_returns': daily_ret_clean, 'sharpe': sharpe,
             'max_drawdown': max_dd, 'annual_returns': annual_rets,
+            'annual_max_drawdown': annual_mdd,
             'final_value': final_nav, 'selections': selections,
             'n_dates': n_dates}
 

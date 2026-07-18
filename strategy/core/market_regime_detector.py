@@ -25,6 +25,7 @@ class MarketRegimeInfo:
     # 熊市风险信号 (新增)
     bear_risk: bool       # 熊市风险（用于风险管理，120日维度）
     bear_risk_fast: bool  # 快速熊市风险（60日维度，急跌检测）
+    severe_bear: bool = False  # 持续熊市: 60日bear_risk密度>70%
     # 状态切换率
     regime_volatility: float = 0.0  # 0(稳定) ~ 1(混沌)，用于动态调仓频率
 
@@ -42,6 +43,7 @@ class MarketRegimeInfo:
             'style_confidence': self.style_confidence,
             'bear_risk': self.bear_risk,
             'bear_risk_fast': self.bear_risk_fast,
+            'severe_bear': self.severe_bear,
             'regime_volatility': self.regime_volatility,
         }
 
@@ -133,6 +135,10 @@ class MarketRegimeDetector:
         # 熊市风险信号
         self.index_data['bear_risk'] = [r.bear_risk for r in regime_info_list]
         self.index_data['bear_risk_fast'] = [r.bear_risk_fast for r in regime_info_list]
+        # 持续熊市: 60日滚动bear_risk密度>70% (2022:98%d, 2025:0d, 精准区分)
+        br_series = self.index_data['bear_risk'].astype(float)
+        br_density = br_series.rolling(60, min_periods=30).mean()
+        self.index_data['severe_bear'] = br_density > 0.70
         # 状态切换率（后处理：基于已生成的regime序列计算20日切换频率）
         regime_vals = self.index_data['regime'].values
         regime_vol_list = []
@@ -200,7 +206,7 @@ class MarketRegimeDetector:
                 regime=0, confidence=0.0, momentum_score=0.0,
                 trend_score=0.0, volatility=0.0, is_extreme=False,
                 style_regime='balanced', style_score=0.0, size_score=0.0, style_confidence=0.0,
-                bear_risk=False, bear_risk_fast=False
+                bear_risk=False, bear_risk_fast=False, severe_bear=False
             )
 
         # 获取各指标
@@ -446,6 +452,7 @@ class MarketRegimeDetector:
             style_confidence=float(self.index_data.loc[idx, 'style_confidence']),
             bear_risk=bool(self.index_data.loc[idx, 'bear_risk']),
             bear_risk_fast=bool(self.index_data.loc[idx, 'bear_risk_fast']),
+            severe_bear=bool(self.index_data.loc[idx, 'severe_bear']) if 'severe_bear' in self.index_data.columns else False,
         )
 
     def get_regime(self, date) -> int:

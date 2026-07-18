@@ -464,6 +464,7 @@ class PortfolioConstructor:
         market_regime=0,
         bear_risk=False,
         bear_risk_fast=False,
+        severe_bear=False,
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
@@ -471,15 +472,15 @@ class PortfolioConstructor:
         total_equity = cash + sum(current_positions.values())
         n_positions = self._calc_max_position(total_equity, prices)
 
-        # === 熊市: 减少持仓数量 + 提高质量门槛 ===
+        # === 熊市仓位: bear_risk激进(2025=0d不影响), bear_risk_fast原样 ===
         if bear_risk:
-            n_positions = max(2, n_positions // 2)  # 砍半持仓, 集中火力
-            _eff_min_rank = max(self.min_rank_pct, 0.55)  # 提高排名门槛
-            _eff_min_score = max(self.min_absolute_score, 0.10)  # 提高分数门槛
+            n_positions = max(1, n_positions // 3)  # 因子反指, 仅留最优
+            _eff_min_rank = max(self.min_rank_pct, 0.65)
+            _eff_min_score = max(self.min_absolute_score, 0.20)
         elif bear_risk_fast:
-            n_positions = max(3, int(n_positions * 0.7))
-            _eff_min_rank = max(self.min_rank_pct, 0.50)
-            _eff_min_score = max(self.min_absolute_score, 0.05)
+            n_positions = max(3, int(n_positions * 0.7))  # 原逻辑
+            _eff_min_rank = max(self.min_rank_pct, 0.50)  # 原逻辑
+            _eff_min_score = max(self.min_absolute_score, 0.05)  # 原逻辑
         else:
             _eff_min_rank = self.min_rank_pct
             _eff_min_score = self.min_absolute_score
@@ -697,11 +698,11 @@ class PortfolioConstructor:
         # bear_risk: 120日回撤>15% + 120日动量<-10% + 空头EMA排列 (确认熊市)
         # bear_risk_fast: 60日回撤>10% + 60日动量<-6% (快速预警)
         if bear_risk and bear_risk_fast:
-            bear_cap = 0.25  # 双重确认→强制低仓, 保命模式
+            bear_cap = 0.10  # 双重确认→极低仓, bear_IC为负
         elif bear_risk:
-            bear_cap = 0.40  # 确认熊市→最多40%仓位
+            bear_cap = 0.20  # 单bear→降仓
         elif bear_risk_fast:
-            bear_cap = 0.55  # 预警→降至55%, 防患未然
+            bear_cap = 0.55  # 原逻辑, 保牛市
         else:
             bear_cap = 1.0
         target_exposure = min(target_exposure, bear_cap)
@@ -719,9 +720,9 @@ class PortfolioConstructor:
         )
         if chan_strong_buys >= 2 and target_exposure < 0.6:
             if bear_risk:
-                chan_floor = 0.30  # 确认熊市: 即使有强买点也最多30%, 保护本金
+                chan_floor = 0.15  # 熊市保守, 不超bear_cap太多
             elif bear_risk_fast:
-                chan_floor = 0.45  # 预警: 提高至45%, 博弈反弹
+                chan_floor = 0.45  # 原逻辑
             else:
                 chan_floor = 0.60  # 正常: 不错过底部
             target_exposure = max(target_exposure, chan_floor)
@@ -1219,6 +1220,7 @@ class PortfolioConstructor:
         momentum_score=0.0,
         bear_risk=False,
         bear_risk_fast=False,
+        severe_bear=False,
         trend_score=0.0,
         index_volume_ratio=1.0,
         style_score=0.0,
@@ -1768,6 +1770,7 @@ class PortfolioConstructor:
                 market_regime=market_regime,
                 bear_risk=bear_risk,
                 bear_risk_fast=bear_risk_fast,
+                severe_bear=severe_bear,
             )
 
         # 强制卖出 (止损 + Chan卖出 + 弱势板块)

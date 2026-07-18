@@ -91,6 +91,7 @@ class Strategy:
         market_regime = 0
         bear_risk = False
         bear_risk_fast = False
+        severe_bear = False
         if self.index_data is not None:
             row = self.index_data[self.index_data["datetime"].dt.date == date]
             if not row.empty:
@@ -102,6 +103,7 @@ class Strategy:
                 market_regime = int(row["regime"].values[0]) if "regime" in row.columns else 0
                 bear_risk = bool(row["bear_risk"].values[0]) if "bear_risk" in row.columns else False
                 bear_risk_fast = bool(row["bear_risk_fast"].values[0]) if "bear_risk_fast" in row.columns else False
+                severe_bear = bool(row["severe_bear"].values[0]) if "severe_bear" in row.columns else False
 
         # 每日更新情绪权重
         self.set_sentiment_multipliers(date, 0)
@@ -131,6 +133,7 @@ class Strategy:
             market_regime=market_regime,
             bear_risk=bear_risk,
             bear_risk_fast=bear_risk_fast,
+            severe_bear=severe_bear,
             momentum_score=momentum_score,
             trend_score=trend_score,
             index_volume_ratio=index_volume_ratio,
