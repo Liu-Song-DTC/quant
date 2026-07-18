@@ -100,6 +100,17 @@ INDUSTRY_CHAINS: Dict[str, Dict[str, List[str]]] = {
     },
 }
 
+# 宽基指数/风格/主题概念 — 无产业链上下游关系, 不触发缺失警告
+_NO_CHAIN_CONCEPTS: set = {
+    "上证50_", "深证100R", "上证180_", "央视50_", "创业成份",
+    "大盘价值", "中盘价值", "价值股", "红利股", "权重股", "周期股",
+    "超级品牌", "茅指数", "证金持股", "中字头", "中特估", "行业龙头", "基金重仓",
+    "AH股", "IPO受益", "REITs概念",
+    "反内卷概念", "超级电容", "湖北自贸", "参股券商", "参股银行",
+    "东方财富热股", "阿里概念", "股权激励", "网络游戏",
+    "快手概念", "小红书概念", "一带一路", "AIPC",
+}
+
 # 所有已映射的概念名集合 (自动从映射文件和定义中收集)
 _ALL_CHAIN_CONCEPTS: set = None
 
@@ -298,7 +309,10 @@ def get_chain_concepts(concept_name: str) -> Optional[set]:
     global _CHAIN_INDEX
     if _CHAIN_INDEX is None:
         _CHAIN_INDEX = _build_chain_index()
-    return _CHAIN_INDEX.get(concept_name)
+    result = _CHAIN_INDEX.get(concept_name)
+    if result is None and concept_name in _NO_CHAIN_CONCEPTS:
+        return set()  # 宽基/主题概念无产业链, 返回空集等价于不限行业
+    return result
 def get_chain_lead_score(
     code: str,
     stock_concepts: Dict[str, List[str]],

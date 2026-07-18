@@ -603,7 +603,7 @@ class PortfolioConstructor:
         _chain_concepts = None
         _dom_industry = None
         if len(candidates) >= 3:
-            from .industry_chain import get_chain_concepts
+            from .industry_chain import get_chain_concepts, _NO_CHAIN_CONCEPTS
             # 统计各行业候选数量和中位数得分
             _ind_stats = {}
             for c in candidates:
@@ -635,8 +635,9 @@ class PortfolioConstructor:
                     else:
                         print(f" [产业链] {_dom_industry} 过滤后仅{len(_chained)}只(<3) → 退回不限行业")
                 else:
-                    plog.alert(f"产业链缺失: \"{_dom_industry}\" 未在 INDUSTRY_CHAINS 中定义, 请补充")
-                    print(f" [产业链] ⚠ \"{_dom_industry}\" 缺少产业链定义 → 退回不限行业")
+                    if _dom_industry not in _NO_CHAIN_CONCEPTS:
+                        plog.alert(f"产业链缺失: \"{_dom_industry}\" 未在 INDUSTRY_CHAINS 中定义, 请补充")
+                        print(f" [产业链] ⚠ \"{_dom_industry}\" 缺少产业链定义 → 退回不限行业")
             else:
                 plog.alert(f"产业链: 候选分散, 无主导行业(所有行业均<2只), 退回不限行业")
 
