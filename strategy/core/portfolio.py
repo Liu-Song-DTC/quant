@@ -991,7 +991,7 @@ class PortfolioConstructor:
         # 排序：按有效得分降序（已持仓有换手加分, 锁仓排最前）
         qualified.sort(key=lambda x: (-x['_locked'], -x['effective_score']))
 
-        # === 纯score排序选股 + 行业分散(同行业≤max_per_industry只) ===
+        # === 纯score排序选股 ===
         selected = []
         for c in qualified:
             if len(selected) >= n_positions:
@@ -1156,6 +1156,10 @@ class PortfolioConstructor:
             capped_total = sum(c['weight'] for c in valid_selected) + 1e-10
             for c in valid_selected:
                 c['weight'] = c['weight'] / capped_total * target_exposure
+            # 最终上限保护: 归一化膨胀后再次裁剪（防止重归一化导致单票超限）
+            for c in valid_selected:
+                c['weight'] = min(c['weight'], max_single)
+            for c in valid_selected:
                 desired_value[c['code']] = c['weight'] * total_equity
 
         # 用 valid_selected 替换 selected (用于日志记录)

@@ -370,6 +370,9 @@ class FactorLibrary:
         if as_of_date is not None and self.store.get_all_factors():
             selected = self.select(industry, as_of_date, top_n=top_n)
             if selected:
+                if not hasattr(self, '_diag_ic_hits'):
+                    self._diag_ic_hits = 0; self._diag_yaml_hits = 0; self._diag_defaults = 0
+                self._diag_ic_hits += 1
                 if ic_weighted:
                     return [(s['factor_name'], s['score'], s.get('direction', 1))
                             for s in selected]
@@ -384,17 +387,32 @@ class FactorLibrary:
             factors = cfg.get('factors', [])
             weights = cfg.get('weights', [])
             if factors and weights and len(factors) == len(weights):
+                if not hasattr(self, '_diag_ic_hits'):
+                    self._diag_ic_hits = 0; self._diag_yaml_hits = 0; self._diag_defaults = 0
+                self._diag_yaml_hits += 1
                 total_w = sum(abs(w) for w in weights) + 1e-10
                 return [(fn, abs(w) / total_w, 1) for fn, w in zip(factors, weights)]
 
         # 3) 通用因子兜底
+        if not hasattr(self, '_diag_ic_hits'):
+            self._diag_ic_hits = 0; self._diag_yaml_hits = 0; self._diag_defaults = 0
+        self._diag_defaults += 1
         default_factors = [
-            ('trend_lowvol', 0.30, 1),
+            ('trend_vol', 0.30, 1),
             ('relative_strength', 0.25, 1),
             ('low_downside', 0.25, 1),
             ('momentum_reversal', 0.20, 1),
         ]
         return default_factors
+
+    def print_diag(self):
+        """打印因子来源诊断: IC/YAML/兜底各自占比"""
+        if not hasattr(self, '_diag_ic_hits'):
+            return
+        total = self._diag_ic_hits + self._diag_yaml_hits + self._diag_defaults + 1e-10
+        print(f"[因子来源] IC={self._diag_ic_hits}({100*self._diag_ic_hits/total:.1f}%) "
+              f"YAML={self._diag_yaml_hits}({100*self._diag_yaml_hits/total:.1f}%) "
+              f"兜底={self._diag_defaults}({100*self._diag_defaults/total:.1f}%)")
 
     # -- Lifecycle Management --
 

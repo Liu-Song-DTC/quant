@@ -36,9 +36,10 @@ def init_live_engine(
     """初始化实盘 SignalEngine — 与回测 bt_execution.add_data_and_signal 等价。
 
     执行顺序:
-      1. 准备 factor_df (与回测相同的 prepare_factor_data)
-      2. 预计算全局 IC → 存入 _factor_cache
-      3. 设置 engine 的因子/行业/MR/factor_library
+      1. 生成市场状态 (MarketRegimeDetector)
+      2. 准备 factor_df (与回测相同的 prepare_factor_data)
+      3. 预计算全局 IC → 存入 _factor_cache
+      4. 设置 engine 的因子/行业/ML/regime
 
     Args:
         stock_file_map: {code: filepath} 历史日线数据
@@ -51,10 +52,21 @@ def init_live_engine(
     """
     from .factor_preparer import prepare_factor_data
     from .industry_mapping import INDUSTRY_KEYWORDS, build_fine_industry_map
+    from .market_regime_detector import MarketRegimeDetector
 
     config = load_config()
     factor_mode = config.get('factor_mode', 'both')
     stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
+
+    # Step 0: 生成市场状态 (与回测 bt_execution.add_data_and_signal 一致)
+    regime_df = None
+    if "sh000001" in stock_file_map:
+        index_df = pd.read_csv(stock_file_map["sh000001"], parse_dates=['datetime'])
+        detector = MarketRegimeDetector()
+        regime_df = detector.generate(index_df)
+        print(f"[实盘] 市场状态已生成: {len(regime_df)} 条记录")
+    else:
+        print("[实盘] 警告: 未找到sh000001指数数据, 市场状态将使用默认值")
 
     # Step 1: 准备 factor_df (与回测完全相同的函数调用)
     if factor_mode != 'fixed':
@@ -75,6 +87,8 @@ def init_live_engine(
     # Step 2: 创建 engine 并设置因子数据
     engine = SignalEngine()
     engine.set_fundamental_data(fundamental_data)
+    if regime_df is not None:
+        engine.set_market_regime(regime_df)
 
     if factor_df is not None and factor_mode != 'fixed':
         # 初始化全局IC缓存 (与回测 precompute_all_factor_selections 相同逻辑)
@@ -85,11 +99,23 @@ def init_live_engine(
         from .factor_library import create_factor_library
         engine.dynamic_factor_selector.factor_library = create_factor_library()
 
-        # ML模型 (如果已训练)
-        _ml_model_path = os.path.join(
+        # ML模型 (季度滚动: 加载当前季度模型)
+        _model_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'models', 'xgb_strategy_model.json'
+            'models'
         )
+        _today = pd.Timestamp.now()
+        _qid = f"{_today.year}Q{(_today.month - 1) // 3 + 1}"
+        _ml_model_path = os.path.join(_model_dir, f'xgb_{_qid}.json')
+        # 如果当前季度模型不存在, 回退到上一季度
+        if not os.path.exists(_ml_model_path):
+            for _offset in range(1, 4):  # 回退最多4个季度
+                _prev_q = _today - pd.DateOffset(months=3 * _offset)
+                _prev_qid = f"{_prev_q.year}Q{(_prev_q.month - 1) // 3 + 1}"
+                _fallback = os.path.join(_model_dir, f'xgb_{_prev_qid}.json')
+                if os.path.exists(_fallback):
+                    _ml_model_path = _fallback
+                    break
         if os.path.exists(_ml_model_path):
             try:
                 from .ml_predictor import MLFactorPredictor
@@ -140,6 +166,22 @@ def update_live_engine(
     latest_date = selector.factor_df['date'].max()
     new_rows = []
     today = pd.Timestamp.now().date()
+
+    # 季度切换: 重新加载ML模型
+    _today = pd.Timestamp.now()
+    _qid = f"{_today.year}Q{(_today.month - 1) // 3 + 1}"
+    _model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models')
+    _q_model_path = os.path.join(_model_dir, f'xgb_{_qid}.json')
+    if os.path.exists(_q_model_path):
+        try:
+            from .ml_predictor import MLFactorPredictor
+            _ml = MLFactorPredictor(load_config().config)
+            _ml.load_model(_q_model_path)
+            engine.set_ml_predictor(_ml)
+            engine._ml_predictions = {}
+            print(f"[实盘] 季度切换: ML模型已更新 -> {_qid}")
+        except Exception as e:
+            print(f"[实盘] ML模型加载失败: {e}")
 
     for code, df in new_stock_data.items():
         if len(df) < 60:

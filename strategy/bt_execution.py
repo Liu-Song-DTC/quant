@@ -477,7 +477,6 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     ml_config = config.config.get('ml', {})
     _ml_model_path = None
     _ml_preds = {}
-    # 检查 xgboost 可用性（避免逐 chunk 报错）
     _has_xgb = False
     try:
         import xgboost as _xgb
@@ -488,11 +487,10 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         try:
             from core.ml_predictor import MLFactorPredictor
 
-            _train_window = ml_config.get('train_window_days', 750)  # 3年窗口
-            _retrain_freq = ml_config.get('retrain_frequency', 60)   # 季度重训
+            _train_window = ml_config.get('train_window_days', 750)
+            _retrain_freq = ml_config.get('retrain_frequency', 60)
             _pred_start = pd.Timestamp(ml_config.get('pred_start_date', '2021-01-01'))
 
-            # 预测期: pred_start 之后的所有日期
             _all_dates = sorted(factor_df['date'].unique())
             _pred_dates = [d for d in _all_dates if d >= _pred_start]
 
@@ -503,14 +501,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                       f"retrain_every={_retrain_freq}日 "
                       f"pred_dates={len(_pred_dates)}")
 
-                # 构建 date→regime 映射 (用于ML regime交互特征)
                 _regime_map = {}
                 if regime_df is not None and 'regime' in regime_df.columns:
                     for _idx, _row in regime_df.iterrows():
                         k = _idx.strftime('%Y-%m-%d') if isinstance(_idx, pd.Timestamp) else str(_idx)
                         _regime_map[k] = int(_row['regime'])
 
-                # 按 retrain_frequency 分 chunk, 每 chunk 用前 train_window 日训练
                 chunk_starts = list(range(0, len(_pred_dates), _retrain_freq))
                 _val_ics = []
                 _total_preds = 0
@@ -520,17 +516,15 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     chunk_dates = _pred_dates[chunk_start:chunk_end]
                     first_pred_date = chunk_dates[0]
 
-                    # 训练集: first_pred_date 之前 train_window 日
                     train_start = first_pred_date - pd.Timedelta(days=_train_window)
                     train_mask = (factor_df['date'] >= train_start) & \
                                  (factor_df['date'] < first_pred_date)
                     train_df = factor_df[train_mask]
 
-                    if len(train_df) < 50000:  # 最少5万样本
+                    if len(train_df) < 50000:
                         print(f"  chunk {chunk_idx}: 训练样本不足({len(train_df)}), 跳过")
                         continue
 
-                    # 训练 (传入训练期内主导regime作为regime_info)
                     ml_predictor = MLFactorPredictor(config.config)
                     _train_regime = 0
                     if _regime_map:
@@ -541,18 +535,16 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     _min_val_ic = ml_config.get('min_val_ic', 0.03)
                     if val_ic is None or val_ic < _min_val_ic:
                         if val_ic is not None and val_ic > 0:
-                            print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} < {_min_val_ic}, 跳过ML预测")
+                            print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} < {_min_val_ic}, 跳过")
                         continue
                     _val_ics.append(val_ic)
 
-                    # 保存最新模型
                     strategy_dir = os.path.dirname(os.path.abspath(__file__))
                     model_dir = os.path.join(strategy_dir, 'models')
                     os.makedirs(model_dir, exist_ok=True)
                     _ml_model_path = os.path.join(model_dir, 'xgb_strategy_model.json')
                     ml_predictor.save_model(_ml_model_path)
 
-                    # 预测当前 chunk
                     for date in chunk_dates:
                         date_df = factor_df[factor_df['date'] == date]
                         if len(date_df) == 0:
@@ -567,8 +559,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
                 _ml_total_preds = len(_ml_preds)
                 _ml_val_ic = float(np.mean(_val_ics)) if _val_ics else 0.0
-                print(f"ML滚动训练完成: {len(chunk_starts)} chunks, "
+                _skipped = len(chunk_starts) - len(_val_ics)
+                print(f"ML滚动训练完成: {len(chunk_starts)} chunks, 有效={len(_val_ics)} 跳过={_skipped}, "
                       f"avg_IC={_ml_val_ic:.4f}, preds={_ml_total_preds:,}")
+                if _val_ics:
+                    print(f"  IC范围: [{min(_val_ics):.4f}, {max(_val_ics):.4f}], "
+                          f"中位数={sorted(_val_ics)[len(_val_ics)//2]:.4f}")
                 print(f"ML模型已保存: {_ml_model_path}")
 
         except ImportError as e:
@@ -577,8 +573,6 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         except Exception as e:
             print(f"[ML] 训练失败: {e}")
             import traceback; traceback.print_exc()
-            import traceback
-            traceback.print_exc()
 
     # 准备信号生成用的参数
     global use_dynamic, precomputed_cache
@@ -837,6 +831,29 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     signal_csv.close()
     print(f"信号数据已保存: {signal_count[0]} 条 -> {signals_output_path}")
 
+    # === 信号质量诊断 ===
+    try:
+        _sig_df = pd.read_csv(signals_output_path)
+        if len(_sig_df) > 0:
+            _buys = _sig_df[_sig_df['signal'] == 'buy']
+            _sells = _sig_df[_sig_df['signal'] == 'sell']
+            print(f"\n[信号诊断] 总计={len(_sig_df):,} 买入={len(_buys):,} 卖出={len(_sells):,}")
+            if len(_buys) > 0:
+                _cols = [c for c in ['score', 'confidence', 'factor_value'] if c in _buys.columns]
+                for _c in _cols:
+                    _vals = _buys[_c].dropna()
+                    if len(_vals) > 0:
+                        print(f"  买入{_c}: avg={_vals.mean():.4f} median={_vals.median():.4f} "
+                              f"[{_vals.min():.4f}, {_vals.max():.4f}]")
+            # 按年统计
+            if 'date' in _sig_df.columns:
+                _sig_df['year'] = pd.to_datetime(_sig_df['date']).dt.year
+                for _yr in sorted(_sig_df['year'].unique()):
+                    _yr_buy = len(_sig_df[(_sig_df['year'] == _yr) & (_sig_df['signal'] == 'buy')])
+                    print(f"  {_yr}: 买入信号={_yr_buy}")
+    except Exception as _e:
+        pass
+
     # === 从CSV加载信号到 DataFrame-backed SignalStore（节省 ~800MB 内存） ===
     strategy.signal_store.finalize(signals_output_path)
 
@@ -844,6 +861,23 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     del stock_items
     import gc
     gc.collect()
+
+    # 打印季度因子匹配诊断
+    try:
+        from core.signal_engine import _print_quarter_diag
+        _print_quarter_diag()
+    except Exception:
+        pass
+
+    # 打印FactorLibrary来源统计
+    try:
+        if hasattr(strategy, 'signal_engine'):
+            _lib = getattr(strategy.signal_engine, 'factor_library', None) or \
+                   getattr(getattr(strategy.signal_engine, 'dynamic_factor_selector', None), 'factor_library', None)
+            if _lib and hasattr(_lib, 'print_diag'):
+                _lib.print_diag()
+    except Exception:
+        pass
 
     # 打印动态因子统计
     total = dynamic_factor_stats['hit'] + dynamic_factor_stats['miss']
@@ -1180,7 +1214,12 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     # 1. 构建价格矩阵
     stock_codes = sorted([f.replace('_qfq.csv', '') for f in os.listdir(DATA_PATH)
                          if f.endswith('_qfq.csv') and f != 'sh000001_qfq.csv' and not f.startswith('._')])
-    calendar = pd.bdate_range(start=fromdate, end=todate)
+    # 使用真实A股交易日历（指数数据），避免bdate_range包含节假日
+    _idx_fp = os.path.join(DATA_PATH, 'sh000001_qfq.csv')
+    _idx_df = pd.read_csv(_idx_fp, parse_dates=['datetime'])
+    _idx_df = _idx_df[(_idx_df['datetime'] >= pd.Timestamp(fromdate)) &
+                      (_idx_df['datetime'] <= pd.Timestamp(todate))]
+    calendar = pd.DatetimeIndex(sorted(_idx_df['datetime'].unique()))
     n_dates = len(calendar)
     code_to_idx = {c: i for i, c in enumerate(stock_codes)}
     idx_to_code = {i: c for i, c in enumerate(stock_codes)}
@@ -1227,7 +1266,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     daily_value = close_px * volume_m  # 每日成交额
     # 20日滚动均值: 用 pandas rolling (沿 time axis=0)
     dv = pd.DataFrame(daily_value, index=calendar, columns=stock_codes)
-    avg_daily_value = dv.rolling(20, min_periods=5).mean().values
+    avg_daily_value = dv.rolling(20, min_periods=5).mean().shift(1).values
     tradable = (~np.isnan(close_px)) & (close_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
     # ST 过滤: 逐日检查（默认不过滤，除非 fundamental_data 可用）
     if fundamental_data is not None and hasattr(fundamental_data, 'is_st'):

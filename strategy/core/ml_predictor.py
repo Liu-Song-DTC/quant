@@ -16,7 +16,11 @@ XGBoost ML预测层 - 捕获因子间的非线性交互
 
 import numpy as np
 import pandas as pd
+import warnings
 from typing import Dict, List, Optional
+
+# 常数特征在金融数据中常见(如概念热度在大部分股票为0), 不影响训练
+warnings.filterwarnings('ignore', message='An input array is constant')
 
 
 class MLFactorPredictor:
@@ -141,8 +145,12 @@ class MLFactorPredictor:
 
         # 截面标准化: 消除跨日期量级差异, 模型学习相对排名而非绝对量级
         df = self._cross_sectional_zscore(df, numeric_cols)
-        if 'future_ret' in df.columns:
-            df = self._cross_sectional_zscore(df, ['future_ret'])
+
+        # Rank标签: 截面百分位排名 → 中心化到[-0.5, 0.5], 预测排序而非绝对收益
+        if 'future_ret' in df.columns and 'date' in df.columns:
+            df['future_ret_rank'] = df.groupby('date')['future_ret'].rank(pct=True) - 0.5
+            df['future_ret'] = df['future_ret_rank']
+            df.drop(columns=['future_ret_rank'], inplace=True)
 
         # 特征工程 (基于标准化后的因子值)
         df = self.prepare_features(df, regime_info, is_train=True)
@@ -155,14 +163,8 @@ class MLFactorPredictor:
             print(f"[ML] 有效特征不足: {len(valid_features)}")
             return None
 
-        # 特征稳定性过滤: 跨时间段IC_sharpe < 0.2 的特征视为噪声, 移除
-        if len(valid_features) > 15 and 'date' in df.columns:
-            stable_features = self._filter_stable_features(df, valid_features)
-            n_dropped = len(valid_features) - len(stable_features)
-            if n_dropped > 0 and len(stable_features) >= 8:
-                valid_features = stable_features
-                if n_dropped > 10:
-                    print(f"  [ML] 特征稳定性过滤: {n_dropped} 个噪声特征已移除, 保留 {len(stable_features)}")
+        # 特征过滤已关闭: XGBoost树模型自带方向学习 + L1/L2正则 + sample_weight时变加权
+        # 负IC特征不删也不翻转 — 树分裂方向不依赖特征符号, regime交叉特征处理多空不对称
 
         # 处理Inf/NaN
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -198,19 +200,38 @@ class MLFactorPredictor:
             print(f"[ML] 训练/验证集太小: {len(y_train)}/{len(y_val)}")
             return None
 
-        self.model = XGBRegressor(**self.xgb_params)
-        self.model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        # 时序样本权重: 越靠近训练期末的数据权重越大(近期市场规律更相关)
+        _max_date = train_df.loc[train_mask, 'date'].max()
+        _days_diff = (_max_date - train_df.loc[train_mask, 'date']).dt.days.values
+        sample_weight = np.exp(_days_diff / 500.0)  # ~2年半衰, 近期数据权重≈2.7x最远数据
+
+        # Ensemble: 3个不同种子模型，预测取均值 → 降方差5-10%
+        self._ensemble_models = []
+        _ensemble_preds = np.zeros(len(y_val))
+        _ensemble_seeds = [42, 123, 777]
+        for _seed in _ensemble_seeds:
+            _params = {**self.xgb_params, 'random_state': _seed}
+            _m = XGBRegressor(**_params)
+            _m.fit(X_train, y_train, sample_weight=sample_weight,
+                   eval_set=[(X_val, y_val)], verbose=False)
+            self._ensemble_models.append(_m)
+            _ensemble_preds += _m.predict(X_val) / len(_ensemble_seeds)
+
+        # 主模型保留最后一个(用于特征重要性), predict时用ensemble
+        self.model = self._ensemble_models[-1]
         self._last_train_date = dates[-1]
 
         # 固化训练特征: predict时复用, 避免prepare_features覆盖导致shape mismatch
         self._trained_features = valid_features
 
-        y_pred = self.model.predict(X_val)
-        val_ic = np.corrcoef(y_pred, y_val)[0, 1] if len(y_val) > 1 else 0
+        val_ic = np.corrcoef(_ensemble_preds, y_val)[0, 1] if len(y_val) > 1 else 0
 
-        self._feature_importances = dict(sorted(
-            zip(valid_features, self.model.feature_importances_),
-            key=lambda x: -x[1]))
+        # 特征重要性: ensemble均值
+        _all_imp = {}
+        for _m in self._ensemble_models:
+            for fn, imp in zip(valid_features, _m.feature_importances_):
+                _all_imp[fn] = _all_imp.get(fn, 0) + imp / len(_ensemble_seeds)
+        self._feature_importances = dict(sorted(_all_imp.items(), key=lambda x: -x[1]))
 
         print(f"[ML] 训练完成: 样本={len(train_df)}, "
               f"特征={len(valid_features)}, 验证IC={val_ic:.4f}")
@@ -238,7 +259,22 @@ class MLFactorPredictor:
             return np.zeros(len(df))
 
         X = df[valid_features].fillna(0).values
-        return self.model.predict(X)
+        # 补齐缺失特征列: 训练时63特征, 预测时可能只有32个基础因子 → 缺失列填0
+        if len(valid_features) < len(trained_cols):
+            full_X = np.zeros((len(df), len(trained_cols)))
+            col_to_idx = {c: i for i, c in enumerate(trained_cols)}
+            for j, c in enumerate(valid_features):
+                full_X[:, col_to_idx[c]] = X[:, j]
+            X = full_X
+        # Ensemble预测: 3个模型取均值
+        if hasattr(self, '_ensemble_models') and self._ensemble_models:
+            preds = np.zeros(len(df))
+            for _m in self._ensemble_models:
+                preds += _m.predict(X) / len(self._ensemble_models)
+            return preds
+        elif self.model is not None:
+            return self.model.predict(X)
+        return np.zeros(len(df))
 
     def get_feature_importance(self) -> Dict[str, float]:
         if not hasattr(self, '_feature_importances'):
@@ -246,38 +282,46 @@ class MLFactorPredictor:
         return self._feature_importances
 
     def is_trained(self) -> bool:
-        return self.model is not None
+        return hasattr(self, '_ensemble_models') and len(self._ensemble_models) > 0
 
     def save_model(self, path: str):
-        """保存模型到文件（XGBoost原生JSON格式）"""
-        if self.model is None:
+        """保存ensemble模型到文件"""
+        if not hasattr(self, '_ensemble_models') or not self._ensemble_models:
             return
-        self.model.save_model(path)
-        # 同时保存元数据
+        for i, _m in enumerate(self._ensemble_models):
+            _m.save_model(f"{path}.{i}.json")
         import pickle
-        meta_path = path + '.meta'
-        with open(meta_path, 'wb') as f:
+        with open(path + '.meta', 'wb') as f:
             pickle.dump({
                 'feature_cols': self.feature_cols,
                 'trained_features': getattr(self, '_trained_features', self.feature_cols),
                 'cross_feature_pairs': self._cross_feature_pairs,
                 'feature_importances': getattr(self, '_feature_importances', {}),
+                'n_models': len(self._ensemble_models),
             }, f)
 
     def load_model(self, path: str):
-        """从文件加载模型"""
+        """从文件加载ensemble模型"""
         from xgboost import XGBRegressor
-        self.model = XGBRegressor()
-        self.model.load_model(path)
-        # 加载元数据
         import pickle
         meta_path = path + '.meta'
+        n_models = 3
         if __import__('os').path.exists(meta_path):
             with open(meta_path, 'rb') as f:
                 data = pickle.load(f)
             self.feature_cols = data['feature_cols']
             self._trained_features = data.get('trained_features', data['feature_cols'])
             self._cross_feature_pairs = data['cross_feature_pairs']
+            n_models = data.get('n_models', 3)
+        self._ensemble_models = []
+        for i in range(n_models):
+            _m = XGBRegressor()
+            _mp = f"{path}.{i}.json"
+            if __import__('os').path.exists(_mp):
+                _m.load_model(_mp)
+                self._ensemble_models.append(_m)
+        if self._ensemble_models:
+            self.model = self._ensemble_models[-1]
             self._feature_importances = data['feature_importances']
 
     @staticmethod

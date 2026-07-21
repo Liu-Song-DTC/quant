@@ -95,6 +95,81 @@ def _load_concept_map():
 INDUSTRY_FACTOR_CONFIG = _load_industry_factors()
 STOCK_CONCEPT_MAP = _load_concept_map()  # 概念板块→因子配置查找（与标定对齐）
 
+# 季度因子配置缓存
+_QUARTER_INDEX = None        # {quarter_id: {start, end, file}}
+_QUARTER_CONFIG_CACHE = {}   # {quarter_id: {industry: {...}}}
+
+
+def _load_quarter_index():
+    """加载季度配置文件索引"""
+    global _QUARTER_INDEX
+    if _QUARTER_INDEX is not None:
+        return _QUARTER_INDEX
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    index_path = os.path.join(base_dir, 'config', 'quarterly_factors', 'index.yaml')
+    if os.path.exists(index_path):
+        with open(index_path, 'r', encoding='utf-8') as f:
+            idx = yaml.safe_load(f)
+            _QUARTER_INDEX = idx.get('quarters', {})
+    else:
+        _QUARTER_INDEX = {}
+    return _QUARTER_INDEX
+
+
+def _get_quarter_id(date):
+    """日期→季度ID: pd.Timestamp('2021-03-15') → '2021Q1'"""
+    if date is None:
+        return None
+    d = pd.Timestamp(date)
+    return f"{d.year}Q{(d.month - 1) // 3 + 1}"
+
+
+def _load_quarter_config(quarter_id):
+    """加载单个季度的因子配置"""
+    if quarter_id in _QUARTER_CONFIG_CACHE:
+        return _QUARTER_CONFIG_CACHE[quarter_id]
+    idx = _load_quarter_index()
+    if quarter_id not in idx:
+        return None
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    file_path = os.path.join(base_dir, 'config', 'quarterly_factors',
+                             idx[quarter_id]['file'])
+    if not os.path.exists(file_path):
+        return None
+    with open(file_path, 'r', encoding='utf-8') as f:
+        cfg = yaml.safe_load(f)
+        _QUARTER_CONFIG_CACHE[quarter_id] = cfg.get('industry_factors', {})
+    return _QUARTER_CONFIG_CACHE[quarter_id]
+
+
+# 季度配置匹配诊断计数器
+_QUARTER_DIAG = {'quarter_hits': 0, 'global_fallbacks': 0, 'concept_matches': 0,
+                 'keyword_fallbacks': 0, 'no_match': 0, 'printed': False}
+_QUARTER_DIAG_LOCK = False  # 避免并发打印混乱
+
+def _resolve_factor_config(date=None):
+    """按日期解析因子配置：优先季度配置，回退到全局配置"""
+    if date is not None:
+        qid = _get_quarter_id(date)
+        if qid:
+            qcfg = _load_quarter_config(qid)
+            if qcfg:
+                _QUARTER_DIAG['quarter_hits'] += 1
+                return qcfg
+    _QUARTER_DIAG['global_fallbacks'] += 1
+    return INDUSTRY_FACTOR_CONFIG
+
+
+def _print_quarter_diag():
+    """打印季度配置匹配诊断"""
+    d = _QUARTER_DIAG
+    total = d['concept_matches'] + d['keyword_fallbacks'] + d['no_match']
+    if total == 0:
+        return
+    print(f"[季度配置诊断] 行业名查找: 概念匹配={d['concept_matches']}({100*d['concept_matches']/total:.1f}%) "
+          f"关键词回退={d['keyword_fallbacks']}({100*d['keyword_fallbacks']/total:.1f}%) "
+          f"无匹配={d['no_match']}({100*d['no_match']/total:.1f}%)")
+    print(f"[季度配置诊断] 配置解析: 季度命中={d['quarter_hits']} 全局回退={d['global_fallbacks']}")
 
 def _safe_get_arr(ind: dict, key: str, n: int, default):
     """向量化版 _safe_get：从ind字典取key对应的numpy数组，不存在时返回填充默认值的数组。"""
@@ -1158,12 +1233,12 @@ class SignalEngine:
                     _industry = self._get_specific_industry(code, _mid_date) if code else ''
                     _scoring = lib.get_scoring_factors(
                         _industry or '', as_of_date=_mid_date,
-                        fallback_config=INDUSTRY_FACTOR_CONFIG)
+                        fallback_config=_resolve_factor_config(current_date))
                 else:
                     raise Exception("no lib")
             except Exception:
                 _scoring = [
-                    ('trend_lowvol', 0.30), ('relative_strength', 0.25),
+                    ('trend_vol', 0.30), ('relative_strength', 0.25),
                     ('low_downside', 0.25), ('momentum_reversal', 0.20),
                 ]
 
@@ -1266,7 +1341,7 @@ class SignalEngine:
                 _vol_i = float(regimes['volatility'][i]) if regimes and 'volatility' in regimes else 0.15
                 factor_result = self._select_factor(
                     ind, i, _mkt_regime_i, _ind_cat, code=code, current_date=dates[i],
-                    trend_score=_trend_i, volatility=_vol_i
+                    trend_score=_trend_i, volatility=_vol_i, specific_industry=_spec_ind
                 )
                 if factor_result is None:
                     continue
@@ -1373,29 +1448,43 @@ class SignalEngine:
 
         # === 3.4 ML预测融合：XGBoost非线性因子组合 ===
         ml_normalized = np.zeros(n)  # 默认无ML
-        if self.ml_enabled and self._ml_predictions and dates is not None and code:
-            # 归一化code为6位字符串，确保与ML预测字典key格式一致
-            code_str = str(code).zfill(6)
-            bar_dates = pd.to_datetime(dates)
+        # 预计算dict路径(回测) 或 直接predict路径(实盘)
+        has_ml_model = self.ml_predictor is not None and self.ml_predictor.is_trained()
+        if self.ml_enabled and dates is not None and code:
+            if self._ml_predictions:
+                # 回测路径：预计算dict查找
+                code_str = str(code).zfill(6)
+                bar_dates = pd.to_datetime(dates)
+                ml_pred_series = np.full(len(bar_dates), 0.0)
+                if hasattr(self, '_ml_cache') and code_str in self._ml_cache:
+                    ml_dates_arr, ml_vals_arr = self._ml_cache[code_str]
+                    if len(ml_dates_arr) > 0:
+                        ml_dt64 = np.asarray(ml_dates_arr, dtype='datetime64[ns]')
+                        bar_dt64 = np.asarray(bar_dates, dtype='datetime64[ns]')
+                        idx = np.searchsorted(ml_dt64, bar_dt64, side='right') - 1
+                        valid = (idx >= 0) & (idx < len(ml_vals_arr))
+                        ml_pred_series[valid] = ml_vals_arr[idx[valid]]
+                else:
+                    ml_pred_series = np.array([self._ml_predictions.get((code_str, d), 0.0) for d in bar_dates])
+                ml_normalized = np.tanh(ml_pred_series * 3)
+            elif has_ml_model:
+                # 实盘路径：直接调用模型预测(仅最新bar)
+                from .market_regime_detector import MarketRegimeDetector
+                bar_date = pd.to_datetime(dates[n - 1])
+                # 构建单行特征(因子截面值)
+                feature_vals = {}
+                for fn in self.ml_predictor.feature_cols:
+                    if fn in ind:
+                        feature_vals[fn] = float(_safe_get_arr(ind, fn, n, 0.0)[n - 1])
+                if feature_vals:
+                    row_df = pd.DataFrame([feature_vals])
+                    row_df['date'] = bar_date
+                    row_df['code'] = str(code).zfill(6)
+                    pred_val = self.ml_predictor.predict(row_df)
+                    if len(pred_val) > 0 and abs(pred_val[0]) > 0.001:
+                        ml_normalized[n - 1] = float(np.tanh(pred_val[0] * 3))
 
-            # 前向填充：ML预测仅在采样日期生成（date_step=3），需扩展到每日
-            ml_pred_series = np.full(len(bar_dates), 0.0)
-            if hasattr(self, '_ml_cache') and code_str in self._ml_cache:
-                ml_dates_arr, ml_vals_arr = self._ml_cache[code_str]
-                if len(ml_dates_arr) > 0:
-                    # 统一转为datetime64确保searchsorted类型一致
-                    ml_dt64 = np.asarray(ml_dates_arr, dtype='datetime64[ns]')
-                    bar_dt64 = np.asarray(bar_dates, dtype='datetime64[ns]')
-                    idx = np.searchsorted(ml_dt64, bar_dt64, side='right') - 1
-                    valid = (idx >= 0) & (idx < len(ml_vals_arr))
-                    ml_pred_series[valid] = ml_vals_arr[idx[valid]]
-            else:
-                # 回退：逐bar查找（首次调用或无缓存时）
-                ml_pred_series = np.array([self._ml_predictions.get((code_str, d), 0.0) for d in bar_dates])
-
-            # ML预测值归一化到score量级（ML输出≈future_ret，需压缩到[-1,1]）
-            ml_normalized = np.tanh(ml_pred_series * 15)
-            # 仅在ML有非零预测时融合
+        if self.ml_enabled:
             ml_active = np.abs(ml_normalized) > 0.01
             adjusted_score[ml_active] = (
                 (1 - self.ml_blend_weight) * adjusted_score[ml_active] +
@@ -1403,6 +1492,7 @@ class SignalEngine:
             )
 
         # === 3.6 另类数据调整：龙虎榜个股 + 北向/融资市场级 ===
+        dt_signal = np.zeros(n)
         if self._alt_data is None:
             try:
                 from .alternative_data import get_provider
@@ -1640,8 +1730,8 @@ class SignalEngine:
 
         pct = self._buy_threshold_pct
         s_shifted = pd.Series(np.where(~np.isnan(scores), scores, np.nan)).shift(1)
-        roll_buy = s_shifted.rolling(window=800, min_periods=100).quantile(pct)
-        roll_sell = s_shifted.rolling(window=800, min_periods=100).quantile(1.0 - pct)
+        roll_buy = s_shifted.rolling(window=400, min_periods=100).quantile(pct)
+        roll_sell = s_shifted.rolling(window=400, min_periods=100).quantile(1.0 - pct)
 
         buy_vals = roll_buy.values
         sell_vals = roll_sell.values
@@ -1653,7 +1743,7 @@ class SignalEngine:
 
     def _select_factor(self, ind: dict, idx: int, regime: int, industry_category: str = 'default',
                        code=None, current_date=None, trend_score: float = 0.0,
-                       volatility: float = 0.15) -> tuple:
+                       volatility: float = 0.15, specific_industry: str = '') -> tuple:
         """根据行业选择因子 — 支持因子择时连续状态
 
         mode配置:
@@ -1664,9 +1754,10 @@ class SignalEngine:
         Returns:
             (factor_name, factor_value, risk_info, is_industry_factor)
         """
-        specific_industry = (self._get_specific_industry(code, current_date) or '') if code else ''
+        if not specific_industry and code:
+            specific_industry = (self._get_specific_industry(code, current_date) or '')
 
-        # fixed模式: 直接用IC cache的walk-forward因子(无过拟合风险)
+        # fixed模式: 优先用IC cache的walk-forward因子(无过拟合风险)
         if self.factor_mode == 'fixed':
             self._stats['fixed_default'] += 1
             factor_name, factor_value, risk_info = self._calculate_default_factor(
@@ -1702,7 +1793,7 @@ class SignalEngine:
         if self.factor_mode in ['fixed', 'both', 'reweight'] or (self.factor_mode == 'dynamic' and self.factor_fallback_to_fixed):
             if self.industry_factor_enabled and code and current_date:
                 # 使用行业特定因子（已按市场状态优化）
-                if specific_industry and specific_industry in INDUSTRY_FACTOR_CONFIG:
+                if specific_industry and specific_industry in _resolve_factor_config(current_date):
                     result = self._calculate_industry_factor_score(ind, idx, specific_industry,
                                                                    code=code, current_date=current_date,
                                                                    regime=regime,
@@ -1721,8 +1812,9 @@ class SignalEngine:
         # Fix#13: 最终兜底 — 使用行业category的配置（优先）
         # 如果specific_industry不在配置中,尝试用industry_category匹配
         if self.industry_factor_enabled:
-            fallback_ind = specific_industry if specific_industry in INDUSTRY_FACTOR_CONFIG else industry_category
-            if fallback_ind in INDUSTRY_FACTOR_CONFIG:
+            fallback_cfg = _resolve_factor_config(current_date)
+            fallback_ind = specific_industry if specific_industry in fallback_cfg else industry_category
+            if fallback_ind in fallback_cfg:
                 result = self._calculate_industry_factor_score(
                     ind, idx, fallback_ind, code=code, current_date=current_date,
                     regime=0, dynamic_ic_weights=None,
@@ -1763,15 +1855,11 @@ class SignalEngine:
             logger.warning(f"动态因子选择失败 date={current_date_str}", exc_info=True)
             return None
 
-        if not industry_factors or industry not in industry_factors:
+        if not industry_factors or 'factors' not in industry_factors:
             return None
 
-        selected_info = industry_factors[industry]
-        if not selected_info or 'factors' not in selected_info:
-            return None
-
-        factors = selected_info['factors']
-        weights = selected_info.get('weights', None)
+        factors = industry_factors['factors']
+        weights = industry_factors.get('weights', None)
         if not weights or len(weights) != len(factors):
             return None
 
@@ -2083,21 +2171,40 @@ class SignalEngine:
             lib = None
 
         factor_names = []  # 实际使用的因子名(诊断用)
-        if lib is not None:
-            industry = (self._get_specific_industry(code, current_date)
-                        if (code and current_date) else '')
+
+        # P0: 季度滚动标定的行业因子 (98%+ 覆盖, 含熊市防御因子)
+        industry = (self._get_specific_industry(code, current_date)
+                    if (code and current_date) else '')
+        qcfg = _resolve_factor_config(current_date) if current_date else {}
+        industry_cfg = qcfg.get(industry) if industry else None
+
+        if industry_cfg:
+            factors = industry_cfg.get('factors', [])
+            weights_cfg = industry_cfg.get('weights', [])
+            if factors and weights_cfg and len(factors) == len(weights_cfg):
+                scoring_factors = list(zip(factors, weights_cfg))
+                self._stats['fixed_industry'] += 1
+            else:
+                scoring_factors = []
+        else:
+            scoring_factors = []
+
+        # P1: FactorLibrary (IC store or YAML fallback)
+        if not scoring_factors and lib is not None:
             scoring_factors = lib.get_scoring_factors(
                 industry or '', as_of_date=current_date,
-                fallback_config=INDUSTRY_FACTOR_CONFIG)
-        else:
-            # 从IC缓存读取当前日期的最优因子 (无FactorLibrary时)
+                fallback_config=qcfg)
+
+        # P2: IC缓存或无库回退
+        if not scoring_factors:
             scoring_factors = self._get_cached_scoring_factors(current_date) if current_date else []
-            if not scoring_factors:
-                mom_dir = -1 if regime == -1 else 1  # 熊市动量反转
-                scoring_factors = [
-                    ('trend_lowvol', 0.30, 1), ('relative_strength', 0.25, 1),
-                    ('low_downside', 0.25, 1), ('momentum_reversal', 0.20, mom_dir),
-                ]
+        # P3: 硬编码兜底
+        if not scoring_factors:
+            mom_dir = -1 if regime == -1 else 1
+            scoring_factors = [
+                ('trend_vol', 0.30, 1), ('relative_strength', 0.25, 1),
+                ('low_downside', 0.25, 1), ('momentum_reversal', 0.20, mom_dir),
+            ]
 
         score = 0.0
         for item in scoring_factors[:5]:
@@ -2197,7 +2304,7 @@ class SignalEngine:
         支持tech_fund_combo等复合因子
         dynamic_ic_weights: walk-forward IC权重 (reweight模式), {factor_name: ic_weight}
         """
-        config = INDUSTRY_FACTOR_CONFIG.get(industry)
+        config = _resolve_factor_config(current_date).get(industry)
         if not config:
             return None
 
@@ -2211,9 +2318,9 @@ class SignalEngine:
         vol_factor = np.clip(vol / 0.20, 0.5, 2.0)
 
         # 连续三状态权重
-        bull_w = trend_sig * (2.0 - vol_factor * 0.5)
-        bear_w = (1.0 - trend_sig) * vol_factor * 0.7
-        neutral_w = 1.0 - bull_w - bear_w
+        bull_w = np.clip(trend_sig * (2.0 - vol_factor * 0.5), 0.0, 1.0)
+        bear_w = np.clip((1.0 - trend_sig) * vol_factor * 0.7, 0.0, 1.0)
+        neutral_w = max(0.0, 1.0 - bull_w - bear_w)
         total = bull_w + neutral_w + bear_w + 1e-10
         bull_w /= total; neutral_w /= total; bear_w /= total
 
@@ -2222,9 +2329,9 @@ class SignalEngine:
         bw_cfg = config.get('bull_weights', None)
         nf = config.get('factors', [])
         nw_cfg = config.get('weights', None)
-        # 熊市用中性因子(OOS表现差), 但通过连续权重自动降权
-        brf = config.get('bear_factors', config.get('factors', []))
-        brw_cfg = config.get('bear_weights', None)
+        # 熊市使用中性因子，通过连续权重自动降权
+        brf = config.get('factors', [])
+        brw_cfg = None
 
         if not nf:
             return None
@@ -2271,13 +2378,40 @@ class SignalEngine:
                 factor_val = combo.get('tech_fund_combo')
             elif factor_name in ('fund_pe', 'fund_pb'):
                 close_p = self._safe_get(ind, 'close', idx, None)
-                if close_p and close_p > 0 and hasattr(self, 'fundamental_data') and self.fundamental_data:
+                if close_p and close_p > 0:
+                    # 优先从预加载缓存取eps/bps, 避免每bar调用DataFrame过滤
+                    cache_key = str(current_date)[:10] if current_date else None
+                    row = None
+                    if cache_key and hasattr(self, '_fund_cache'):
+                        entry = self._fund_cache.get(cache_key)
+                        if entry:
+                            row = entry.get('row')
                     if factor_name == 'fund_pe':
-                        eps_val = self.fundamental_data.get_eps(code, current_date)
+                        if row is not None:
+                            eps_val = row.get('每股收益')
+                        elif hasattr(self, 'fundamental_data') and self.fundamental_data:
+                            eps_val = self.fundamental_data.get_eps(code, current_date)
+                        else:
+                            eps_val = None
+                        if eps_val is not None:
+                            try:
+                                eps_val = float(eps_val)
+                            except (ValueError, TypeError):
+                                eps_val = None
                         if eps_val and eps_val > 0:
                             factor_val = compress_fundamental_factor(close_p / eps_val, 'fund_pe')
                     else:  # fund_pb
-                        bps_val = self.fundamental_data.get_bps(code, current_date)
+                        if row is not None:
+                            bps_val = row.get('每股净资产')
+                        elif hasattr(self, 'fundamental_data') and self.fundamental_data:
+                            bps_val = self.fundamental_data.get_bps(code, current_date)
+                        else:
+                            bps_val = None
+                        if bps_val is not None:
+                            try:
+                                bps_val = float(bps_val)
+                            except (ValueError, TypeError):
+                                bps_val = None
                         if bps_val and bps_val > 0:
                             factor_val = compress_fundamental_factor(close_p / bps_val, 'fund_pb')
             elif factor_name.startswith('fund_'):
@@ -2476,62 +2610,80 @@ class SignalEngine:
 
     def _get_specific_industry(self, code, current_date) -> str:
         """获取具体行业名（优先industry_codes反向映射保证DYN缓存命中，回退概念板块）"""
+        # 内存缓存: 同股票同季度行业不变, 避免逐bar重复计算
+        _ck = f'{code}_{_get_quarter_id(current_date)}'
+        if not hasattr(self, '_spec_ind_cache'):
+            self._spec_ind_cache = {}
+        _cached = self._spec_ind_cache.get(_ck)
+        if _cached is not None:
+            return _cached if _cached != '__NONE__' else ''
+
         has_ic = hasattr(self, 'industry_codes') and self.industry_codes
 
-        # P0: 优先从 industry_codes 反向映射查找（保证与DYN缓存的key一致）
-        if has_ic:
+        result = None
+        # P0: 优先从概念板块映射查找（与季度标定对齐，季度配置用概念名）
+        cfg = _resolve_factor_config(current_date)
+        if code in STOCK_CONCEPT_MAP:
+            for concept in STOCK_CONCEPT_MAP[code]:
+                if concept in cfg:
+                    _QUARTER_DIAG['concept_matches'] += 1
+                    result = concept
+                    break
+
+        # 回退：industry_codes 反向映射
+        if result is None and has_ic:
             if not hasattr(self, '_industry_code_reverse_map'):
                 self._industry_code_reverse_map = {
                     c: ind_name for ind_name, codes in self.industry_codes.items() for c in codes
                 }
             result = self._industry_code_reverse_map.get(code)
             if result:
-                return result
+                _QUARTER_DIAG['keyword_fallbacks'] += 1
 
-        # 回退：概念板块映射（与离线标定对齐）
-        if code in STOCK_CONCEPT_MAP:
-            for concept in STOCK_CONCEPT_MAP[code]:
-                if concept in INDUSTRY_FACTOR_CONFIG:
-                    return concept
+        if result is None:
+            _QUARTER_DIAG['no_match'] += 1
 
         # 使用预加载缓存
-        if hasattr(self, '_fund_cache') and self._has_fund_data_cache:
-            cache_key = str(current_date)[:10]
-            entry = self._fund_cache.get(cache_key)
+        if result is None and hasattr(self, '_fund_cache') and self._has_fund_data_cache:
+            entry = self._fund_cache.get(str(current_date)[:10])
             if entry:
                 raw_industry = entry.get('industry')
                 if raw_industry:
                     cleaned = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
-                    # 返回细行业名：如果在配置中直接返回，否则返回原始名
-                    if cleaned in INDUSTRY_FACTOR_CONFIG:
-                        return cleaned
-                    # 尝试关键词匹配作为回退
-                    for config_key, keywords in INDUSTRY_KEYWORDS.items():
-                        if any(kw in cleaned for kw in keywords):
-                            if config_key in INDUSTRY_FACTOR_CONFIG:
-                                return config_key
-                    return cleaned
+                    if cleaned in cfg:
+                        result = cleaned
+                    else:
+                        for config_key, keywords in INDUSTRY_KEYWORDS.items():
+                            if any(kw in cleaned for kw in keywords):
+                                if config_key in cfg:
+                                    result = config_key
+                                    break
+                        if result is None:
+                            result = cleaned
 
         # Fallback: 直接查询 fundamental_data
-        has_fd = hasattr(self, 'fundamental_data') and self.fundamental_data
-        if has_fd:
-            try:
-                raw_industry = self.fundamental_data.get_industry(code, current_date)
-                if not raw_industry:
-                    return None
-                cleaned = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
-                # 返回细行业名：如果在配置中直接返回
-                if cleaned in INDUSTRY_FACTOR_CONFIG:
-                    return cleaned
-                # 关键词回退
-                for config_key, keywords in INDUSTRY_KEYWORDS.items():
-                    if any(kw in cleaned for kw in keywords):
-                        if config_key in INDUSTRY_FACTOR_CONFIG:
-                            return config_key
-                return cleaned
-            except Exception as e:
-                import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
-        return None
+        if result is None:
+            has_fd = hasattr(self, 'fundamental_data') and self.fundamental_data
+            if has_fd:
+                try:
+                    raw_industry = self.fundamental_data.get_industry(code, current_date)
+                    if raw_industry:
+                        cleaned = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
+                        if cleaned in cfg:
+                            result = cleaned
+                        else:
+                            for config_key, keywords in INDUSTRY_KEYWORDS.items():
+                                if any(kw in cleaned for kw in keywords):
+                                    if config_key in cfg:
+                                        result = config_key
+                                        break
+                            if result is None:
+                                result = cleaned
+                except Exception as e:
+                    import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
+
+        self._spec_ind_cache[_ck] = result if result else '__NONE__'
+        return result if result else ''
 
     def _get_fundamental_score(self, code, current_date) -> float:
         """获取基本面因子评分（使用预加载缓存）"""
