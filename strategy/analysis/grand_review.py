@@ -109,7 +109,7 @@ for code in active_codes:
             'close': c,
             'dates': pc['dates'],
             'trend_initiation': ind.get('trend_initiation', np.zeros(len(c))),
-            'mom_x_lowvol_20_20': ind.get('mom_x_lowvol_20_20', np.zeros(len(c))),
+            'mom_x_vol_20_20': ind.get('mom_x_vol_20_20', np.zeros(len(c))),
             'momentum_reversal': ind.get('momentum_reversal', np.zeros(len(c))),
         }
         del df
@@ -553,7 +553,7 @@ for code in active_codes:
     icode = indicator_cache.get(code)
     if icode is None: continue
     c, dates, ti_arr = icode['close'], icode['dates'], icode['trend_initiation']
-    ml = icode['mom_x_lowvol_20_20']; mr = icode['momentum_reversal']
+    ml = icode['mom_x_vol_20_20']; mr = icode['momentum_reversal']
     n = len(c)
     if n < 60: continue
     old_score = ml[-1] * 0.60 + mr[-1] * 0.40

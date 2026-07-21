@@ -2172,15 +2172,21 @@ class SignalEngine:
 
         factor_names = []  # 实际使用的因子名(诊断用)
 
-        # P0: 季度滚动标定的行业因子 (98%+ 覆盖, 含熊市防御因子)
+        # P0: 原始行业因子 (377行业, 高IC技术因子, combined_IC 0.12+)
         industry = (self._get_specific_industry(code, current_date)
                     if (code and current_date) else '')
-        qcfg = _resolve_factor_config(current_date) if current_date else {}
-        industry_cfg = qcfg.get(industry) if industry else None
+        industry_cfg = INDUSTRY_FACTOR_CONFIG.get(industry) if industry else None
 
         if industry_cfg:
-            factors = industry_cfg.get('factors', [])
-            weights_cfg = industry_cfg.get('weights', [])
+            if regime == -1 and industry_cfg.get('bear_factors'):
+                factors = industry_cfg['bear_factors']
+                weights_cfg = industry_cfg.get('bear_weights', [])
+            elif regime == 1 and industry_cfg.get('bull_factors'):
+                factors = industry_cfg['bull_factors']
+                weights_cfg = industry_cfg.get('bull_weights', [])
+            else:
+                factors = industry_cfg.get('factors', [])
+                weights_cfg = industry_cfg.get('weights', [])
             if factors and weights_cfg and len(factors) == len(weights_cfg):
                 scoring_factors = list(zip(factors, weights_cfg))
                 self._stats['fixed_industry'] += 1
@@ -2188,6 +2194,17 @@ class SignalEngine:
                 scoring_factors = []
         else:
             scoring_factors = []
+
+        # P1: 熊市额外防御 — 季度标定的bear_factors覆盖(仅熊市生效)
+        if not scoring_factors and regime == -1:
+            qcfg = _resolve_factor_config(current_date) if current_date else {}
+            industry_cfg = qcfg.get(industry) if industry else None
+            if industry_cfg and industry_cfg.get('bear_factors'):
+                factors = industry_cfg['bear_factors']
+                weights_cfg = industry_cfg.get('bear_weights', [])
+                if factors and weights_cfg and len(factors) == len(weights_cfg):
+                    scoring_factors = list(zip(factors, weights_cfg))
+                    self._stats['fixed_industry'] += 1
 
         # P1: FactorLibrary (IC store or YAML fallback)
         if not scoring_factors and lib is not None:

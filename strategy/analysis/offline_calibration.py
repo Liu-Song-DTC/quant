@@ -63,6 +63,11 @@ _worker_lookback = 120
 _worker_forward_period = 20
 _worker_concept_map = {}  # {code: [concept_names]} — 概念板块标定
 
+# ========== 全局变量用于IC并行标定（fork继承） ==========
+_calib_factor_df = None
+_calib_concept_to_codes = None
+_calib_candidates = None
+
 
 def _log_memory(tag=""):
     """记录当前进程内存使用（仅Linux）"""
@@ -138,86 +143,85 @@ def _calibrate_stock_worker(args):
     stock_concepts = _worker_concept_map.get(code, [])
     stock_industry = stock_concepts[0] if stock_concepts else '其他'
 
-    # 批量获取基本面数据（优化：每个日期只调用1次_get_latest + 1次_get_nth_latest，
-    # 替代原来每个日期15+次独立方法调用，大幅减少DataFrame filter+sort操作）
+    # 批量获取基本面数据: 预加载+searchsorted替代逐日期filter+sort
     fund_cache = {}
     if _worker_fd is not None:
-        # 优化: 只查股票有交易数据的日期, 跳过无效查询 (提速50%+)
-        valid_dates = [d for d in factor_dates if d in date_to_idx and date_to_idx[d] >= lookback]
-        for eval_date in valid_dates:
+        # 确保股票基本面数据已加载（与_get_latest的懒加载行为一致）
+        if code not in _worker_fd.stock_data:
             try:
-                latest = _worker_fd._get_latest(code, eval_date)
-                if latest is None:
-                    fund_cache[eval_date] = {}
-                    continue
-
-                def _pct(v):
-                    """解析百分比字符串"""
-                    if v is None:
-                        return None
-                    try:
-                        if isinstance(v, str):
-                            return float(v.strip('%')) / 100
-                        return float(v)
-                    except Exception:
-                        return None
-
-                roe = _pct(latest.get('净资产收益率'))
-                pg = _pct(latest.get('净利润-同比增长'))
-                rg = _pct(latest.get('营业总收入-同比增长'))
-                eps = latest.get('每股收益')
-                gm = _pct(latest.get('销售毛利率'))
-                operating_cf = latest.get('xjll_经营性现金流-现金流量净额')
-                profit = latest.get('净利润-净利润')
-
-                # fund_score — 统一使用 compute_fundamental_score (与实盘一致)
-                # roe/pg/rg已通过_pct转为小数, eps保持原值
-                fund_score = compute_fundamental_score(
-                    roe=roe, profit_growth=pg, revenue_growth=rg, eps=eps
-                )
-
-                # pg_improve / rg_improve（需上一季度数据）
-                pg_improve = None
-                rg_improve = None
-                prev = _worker_fd._get_nth_latest(code, eval_date, n=1)
-                if prev is not None:
-                    prev_pg = _pct(prev.get('净利润-同比增长'))
-                    prev_rg = _pct(prev.get('营业总收入-同比增长'))
-                    if pg is not None and prev_pg is not None:
-                        pg_improve = pg - prev_pg
-                    if rg is not None and prev_rg is not None:
-                        rg_improve = rg - prev_rg
-
-                cf_to_profit = None
-                if operating_cf is not None and profit is not None and profit > 0:
-                    cf_to_profit = operating_cf / profit
-
-                # 估值因子: PE/PB (Fix#1)
-                eps_val = latest.get('每股收益')
-                bps_val = latest.get('每股净资产')
-                try:
-                    eps_val = float(eps_val) if eps_val is not None else None
-                except (ValueError, TypeError):
-                    eps_val = None
-                try:
-                    bps_val = float(bps_val) if bps_val is not None else None
-                except (ValueError, TypeError):
-                    bps_val = None
-
-                fund_cache[eval_date] = {
-                    'roe': roe,
-                    'profit_growth': pg,
-                    'revenue_growth': rg,
-                    'fund_score': fund_score,
-                    'gross_margin': gm,
-                    'pg_improve': pg_improve,
-                    'rg_improve': rg_improve,
-                    'cf_to_profit': cf_to_profit,
-                    'eps': eps_val,
-                    'bps': bps_val,
-                }
+                _worker_fd._load_stock(code)
             except Exception:
-                fund_cache[eval_date] = {}
+                pass
+    if _worker_fd is not None and code in _worker_fd.stock_data:
+        # 预加载基本面DataFrame, 一次性排序
+        fund_df = _worker_fd.stock_data[code].copy()
+        if '数据可用日期' in fund_df.columns and len(fund_df) > 0:
+            fund_df = fund_df.sort_values(['数据可用日期', '报告期'])
+            available_dates = fund_df['数据可用日期'].values
+
+            valid_dates = [d for d in factor_dates if d in date_to_idx and date_to_idx[d] >= lookback]
+            for eval_date in valid_dates:
+                try:
+                    date_str = eval_date.strftime('%Y%m%d') if hasattr(eval_date, 'strftime') else str(eval_date).replace('-', '')
+                    pos = np.searchsorted(available_dates, date_str, side='right') - 1
+                    if pos < 0:
+                        fund_cache[eval_date] = {}
+                        continue
+
+                    row = fund_df.iloc[pos]
+
+                    def _pct(v):
+                        if v is None: return None
+                        try:
+                            if isinstance(v, str): return float(v.strip('%')) / 100
+                            return float(v)
+                        except Exception: return None
+
+                    roe = _pct(row.get('净资产收益率'))
+                    pg = _pct(row.get('净利润-同比增长'))
+                    rg = _pct(row.get('营业总收入-同比增长'))
+                    eps = row.get('每股收益')
+                    gm = _pct(row.get('销售毛利率'))
+                    operating_cf = row.get('xjll_经营性现金流-现金流量净额')
+                    profit = row.get('净利润-净利润')
+                    bps_val = row.get('每股净资产')
+
+                    fund_score = compute_fundamental_score(
+                        roe=roe, profit_growth=pg, revenue_growth=rg, eps=eps)
+
+                    # pg_improve / rg_improve (上一季度)
+                    pg_improve = None
+                    rg_improve = None
+                    if pos > 0:
+                        prev_row = fund_df.iloc[pos - 1]
+                        prev_pg = _pct(prev_row.get('净利润-同比增长'))
+                        prev_rg = _pct(prev_row.get('营业总收入-同比增长'))
+                        if pg is not None and prev_pg is not None:
+                            pg_improve = pg - prev_pg
+                        if rg is not None and prev_rg is not None:
+                            rg_improve = rg - prev_rg
+
+                    cf_to_profit = None
+                    if operating_cf is not None and profit is not None and profit > 0:
+                        cf_to_profit = operating_cf / profit
+
+                    try: eps_val = float(eps) if eps is not None else None
+                    except (ValueError, TypeError): eps_val = None
+                    try: bps_val = float(bps_val) if bps_val is not None else None
+                    except (ValueError, TypeError): bps_val = None
+
+                    fund_cache[eval_date] = {
+                        'roe': roe, 'profit_growth': pg, 'revenue_growth': rg,
+                        'fund_score': fund_score, 'gross_margin': gm,
+                        'pg_improve': pg_improve, 'rg_improve': rg_improve,
+                        'cf_to_profit': cf_to_profit, 'eps': eps_val, 'bps': bps_val,
+                    }
+                except Exception:
+                    fund_cache[eval_date] = {}
+        else:
+            valid_dates = [d for d in factor_dates if d in date_to_idx and date_to_idx[d] >= lookback]
+    else:
+        valid_dates = [d for d in factor_dates if d in date_to_idx and date_to_idx[d] >= lookback]
 
     results = []
     for sample_date in valid_dates:  # 复用上面过滤后的有效日期
@@ -283,7 +287,7 @@ def _calibrate_stock_worker(args):
     return results
 
 
-def prepare_calibration_data():
+def prepare_calibration_data(start_date=None, end_date=None):
     """准备标定所需的元数据（不预加载全部股票数据，节省内存）
 
     只加载：
@@ -292,7 +296,20 @@ def prepare_calibration_data():
     3. 指数数据用于市场状态检测
     4. 基本面数据（FundamentalData内部加载）
     5. 概念板块映射（stock_concept_map.pkl，与信号引擎对齐）
+
+    Args:
+        start_date: 标定起始日期 (str or pd.Timestamp), 默认 2016-01-01
+        end_date: 标定结束日期 (str or pd.Timestamp), 默认 2020-12-31
     """
+    if start_date is None:
+        start_date = pd.Timestamp('2016-01-01')
+    else:
+        start_date = pd.Timestamp(start_date)
+    if end_date is None:
+        end_date = pd.Timestamp('2020-12-31')
+    else:
+        end_date = pd.Timestamp(end_date)
+
     config = load_config()
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     raw_data_path = os.path.join(project_root, 'data/stock_data/raw_data/')
@@ -320,9 +337,10 @@ def prepare_calibration_data():
 
     stock_codes = [c for c in stock_file_map.keys() if c != "sh000001"]
 
-    # 只保留近年数据用于标定（2020年以后）
-    all_dates = sorted(d for d in all_dates if d >= pd.Timestamp('2020-01-01'))
-    print(f"交易日期: {len(all_dates)} 天 (2020-01-01 起)")
+    # 标定窗口过滤
+    all_dates = sorted(d for d in all_dates
+                       if d >= start_date and d <= end_date)
+    print(f"交易日期: {len(all_dates)} 天 ({start_date.date()} ~ {end_date.date()})")
 
     # ---- 只验证基本面数据路径存在（worker各自加载） ----
     fund_path_ok = fundamental_path and os.path.exists(fundamental_path)
@@ -393,8 +411,8 @@ def _calc_max_workers():
                     avail_kb = int(line.split()[1])
                     avail_gb = avail_kb / (1024 * 1024)
                     # 保守：每worker 500MB，保留1.5GB给主进程合并factor_df和标定计算
-                    max_w = max(1, int((avail_gb - 1.5) / 0.5))
-                    max_w = min(max_w, 4)  # 最多4个（避免fork/spawn过重）
+                    max_w = max(1, int((avail_gb - 1.0) / 0.4))
+                    max_w = min(max_w, 8)  # 最多8个
                     print(f"可用内存: {avail_gb:.1f} GB → 最大workers: {max_w}")
                     return max_w
     except Exception:
@@ -627,8 +645,66 @@ def _cross_sectional_ic_batch(regime_df, candidate_factors, value_col='future_re
     return factor_ic_lists
 
 
+def _calibrate_concepts_worker(concepts_chunk):
+    """Worker: 并行计算一组概念的IC"""
+    global _calib_factor_df, _calib_concept_to_codes, _calib_candidates
+    factor_df = _calib_factor_df
+    concept_to_codes = _calib_concept_to_codes
+    candidate_factors = _calib_candidates
+
+    regime_map = {1: 'bull', 0: 'neutral', -1: 'bear'}
+    results = {}
+
+    for concept in concepts_chunk:
+        if concept_to_codes:
+            codes = concept_to_codes.get(concept, [])
+            if not codes:
+                continue
+            ind_df = factor_df[factor_df['code'].isin(codes)]
+        else:
+            ind_df = factor_df[factor_df['industry'] == concept]
+        if len(ind_df) < 100:
+            continue
+
+        results[concept] = {}
+
+        for regime_val, regime_name in regime_map.items():
+            regime_df = ind_df[ind_df['regime'] == regime_val]
+            if len(regime_df) < 50:
+                continue
+
+            factor_ic_lists = _cross_sectional_ic_batch(regime_df, candidate_factors)
+            factor_metrics = {}
+
+            for factor_name, ic_list in factor_ic_lists.items():
+                if len(ic_list) < 10:
+                    continue
+                ic_mean = np.mean(ic_list)
+                ic_std = np.std(ic_list) + 1e-10
+                if ic_mean <= 0:
+                    continue
+                ic_signs = np.sign(ic_list)
+                ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
+                if ic_stability < 0.1:
+                    continue
+                t_stat = ic_mean / (ic_std / np.sqrt(len(ic_list)))
+                if abs(t_stat) < 1.5:
+                    continue
+                factor_metrics[factor_name] = {
+                    'ic_mean': float(ic_mean),
+                    'ic_std': float(ic_std),
+                    'ir': float(ic_mean / ic_std),
+                    'ic_stability': float(ic_stability),
+                    'combined_ir': float((ic_mean / ic_std) * (0.5 + 0.5 * ic_stability)),
+                    'n_dates': int(len(ic_list)),
+                }
+            if factor_metrics:
+                results[concept][regime_name] = factor_metrics
+    return results
+
+
 def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None):
-    """按概念板块×市场状态标定因子
+    """按概念板块×市场状态标定因子（并行：fork pool）
 
     关键：每个概念使用ALL属于它的股票（不限于主概念），
     与信号引擎的查找逻辑保持一致（一只股票→第一个有配置的概念）。
@@ -644,12 +720,10 @@ def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None):
     if factor_df.empty:
         return {}
 
-    # 确保日期类型正确
     if factor_df['date'].dtype != 'datetime64[ns]':
         factor_df = factor_df.copy()
         factor_df['date'] = pd.to_datetime(factor_df['date'])
 
-    # 构建概念→代码映射（一只股票属于多个概念，每个概念包含所有关联股票）
     if concept_map:
         codes_in_df = set(factor_df['code'].unique())
         concept_to_codes = defaultdict(list)
@@ -657,7 +731,6 @@ def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None):
             if code in codes_in_df:
                 for c in concepts:
                     concept_to_codes[c].append(code)
-        # 过滤：至少需要min_codes只股票
         min_codes = 20
         concepts = sorted(
             c for c, clist in concept_to_codes.items()
@@ -669,66 +742,21 @@ def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None):
         concept_to_codes = None
         print(f"标定行业数: {len(concepts)} (回退industry列)")
 
-    regime_map = {1: 'bull', 0: 'neutral', -1: 'bear'}
+    # 并行: fork pool, factor_df通过COW共享
+    n_workers = min(multiprocessing.cpu_count(), 8)
+    concept_chunks = [list(c) for c in np.array_split(concepts, n_workers) if len(c) > 0]
+
+    # 设置全局变量（fork后子进程继承）
+    global _calib_factor_df, _calib_concept_to_codes, _calib_candidates
+    _calib_factor_df = factor_df
+    _calib_concept_to_codes = concept_to_codes
+    _calib_candidates = candidate_factors
+
     calibration_results = {}
-
-    for concept in tqdm(concepts, desc="标定概念"):
-        if concept_to_codes:
-            ind_df = factor_df[factor_df['code'].isin(concept_to_codes[concept])]
-        else:
-            ind_df = factor_df[factor_df['industry'] == concept]
-        if len(ind_df) < 100:
-            continue
-
-        calibration_results[concept] = {}
-
-        for regime_val, regime_name in regime_map.items():
-            regime_df = ind_df[ind_df['regime'] == regime_val]
-            if len(regime_df) < 50:
-                continue
-
-            # 批量计算所有因子的截面IC（一次groupby，提速~30x）
-            factor_ic_lists = _cross_sectional_ic_batch(regime_df, candidate_factors)
-
-            factor_metrics = {}
-
-            for factor_name, ic_list in factor_ic_lists.items():
-                if len(ic_list) < 10:
-                    continue
-
-                ic_mean = np.mean(ic_list)
-                ic_std = np.std(ic_list) + 1e-10
-                ir = ic_mean / ic_std
-                ic_signs = np.sign(ic_list)
-                ic_stability = np.abs(np.sum(ic_signs)) / len(ic_signs)
-                n_dates = len(ic_list)
-
-                # 只保留正向IC因子
-                if ic_mean <= 0:
-                    continue
-
-                # 稳定性过滤（按市场状态分样本后stability普遍较低，适度放宽）
-                if ic_stability < 0.1:
-                    continue
-
-                # t统计量过滤（替代高stability要求）
-                t_stat = ic_mean / (ic_std / np.sqrt(n_dates)) if n_dates > 0 else 0
-                if abs(t_stat) < 1.5:
-                    continue
-
-                combined_ir = ir * (0.5 + 0.5 * ic_stability)
-
-                factor_metrics[factor_name] = {
-                    'ic_mean': float(ic_mean),
-                    'ic_std': float(ic_std),
-                    'ir': float(ir),
-                    'ic_stability': float(ic_stability),
-                    'combined_ir': float(combined_ir),
-                    'n_dates': int(n_dates),
-                }
-
-            if factor_metrics:
-                calibration_results[concept][regime_name] = factor_metrics
+    with multiprocessing.get_context('fork').Pool(n_workers) as pool:
+        for worker_result in tqdm(pool.imap(_calibrate_concepts_worker, concept_chunks),
+                                   total=len(concept_chunks), desc="标定概念"):
+            calibration_results.update(worker_result)
 
     return calibration_results
 
@@ -794,36 +822,16 @@ def _compute_combined_factor_ic(regime_df, factor_names, weights):
     }
 
 
-def select_best_factors(calibration_results, factor_df, concept_map=None, max_factors=3, min_combined_ir=0.02):
-    """贪心前向选择最优因子组合，验证组合IC
+def _select_best_factors_worker(concepts_chunk):
+    """Worker: 并行贪心前向选择"""
+    global _calib_factor_df, _calib_concept_to_codes
+    factor_df = _calib_factor_df
+    concept_to_codes = _calib_concept_to_codes
 
-    使用与calibrate_industry_regime一致的概念分组（所有属于该概念的股票）。
-
-    Args:
-        calibration_results: calibrate_industry_regime的输出
-        factor_df: 因子数据DataFrame（含code列）
-        concept_map: {code: [concept_names]} 概念板块映射
-        max_factors: 每个行业每个状态最多选几个因子
-        min_combined_ir: 最低combined_ir阈值
-
-    Returns:
-        dict: 适合写入factor_config.yaml的格式
-    """
-    result_config = {}
     regime_map = {'neutral': 0, 'bull': 1, 'bear': -1}
+    result_config = {}
 
-    # 构建概念→代码映射（与calibrate_industry_regime一致）
-    if concept_map:
-        codes_in_df = set(factor_df['code'].unique())
-        concept_to_codes = defaultdict(list)
-        for code, concepts in concept_map.items():
-            if code in codes_in_df:
-                for c in concepts:
-                    concept_to_codes[c].append(code)
-    else:
-        concept_to_codes = None
-
-    for concept, regimes in calibration_results.items():
+    for concept, regimes in concepts_chunk:
         config = {}
         if concept_to_codes and concept in concept_to_codes:
             ind_df = factor_df[factor_df['code'].isin(concept_to_codes[concept])]
@@ -836,68 +844,51 @@ def select_best_factors(calibration_results, factor_df, concept_map=None, max_fa
             if regime_name not in regimes:
                 continue
 
-            # 按combined_ir排序
             sorted_factors = sorted(
                 regimes[regime_name].items(),
-                key=lambda x: x[1]['combined_ir'],
-                reverse=True
-            )
+                key=lambda x: x[1]['combined_ir'], reverse=True)
 
-            # 过滤低质量因子
-            candidates = [
-                (fn, m) for fn, m in sorted_factors
-                if m['combined_ir'] >= min_combined_ir
-            ]
-
+            candidates = [(fn, m) for fn, m in sorted_factors
+                         if m['combined_ir'] >= 0.02]
             if not candidates:
                 continue
 
-            # 筛选该市场状态的因子数据
             regime_val = regime_map[regime_name]
             regime_df = ind_df[ind_df['regime'] == regime_val] if 'regime' in ind_df.columns else ind_df
             if len(regime_df) < 50:
-                # 数据不足，退回简单选择
-                selected = candidates[:max_factors]
+                selected = candidates[:3]
                 factors = [f[0] for f in selected]
                 total_ir = sum(f[1]['combined_ir'] for f in selected)
                 weights = [f[1]['combined_ir'] / total_ir for f in selected]
                 avg_ic = float(np.mean([f[1]['ic_mean'] for f in selected]))
-                combined_ic = avg_ic  # 无验证数据，用单因子均值IC估计
+                combined_ic = avg_ic
             else:
-                # 贪心前向选择：top-k + 组合IC验证
                 best_result = None
                 best_combined_ic = 0
-
-                for k in range(1, min(max_factors + 1, len(candidates) + 1)):
+                for k in range(1, min(4, len(candidates) + 1)):
                     top_k = candidates[:k]
                     factors_k = [f[0] for f in top_k]
                     total_ir = sum(f[1]['combined_ir'] for f in top_k)
                     weights_k = [f[1]['combined_ir'] / total_ir for f in top_k]
-
                     combo_ic = _compute_combined_factor_ic(regime_df, factors_k, weights_k)
-
                     if combo_ic and combo_ic['ic_mean'] > best_combined_ic:
                         best_combined_ic = combo_ic['ic_mean']
                         best_result = {
-                            'factors': factors_k,
-                            'weights': weights_k,
+                            'factors': factors_k, 'weights': weights_k,
                             'avg_ic': float(np.mean([f[1]['ic_mean'] for f in top_k])),
                             'combined_ic': combo_ic['ic_mean'],
                             'combined_ir': combo_ic['ir'],
                             'combined_stability': combo_ic['ic_stability'],
                         }
-
                 if best_result is None:
                     top1 = candidates[:1]
                     best_result = {
-                        'factors': [top1[0][0]],
-                        'weights': [1.0],
+                        'factors': [top1[0][0]], 'weights': [1.0],
                         'avg_ic': top1[0][1]['ic_mean'],
                         'combined_ic': top1[0][1]['ic_mean'],
                         'combined_ir': top1[0][1]['ir'],
                         'combined_stability': top1[0][1]['ic_stability'],
                     }
-
                 factors = best_result['factors']
                 weights = best_result['weights']
                 avg_ic = best_result['avg_ic']
@@ -921,7 +912,35 @@ def select_best_factors(calibration_results, factor_df, concept_map=None, max_fa
 
         if config:
             result_config[concept] = config
+    return result_config
 
+
+def select_best_factors(calibration_results, factor_df, concept_map=None, max_factors=3, min_combined_ir=0.02):
+    """贪心前向选择最优因子组合（并行：fork pool）"""
+    if concept_map:
+        codes_in_df = set(factor_df['code'].unique())
+        concept_to_codes = defaultdict(list)
+        for code, concepts in concept_map.items():
+            if code in codes_in_df:
+                for c in concepts:
+                    concept_to_codes[c].append(code)
+    else:
+        concept_to_codes = None
+
+    # 并行
+    items = list(calibration_results.items())
+    n_workers = min(multiprocessing.cpu_count(), 8)
+    chunks = [list(c) for c in np.array_split(items, n_workers) if len(c) > 0]
+
+    global _calib_factor_df, _calib_concept_to_codes
+    _calib_factor_df = factor_df
+    _calib_concept_to_codes = concept_to_codes
+
+    result_config = {}
+    with multiprocessing.get_context('fork').Pool(n_workers) as pool:
+        for worker_result in tqdm(pool.imap(_select_best_factors_worker, chunks),
+                                   total=len(chunks), desc="因子选择"):
+            result_config.update(worker_result)
     return result_config
 
 
