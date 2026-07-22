@@ -61,13 +61,13 @@ class MarketRegimeDetector:
     def _init_params(self):
         """初始化参数"""
         # 熊市阈值 (ExpB1: 收窄中性区间, 5%→3%, 减少SHARPE因子误用)
-        self.mom5_bear = -0.03    # 5日动量 < -3%
-        self.mom_bear = -0.03     # 20日动量 < -3%
-        self.mom_bear_sustained = -0.06  # 持续熊市：20日动量 < -6%
+        self.mom5_bear = -0.01    # 5日动量 < -1% (原-3%, 2022阴跌难触发)
+        self.mom_bear = -0.015    # 20日动量 < -1.5% (原-3%)
+        self.mom_bear_sustained = -0.03  # 持续熊市：20日动量 < -3% (原-6%)
 
         # 牛市阈值 (A股急涨急跌, 60日动量3%太高→MOM因子从未触发)
-        self.mom_bull = 0.025     # 20日动量 > 2.5% (3%→2.5%)
-        self.mom60_bull = 0.0     # 60日动量 > 0% (1%→0%: 任何正60日动量配合即可)
+        self.mom_bull = 0.015     # 20日动量 > 1.5% (原2.5%, 放宽牛市识别)
+        self.mom60_bull = -0.01    # 60日动量 > -1% (原0%, 放过刚复苏市场)
 
         # 极端波动阈值
         self.vol_extreme_high = 0.30
@@ -87,11 +87,11 @@ class MarketRegimeDetector:
         # === 新增：熊市风险检测参数 ===
         # 用于风险管理的熊市检测（不同于短期超跌检测）
         self.bear_risk_ma_period = 120  # 均线周期
-        self.bear_risk_drawdown = 0.10  # 回撤阈值 10% (原15%过严, 2%触发率)
-        self.bear_risk_momentum = -0.05  # 120日动量阈值 -5% (原-10%)
+        self.bear_risk_drawdown = 0.07  # 回撤阈值 7% (2022年连续阴跌需更敏感)
+        self.bear_risk_momentum = -0.03  # 120日动量阈值 -3% (原-5%, 2022年缓慢下跌难触发)
         # === 快速熊市检测：60日维度，捕捉急跌（120日动量滞后）===
-        self.bear_risk_momentum_fast = -0.03  # 60日动量阈值 -3% (原-6%)
-        self.bear_risk_drawdown_fast = 0.07   # 60日回撤阈值 7% (原10%)
+        self.bear_risk_momentum_fast = -0.02  # 60日动量阈值 -2% (原-3%)
+        self.bear_risk_drawdown_fast = 0.05   # 60日回撤阈值 5% (原7%)
 
     def generate(self, index_df: pd.DataFrame,
                  small_cap_df: pd.DataFrame = None,      # 中证1000 (000852)

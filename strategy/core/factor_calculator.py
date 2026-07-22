@@ -287,7 +287,7 @@ def calculate_indicators(
     # 三维度综合: 排列度(40%) + 通道宽度(30%) + 斜率方向(30%)
     # 相比纯排列度，加入价差和斜率使其:
     #   - 更灵敏: 价差收窄先于排列破坏 (Fix#5)
-    #   - 更独立: 不同于trend_vol和mom_x_vol (Fix#6)
+    #   - 更独立: 不同于trend_lowvol和mom_x_lowvol (Fix#6)
     ma5, ma10, ma20, ma60 = result['ma5'], result['ma10'], result['ma20'], result['ma60']
     # 维度1: MA排列度 (0-5)
     alignment = np.zeros(n, dtype=np.float32)
@@ -334,14 +334,14 @@ def calculate_indicators(
     # 动量×低波动 - 使用tanh压缩
     # 值域分析：mom约[-0.5, 0.5], vol约[0.01, 0.05]，乘积约[-0.025, 0.025]
     # 为了统一量纲，放大后压缩
-    raw_mlv_10_10 = result['mom_10'] * result['volatility_10']
-    raw_mlv_10_20 = result['mom_10'] * result['volatility_20']
-    raw_mlv_20_10 = result['mom_20'] * result['volatility_10']
-    raw_mlv_20_20 = result['mom_20'] * result['volatility_20']
-    result['mom_x_vol_10_10'] = np.tanh(raw_mlv_10_10 * 20)  # 放大后压缩
-    result['mom_x_vol_10_20'] = np.tanh(raw_mlv_10_20 * 20)
-    result['mom_x_vol_20_10'] = np.tanh(raw_mlv_20_10 * 20)
-    result['mom_x_vol_20_20'] = np.tanh(raw_mlv_20_20 * 20)
+    raw_mlv_10_10 = result['mom_10'] * (-result['volatility_10'])
+    raw_mlv_10_20 = result['mom_10'] * (-result['volatility_20'])
+    raw_mlv_20_10 = result['mom_20'] * (-result['volatility_10'])
+    raw_mlv_20_20 = result['mom_20'] * (-result['volatility_20'])
+    result['mom_x_lowvol_10_10'] = np.tanh(raw_mlv_10_10 * 20)  # 放大后压缩
+    result['mom_x_lowvol_10_20'] = np.tanh(raw_mlv_10_20 * 20)
+    result['mom_x_lowvol_20_10'] = np.tanh(raw_mlv_20_10 * 20)
+    result['mom_x_lowvol_20_20'] = np.tanh(raw_mlv_20_20 * 20)
 
     # RSI+波动率组合 - tanh压缩
     result['rsi_vol_combo'] = np.tanh((50 - result['rsi_14']) / 100 - result['volatility_20'] * 0.5)
@@ -369,7 +369,7 @@ def calculate_indicators(
     # 趋势低波动因子: 强趋势+低波动=稳定上涨
     trend_str = result.get('trend_strength', np.zeros(n))
     atr_ratio = result.get('atr_ratio', np.zeros(n))
-    result['trend_vol'] = np.tanh(trend_str * atr_ratio * 50)
+    result['trend_lowvol'] = np.tanh(trend_str * (-atr_ratio) * 50)
 
     # 量价确认因子: 近20天量价正相关+动量方向一致 (向量化)
     vp_corr = _rolling_corr(result['ret'], result['volume'], 20)
@@ -996,38 +996,6 @@ def calculate_indicators(
     # === 新因子增强缠论买卖信号 ===
     # Apply boosts/reductions to chan_buy_score and chan_sell_score
     _apply_chan_signal_boosts(result, n)
-
-    # === 熊市防御因子 (Phase 2.2) ===
-    # 1. downside_vol_ratio: 下跌波动占比, 高值=大部分波动是下跌=风险大
-    dd20 = result.get('downside_dev_20', np.zeros(n))
-    vol20 = result.get('volatility_20', np.ones(n) * 0.01)
-    result['downside_vol_ratio'] = np.tanh(-(dd20 / (vol20 + 1e-8) - 0.5) * 5)
-
-    # 2. vol_stability: 波动率稳定性, 短/长期波动率比越接近1越稳定
-    vol60_raw = _rolling_std(result['ret'], 60) * np.sqrt(252)
-    vol_stab = np.zeros(n)
-    valid = (vol60_raw > 0.01)
-    vol_stab[valid] = 1.0 - np.abs(result['volatility_20'][valid] / vol60_raw[valid] - 1.0)
-    vol_stab = np.clip(vol_stab, 0.0, 1.0)
-    result['vol_stability'] = np.tanh((vol_stab - 0.5) * 5)
-
-    # 3. ret_asymmetry: 收益不对称性, 正收益日占比 > 负收益 = 健康
-    ret_arr = result['ret']
-    pos_days = _sma((ret_arr > 0).astype(np.float32), 60)
-    neg_days = _sma((ret_arr < 0).astype(np.float32), 60)
-    asym = np.zeros(n)
-    total_days = pos_days + neg_days + 1e-10
-    asym = (pos_days - neg_days) / total_days  # [-1, 1]
-    result['ret_asymmetry'] = np.tanh(asym * 3)
-
-    # 4. price_quality: 价格质量 = 低回撤 + 紧贴均线 + 低波动
-    dd60 = np.zeros(n)
-    if n > 60:
-        roll_max_60 = _rolling_max(close_arr, 60)
-        dd60 = (close_arr - roll_max_60) / (roll_max_60 + 1e-10)
-    ma_dist = np.abs(close_arr / (ma20 + 1e-10) - 1.0)  # 偏离MA20程度
-    pq = (1.0 + dd60) * 0.4 + (1.0 - ma_dist * 5).clip(0, 1) * 0.4 + (1.0 - result['volatility_20']).clip(0, 1) * 0.2
-    result['price_quality'] = np.tanh((pq - 0.5) * 5)
 
     return result
 
@@ -1798,17 +1766,20 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
     # 趋势动量 - 使用arctan压缩防止极端值
     # 根因：m20可能很大（如50%涨幅），乘以2.1后更大
     # 解决：使用arctan压缩，保留单调性同时限制值域
-    # 用m10方向的sigmoid做连续过渡, 避免if/else硬截断导致m10略负时完全归零
-    m10_gate = 1.0 / (1.0 + np.exp(-m10 * 30))  # sigmoid: m10>0→≈1, m10<0→≈0
-    result['trend_mom_v41'] = np.tanh(m20 * 3) * m10_gate
-    result['trend_mom_v24'] = np.tanh(m20 * 3) * m10_gate
-    result['trend_mom_v46'] = np.tanh(m20 * 2.5) * m10_gate
+    if m10 > 0:
+        result['trend_mom_v41'] = np.tanh(m20 * 3)  # 压缩到(-1, 1)
+        result['trend_mom_v24'] = np.tanh(m20 * 3)
+        result['trend_mom_v46'] = np.tanh(m20 * 2.5)
+    else:
+        result['trend_mom_v41'] = 0.0
+        result['trend_mom_v24'] = np.tanh(m20 * 0.5)  # 下跌时轻微负值
+        result['trend_mom_v46'] = 0.0
 
     # 动量×低波动 - tanh压缩
-    result['mom_x_vol_20_20'] = np.tanh(m20 * v20 * 20)
-    result['mom_x_vol_20_10'] = np.tanh(m20 * v10 * 20)
-    result['mom_x_vol_10_20'] = np.tanh(m10 * v20 * 20)
-    result['mom_x_vol_10_10'] = np.tanh(m10 * v10 * 20)
+    result['mom_x_lowvol_20_20'] = np.tanh(m20 * (-v20) * 20)
+    result['mom_x_lowvol_20_10'] = np.tanh(m20 * (-v10) * 20)
+    result['mom_x_lowvol_10_20'] = np.tanh(m10 * (-v20) * 20)
+    result['mom_x_lowvol_10_10'] = np.tanh(m10 * (-v10) * 20)
 
     # 动量差异 - tanh压缩
     mom_5 = ind['mom_5'][idx] if not np.isnan(ind['mom_5'][idx]) else 0
@@ -1850,9 +1821,9 @@ def compute_composite_factors(ind: Dict[str, np.ndarray], idx: int, fund_score: 
     # tech_fund_combo: 技术+基本面组合
     result['tech_fund_combo'] = result.get('trend_mom_v41', 0) * 0.7 + result.get('rsi_factor', 0) * 0.1 + fund_score * 0.2
 
-    # 新因子: trend_vol + vol_confirm
-    if 'trend_vol' in ind:
-        result['trend_vol'] = ind['trend_vol'][idx]
+    # 新因子: trend_lowvol + vol_confirm
+    if 'trend_lowvol' in ind:
+        result['trend_lowvol'] = ind['trend_lowvol'][idx]
     if 'vol_confirm' in ind:
         result['vol_confirm'] = ind['vol_confirm'][idx]
 

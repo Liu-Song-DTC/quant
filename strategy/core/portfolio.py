@@ -472,15 +472,16 @@ class PortfolioConstructor:
         total_equity = cash + sum(current_positions.values())
         n_positions = self._calc_max_position(total_equity, prices)
 
-        # === 熊市仓位: bear_risk激进(2025=0d不影响), bear_risk_fast原样 ===
+        # === 熊市仓位: bear_IC为负→因子反指, 空仓保本金 ===
         if bear_risk:
-            n_positions = max(1, n_positions // 3)  # 因子反指, 仅留最优
-            _eff_min_rank = max(self.min_rank_pct, 0.65)
-            _eff_min_score = max(self.min_absolute_score, 0.20)
+            return {}  # 熊市因子IC为负, 选股=选亏钱
         elif bear_risk_fast:
-            n_positions = max(3, int(n_positions * 0.7))  # 原逻辑
-            _eff_min_rank = max(self.min_rank_pct, 0.50)  # 原逻辑
-            _eff_min_score = max(self.min_absolute_score, 0.05)  # 原逻辑
+            n_positions = max(1, n_positions // 5)
+            _eff_min_rank = max(self.min_rank_pct, 0.75)
+            _eff_min_score = max(self.min_absolute_score, 0.25)
+            n_positions = max(2, int(n_positions * 0.5))
+            _eff_min_rank = max(self.min_rank_pct, 0.55)
+            _eff_min_score = max(self.min_absolute_score, 0.10)
         else:
             _eff_min_rank = self.min_rank_pct
             _eff_min_score = self.min_absolute_score
@@ -676,37 +677,22 @@ class PortfolioConstructor:
         force_exit_industries = set()
         self._force_exit_industries = force_exit_industries
 
-        # === 市场仓位调整: 趋势驱动, 替代v11恒定敞口 ===
-        # trend_score ∈ [-1, 1], 使用分段映射控制敞口
-        # 2022年实证: trend_score<-0.5占70%交易日, 但40%地板太宽→年损28%
-        # 策略: 熊市激进降仓保护本金, 牛市满仓追求收益
-        if trend_score > 0.5:
-            target_exposure = self.base_exposure  # 强牛 → 满仓
+        # === 市场仓位: 趋势+熊市双维度 ===
+        # 2024实证: trend<0无bear_risk时fwd20=+10.8%(牛市回调反弹,应抄底)
+        # 2022实证: trend<0有bear_risk时因子IC为负(必须空仓)
+        if trend_score >= 0.5:
+            target_exposure = self.base_exposure           # 牛市满仓
         elif trend_score > 0:
-            # (0, 0.5]: 温和牛 → 70%-100%
-            target_exposure = (0.70 + 0.30 * trend_score / 0.5) * self.base_exposure
-        elif trend_score > -0.3:
-            # (-0.3, 0]: 弱震荡 → 50%-70%
-            target_exposure = (0.50 + 0.20 * (trend_score + 0.3) / 0.3) * self.base_exposure
-        elif trend_score > -0.5:
-            # (-0.5, -0.3]: 恶化 → 30%-50%
-            target_exposure = (0.30 + 0.20 * (trend_score + 0.5) / 0.2) * self.base_exposure
+            target_exposure = 0.50 * self.base_exposure    # 弱牛半仓
+        elif trend_score == 0:
+            target_exposure = 0.30 * self.base_exposure    # 震荡轻仓
         else:
-            # <= -0.5: 熊市 → 20% 保命模式(原40%太宽)
-            target_exposure = 0.20 * self.base_exposure
+            # 趋势为负: 有bear_risk→空仓, 无bear_risk→轻仓抄底回调
+            target_exposure = 0.0 if bear_risk else 0.30 * self.base_exposure
 
-        # === 熊市指数风险控制: bear_risk来自market_regime_detector, 基于指数回撤+动量+EMA ===
-        # bear_risk: 120日回撤>15% + 120日动量<-10% + 空头EMA排列 (确认熊市)
-        # bear_risk_fast: 60日回撤>10% + 60日动量<-6% (快速预警)
-        if bear_risk and bear_risk_fast:
-            bear_cap = 0.10  # 双重确认→极低仓, bear_IC为负
-        elif bear_risk:
-            bear_cap = 0.20  # 单bear→降仓
-        elif bear_risk_fast:
-            bear_cap = 0.55  # 原逻辑, 保牛市
-        else:
-            bear_cap = 1.0
-        target_exposure = min(target_exposure, bear_cap)
+        # bear_risk双确认→覆盖, 确保极端情况空仓
+        if bear_risk:
+            target_exposure = 0.0
 
         # === 市场缩量降仓: 无量无行情(放松底线) ===
         if index_volume_ratio < 0.5:
@@ -804,7 +790,7 @@ class PortfolioConstructor:
         # 已覆盖原有的 sl/chan_sell/trend=-2/B3回踩/放量下跌/力竭 等全部维度
         # Gate硬门槛仅排除极端无效信号（gate通过score×gate_quality软性影响排名）
         # _GATE_DEFAULT_MEAN=0.55, 全默认gate_quality≈0.68, 需至少一个Gate有信号才能>0.7
-        GATE_FLOOR_NEW = 0.60   # 放松门槛: ML主导评分, gate仅二元安全网
+        GATE_FLOOR_NEW = 0.65   # 提高门槛: 64%无结构买入占比过高
         GATE_FLOOR_HOLD = 0.50  # 持仓放宽: gate质量下降不急于清仓
         gate_filtered = []
         for c in qualified:
@@ -1240,6 +1226,20 @@ class PortfolioConstructor:
         _exit_tags = {}  # 追踪退出原因 (code -> reason)
         profit_reduce = {}  # 止盈减仓 (code -> target_pct_of_current)
         total_equity = cash + sum(current_positions.values())
+
+        # === 趋势+熊市双确认才强制清仓: 单独trend<0可能是牛市回调===
+        # 2024实证: trend<0的51天fwd20=+10.8%(反弹), 需bear_risk过滤
+        if trend_score < 0 and bear_risk:
+            for code in list(current_positions.keys()):
+                stop_loss_sells[code] = 0.0
+                _exit_tags[code] = 'trend_bear'
+            self._entry_dates.clear()
+            self._entry_reasons.clear()
+            self._peak_prices.clear()
+            self._entry_reason_lost_count.clear()
+            self._post_sell_tracking.clear()
+            desired_value = {c: 0.0 for c in current_positions}
+            return desired_value
 
         # === 熊市动态止损: 预警期适度收紧, 确认熊市靠敞口控制而非紧止损 ===
         if bear_risk_fast and not bear_risk:

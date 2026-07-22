@@ -712,7 +712,7 @@ class SignalEngine:
             # portfolio层做Gate/行业/排名过滤, 信号层尽量不截断候选
             _score_ok = (score >= -0.05)  # 极低门槛: 让portfolio判断
             _dt_sig = float(result['_dt_signal'][i]) if '_dt_signal' in result else 0.0
-            # 结构门控: 需缠论买点/龙虎榜, 或分数>0即可(portfolio做Gate筛选)
+            # 结构门控: 需缠论买点/龙虎榜, 或分数>0即可
             has_structure = (bp_buy >= 1) or (_dt_sig > 0.3)
             struct_ok = has_structure or (score > 0.0)
             # 价格宽松: 无结构时仅需>MA20, 有结构时不做MA20限制
@@ -775,7 +775,6 @@ class SignalEngine:
                     else:
                         _is_premium = _tag in self.fqg_premium
                         if _is_premium:
-                            # premium因子: 门槛打8折
                             if score < buy_th * 0.80:
                                 buy = False
                         else:
@@ -783,9 +782,9 @@ class SignalEngine:
                             for _rs, _rm in self.fqg_restricted.items():
                                 if _rs in _tag:
                                     _restricted_mult = max(_restricted_mult, _rm)
-                            if _restricted_mult > 1.0:
-                                if score < buy_th * _restricted_mult:
-                                    buy = False
+                            # 所有因子必须过buy_threshold(含_T默认因子)
+                            if score < buy_th * max(_restricted_mult, 1.0):
+                                buy = False
 
             # 趋势确认已由 Gate 4 (Trend Direction) 处理
 
@@ -1238,7 +1237,7 @@ class SignalEngine:
                     raise Exception("no lib")
             except Exception:
                 _scoring = [
-                    ('trend_vol', 0.30), ('relative_strength', 0.25),
+                    ('trend_lowvol', 0.30), ('relative_strength', 0.25),
                     ('low_downside', 0.25), ('momentum_reversal', 0.20),
                 ]
 
@@ -2172,39 +2171,42 @@ class SignalEngine:
 
         factor_names = []  # 实际使用的因子名(诊断用)
 
-        # P0: 原始行业因子 (377行业, 高IC技术因子, combined_IC 0.12+)
+        # P0: 行业因子 (旧高IC静态配置, 按市场状态选择)
         industry = (self._get_specific_industry(code, current_date)
                     if (code and current_date) else '')
         industry_cfg = INDUSTRY_FACTOR_CONFIG.get(industry) if industry else None
 
-        if industry_cfg:
-            if regime == -1 and industry_cfg.get('bear_factors'):
+        # 熊市: trend_score<0或regime=-1时激活季度标定bear_factors
+        # 2022实证: 阴跌不触发regime=-1, 需trend_score补充检测
+        if regime == -1 or trend_score < -0.05:
+            qcfg = _resolve_factor_config(current_date) if current_date else {}
+            q_cfg = qcfg.get(industry) if industry else None
+            if q_cfg and q_cfg.get('bear_factors'):
+                # 季度标定熊市因子 — 针对当前季度的最优防御组合
+                factors = q_cfg['bear_factors']
+                weights_cfg = q_cfg.get('bear_weights', [])
+            elif industry_cfg and industry_cfg.get('bear_factors'):
                 factors = industry_cfg['bear_factors']
                 weights_cfg = industry_cfg.get('bear_weights', [])
-            elif regime == 1 and industry_cfg.get('bull_factors'):
-                factors = industry_cfg['bull_factors']
-                weights_cfg = industry_cfg.get('bull_weights', [])
-            else:
+            elif industry_cfg:
                 factors = industry_cfg.get('factors', [])
                 weights_cfg = industry_cfg.get('weights', [])
-            if factors and weights_cfg and len(factors) == len(weights_cfg):
-                scoring_factors = list(zip(factors, weights_cfg))
-                self._stats['fixed_industry'] += 1
             else:
-                scoring_factors = []
+                factors, weights_cfg = [], []
+        elif regime == 1 and industry_cfg and industry_cfg.get('bull_factors'):
+            factors = industry_cfg['bull_factors']
+            weights_cfg = industry_cfg.get('bull_weights', [])
+        elif industry_cfg:
+            factors = industry_cfg.get('factors', [])
+            weights_cfg = industry_cfg.get('weights', [])
+        else:
+            factors, weights_cfg = [], []
+
+        if factors and weights_cfg and len(factors) == len(weights_cfg):
+            scoring_factors = list(zip(factors, weights_cfg))
+            self._stats['fixed_industry'] += 1
         else:
             scoring_factors = []
-
-        # P1: 熊市额外防御 — 季度标定的bear_factors覆盖(仅熊市生效)
-        if not scoring_factors and regime == -1:
-            qcfg = _resolve_factor_config(current_date) if current_date else {}
-            industry_cfg = qcfg.get(industry) if industry else None
-            if industry_cfg and industry_cfg.get('bear_factors'):
-                factors = industry_cfg['bear_factors']
-                weights_cfg = industry_cfg.get('bear_weights', [])
-                if factors and weights_cfg and len(factors) == len(weights_cfg):
-                    scoring_factors = list(zip(factors, weights_cfg))
-                    self._stats['fixed_industry'] += 1
 
         # P1: FactorLibrary (IC store or YAML fallback)
         if not scoring_factors and lib is not None:
@@ -2219,7 +2221,7 @@ class SignalEngine:
         if not scoring_factors:
             mom_dir = -1 if regime == -1 else 1
             scoring_factors = [
-                ('trend_vol', 0.30, 1), ('relative_strength', 0.25, 1),
+                ('trend_lowvol', 0.30, 1), ('relative_strength', 0.25, 1),
                 ('low_downside', 0.25, 1), ('momentum_reversal', 0.20, mom_dir),
             ]
 
@@ -2346,9 +2348,9 @@ class SignalEngine:
         bw_cfg = config.get('bull_weights', None)
         nf = config.get('factors', [])
         nw_cfg = config.get('weights', None)
-        # 熊市使用中性因子，通过连续权重自动降权
-        brf = config.get('factors', [])
-        brw_cfg = None
+        # 熊市使用标定的bear_factors (季度标定bear_IC=5-9%)
+        brf = config.get('bear_factors', config.get('factors', []))
+        brw_cfg = config.get('bear_weights')
 
         if not nf:
             return None

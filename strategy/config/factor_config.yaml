@@ -50,12 +50,12 @@ dynamic_factor:
   - ln_cap
   preferred_factors:
   - momentum_reversal
-  - trend_vol
+  - trend_lowvol
   - low_downside
   - fund_pb
   - fund_pe
   - volatility
-  - mom_x_vol_20_20
+  - mom_x_lowvol_20_20
   - smart_money_flow
   - relative_strength
   - wash_sale_score
@@ -72,7 +72,7 @@ dynamic_factor:
 backtest_factors:
 - fund_score
 - volatility
-- mom_x_vol_20_20
+- mom_x_lowvol_20_20
 - fund_roe
 - fund_profit_growth
 - fund_revenue_growth
@@ -80,7 +80,7 @@ backtest_factors:
 - fund_pe
 - fund_pb
 - momentum_reversal
-- trend_vol
+- trend_lowvol
 - bb_width_20
 - turnover_stability
 - smart_money_flow
@@ -110,14 +110,14 @@ backtest_factors:
 - ret_asymmetry
 - price_quality
 static_candidate_factors:
-- trend_vol
+- trend_lowvol
 - momentum_reversal
-- mom_x_vol_20_20
-- mom_x_vol_20_10
+- mom_x_lowvol_20_20
+- mom_x_lowvol_20_10
 - mom_diff_5_20
 - mom_diff_10_20
 - momentum_acceleration
-- mom_x_vol_10_10
+- mom_x_lowvol_10_10
 - volatility_skew
 - low_downside
 - skewness_20
@@ -139,7 +139,7 @@ static_candidate_factors:
 - intraday_ret
 - gap_ratio
 - V41_RSI_915
-- mom_x_vol_10_20
+- mom_x_lowvol_10_20
 - volume_divergence
 - relative_volume_ratio
 - volume_trend
@@ -179,7 +179,7 @@ industry_factors:
   2025三季报预增:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_pg_improve
     weights:
     - 0.3723
@@ -200,8 +200,8 @@ industry_factors:
   2025年报扭亏:
     factors:
     - turnover_stability
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5113
     - 0.2451
@@ -219,8 +219,8 @@ industry_factors:
   2025年报预减:
     factors:
     - turnover_stability
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3929
     - 0.3348
@@ -239,7 +239,7 @@ industry_factors:
     bull_combined_ic: 0.093
   2026一季报预增:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - fund_score
     weights:
@@ -260,7 +260,7 @@ industry_factors:
     bull_combined_ic: 0.0604
   3D打印:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - turnover_stability
     weights:
@@ -323,9 +323,9 @@ industry_factors:
     bull_combined_ic: 0.1866
   AB股:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3814
     - 0.3221
@@ -334,7 +334,7 @@ industry_factors:
     combined_ic: 0.1257
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5311
     - 0.4689
@@ -343,7 +343,7 @@ industry_factors:
   AH股:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5686
     - 0.4314
@@ -361,7 +361,7 @@ industry_factors:
     bull_combined_ic: 0.0355
   AIGC概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1456
@@ -369,7 +369,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4132
     - 0.3479
@@ -397,7 +397,7 @@ industry_factors:
     bull_combined_ic: 0.1567
   AI制药（医疗）:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1373
@@ -405,7 +405,7 @@ industry_factors:
     bull_factors:
     - turnover_stability
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4236
     - 0.3709
@@ -414,7 +414,7 @@ industry_factors:
     bull_combined_ic: 0.1043
   AI应用:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     - momentum_reversal
     weights:
@@ -436,7 +436,7 @@ industry_factors:
   AI手机:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_revenue_growth
     weights:
     - 0.3575
@@ -456,7 +456,7 @@ industry_factors:
     bull_combined_ic: 0.1723
   AI智能体:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     - volatility
     weights:
@@ -477,7 +477,7 @@ industry_factors:
     bull_combined_ic: 0.1445
   AI眼镜:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - fund_pg_improve
     weights:
@@ -498,7 +498,7 @@ industry_factors:
     bull_combined_ic: 0.0698
   AI芯片:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - fund_rg_improve
     weights:
@@ -519,7 +519,7 @@ industry_factors:
     bull_combined_ic: 0.0784
   AI语料:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - momentum_reversal
     weights:
@@ -529,8 +529,8 @@ industry_factors:
     ic: 0.1264
     combined_ic: 0.1514
     bull_factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     bull_weights:
     - 0.5485
     - 0.4515
@@ -538,7 +538,7 @@ industry_factors:
     bull_combined_ic: 0.1247
   BC电池:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_revenue_growth
     weights:
     - 0.5247
@@ -555,7 +555,7 @@ industry_factors:
     bull_combined_ic: 0.1753
   C2M概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.6021
@@ -564,7 +564,7 @@ industry_factors:
     combined_ic: 0.1323
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.668
     - 0.332
@@ -572,7 +572,7 @@ industry_factors:
     bull_combined_ic: 0.1381
   CAR-T细胞疗法:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1905
@@ -587,8 +587,8 @@ industry_factors:
     bull_combined_ic: 0.1348
   CPO概念:
     factors:
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     - fund_roe
     weights:
     - 0.453
@@ -604,7 +604,7 @@ industry_factors:
     bull_combined_ic: 0.0823
   CRO:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.2024
@@ -621,7 +621,7 @@ industry_factors:
     bull_combined_ic: 0.0856
   ChatGPT概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.5275
@@ -630,7 +630,7 @@ industry_factors:
     combined_ic: 0.1736
     bull_factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     - fund_rg_improve
     bull_weights:
     - 0.39
@@ -640,7 +640,7 @@ industry_factors:
     bull_combined_ic: 0.1317
   DeepSeek概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.5253
@@ -656,7 +656,7 @@ industry_factors:
   ERP概念:
     factors:
     - fund_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5877
     - 0.4123
@@ -664,7 +664,7 @@ industry_factors:
     combined_ic: 0.0996
     bull_factors:
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5165
     - 0.4835
@@ -673,7 +673,7 @@ industry_factors:
   ETC:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.351
@@ -710,7 +710,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - fund_rg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4531
     - 0.282
@@ -729,7 +729,7 @@ industry_factors:
     bull_combined_ic: 0.1164
   IGBT概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1489
@@ -745,7 +745,7 @@ industry_factors:
   IPO受益:
     factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.6178
     - 0.3822
@@ -753,7 +753,7 @@ industry_factors:
     combined_ic: 0.1283
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     bull_weights:
     - 0.3817
@@ -763,7 +763,7 @@ industry_factors:
     bull_combined_ic: 0.1308
   LED概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.6039
@@ -780,8 +780,8 @@ industry_factors:
     bull_combined_ic: 0.0985
   MLCC:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     - fund_roe
     weights:
     - 0.453
@@ -801,7 +801,7 @@ industry_factors:
     bull_combined_ic: 0.1094
   MicroLED:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pg_improve
     weights:
     - 0.5455
@@ -820,9 +820,9 @@ industry_factors:
     bull_combined_ic: 0.123
   MiniLED:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3717
     - 0.3181
@@ -902,7 +902,7 @@ industry_factors:
     factors:
     - turnover_stability
     - fund_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.39
     - 0.3059
@@ -921,7 +921,7 @@ industry_factors:
     bull_combined_ic: 0.1095
   REITs概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_profit_growth
     weights:
     - 0.5174
@@ -929,8 +929,8 @@ industry_factors:
     ic: 0.1316
     combined_ic: 0.1678
     bull_factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     bull_weights:
     - 0.6367
     - 0.3633
@@ -938,13 +938,13 @@ industry_factors:
     bull_combined_ic: 0.1541
   ST股:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1043
     combined_ic: 0.1043
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     - volatility
     bull_weights:
@@ -955,8 +955,8 @@ industry_factors:
     bull_combined_ic: 0.1094
   TOPCon电池:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5086
     - 0.4914
@@ -982,7 +982,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4769
     - 0.3
@@ -1011,7 +1011,7 @@ industry_factors:
   一带一路:
     factors:
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     weights:
     - 0.3856
@@ -1031,7 +1031,7 @@ industry_factors:
     bull_combined_ic: 0.0976
   上海自贸:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.2309
@@ -1039,7 +1039,7 @@ industry_factors:
     bull_factors:
     - fund_revenue_growth
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3843
     - 0.3084
@@ -1068,7 +1068,7 @@ industry_factors:
   上证50_:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     weights:
     - 0.447
@@ -1089,7 +1089,7 @@ industry_factors:
   东北振兴:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5392
     - 0.4608
@@ -1107,7 +1107,7 @@ industry_factors:
     bull_combined_ic: 0.139
   东数西算:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - momentum_reversal
     weights:
@@ -1146,7 +1146,7 @@ industry_factors:
   中俄贸易概念:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - turnover_stability
     weights:
     - 0.3792
@@ -1167,8 +1167,8 @@ industry_factors:
   中字头:
     factors:
     - momentum_reversal
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3357
     - 0.3326
@@ -1204,7 +1204,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - fund_rg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4248
     - 0.3114
@@ -1223,7 +1223,7 @@ industry_factors:
     factors:
     - fund_score
     - fund_profit_growth
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3669
     - 0.3368
@@ -1243,7 +1243,7 @@ industry_factors:
   中芯概念:
     factors:
     - fund_roe
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     weights:
     - 0.3945
@@ -1265,7 +1265,7 @@ industry_factors:
     factors:
     - turnover_stability
     - fund_rg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3669
     - 0.3262
@@ -1275,7 +1275,7 @@ industry_factors:
     bull_factors:
     - low_downside
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3892
     - 0.3757
@@ -1285,7 +1285,7 @@ industry_factors:
   乡村振兴:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.4123
@@ -1296,7 +1296,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3691
     - 0.3369
@@ -1305,7 +1305,7 @@ industry_factors:
     bull_combined_ic: 0.123
   乳业:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.5271
@@ -1315,7 +1315,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4258
     - 0.2924
@@ -1324,7 +1324,7 @@ industry_factors:
     bull_combined_ic: 0.1175
   云计算:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.5474
@@ -1334,7 +1334,7 @@ industry_factors:
     bull_factors:
     - fund_pg_improve
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3848
     - 0.3131
@@ -1343,7 +1343,7 @@ industry_factors:
     bull_combined_ic: 0.1035
   互联医疗:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1417
@@ -1358,7 +1358,7 @@ industry_factors:
     bull_combined_ic: 0.1344
   互联网服务:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - turnover_stability
     weights:
@@ -1369,7 +1369,7 @@ industry_factors:
     combined_ic: 0.1306
     bull_factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     - volatility
     bull_weights:
     - 0.3804
@@ -1380,7 +1380,7 @@ industry_factors:
   互联网金融:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5965
     - 0.4035
@@ -1398,7 +1398,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3469
     - 0.3337
@@ -1427,7 +1427,7 @@ industry_factors:
     ic: 0.0864
     combined_ic: 0.1376
     bull_factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - volatility
     bull_weights:
@@ -1438,7 +1438,7 @@ industry_factors:
     bull_combined_ic: 0.0923
   人工智能:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1219
@@ -1475,7 +1475,7 @@ industry_factors:
   人脑工程:
     factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.4097
@@ -1486,7 +1486,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4452
     - 0.2882
@@ -1497,7 +1497,7 @@ industry_factors:
     factors:
     - fund_pb
     - fund_pe
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.418
     - 0.3299
@@ -1517,8 +1517,8 @@ industry_factors:
   传感器:
     factors:
     - momentum_reversal
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3461
     - 0.3316
@@ -1548,7 +1548,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3783
     - 0.3234
@@ -1567,7 +1567,7 @@ industry_factors:
     bull_combined_ic: 0.135
   体外诊断概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     - turnover_stability
     weights:
@@ -1586,7 +1586,7 @@ industry_factors:
     bull_combined_ic: 0.1353
   体育产业:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1319
@@ -1594,7 +1594,7 @@ industry_factors:
     bull_factors:
     - low_downside
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.388
     - 0.3141
@@ -1604,7 +1604,7 @@ industry_factors:
   信创:
     factors:
     - fund_rg_improve
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.3815
@@ -1624,7 +1624,7 @@ industry_factors:
     bull_combined_ic: 0.1472
   储能概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1082
@@ -1639,7 +1639,7 @@ industry_factors:
     bull_combined_ic: 0.0936
   元宇宙概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - momentum_reversal
     weights:
@@ -1657,8 +1657,8 @@ industry_factors:
   充电桩:
     factors:
     - fund_pg_improve
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3548
     - 0.3247
@@ -1675,8 +1675,8 @@ industry_factors:
     bull_combined_ic: 0.1018
   先进封装:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5057
     - 0.4943
@@ -1690,7 +1690,7 @@ industry_factors:
     bull_combined_ic: 0.1365
   光伏概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1146
@@ -1705,7 +1705,7 @@ industry_factors:
     bull_combined_ic: 0.0846
   光刻机(胶):
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_pg_improve
     weights:
     - 0.5362
@@ -1724,7 +1724,7 @@ industry_factors:
     bull_combined_ic: 0.1244
   光纤概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_pg_improve
     weights:
     - 0.5085
@@ -1743,7 +1743,7 @@ industry_factors:
     factors:
     - fund_profit_growth
     - fund_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3921
     - 0.3115
@@ -1762,7 +1762,7 @@ industry_factors:
     bull_combined_ic: 0.0737
   免疫治疗:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1661
@@ -1781,7 +1781,7 @@ industry_factors:
     factors:
     - fund_pb
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3517
     - 0.3427
@@ -1798,13 +1798,13 @@ industry_factors:
     bull_combined_ic: 0.1106
   养老概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1326
     combined_ic: 0.1326
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - low_downside
     - momentum_reversal
     bull_weights:
@@ -1816,8 +1816,8 @@ industry_factors:
   养老金:
     factors:
     - fund_rg_improve
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3954
     - 0.3409
@@ -1836,7 +1836,7 @@ industry_factors:
     bull_combined_ic: 0.0623
   内贸流通:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     - fund_pb
     weights:
@@ -1848,7 +1848,7 @@ industry_factors:
     bull_factors:
     - low_downside
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3446
     - 0.3343
@@ -1857,7 +1857,7 @@ industry_factors:
     bull_combined_ic: 0.1219
   军工:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - turnover_stability
     - momentum_reversal
     weights:
@@ -1879,7 +1879,7 @@ industry_factors:
   军民融合:
     factors:
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     weights:
     - 0.4217
@@ -1920,7 +1920,7 @@ industry_factors:
     factors:
     - fund_pb
     - fund_rg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4159
     - 0.336
@@ -1929,7 +1929,7 @@ industry_factors:
     combined_ic: 0.1322
     bull_factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5879
     - 0.4121
@@ -1937,7 +1937,7 @@ industry_factors:
     bull_combined_ic: 0.1174
   冰雪经济:
     factors:
-    - trend_vol
+    - trend_lowvol
     - low_downside
     weights:
     - 0.538
@@ -1946,7 +1946,7 @@ industry_factors:
     combined_ic: 0.1468
     bull_factors:
     - momentum_reversal
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     bull_weights:
     - 0.3861
@@ -1956,7 +1956,7 @@ industry_factors:
     bull_combined_ic: 0.1201
   冷链物流:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1502
@@ -2026,7 +2026,7 @@ industry_factors:
     bull_combined_ic: 0.1025
   创新医疗服务:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     - momentum_reversal
     weights:
@@ -2047,14 +2047,14 @@ industry_factors:
     bull_combined_ic: 0.0886
   创新药:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1116
     combined_ic: 0.1116
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5417
     - 0.4583
@@ -2081,7 +2081,7 @@ industry_factors:
     factors:
     - fund_profit_growth
     - fund_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3546
     - 0.3369
@@ -2129,7 +2129,7 @@ industry_factors:
     bull_factors:
     - volatility
     - low_downside
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     bull_weights:
     - 0.4114
     - 0.3198
@@ -2160,8 +2160,8 @@ industry_factors:
   化工原料:
     factors:
     - turnover_stability
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.4082
     - 0.2974
@@ -2178,7 +2178,7 @@ industry_factors:
     bull_combined_ic: 0.1418
   北交所概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.16
@@ -2210,7 +2210,7 @@ industry_factors:
     bull_combined_ic: 0.1727
   区块链:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     - momentum_reversal
     weights:
@@ -2231,7 +2231,7 @@ industry_factors:
     bull_combined_ic: 0.1475
   医废处理:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     weights:
     - 0.659
@@ -2248,7 +2248,7 @@ industry_factors:
     bull_combined_ic: 0.1232
   医疗器械概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1097
@@ -2275,7 +2275,7 @@ industry_factors:
     ic: 0.0896
     combined_ic: 0.1285
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     bull_weights:
     - 0.5365
@@ -2284,7 +2284,7 @@ industry_factors:
     bull_combined_ic: 0.0986
   半导体概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - turnover_stability
     weights:
@@ -2313,7 +2313,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3811
     - 0.3503
@@ -2344,8 +2344,8 @@ industry_factors:
   华为汽车:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3877
     - 0.3648
@@ -2365,7 +2365,7 @@ industry_factors:
   华为海思:
     factors:
     - fund_rg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5176
     - 0.4824
@@ -2380,7 +2380,7 @@ industry_factors:
   单抗概念:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5001
     - 0.4999
@@ -2398,7 +2398,7 @@ industry_factors:
     factors:
     - fund_rg_improve
     - fund_pg_improve
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.4538
     - 0.3019
@@ -2415,8 +2415,8 @@ industry_factors:
     bull_combined_ic: 0.1367
   历史新高:
     factors:
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.515
     - 0.485
@@ -2434,7 +2434,7 @@ industry_factors:
     bull_combined_ic: 0.1019
   参股保险:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1226
@@ -2449,13 +2449,13 @@ industry_factors:
     bull_combined_ic: 0.0982
   参股券商:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.142
     combined_ic: 0.142
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.1113
@@ -2464,7 +2464,7 @@ industry_factors:
     factors:
     - turnover_stability
     - momentum_reversal
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.37
     - 0.3166
@@ -2482,7 +2482,7 @@ industry_factors:
   参股期货:
     factors:
     - fund_pe
-    - trend_vol
+    - trend_lowvol
     - fund_rg_improve
     weights:
     - 0.4378
@@ -2500,7 +2500,7 @@ industry_factors:
     bull_combined_ic: 0.1335
   参股银行:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     - momentum_reversal
     weights:
@@ -2523,7 +2523,7 @@ industry_factors:
     factors:
     - turnover_stability
     - fund_pg_improve
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.4495
     - 0.2948
@@ -2532,7 +2532,7 @@ industry_factors:
     combined_ic: 0.1077
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     - fund_pe
     bull_weights:
     - 0.4037
@@ -2543,8 +2543,8 @@ industry_factors:
   发电机概念:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3857
     - 0.3183
@@ -2581,7 +2581,7 @@ industry_factors:
   合成生物:
     factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5226
     - 0.4774
@@ -2626,7 +2626,7 @@ industry_factors:
     bull_factors:
     - fund_pg_improve
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4124
     - 0.3114
@@ -2635,7 +2635,7 @@ industry_factors:
     bull_combined_ic: 0.1016
   商业航天:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.0748
@@ -2652,7 +2652,7 @@ industry_factors:
     factors:
     - fund_profit_growth
     - fund_revenue_growth
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3971
     - 0.3626
@@ -2673,7 +2673,7 @@ industry_factors:
     factors:
     - fund_rg_improve
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3747
     - 0.3314
@@ -2688,7 +2688,7 @@ industry_factors:
     bull_combined_ic: 0.0554
   国产软件:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.5392
@@ -2716,7 +2716,7 @@ industry_factors:
     combined_ic: 0.1708
     bull_factors:
     - fund_pb
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_rg_improve
     bull_weights:
     - 0.4001
@@ -2727,7 +2727,7 @@ industry_factors:
   土地流转:
     factors:
     - volatility
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.3503
@@ -2738,7 +2738,7 @@ industry_factors:
     bull_factors:
     - low_downside
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3738
     - 0.3307
@@ -2747,7 +2747,7 @@ industry_factors:
     bull_combined_ic: 0.1015
   土壤修复:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - turnover_stability
     weights:
@@ -2768,7 +2768,7 @@ industry_factors:
     bull_combined_ic: 0.0673
   在线教育:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.6456
@@ -2777,7 +2777,7 @@ industry_factors:
     combined_ic: 0.1458
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5764
     - 0.4236
@@ -2785,7 +2785,7 @@ industry_factors:
     bull_combined_ic: 0.1396
   地下管网:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     - fund_pg_improve
     weights:
@@ -2806,8 +2806,8 @@ industry_factors:
     bull_combined_ic: 0.1037
   地摊经济:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     - turnover_stability
     weights:
     - 0.3933
@@ -2818,7 +2818,7 @@ industry_factors:
     bull_factors:
     - low_downside
     - momentum_reversal
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3887
     - 0.3435
@@ -2827,8 +2827,8 @@ industry_factors:
     bull_combined_ic: 0.1361
   垃圾分类:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5546
     - 0.4454
@@ -2899,7 +2899,7 @@ industry_factors:
     factors:
     - fund_score
     - fund_profit_growth
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4314
     - 0.2876
@@ -2918,7 +2918,7 @@ industry_factors:
     bull_combined_ic: 0.1439
   多模态AI:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - momentum_reversal
     weights:
@@ -2930,7 +2930,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3641
     - 0.3381
@@ -2939,7 +2939,7 @@ industry_factors:
     bull_combined_ic: 0.1432
   大数据:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     - fund_pb
     weights:
@@ -2951,7 +2951,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3554
     - 0.3534
@@ -2992,13 +2992,13 @@ industry_factors:
     bull_combined_ic: 0.0891
   大飞机:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.1043
     combined_ic: 0.1043
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - low_downside
     bull_weights:
     - 0.5496
@@ -3007,7 +3007,7 @@ industry_factors:
     bull_combined_ic: 0.1215
   天然气:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.109
@@ -3025,7 +3025,7 @@ industry_factors:
   央视50_:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5668
     - 0.4332
@@ -3043,7 +3043,7 @@ industry_factors:
     factors:
     - fund_pb
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3708
     - 0.3508
@@ -3062,7 +3062,7 @@ industry_factors:
     bull_combined_ic: 0.1218
   存储芯片:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.0926
@@ -3115,7 +3115,7 @@ industry_factors:
     factors:
     - fund_pb
     - fund_pe
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4522
     - 0.3029
@@ -3135,8 +3135,8 @@ industry_factors:
   小米概念:
     factors:
     - momentum_reversal
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3371
     - 0.3334
@@ -3155,9 +3155,9 @@ industry_factors:
     bull_combined_ic: 0.0613
   小米汽车:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3872
     - 0.3308
@@ -3176,7 +3176,7 @@ industry_factors:
     bull_combined_ic: 0.1065
   小红书概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     weights:
     - 0.6008
@@ -3184,7 +3184,7 @@ industry_factors:
     ic: 0.1738
     combined_ic: 0.1868
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.1062
@@ -3192,7 +3192,7 @@ industry_factors:
   小金属概念:
     factors:
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     weights:
     - 0.4269
@@ -3210,7 +3210,7 @@ industry_factors:
     bull_combined_ic: 0.0846
   尾气治理:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - turnover_stability
     weights:
@@ -3231,7 +3231,7 @@ industry_factors:
     bull_combined_ic: 0.1671
   工业互联:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1018
@@ -3248,7 +3248,7 @@ industry_factors:
     bull_combined_ic: 0.1174
   工业大麻:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.6281
@@ -3284,7 +3284,7 @@ industry_factors:
     bull_combined_ic: 0.1092
   工业气体:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1034
@@ -3300,7 +3300,7 @@ industry_factors:
   工程建设:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     - fund_score
     weights:
     - 0.3866
@@ -3320,7 +3320,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - momentum_reversal
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3599
     - 0.3222
@@ -3340,7 +3340,7 @@ industry_factors:
   并购重组概念:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.6418
     - 0.3582
@@ -3356,7 +3356,7 @@ industry_factors:
     bull_combined_ic: 0.0902
   幽门螺杆菌概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pg_improve
     weights:
     - 0.5688
@@ -3375,7 +3375,7 @@ industry_factors:
     factors:
     - fund_pe
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4478
     - 0.2815
@@ -3392,7 +3392,7 @@ industry_factors:
     bull_combined_ic: 0.1741
   影视概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1807
@@ -3409,13 +3409,13 @@ industry_factors:
     bull_combined_ic: 0.093
   微利股:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1128
     combined_ic: 0.1128
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - low_downside
     bull_weights:
     - 0.518
@@ -3424,9 +3424,9 @@ industry_factors:
     bull_combined_ic: 0.107
   微盘精选:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3611
     - 0.3259
@@ -3445,7 +3445,7 @@ industry_factors:
     bull_combined_ic: 0.1106
   快手概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.6471
@@ -3453,14 +3453,14 @@ industry_factors:
     ic: 0.2167
     combined_ic: 0.2765
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.1495
     bull_combined_ic: 0.1495
   快递概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1496
@@ -3489,7 +3489,7 @@ industry_factors:
     bull_factors:
     - turnover_stability
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5224
     - 0.272
@@ -3527,7 +3527,7 @@ industry_factors:
     bull_factors:
     - fund_pg_improve
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3514
     - 0.3453
@@ -3536,7 +3536,7 @@ industry_factors:
     bull_combined_ic: 0.1368
   抖音概念(字节概念):
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - momentum_reversal
     weights:
@@ -3546,14 +3546,14 @@ industry_factors:
     ic: 0.1668
     combined_ic: 0.216
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.1044
     bull_combined_ic: 0.1044
   抽水蓄能:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_profit_growth
     weights:
     - 0.524
@@ -3572,7 +3572,7 @@ industry_factors:
     bull_combined_ic: 0.0866
   拼多多概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - fund_pg_improve
     weights:
@@ -3592,7 +3592,7 @@ industry_factors:
   换电概念:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - turnover_stability
     weights:
     - 0.339
@@ -3610,7 +3610,7 @@ industry_factors:
     bull_combined_ic: 0.0922
   数字孪生:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1112
@@ -3627,7 +3627,7 @@ industry_factors:
     bull_combined_ic: 0.101
   数字经济:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1438
@@ -3646,7 +3646,7 @@ industry_factors:
     factors:
     - fund_pe
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3374
     - 0.3328
@@ -3665,7 +3665,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3664
     - 0.3251
@@ -3685,7 +3685,7 @@ industry_factors:
   数据安全:
     factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     - volatility
     weights:
     - 0.3797
@@ -3706,7 +3706,7 @@ industry_factors:
   数据确权:
     factors:
     - volatility
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5278
     - 0.4722
@@ -3722,7 +3722,7 @@ industry_factors:
     bull_combined_ic: 0.1946
   数据要素:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1315
@@ -3739,7 +3739,7 @@ industry_factors:
     bull_combined_ic: 0.1349
   文娱消费:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - turnover_stability
     weights:
@@ -3750,7 +3750,7 @@ industry_factors:
     combined_ic: 0.1781
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5029
     - 0.4971
@@ -3758,7 +3758,7 @@ industry_factors:
     bull_combined_ic: 0.1158
   新型城镇化:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.5028
@@ -3778,7 +3778,7 @@ industry_factors:
   新型工业化:
     factors:
     - fund_pg_improve
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.5249
     - 0.4751
@@ -3797,7 +3797,7 @@ industry_factors:
   新材料:
     factors:
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.7304
     - 0.2696
@@ -3815,7 +3815,7 @@ industry_factors:
     bull_combined_ic: 0.1007
   新消费:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pg_improve
     weights:
     - 0.5385
@@ -3825,7 +3825,7 @@ industry_factors:
     bull_factors:
     - volatility
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3609
     - 0.3329
@@ -3835,7 +3835,7 @@ industry_factors:
   新能源:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.504
     - 0.496
@@ -3855,7 +3855,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3817
     - 0.3272
@@ -3872,7 +3872,7 @@ industry_factors:
     bull_combined_ic: 0.086
   新零售:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     - fund_profit_growth
     weights:
@@ -3893,13 +3893,13 @@ industry_factors:
     bull_combined_ic: 0.0798
   旅游概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1583
     combined_ic: 0.1583
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     - fund_revenue_growth
     bull_weights:
@@ -3928,8 +3928,8 @@ industry_factors:
   无人机:
     factors:
     - turnover_stability
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.4331
     - 0.2839
@@ -3949,7 +3949,7 @@ industry_factors:
   无人驾驶:
     factors:
     - fund_profit_growth
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     weights:
     - 0.3433
@@ -3967,7 +3967,7 @@ industry_factors:
     bull_combined_ic: 0.0743
   无线充电:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1362
@@ -3986,7 +3986,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - fund_rg_improve
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.4162
     - 0.314
@@ -4003,7 +4003,7 @@ industry_factors:
     bull_combined_ic: 0.1154
   时空大数据:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_revenue_growth
     weights:
     - 0.5307
@@ -4024,7 +4024,7 @@ industry_factors:
     factors:
     - fund_profit_growth
     - fund_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3951
     - 0.3143
@@ -4041,7 +4041,7 @@ industry_factors:
     factors:
     - fund_profit_growth
     - fund_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.388
     - 0.3132
@@ -4056,13 +4056,13 @@ industry_factors:
     bull_combined_ic: 0.1147
   昨日炸板:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1515
     combined_ic: 0.1515
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - fund_revenue_growth
     - fund_pb
     bull_weights:
@@ -4073,7 +4073,7 @@ industry_factors:
     bull_combined_ic: 0.1125
   昨日触板:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1568
@@ -4090,7 +4090,7 @@ industry_factors:
     factors:
     - fund_profit_growth
     - fund_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4053
     - 0.3173
@@ -4146,7 +4146,7 @@ industry_factors:
   智慧政务:
     factors:
     - volatility
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.3768
@@ -4183,7 +4183,7 @@ industry_factors:
     bull_combined_ic: 0.1265
   智能家居:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1158
@@ -4198,7 +4198,7 @@ industry_factors:
     bull_combined_ic: 0.0611
   智能电网:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.1071
@@ -4227,8 +4227,8 @@ industry_factors:
   智谱AI概念:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.371
     - 0.3199
@@ -4238,7 +4238,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - wash_sale_score
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4356
     - 0.2861
@@ -4264,13 +4264,13 @@ industry_factors:
     bull_combined_ic: 0.1071
   有机硅概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.1488
     combined_ic: 0.1488
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.141
@@ -4295,7 +4295,7 @@ industry_factors:
   机器人概念:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.502
     - 0.498
@@ -4313,7 +4313,7 @@ industry_factors:
     bull_combined_ic: 0.1062
   机器视觉:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.0973
@@ -4350,8 +4350,8 @@ industry_factors:
   柔性屏(折叠屏):
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.351
     - 0.3487
@@ -4369,7 +4369,7 @@ industry_factors:
   核污染防治:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     - volatility
     weights:
     - 0.3853
@@ -4387,9 +4387,9 @@ industry_factors:
     bull_combined_ic: 0.163
   核能核电:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.352
     - 0.3473
@@ -4429,16 +4429,16 @@ industry_factors:
     ic: 0.0988
     combined_ic: 0.0988
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.1417
     bull_combined_ic: 0.1417
   氟化工概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3883
     - 0.3099
@@ -4476,7 +4476,7 @@ industry_factors:
     bull_combined_ic: 0.0919
   氮化镓:
     factors:
-    - trend_vol
+    - trend_lowvol
     - low_downside
     - momentum_reversal
     weights:
@@ -4497,8 +4497,8 @@ industry_factors:
     bull_combined_ic: 0.1352
   水利建设:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5185
     - 0.4815
@@ -4517,7 +4517,7 @@ industry_factors:
   汽车一体化压铸:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_pg_improve
     weights:
     - 0.4039
@@ -4553,8 +4553,8 @@ industry_factors:
   汽车热管理:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3511
     - 0.3478
@@ -4572,8 +4572,8 @@ industry_factors:
   汽车芯片:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3917
     - 0.3813
@@ -4592,13 +4592,13 @@ industry_factors:
     bull_combined_ic: 0.0928
   沪企改革:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1812
     combined_ic: 0.1812
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.1741
@@ -4627,8 +4627,8 @@ industry_factors:
   油气资源:
     factors:
     - fund_revenue_growth
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3594
     - 0.3388
@@ -4649,7 +4649,7 @@ industry_factors:
     factors:
     - turnover_stability
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.437
     - 0.2879
@@ -4670,7 +4670,7 @@ industry_factors:
     factors:
     - turnover_stability
     - fund_profit_growth
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3455
     - 0.336
@@ -4687,7 +4687,7 @@ industry_factors:
     bull_combined_ic: 0.121
   海工装备:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.5681
@@ -4707,8 +4707,8 @@ industry_factors:
   海洋经济:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3699
     - 0.3365
@@ -4735,7 +4735,7 @@ industry_factors:
     ic: 0.0977
     combined_ic: 0.1122
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pg_improve
     - low_downside
     bull_weights:
@@ -4747,7 +4747,7 @@ industry_factors:
   消费电子概念:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.508
     - 0.492
@@ -4765,7 +4765,7 @@ industry_factors:
     bull_combined_ic: 0.0941
   液冷概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - fund_score
     weights:
@@ -4807,7 +4807,7 @@ industry_factors:
     bull_combined_ic: 0.1174
   混合现实:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - fund_pg_improve
     weights:
@@ -4840,8 +4840,8 @@ industry_factors:
   滨海新区:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3624
     - 0.3233
@@ -4860,9 +4860,9 @@ industry_factors:
     bull_combined_ic: 0.1107
   激光雷达:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3814
     - 0.3388
@@ -4918,7 +4918,7 @@ industry_factors:
   物联网:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5545
     - 0.4455
@@ -4938,7 +4938,7 @@ industry_factors:
     factors:
     - fund_rg_improve
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3525
     - 0.3517
@@ -4972,7 +4972,7 @@ industry_factors:
     bull_combined_ic: 0.1188
   特高压:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_revenue_growth
     weights:
     - 0.5447
@@ -5033,7 +5033,7 @@ industry_factors:
     factors:
     - fund_pb
     - fund_gross_margin
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3801
     - 0.3656
@@ -5060,7 +5060,7 @@ industry_factors:
     bull_factors:
     - volatility
     - fund_profit_growth
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     bull_weights:
     - 0.4374
     - 0.3338
@@ -5069,8 +5069,8 @@ industry_factors:
     bull_combined_ic: 0.1551
   玻璃基板:
     factors:
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.511
     - 0.489
@@ -5084,7 +5084,7 @@ industry_factors:
     bull_combined_ic: 0.0973
   生态农业:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.0941
@@ -5102,7 +5102,7 @@ industry_factors:
   生物疫苗:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     weights:
     - 0.4383
@@ -5121,7 +5121,7 @@ industry_factors:
   生物识别:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.5067
     - 0.4933
@@ -5140,8 +5140,8 @@ industry_factors:
   生物质能发电:
     factors:
     - fund_pb
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3631
     - 0.3301
@@ -5160,7 +5160,7 @@ industry_factors:
     bull_combined_ic: 0.1584
   电商概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     - fund_pb
     weights:
@@ -5200,8 +5200,8 @@ industry_factors:
     bull_combined_ic: 0.1169
   电子烟:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5259
     - 0.4741
@@ -5219,7 +5219,7 @@ industry_factors:
     bull_combined_ic: 0.1444
   电子竞技:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_rg_improve
     - turnover_stability
     weights:
@@ -5241,7 +5241,7 @@ industry_factors:
   电子身份证:
     factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     - fund_roe
     weights:
     - 0.5154
@@ -5280,7 +5280,7 @@ industry_factors:
     factors:
     - fund_pb
     - fund_revenue_growth
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3537
     - 0.3436
@@ -5300,7 +5300,7 @@ industry_factors:
   病原体防治:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     - volatility
     weights:
     - 0.4773
@@ -5321,7 +5321,7 @@ industry_factors:
   病毒防治:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.6507
     - 0.3493
@@ -5347,7 +5347,7 @@ industry_factors:
     ic: 0.1268
     combined_ic: 0.1813
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pg_improve
     bull_weights:
     - 0.5105
@@ -5356,7 +5356,7 @@ industry_factors:
     bull_combined_ic: 0.09
   百度概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.5243
@@ -5365,7 +5365,7 @@ industry_factors:
     combined_ic: 0.1596
     bull_factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     - volatility
     bull_weights:
     - 0.3875
@@ -5376,8 +5376,8 @@ industry_factors:
   百日新高:
     factors:
     - turnover_stability
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3942
     - 0.3289
@@ -5396,14 +5396,14 @@ industry_factors:
     bull_combined_ic: 0.0692
   知识产权:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1727
     combined_ic: 0.1727
     bull_factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     bull_weights:
     - 0.6192
     - 0.3808
@@ -5412,7 +5412,7 @@ industry_factors:
   短剧互动游戏:
     factors:
     - volatility
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.3868
@@ -5422,7 +5422,7 @@ industry_factors:
     combined_ic: 0.2364
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5386
     - 0.4614
@@ -5430,9 +5430,9 @@ industry_factors:
     bull_combined_ic: 0.1446
   石墨烯:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3785
     - 0.3109
@@ -5450,7 +5450,7 @@ industry_factors:
   碳交易:
     factors:
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5147
     - 0.4853
@@ -5469,7 +5469,7 @@ industry_factors:
   碳化硅:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     - fund_revenue_growth
     weights:
     - 0.4027
@@ -5487,7 +5487,7 @@ industry_factors:
     bull_combined_ic: 0.0848
   碳纤维:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_revenue_growth
     weights:
     - 0.5512
@@ -5504,7 +5504,7 @@ industry_factors:
     bull_combined_ic: 0.2353
   磁悬浮概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.096
@@ -5521,9 +5521,9 @@ industry_factors:
     bull_combined_ic: 0.1784
   磷化工:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.4247
     - 0.301
@@ -5561,7 +5561,7 @@ industry_factors:
     bull_combined_ic: 0.1356
   科创板做市股:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.1032
@@ -5576,7 +5576,7 @@ industry_factors:
     bull_combined_ic: 0.0902
   移动支付:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_rg_improve
     - fund_pe
     weights:
@@ -5631,7 +5631,7 @@ industry_factors:
     bull_combined_ic: 0.1224
   空气能热泵:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1411
@@ -5662,7 +5662,7 @@ industry_factors:
   空间计算:
     factors:
     - fund_rg_improve
-    - trend_vol
+    - trend_lowvol
     - fund_profit_growth
     weights:
     - 0.3612
@@ -5672,7 +5672,7 @@ industry_factors:
     combined_ic: 0.086
     bull_factors:
     - wash_sale_score
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.6563
     - 0.3437
@@ -5680,8 +5680,8 @@ industry_factors:
     bull_combined_ic: 0.1039
   第三代半导体:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     - fund_revenue_growth
     weights:
     - 0.3405
@@ -5701,7 +5701,7 @@ industry_factors:
     bull_combined_ic: 0.0976
   算力概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - fund_profit_growth
     weights:
@@ -5723,7 +5723,7 @@ industry_factors:
   粤港自贸:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.4036
@@ -5753,7 +5753,7 @@ industry_factors:
     ic: 0.1252
     combined_ic: 0.1775
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     bull_weights:
     - 0.5889
@@ -5762,7 +5762,7 @@ industry_factors:
     bull_combined_ic: 0.144
   精准医疗:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1581
@@ -5781,7 +5781,7 @@ industry_factors:
     factors:
     - fund_pb
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4767
     - 0.2807
@@ -5817,8 +5817,8 @@ industry_factors:
     bull_combined_ic: 0.1292
   统一大市场:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5331
     - 0.4669
@@ -5836,7 +5836,7 @@ industry_factors:
     bull_combined_ic: 0.1352
   维生素:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     - fund_profit_growth
     weights:
@@ -5846,7 +5846,7 @@ industry_factors:
     ic: 0.0917
     combined_ic: 0.1439
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.1166
@@ -5854,7 +5854,7 @@ industry_factors:
   绿色电力:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.5512
     - 0.4488
@@ -5870,7 +5870,7 @@ industry_factors:
     bull_combined_ic: 0.0782
   网红经济:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     weights:
     - 0.5799
@@ -5890,7 +5890,7 @@ industry_factors:
   网络安全:
     factors:
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.4146
@@ -5910,7 +5910,7 @@ industry_factors:
     bull_combined_ic: 0.1085
   网络游戏:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1314
@@ -5925,7 +5925,7 @@ industry_factors:
     bull_combined_ic: 0.1024
   职业教育:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pb
     weights:
     - 0.5481
@@ -5944,7 +5944,7 @@ industry_factors:
     bull_combined_ic: 0.1658
   肝炎概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1215
@@ -5959,7 +5959,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - fund_rg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.371
     - 0.327
@@ -5978,7 +5978,7 @@ industry_factors:
     bull_combined_ic: 0.068
   股权转让:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     - momentum_reversal
     weights:
@@ -5990,7 +5990,7 @@ industry_factors:
     bull_factors:
     - turnover_stability
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4086
     - 0.303
@@ -5999,7 +5999,7 @@ industry_factors:
     bull_combined_ic: 0.1271
   胎压监测:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_revenue_growth
     - fund_rg_improve
     weights:
@@ -6009,8 +6009,8 @@ industry_factors:
     ic: 0.1044
     combined_ic: 0.1374
     bull_factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     bull_weights:
     - 0.59
     - 0.41
@@ -6018,8 +6018,8 @@ industry_factors:
     bull_combined_ic: 0.135
   腾讯云:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5515
     - 0.4485
@@ -6033,7 +6033,7 @@ industry_factors:
     bull_combined_ic: 0.1335
   航天航空:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.0852
@@ -6050,9 +6050,9 @@ industry_factors:
     bull_combined_ic: 0.13
   航母概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3425
     - 0.331
@@ -6060,7 +6060,7 @@ industry_factors:
     ic: 0.0887
     combined_ic: 0.1035
     bull_factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     bull_weights:
     - 1.0
     bull_ic: 0.0644
@@ -6068,8 +6068,8 @@ industry_factors:
   节能环保:
     factors:
     - turnover_stability
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3584
     - 0.3322
@@ -6089,7 +6089,7 @@ industry_factors:
   英伟达概念:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_score
     weights:
     - 0.3829
@@ -6110,7 +6110,7 @@ industry_factors:
   苹果概念:
     factors:
     - fund_rg_improve
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_score
     weights:
     - 0.397
@@ -6147,7 +6147,7 @@ industry_factors:
     bull_combined_ic: 0.111
   荣耀概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - low_downside
     weights:
@@ -6168,7 +6168,7 @@ industry_factors:
     bull_combined_ic: 0.1197
   虚拟数字人:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - momentum_reversal
     weights:
@@ -6179,7 +6179,7 @@ industry_factors:
     combined_ic: 0.1809
     bull_factors:
     - fund_profit_growth
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5142
     - 0.4858
@@ -6187,8 +6187,8 @@ industry_factors:
     bull_combined_ic: 0.1163
   虚拟现实:
     factors:
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.5043
     - 0.4957
@@ -6227,7 +6227,7 @@ industry_factors:
     bull_combined_ic: 0.1167
   蚂蚁概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     - wash_sale_score
     weights:
     - 0.6684
@@ -6282,9 +6282,9 @@ industry_factors:
     bull_combined_ic: 0.1834
   装配建筑:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.4022
     - 0.3084
@@ -6292,14 +6292,14 @@ industry_factors:
     ic: 0.1017
     combined_ic: 0.1291
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.107
     bull_combined_ic: 0.107
   裸眼3D:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1415
@@ -6317,7 +6317,7 @@ industry_factors:
   证金持股:
     factors:
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     - fund_score
     weights:
     - 0.3804
@@ -6328,7 +6328,7 @@ industry_factors:
     bull_factors:
     - turnover_stability
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.535
     - 0.2796
@@ -6337,7 +6337,7 @@ industry_factors:
     bull_combined_ic: 0.0627
   调味品概念:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - turnover_stability
     - fund_pe
     weights:
@@ -6347,14 +6347,14 @@ industry_factors:
     ic: 0.0888
     combined_ic: 0.1137
     bull_factors:
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 1.0
     bull_ic: 0.0832
     bull_combined_ic: 0.0832
   谷子经济:
     factors:
-    - trend_vol
+    - trend_lowvol
     - volatility
     - momentum_reversal
     weights:
@@ -6366,7 +6366,7 @@ industry_factors:
     bull_factors:
     - low_downside
     - volatility
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3696
     - 0.3267
@@ -6377,7 +6377,7 @@ industry_factors:
     factors:
     - fund_rg_improve
     - fund_profit_growth
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4458
     - 0.2843
@@ -6387,7 +6387,7 @@ industry_factors:
     bull_factors:
     - volatility
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4013
     - 0.3252
@@ -6396,7 +6396,7 @@ industry_factors:
     bull_combined_ic: 0.1599
   贬值受益:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.088
@@ -6413,7 +6413,7 @@ industry_factors:
     bull_combined_ic: 0.1047
   资源开采概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1246
@@ -6421,7 +6421,7 @@ industry_factors:
     bull_factors:
     - fund_pg_improve
     - trend_initiation
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3926
     - 0.3833
@@ -6453,7 +6453,7 @@ industry_factors:
     factors:
     - fund_profit_growth
     - wash_sale_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4115
     - 0.2958
@@ -6489,7 +6489,7 @@ industry_factors:
     bull_combined_ic: 0.1266
   超超临界发电:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_profit_growth
     - fund_pg_improve
     weights:
@@ -6499,7 +6499,7 @@ industry_factors:
     ic: 0.0933
     combined_ic: 0.1174
     bull_factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - low_downside
     bull_weights:
@@ -6510,7 +6510,7 @@ industry_factors:
     bull_combined_ic: 0.131
   超跌股:
     factors:
-    - trend_vol
+    - trend_lowvol
     - momentum_reversal
     weights:
     - 0.5884
@@ -6520,7 +6520,7 @@ industry_factors:
     bull_factors:
     - fund_pb
     - volatility
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     bull_weights:
     - 0.523
     - 0.2643
@@ -6529,13 +6529,13 @@ industry_factors:
     bull_combined_ic: 0.1988
   跨境支付:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1324
     combined_ic: 0.1324
     bull_factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - low_downside
     bull_weights:
     - 0.5375
@@ -6544,9 +6544,9 @@ industry_factors:
     bull_combined_ic: 0.1806
   跨境电商:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.4365
     - 0.3059
@@ -6563,7 +6563,7 @@ industry_factors:
     bull_combined_ic: 0.1219
   车联网(车路云):
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1066
@@ -6571,7 +6571,7 @@ industry_factors:
     bull_factors:
     - fund_pg_improve
     - turnover_stability
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.4116
     - 0.3199
@@ -6582,7 +6582,7 @@ industry_factors:
     factors:
     - fund_revenue_growth
     - fund_profit_growth
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.388
     - 0.3097
@@ -6602,7 +6602,7 @@ industry_factors:
   边缘计算:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - volatility
     weights:
     - 0.3694
@@ -6613,7 +6613,7 @@ industry_factors:
     bull_factors:
     - volatility
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3602
     - 0.3228
@@ -6623,8 +6623,8 @@ industry_factors:
   近期新高:
     factors:
     - turnover_stability
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.3839
     - 0.3272
@@ -6645,7 +6645,7 @@ industry_factors:
     factors:
     - fund_rg_improve
     - fund_pg_improve
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.4418
     - 0.3228
@@ -6664,8 +6664,8 @@ industry_factors:
     bull_combined_ic: 0.079
   通用航空:
     factors:
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.5714
     - 0.4286
@@ -6680,8 +6680,8 @@ industry_factors:
   造纸印刷:
     factors:
     - fund_pg_improve
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.4314
     - 0.2989
@@ -6720,8 +6720,8 @@ industry_factors:
   量子科技:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3384
     - 0.3314
@@ -6758,7 +6758,7 @@ industry_factors:
   钙钛矿电池:
     factors:
     - fund_profit_growth
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_pg_improve
     weights:
     - 0.4607
@@ -6778,7 +6778,7 @@ industry_factors:
     bull_combined_ic: 0.1565
   钠离子电池:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_pg_improve
     weights:
     - 0.5246
@@ -6797,9 +6797,9 @@ industry_factors:
     bull_combined_ic: 0.1219
   铁路基建:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3784
     - 0.3357
@@ -6809,7 +6809,7 @@ industry_factors:
     bull_factors:
     - turnover_stability
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.432
     - 0.3121
@@ -6818,7 +6818,7 @@ industry_factors:
     bull_combined_ic: 0.1111
   铜缆高速连接:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - momentum_reversal
     - fund_score
     weights:
@@ -6894,7 +6894,7 @@ industry_factors:
     bull_combined_ic: 0.0736
   阿兹海默:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1974
@@ -6902,7 +6902,7 @@ industry_factors:
     bull_factors:
     - volatility
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3966
     - 0.3639
@@ -6911,7 +6911,7 @@ industry_factors:
     bull_combined_ic: 0.2059
   阿里概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.1434
@@ -6928,7 +6928,7 @@ industry_factors:
     bull_combined_ic: 0.0763
   降解塑料:
     factors:
-    - trend_vol
+    - trend_lowvol
     - turnover_stability
     weights:
     - 0.5404
@@ -6949,7 +6949,7 @@ industry_factors:
     factors:
     - fund_profit_growth
     - fund_score
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3451
     - 0.336
@@ -6959,7 +6959,7 @@ industry_factors:
     bull_factors:
     - fund_pg_improve
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3905
     - 0.3193
@@ -6970,7 +6970,7 @@ industry_factors:
     factors:
     - fund_pg_improve
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.3766
     - 0.3275
@@ -6988,8 +6988,8 @@ industry_factors:
   零售概念:
     factors:
     - fund_pg_improve
-    - trend_vol
-    - mom_x_vol_20_20
+    - trend_lowvol
+    - mom_x_lowvol_20_20
     weights:
     - 0.361
     - 0.3432
@@ -7008,9 +7008,9 @@ industry_factors:
     bull_combined_ic: 0.084
   页岩气:
     factors:
-    - trend_vol
+    - trend_lowvol
     - fund_roe
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.4797
     - 0.2625
@@ -7050,9 +7050,9 @@ industry_factors:
     bull_combined_ic: 0.1278
   风能:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     - fund_pg_improve
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.3525
     - 0.3506
@@ -7072,7 +7072,7 @@ industry_factors:
   飞行汽车(eVTOL):
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 0.509
     - 0.491
@@ -7105,14 +7105,14 @@ industry_factors:
     bull_combined_ic: 0.1066
   首发经济:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.2231
     combined_ic: 0.2231
     bull_factors:
     - low_downside
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.5636
     - 0.4364
@@ -7121,8 +7121,8 @@ industry_factors:
   高压快充:
     factors:
     - momentum_reversal
-    - mom_x_vol_20_20
-    - trend_vol
+    - mom_x_lowvol_20_20
+    - trend_lowvol
     weights:
     - 0.3802
     - 0.3572
@@ -7139,7 +7139,7 @@ industry_factors:
     bull_combined_ic: 0.0935
   高带宽内存:
     factors:
-    - mom_x_vol_20_20
+    - mom_x_lowvol_20_20
     weights:
     - 1.0
     ic: 0.1544
@@ -7156,7 +7156,7 @@ industry_factors:
     factors:
     - fund_score
     - fund_pb
-    - trend_vol
+    - trend_lowvol
     weights:
     - 0.4188
     - 0.3229
@@ -7166,7 +7166,7 @@ industry_factors:
     bull_factors:
     - fund_pg_improve
     - fund_gross_margin
-    - trend_vol
+    - trend_lowvol
     bull_weights:
     - 0.3922
     - 0.3771
@@ -7175,7 +7175,7 @@ industry_factors:
     bull_combined_ic: 0.0973
   鸿蒙概念:
     factors:
-    - trend_vol
+    - trend_lowvol
     weights:
     - 1.0
     ic: 0.0959
@@ -7301,12 +7301,12 @@ portfolio:
   target_volatility: 0.28
   entry_speed: 0.8
   exit_speed: 0.8
-  position_stop_loss: 0.1
+  position_stop_loss: 0.08
   portfolio_stop_loss: 0.1
   selection:
     min_rank_pct: 0.4
     min_absolute_score: 0.0
-    min_confidence: 0.6
+    min_confidence: 0.60
     chan_gate_enabled: true
     chan_gate_min_count: 2
     chan_fallback_score: 0.4
@@ -7514,14 +7514,14 @@ ml:
   reg_alpha: 1.0
   min_child_weight: 5
   feature_whitelist:
-  - trend_vol
+  - trend_lowvol
   - momentum_reversal
-  - mom_x_vol_20_20
-  - mom_x_vol_20_10
+  - mom_x_lowvol_20_20
+  - mom_x_lowvol_20_10
   - mom_diff_5_20
   - mom_diff_10_20
   - momentum_acceleration
-  - mom_x_vol_10_10
+  - mom_x_lowvol_10_10
   - volatility_skew
   - low_downside
   - skewness_20
@@ -7543,7 +7543,7 @@ ml:
   - intraday_ret
   - gap_ratio
   - V41_RSI_915
-  - mom_x_vol_10_20
+  - mom_x_lowvol_10_20
   - volume_divergence
   - relative_volume_ratio
   - volume_trend
