@@ -225,6 +225,19 @@ class PortfolioConstructor:
         self._sector_rotation = None  # 板块轮动分析器
 
         # === 多策略框架 ===
+        # === DEBUG: 熊市行为统计 ===
+        self._dbg = {
+            'calls': 0,
+            'bear_risk_days': 0,
+            'bear_risk_fast_days': 0,
+            'normal_days': 0,
+            'empty_return_days': 0,
+            'positions_dist': [],  # (regime, n_positions, exposure)
+            'exit_reasons': {},     # reason -> count
+            'peak_trail_hits': 0,
+            'peak_trail_regime': {'BEAR': 0, 'FAST': 0, 'NORM': 0},
+            'peak_trail_trail_values': [],  # (regime, trail, dd, pnl)
+        }
         from .multi_strategy import MultiStrategyWeights
         self._multi_strategy = MultiStrategyWeights()
 
@@ -477,11 +490,8 @@ class PortfolioConstructor:
             return {}  # 熊市因子IC为负, 选股=选亏钱
         elif bear_risk_fast:
             n_positions = max(1, n_positions // 5)
-            _eff_min_rank = max(self.min_rank_pct, 0.75)
-            _eff_min_score = max(self.min_absolute_score, 0.25)
-            n_positions = max(2, int(n_positions * 0.5))
-            _eff_min_rank = max(self.min_rank_pct, 0.55)
-            _eff_min_score = max(self.min_absolute_score, 0.10)
+            _eff_min_rank = max(self.min_rank_pct, 0.80)
+            _eff_min_score = max(self.min_absolute_score, 0.30)
         else:
             _eff_min_rank = self.min_rank_pct
             _eff_min_score = self.min_absolute_score
@@ -1266,10 +1276,15 @@ class PortfolioConstructor:
                 self._post_sell_tracking.pop(code, None)
                 continue
 
-            # 分级峰值回撤: 亏损收6%, 盈利放15%(让利润跑)
+            # 分级峰值回撤: 熊市收紧保护, 牛市让利润奔跑
             if code in self._peak_prices and self._peak_prices[code] > 0:
                 dd_from_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
-                trail = 0.06 if pnl_pct <= 0 else 0.15
+                if bear_risk:
+                    trail = 0.04 if pnl_pct <= 0 else 0.07
+                elif bear_risk_fast:
+                    trail = 0.05 if pnl_pct <= 0 else 0.10
+                else:
+                    trail = 0.06 if pnl_pct <= 0 else 0.15
                 if dd_from_peak >= trail:
                     stop_loss_sells[code] = 0.0
                     _exit_tags[code] = 'peak_trail'
