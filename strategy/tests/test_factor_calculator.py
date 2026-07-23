@@ -60,7 +60,7 @@ def test_compute_composite_factors():
     result = compute_composite_factors(indicators, idx=150, fund_score=0.5)
     assert isinstance(result, dict)
 
-    expected = ['volatility', 'momentum_reversal', 'trend_vol',
+    expected = ['volatility', 'momentum_reversal', 'trend_lowvol',
                 'smart_money_flow', 'relative_strength']
     for col in expected:
         assert col in result, f"缺少因子: {col}"

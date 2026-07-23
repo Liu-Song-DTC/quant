@@ -212,6 +212,15 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Project: runtime cache & temp files
+strategy/cache/
+strategy/models/
+strategy/tmp_factor/
+strategy/rolling_validation_results/*.parquet
+strategy/rolling_validation_results/backtest_diagnostics.json
+strategy/test_pool.py
+strategy/test_spawn.py
+
 # Trade runtime files (含token, 不提交)
 trade/config.yaml
 trade/portfolio_state.internal.json

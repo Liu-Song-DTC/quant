@@ -50,10 +50,10 @@ def _extract_factor_records(all_results: list, train_window_days: int = 250) -> 
 # 因子家族分类（用于分散化约束，避免单一因子家族集体霸榜）
 FACTOR_FAMILIES = {
     'momentum':  ['mom_diff_5_20', 'mom_diff_10_20', 'momentum_reversal',
-                  'momentum_acceleration', 'mom_x_vol_20_20', 'mom_x_vol_10_10',
+                  'momentum_acceleration', 'mom_x_lowvol_20_20', 'mom_x_lowvol_10_10',
                   'mom_quality', 'trend_quality', 'trend_initiation', 'return_risk_ratio',
                   'momentum_reversal_chg20', 'momentum_acceleration_chg20',
-                  'mom_x_vol_20_20_chg20', 'trend_vol', 'trend_vol_chg20'],
+                  'mom_x_lowvol_20_20_chg20', 'trend_lowvol', 'trend_lowvol_chg20'],
     'lowvol':    ['volatility', 'low_downside', 'inv_turnover', 'atr_ratio',
                   'downside_risk', 'bb_rsi_combo'],
     'value':     ['debt_ratio', 'log_operating_cf', 'log_revenue', 'log_total_assets',

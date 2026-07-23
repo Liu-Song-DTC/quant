@@ -398,7 +398,7 @@ class FactorLibrary:
             self._diag_ic_hits = 0; self._diag_yaml_hits = 0; self._diag_defaults = 0
         self._diag_defaults += 1
         default_factors = [
-            ('trend_vol', 0.30, 1),
+            ('trend_lowvol', 0.30, 1),
             ('relative_strength', 0.25, 1),
             ('low_downside', 0.25, 1),
             ('momentum_reversal', 0.20, 1),

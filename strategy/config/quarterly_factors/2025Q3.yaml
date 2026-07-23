@@ -1,0 +1,10650 @@
+industry_factors:
+  2025三季报预增:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - volatility
+    weights:
+    - 0.4243
+    - 0.3811
+    - 0.1946
+    ic: 0.0519
+    combined_ic: 0.0696
+    bull_factors:
+    - fund_pb
+    - low_downside
+    - momentum_reversal
+    bull_weights:
+    - 0.5083
+    - 0.2479
+    - 0.2437
+    bull_ic: 0.072
+    bull_combined_ic: 0.1246
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_profit_growth
+    bear_weights:
+    - 0.4231
+    - 0.3925
+    - 0.1844
+    bear_ic: 0.0621
+    bear_combined_ic: 0.0875
+  2025年报扭亏:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.5149
+    - 0.4851
+    ic: 0.0645
+    combined_ic: 0.084
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.3897
+    - 0.3396
+    - 0.2707
+    bull_ic: 0.0958
+    bull_combined_ic: 0.1169
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3535
+    - 0.3358
+    - 0.3106
+    bear_ic: 0.0684
+    bear_combined_ic: 0.0873
+  2025年报预减:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    - volatility
+    weights:
+    - 0.3557
+    - 0.345
+    - 0.2993
+    ic: 0.0625
+    combined_ic: 0.0856
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - low_downside
+    bull_weights:
+    - 0.3456
+    - 0.3422
+    - 0.3122
+    bull_ic: 0.0848
+    bull_combined_ic: 0.1142
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    - momentum_reversal
+    bear_weights:
+    - 0.3941
+    - 0.3031
+    - 0.3028
+    bear_ic: 0.0577
+    bear_combined_ic: 0.0885
+  2026一季报预增:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.7448
+    - 0.2552
+    ic: 0.0569
+    combined_ic: 0.0776
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - rsi_vol_combo
+    bull_weights:
+    - 0.4029
+    - 0.3391
+    - 0.258
+    bull_ic: 0.0629
+    bull_combined_ic: 0.0914
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    bear_weights:
+    - 0.4034
+    - 0.3029
+    - 0.2937
+    bear_ic: 0.0636
+    bear_combined_ic: 0.0924
+  3D打印:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.5454
+    - 0.4546
+    ic: 0.0895
+    combined_ic: 0.1125
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3507
+    - 0.3298
+    - 0.3195
+    bull_ic: 0.1092
+    bull_combined_ic: 0.1499
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    bear_weights:
+    - 0.4969
+    - 0.2801
+    - 0.2229
+    bear_ic: 0.0753
+    bear_combined_ic: 0.1083
+  5G概念:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    weights:
+    - 0.5218
+    - 0.4782
+    ic: 0.0673
+    combined_ic: 0.0885
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5923
+    - 0.4077
+    bull_ic: 0.105
+    bull_combined_ic: 0.1252
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.5144
+    - 0.4856
+    bear_ic: 0.0914
+    bear_combined_ic: 0.123
+  6G概念:
+    factors:
+    - fund_pe
+    - fund_score
+    - fund_pb
+    weights:
+    - 0.3984
+    - 0.3153
+    - 0.2863
+    ic: 0.122
+    combined_ic: 0.1573
+    bull_factors:
+    - fund_pb
+    - volatility
+    - fund_pe
+    bull_weights:
+    - 0.4254
+    - 0.2986
+    - 0.2761
+    bull_ic: 0.0983
+    bull_combined_ic: 0.1235
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.5062
+    - 0.4938
+    bear_ic: 0.0989
+    bear_combined_ic: 0.1309
+  AB股:
+    factors:
+    - low_downside
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.3616
+    - 0.3194
+    - 0.319
+    ic: 0.0718
+    combined_ic: 0.0983
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - low_downside
+    bull_weights:
+    - 0.3828
+    - 0.3092
+    - 0.308
+    bull_ic: 0.0816
+    bull_combined_ic: 0.107
+    bear_factors:
+    - momentum_reversal
+    - turnover_stability
+    bear_weights:
+    - 0.5759
+    - 0.4241
+    bear_ic: 0.0753
+    bear_combined_ic: 0.1011
+  AH股:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.6912
+    - 0.3088
+    ic: 0.0476
+    combined_ic: 0.0636
+    bull_factors:
+    - fund_pg_improve
+    - volatility
+    - turnover_stability
+    bull_weights:
+    - 0.4185
+    - 0.3041
+    - 0.2774
+    bull_ic: 0.0577
+    bull_combined_ic: 0.0848
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_profit_growth
+    bear_weights:
+    - 0.419
+    - 0.3455
+    - 0.2356
+    bear_ic: 0.0502
+    bear_combined_ic: 0.0714
+  AIGC概念:
+    factors:
+    - fund_rg_improve
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.3472
+    - 0.3401
+    - 0.3127
+    ic: 0.0814
+    combined_ic: 0.1031
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    bull_weights:
+    - 0.3846
+    - 0.3174
+    - 0.2981
+    bull_ic: 0.094
+    bull_combined_ic: 0.1187
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1114
+    bear_combined_ic: 0.1114
+  AIPC:
+    factors:
+    - volatility
+    - rsi_vol_combo
+    weights:
+    - 0.5442
+    - 0.4558
+    ic: 0.0782
+    combined_ic: 0.099
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.406
+    - 0.3314
+    - 0.2626
+    bull_ic: 0.0922
+    bull_combined_ic: 0.1346
+    bear_factors:
+    - fund_pg_improve
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.5772
+    - 0.2227
+    - 0.2001
+    bear_ic: 0.078
+    bear_combined_ic: 0.1299
+  AI制药（医疗）:
+    factors:
+    - volatility
+    - fund_pb
+    weights:
+    - 0.5628
+    - 0.4372
+    ic: 0.0963
+    combined_ic: 0.1194
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.375
+    - 0.318
+    - 0.307
+    bull_ic: 0.091
+    bull_combined_ic: 0.1333
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4246
+    - 0.3862
+    - 0.1892
+    bear_ic: 0.0783
+    bear_combined_ic: 0.1155
+  AI应用:
+    factors:
+    - fund_pe
+    - volatility
+    weights:
+    - 0.5291
+    - 0.4709
+    ic: 0.0848
+    combined_ic: 0.1022
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3702
+    - 0.3405
+    - 0.2893
+    bull_ic: 0.098
+    bull_combined_ic: 0.1354
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3456
+    - 0.33
+    - 0.3243
+    bear_ic: 0.0768
+    bear_combined_ic: 0.108
+  AI手机:
+    factors:
+    - fund_rg_improve
+    - fund_pb
+    - low_downside
+    weights:
+    - 0.3956
+    - 0.3277
+    - 0.2767
+    ic: 0.0636
+    combined_ic: 0.0817
+    bull_factors:
+    - fund_pb
+    - fund_rg_improve
+    - momentum_reversal
+    bull_weights:
+    - 0.4213
+    - 0.2931
+    - 0.2856
+    bull_ic: 0.1056
+    bull_combined_ic: 0.1404
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.5149
+    - 0.4851
+    bear_ic: 0.1101
+    bear_combined_ic: 0.1467
+  AI智能体:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    weights:
+    - 0.5286
+    - 0.4714
+    ic: 0.0705
+    combined_ic: 0.0908
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    bull_weights:
+    - 0.4163
+    - 0.3171
+    - 0.2666
+    bull_ic: 0.0962
+    bull_combined_ic: 0.1289
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.549
+    - 0.451
+    bear_ic: 0.0891
+    bear_combined_ic: 0.0987
+  AI眼镜:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    weights:
+    - 0.3869
+    - 0.3757
+    - 0.2374
+    ic: 0.0715
+    combined_ic: 0.1107
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.3933
+    - 0.3404
+    - 0.2663
+    bull_ic: 0.088
+    bull_combined_ic: 0.1269
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.5481
+    - 0.4519
+    bear_ic: 0.0762
+    bear_combined_ic: 0.1049
+  AI芯片:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_score
+    weights:
+    - 0.4356
+    - 0.3227
+    - 0.2418
+    ic: 0.0519
+    combined_ic: 0.0696
+    bull_factors:
+    - fund_rg_improve
+    - fund_pe
+    bull_weights:
+    - 0.5057
+    - 0.4943
+    bull_ic: 0.0837
+    bull_combined_ic: 0.0788
+    bear_factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3811
+    - 0.3506
+    - 0.2683
+    bear_ic: 0.0933
+    bear_combined_ic: 0.1136
+  AI语料:
+    factors:
+    - volatility
+    - fund_pb
+    weights:
+    - 0.516
+    - 0.484
+    ic: 0.114
+    combined_ic: 0.1318
+    bull_factors:
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.5308
+    - 0.4692
+    bull_ic: 0.1444
+    bull_combined_ic: 0.1678
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - volatility
+    bear_weights:
+    - 0.3862
+    - 0.323
+    - 0.2908
+    bear_ic: 0.0919
+    bear_combined_ic: 0.1255
+  BC电池:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    weights:
+    - 0.445
+    - 0.3363
+    - 0.2187
+    ic: 0.0918
+    combined_ic: 0.1387
+    bull_factors:
+    - fund_revenue_growth
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3565
+    - 0.3236
+    - 0.32
+    bull_ic: 0.074
+    bull_combined_ic: 0.116
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.6696
+    - 0.3304
+    bear_ic: 0.0889
+    bear_combined_ic: 0.1413
+  C2M概念:
+    factors:
+    - volatility
+    - turnover_stability
+    - fund_rg_improve
+    weights:
+    - 0.3479
+    - 0.3379
+    - 0.3142
+    ic: 0.0834
+    combined_ic: 0.1143
+    bull_factors:
+    - volatility
+    - fund_pg_improve
+    bull_weights:
+    - 0.5209
+    - 0.4791
+    bull_ic: 0.0772
+    bull_combined_ic: 0.0903
+    bear_factors:
+    - fund_rg_improve
+    - fund_profit_growth
+    - fund_pe
+    bear_weights:
+    - 0.4871
+    - 0.3053
+    - 0.2076
+    bear_ic: 0.0567
+    bear_combined_ic: 0.1179
+  CAR-T细胞疗法:
+    factors:
+    - fund_pe
+    - fund_profit_growth
+    - fund_pb
+    weights:
+    - 0.3634
+    - 0.3244
+    - 0.3121
+    ic: 0.081
+    combined_ic: 0.1027
+    bull_factors:
+    - fund_revenue_growth
+    - momentum_reversal
+    bull_weights:
+    - 0.5227
+    - 0.4773
+    bull_ic: 0.0842
+    bull_combined_ic: 0.1099
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.3595
+    - 0.3532
+    - 0.2872
+    bear_ic: 0.0634
+    bear_combined_ic: 0.1053
+  CPO概念:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5467
+    - 0.4533
+    ic: 0.085
+    combined_ic: 0.1037
+    bull_factors:
+    - fund_pe
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0977
+    bull_combined_ic: 0.0972
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pg_improve
+    bear_weights:
+    - 0.3475
+    - 0.3436
+    - 0.3088
+    bear_ic: 0.0905
+    bear_combined_ic: 0.1122
+  CRO:
+    factors:
+    - volatility
+    - fund_rg_improve
+    weights:
+    - 0.5089
+    - 0.4911
+    ic: 0.074
+    combined_ic: 0.0871
+    bull_factors:
+    - fund_profit_growth
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3808
+    - 0.3112
+    - 0.3079
+    bull_ic: 0.0739
+    bull_combined_ic: 0.1002
+    bear_factors:
+    - fund_rg_improve
+    - fund_pe
+    bear_weights:
+    - 0.762
+    - 0.238
+    bear_ic: 0.0622
+    bear_combined_ic: 0.0926
+  ChatGPT概念:
+    factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    weights:
+    - 0.3828
+    - 0.3277
+    - 0.2895
+    ic: 0.0934
+    combined_ic: 0.129
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3456
+    - 0.3341
+    - 0.3203
+    bull_ic: 0.0982
+    bull_combined_ic: 0.1313
+    bear_factors:
+    - fund_pb
+    - volatility
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3524
+    - 0.3376
+    - 0.31
+    bear_ic: 0.0884
+    bear_combined_ic: 0.1143
+  DeepSeek概念:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - turnover_stability
+    weights:
+    - 0.3595
+    - 0.3484
+    - 0.2922
+    ic: 0.0463
+    combined_ic: 0.0688
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5522
+    - 0.4478
+    bull_ic: 0.1075
+    bull_combined_ic: 0.1222
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5374
+    - 0.4626
+    bear_ic: 0.0681
+    bear_combined_ic: 0.0875
+  ERP概念:
+    factors:
+    - momentum_reversal
+    - fund_profit_growth
+    - rsi_vol_combo
+    weights:
+    - 0.3364
+    - 0.3357
+    - 0.328
+    ic: 0.1025
+    combined_ic: 0.1473
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1054
+    bull_combined_ic: 0.1054
+    bear_factors:
+    - fund_score
+    bear_weights:
+    - 1.0
+    bear_ic: 0.121
+    bear_combined_ic: 0.121
+  ETC:
+    factors:
+    - fund_roe
+    weights:
+    - 1.0
+    ic: 0.093
+    combined_ic: 0.093
+    bull_factors:
+    - fund_pb
+    - volatility
+    - fund_pe
+    bull_weights:
+    - 0.3591
+    - 0.3575
+    - 0.2834
+    bull_ic: 0.1238
+    bull_combined_ic: 0.1462
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - turnover_stability
+    bear_weights:
+    - 0.3741
+    - 0.3146
+    - 0.3113
+    bear_ic: 0.0923
+    bear_combined_ic: 0.1179
+  F5G概念:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_profit_growth
+    weights:
+    - 0.4284
+    - 0.3087
+    - 0.2629
+    ic: 0.0803
+    combined_ic: 0.1207
+    bull_factors:
+    - fund_pb
+    - low_downside
+    - fund_pg_improve
+    bull_weights:
+    - 0.4269
+    - 0.2937
+    - 0.2794
+    bull_ic: 0.0987
+    bull_combined_ic: 0.1472
+    bear_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    bear_weights:
+    - 0.3946
+    - 0.3127
+    - 0.2927
+    bear_ic: 0.0719
+    bear_combined_ic: 0.1093
+  HJT电池:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_profit_growth
+    weights:
+    - 0.4097
+    - 0.301
+    - 0.2893
+    ic: 0.0531
+    combined_ic: 0.0733
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0681
+    bull_combined_ic: 0.0681
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.412
+    - 0.3141
+    - 0.2738
+    bear_ic: 0.0512
+    bear_combined_ic: 0.0672
+  IGBT概念:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    - turnover_stability
+    weights:
+    - 0.3583
+    - 0.3322
+    - 0.3094
+    ic: 0.0595
+    combined_ic: 0.0823
+    bull_factors:
+    - volatility
+    - fund_pe
+    bull_weights:
+    - 0.5672
+    - 0.4328
+    bull_ic: 0.0915
+    bull_combined_ic: 0.1107
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.4383
+    - 0.2914
+    - 0.2702
+    bear_ic: 0.0682
+    bear_combined_ic: 0.0872
+  IPO受益:
+    factors:
+    - low_downside
+    - fund_pg_improve
+    weights:
+    - 0.542
+    - 0.458
+    ic: 0.0655
+    combined_ic: 0.0792
+    bull_factors:
+    - low_downside
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.4253
+    - 0.3166
+    - 0.258
+    bull_ic: 0.0829
+    bull_combined_ic: 0.1391
+    bear_factors:
+    - fund_pb
+    - fund_pe
+    - fund_pg_improve
+    bear_weights:
+    - 0.3729
+    - 0.3274
+    - 0.2997
+    bear_ic: 0.0612
+    bear_combined_ic: 0.0954
+  LED概念:
+    factors:
+    - fund_rg_improve
+    - fund_profit_growth
+    - fund_pe
+    weights:
+    - 0.415
+    - 0.2999
+    - 0.2851
+    ic: 0.0754
+    combined_ic: 0.0998
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - fund_pe
+    bull_weights:
+    - 0.3852
+    - 0.3137
+    - 0.3012
+    bull_ic: 0.0863
+    bull_combined_ic: 0.1257
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5306
+    - 0.4694
+    bear_ic: 0.0735
+    bear_combined_ic: 0.1045
+  MLCC:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    weights:
+    - 0.4644
+    - 0.2749
+    - 0.2608
+    ic: 0.0852
+    combined_ic: 0.1203
+    bull_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    bull_weights:
+    - 0.3903
+    - 0.3203
+    - 0.2894
+    bull_ic: 0.0794
+    bull_combined_ic: 0.0902
+    bear_factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.415
+    - 0.3507
+    - 0.2343
+    bear_ic: 0.0964
+    bear_combined_ic: 0.1346
+  MicroLED:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - turnover_stability
+    weights:
+    - 0.4306
+    - 0.3341
+    - 0.2353
+    ic: 0.0824
+    combined_ic: 0.1224
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.5195
+    - 0.4805
+    bull_ic: 0.0734
+    bull_combined_ic: 0.0991
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    - fund_rg_improve
+    bear_weights:
+    - 0.4439
+    - 0.2859
+    - 0.2702
+    bear_ic: 0.0713
+    bear_combined_ic: 0.1053
+  MiniLED:
+    factors:
+    - fund_rg_improve
+    - fund_pb
+    - fund_pe
+    weights:
+    - 0.3633
+    - 0.3263
+    - 0.3104
+    ic: 0.0789
+    combined_ic: 0.1192
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3968
+    - 0.3139
+    - 0.2894
+    bull_ic: 0.0937
+    bull_combined_ic: 0.122
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3767
+    - 0.3341
+    - 0.2892
+    bear_ic: 0.0709
+    bear_combined_ic: 0.1183
+  OLED:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pe
+    weights:
+    - 0.4001
+    - 0.307
+    - 0.2929
+    ic: 0.0621
+    combined_ic: 0.0946
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    bull_weights:
+    - 0.3565
+    - 0.3313
+    - 0.3122
+    bull_ic: 0.0856
+    bull_combined_ic: 0.1049
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3701
+    - 0.3458
+    - 0.2841
+    bear_ic: 0.0772
+    bear_combined_ic: 0.1135
+  PCB:
+    factors:
+    - fund_pb
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.3495
+    - 0.3327
+    - 0.3178
+    ic: 0.0739
+    combined_ic: 0.0993
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4307
+    - 0.3312
+    - 0.2382
+    bull_ic: 0.0815
+    bull_combined_ic: 0.1158
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3679
+    - 0.3206
+    - 0.3115
+    bear_ic: 0.0802
+    bear_combined_ic: 0.1091
+  PEEK材料概念:
+    factors:
+    - fund_pe
+    - fund_pb
+    - wash_sale_score
+    weights:
+    - 0.35
+    - 0.3406
+    - 0.3094
+    ic: 0.056
+    combined_ic: 0.0698
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.354
+    - 0.3394
+    - 0.3066
+    bull_ic: 0.105
+    bull_combined_ic: 0.1278
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_rg_improve
+    bear_weights:
+    - 0.35
+    - 0.3322
+    - 0.3178
+    bear_ic: 0.0846
+    bear_combined_ic: 0.1107
+  PPP模式:
+    factors:
+    - volatility
+    - fund_profit_growth
+    weights:
+    - 0.5724
+    - 0.4276
+    ic: 0.0869
+    combined_ic: 0.1081
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3521
+    - 0.3389
+    - 0.309
+    bull_ic: 0.1023
+    bull_combined_ic: 0.1467
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0757
+    bear_combined_ic: 0.0757
+  REITs概念:
+    factors:
+    - fund_pe
+    - fund_profit_growth
+    - momentum_reversal
+    weights:
+    - 0.3541
+    - 0.3393
+    - 0.3066
+    ic: 0.0847
+    combined_ic: 0.1295
+    bull_factors:
+    - low_downside
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1382
+    bull_combined_ic: 0.1382
+    bear_factors:
+    - momentum_reversal
+    - turnover_stability
+    bear_weights:
+    - 0.5879
+    - 0.4121
+    bear_ic: 0.095
+    bear_combined_ic: 0.1282
+  ST股:
+    factors:
+    - volatility
+    - low_downside
+    - momentum_reversal
+    weights:
+    - 0.4528
+    - 0.2784
+    - 0.2688
+    ic: 0.0873
+    combined_ic: 0.1199
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4056
+    - 0.3098
+    - 0.2846
+    bull_ic: 0.101
+    bull_combined_ic: 0.1259
+    bear_factors:
+    - momentum_reversal
+    - volatility
+    bear_weights:
+    - 0.5334
+    - 0.4666
+    bear_ic: 0.0867
+    bear_combined_ic: 0.1053
+  TOPCon电池:
+    factors:
+    - fund_pe
+    weights:
+    - 1.0
+    ic: 0.0984
+    combined_ic: 0.1008
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - fund_pg_improve
+    bull_weights:
+    - 0.4284
+    - 0.32
+    - 0.2516
+    bull_ic: 0.0842
+    bull_combined_ic: 0.1351
+    bear_factors:
+    - turnover_stability
+    - fund_pg_improve
+    - volatility
+    bear_weights:
+    - 0.3636
+    - 0.3374
+    - 0.299
+    bear_ic: 0.0558
+    bear_combined_ic: 0.0792
+  Web3.0:
+    factors:
+    - fund_pb
+    - momentum_reversal
+    weights:
+    - 0.6097
+    - 0.3903
+    ic: 0.1005
+    combined_ic: 0.1407
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3437
+    - 0.3326
+    - 0.3237
+    bull_ic: 0.1333
+    bull_combined_ic: 0.1812
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    - volatility
+    bear_weights:
+    - 0.3412
+    - 0.3408
+    - 0.318
+    bear_ic: 0.0975
+    bear_combined_ic: 0.1318
+  WiFi:
+    factors:
+    - fund_pe
+    - fund_score
+    weights:
+    - 0.5069
+    - 0.4931
+    ic: 0.0996
+    combined_ic: 0.1132
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3461
+    - 0.3332
+    - 0.3207
+    bull_ic: 0.1129
+    bull_combined_ic: 0.1742
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    - volatility
+    bear_weights:
+    - 0.3427
+    - 0.3381
+    - 0.3192
+    bear_ic: 0.0944
+    bear_combined_ic: 0.1395
+  一带一路:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.563
+    - 0.437
+    ic: 0.0682
+    combined_ic: 0.0847
+    bull_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.4531
+    - 0.2783
+    - 0.2687
+    bull_ic: 0.067
+    bull_combined_ic: 0.0949
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.4018
+    - 0.3192
+    - 0.279
+    bear_ic: 0.0492
+    bear_combined_ic: 0.0727
+  上海自贸:
+    factors:
+    - volatility
+    - momentum_reversal
+    weights:
+    - 0.5544
+    - 0.4456
+    ic: 0.0691
+    combined_ic: 0.0912
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - low_downside
+    bull_weights:
+    - 0.3992
+    - 0.3302
+    - 0.2706
+    bull_ic: 0.0813
+    bull_combined_ic: 0.1137
+    bear_factors:
+    - low_downside
+    - fund_rg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3388
+    - 0.333
+    - 0.3282
+    bear_ic: 0.0448
+    bear_combined_ic: 0.0605
+  上证180_:
+    factors:
+    - fund_pg_improve
+    - top_fractal_volume
+    - volatility
+    weights:
+    - 0.471
+    - 0.284
+    - 0.245
+    ic: 0.0317
+    combined_ic: 0.0503
+    bull_factors:
+    - volatility
+    - fund_pg_improve
+    - fund_pe
+    bull_weights:
+    - 0.4114
+    - 0.306
+    - 0.2826
+    bull_ic: 0.0589
+    bull_combined_ic: 0.0813
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    bear_weights:
+    - 0.4572
+    - 0.3025
+    - 0.2403
+    bear_ic: 0.0524
+    bear_combined_ic: 0.0726
+  上证50_:
+    factors:
+    - smart_money_flow
+    - top_fractal_volume
+    - fund_pe
+    weights:
+    - 0.3631
+    - 0.32
+    - 0.3169
+    ic: 0.0624
+    combined_ic: 0.0882
+    bull_factors:
+    - fund_pe
+    - low_downside
+    bull_weights:
+    - 0.5587
+    - 0.4413
+    bull_ic: 0.0583
+    bull_combined_ic: 0.0784
+    bear_factors:
+    - fund_rg_improve
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.4401
+    - 0.2881
+    - 0.2718
+    bear_ic: 0.0712
+    bear_combined_ic: 0.0959
+  东北振兴:
+    factors:
+    - volatility
+    - low_downside
+    - turnover_stability
+    weights:
+    - 0.401
+    - 0.3254
+    - 0.2736
+    ic: 0.0874
+    combined_ic: 0.1141
+    bull_factors:
+    - turnover_stability
+    - low_downside
+    bull_weights:
+    - 0.5345
+    - 0.4655
+    bull_ic: 0.0986
+    bull_combined_ic: 0.1208
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pg_improve
+    bear_weights:
+    - 0.4459
+    - 0.2883
+    - 0.2658
+    bear_ic: 0.0734
+    bear_combined_ic: 0.1033
+  东数西算:
+    factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    weights:
+    - 0.3844
+    - 0.3559
+    - 0.2597
+    ic: 0.0785
+    combined_ic: 0.0916
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.3833
+    - 0.3512
+    - 0.2655
+    bull_ic: 0.112
+    bull_combined_ic: 0.1357
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.5593
+    - 0.4407
+    bear_ic: 0.084
+    bear_combined_ic: 0.1112
+  东方财富热股:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5886
+    - 0.4114
+    ic: 0.0656
+    combined_ic: 0.0941
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.5375
+    - 0.4625
+    bull_ic: 0.0773
+    bull_combined_ic: 0.0981
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.5462
+    - 0.4538
+    bear_ic: 0.0809
+    bear_combined_ic: 0.0886
+  中俄贸易概念:
+    factors:
+    - fund_pb
+    - momentum_reversal
+    weights:
+    - 0.6197
+    - 0.3803
+    ic: 0.0969
+    combined_ic: 0.1434
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - turnover_stability
+    bull_weights:
+    - 0.3878
+    - 0.3266
+    - 0.2856
+    bull_ic: 0.1013
+    bull_combined_ic: 0.1687
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.4044
+    - 0.3342
+    - 0.2614
+    bear_ic: 0.0881
+    bear_combined_ic: 0.1279
+  中字头:
+    factors:
+    - fund_pb
+    weights:
+    - 1.0
+    ic: 0.0929
+    combined_ic: 0.093
+    bull_factors:
+    - volatility
+    - low_downside
+    - momentum_reversal
+    bull_weights:
+    - 0.3553
+    - 0.3286
+    - 0.316
+    bull_ic: 0.0919
+    bull_combined_ic: 0.1226
+    bear_factors:
+    - momentum_reversal
+    - turnover_stability
+    bear_weights:
+    - 0.5574
+    - 0.4426
+    bear_ic: 0.0565
+    bear_combined_ic: 0.078
+  中特估:
+    factors:
+    - fund_pg_improve
+    - turnover_stability
+    - volatility
+    weights:
+    - 0.3657
+    - 0.3342
+    - 0.3001
+    ic: 0.0435
+    combined_ic: 0.0586
+    bull_factors:
+    - fund_pg_improve
+    - low_downside
+    - fund_pe
+    bull_weights:
+    - 0.3524
+    - 0.3318
+    - 0.3158
+    bull_ic: 0.0705
+    bull_combined_ic: 0.0925
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.4336
+    - 0.3162
+    - 0.2502
+    bear_ic: 0.0706
+    bear_combined_ic: 0.0875
+  中盘价值:
+    factors:
+    - fund_pg_improve
+    weights:
+    - 1.0
+    ic: 0.0843
+    combined_ic: 0.0843
+    bull_factors:
+    - low_downside
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0752
+    bull_combined_ic: 0.0752
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.3786
+    - 0.3404
+    - 0.281
+    bear_ic: 0.092
+    bear_combined_ic: 0.1187
+  中盘成长:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    - fund_profit_growth
+    weights:
+    - 0.3736
+    - 0.3388
+    - 0.2876
+    ic: 0.0578
+    combined_ic: 0.0802
+    bull_factors:
+    - fund_pe
+    - fund_profit_growth
+    - volatility
+    bull_weights:
+    - 0.4228
+    - 0.2906
+    - 0.2867
+    bull_ic: 0.0721
+    bull_combined_ic: 0.0879
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4001
+    - 0.3114
+    - 0.2886
+    bear_ic: 0.0582
+    bear_combined_ic: 0.0771
+  中芯概念:
+    factors:
+    - momentum_reversal
+    - fund_revenue_growth
+    - rsi_vol_combo
+    weights:
+    - 0.3469
+    - 0.3275
+    - 0.3256
+    ic: 0.0678
+    combined_ic: 0.102
+    bull_factors:
+    - fund_pe
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0898
+    bull_combined_ic: 0.0898
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pe
+    bear_weights:
+    - 0.4098
+    - 0.296
+    - 0.2942
+    bear_ic: 0.0831
+    bear_combined_ic: 0.1158
+  中药概念:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.5177
+    - 0.4823
+    ic: 0.0827
+    combined_ic: 0.1021
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - rsi_vol_combo
+    bull_weights:
+    - 0.367
+    - 0.3204
+    - 0.3126
+    bull_ic: 0.0448
+    bull_combined_ic: 0.0585
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.5529
+    - 0.4471
+    bear_ic: 0.0833
+    bear_combined_ic: 0.109
+  乡村振兴:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.0983
+    combined_ic: 0.0983
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4259
+    - 0.2948
+    - 0.2793
+    bull_ic: 0.096
+    bull_combined_ic: 0.1144
+    bear_factors:
+    - momentum_reversal
+    - turnover_stability
+    bear_weights:
+    - 0.5415
+    - 0.4585
+    bear_ic: 0.0936
+    bear_combined_ic: 0.1336
+  乳业:
+    factors:
+    - volatility
+    - momentum_reversal
+    - low_downside
+    weights:
+    - 0.3486
+    - 0.3398
+    - 0.3115
+    ic: 0.0995
+    combined_ic: 0.1219
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.5106
+    - 0.4894
+    bull_ic: 0.0931
+    bull_combined_ic: 0.1305
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5484
+    - 0.4516
+    bear_ic: 0.0722
+    bear_combined_ic: 0.0956
+  云计算:
+    factors:
+    - momentum_reversal
+    - fund_pe
+    weights:
+    - 0.5034
+    - 0.4966
+    ic: 0.0792
+    combined_ic: 0.1129
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.389
+    - 0.3108
+    - 0.3002
+    bull_ic: 0.0927
+    bull_combined_ic: 0.1231
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5566
+    - 0.4434
+    bear_ic: 0.082
+    bear_combined_ic: 0.1058
+  互联医疗:
+    factors:
+    - fund_pg_improve
+    - low_downside
+    - volatility
+    weights:
+    - 0.3488
+    - 0.3278
+    - 0.3234
+    ic: 0.0658
+    combined_ic: 0.0778
+    bull_factors:
+    - low_downside
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1038
+    bull_combined_ic: 0.1038
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_rg_improve
+    bear_weights:
+    - 0.449
+    - 0.2804
+    - 0.2707
+    bear_ic: 0.0477
+    bear_combined_ic: 0.0767
+  互联网服务:
+    factors:
+    - fund_pb
+    - fund_profit_growth
+    - fund_roe
+    weights:
+    - 0.3652
+    - 0.3293
+    - 0.3055
+    ic: 0.071
+    combined_ic: 0.0976
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3831
+    - 0.3323
+    - 0.2846
+    bull_ic: 0.103
+    bull_combined_ic: 0.1424
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3794
+    - 0.3445
+    - 0.2762
+    bear_ic: 0.0838
+    bear_combined_ic: 0.1223
+  互联网金融:
+    factors:
+    - turnover_stability
+    - fund_score
+    - fund_pg_improve
+    weights:
+    - 0.3882
+    - 0.3083
+    - 0.3035
+    ic: 0.0467
+    combined_ic: 0.0659
+    bull_factors:
+    - volatility
+    - turnover_stability
+    - low_downside
+    bull_weights:
+    - 0.3461
+    - 0.3374
+    - 0.3165
+    bull_ic: 0.0976
+    bull_combined_ic: 0.1226
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.3934
+    - 0.3151
+    - 0.2915
+    bear_ic: 0.0417
+    bear_combined_ic: 0.0556
+  交运设备:
+    factors:
+    - fund_profit_growth
+    - momentum_reversal
+    weights:
+    - 0.5267
+    - 0.4733
+    ic: 0.0637
+    combined_ic: 0.0776
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - turnover_stability
+    bull_weights:
+    - 0.3619
+    - 0.3201
+    - 0.318
+    bull_ic: 0.0711
+    bull_combined_ic: 0.1079
+    bear_factors:
+    - fund_pb
+    - fund_profit_growth
+    - momentum_reversal
+    bear_weights:
+    - 0.3589
+    - 0.3215
+    - 0.3196
+    bear_ic: 0.0561
+    bear_combined_ic: 0.082
+  京津冀:
+    factors:
+    - fund_profit_growth
+    - fund_score
+    - volatility
+    weights:
+    - 0.3444
+    - 0.3309
+    - 0.3247
+    ic: 0.0796
+    combined_ic: 0.107
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.3691
+    - 0.3458
+    - 0.2851
+    bull_ic: 0.1122
+    bull_combined_ic: 0.1496
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3583
+    - 0.3486
+    - 0.2931
+    bear_ic: 0.0616
+    bear_combined_ic: 0.0893
+  人工智能:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - volatility
+    weights:
+    - 0.3963
+    - 0.3548
+    - 0.2489
+    ic: 0.0597
+    combined_ic: 0.0758
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1063
+    bull_combined_ic: 0.1063
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5219
+    - 0.4781
+    bear_ic: 0.0758
+    bear_combined_ic: 0.0941
+  人形机器人:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_profit_growth
+    weights:
+    - 0.4344
+    - 0.3285
+    - 0.2371
+    ic: 0.0543
+    combined_ic: 0.0744
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0917
+    bull_combined_ic: 0.0917
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.376
+    - 0.339
+    - 0.285
+    bear_ic: 0.0752
+    bear_combined_ic: 0.0981
+  人脑工程:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    weights:
+    - 0.3611
+    - 0.3213
+    - 0.3177
+    ic: 0.0836
+    combined_ic: 0.1036
+    bull_factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    bull_weights:
+    - 0.3768
+    - 0.3601
+    - 0.2631
+    bull_ic: 0.1084
+    bull_combined_ic: 0.1441
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3798
+    - 0.3112
+    - 0.309
+    bear_ic: 0.0782
+    bear_combined_ic: 0.1319
+  价值股:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5512
+    - 0.4488
+    ic: 0.0895
+    combined_ic: 0.1134
+    bull_factors:
+    - fund_pe
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.3576
+    - 0.3248
+    - 0.3177
+    bull_ic: 0.0874
+    bull_combined_ic: 0.1146
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    bear_weights:
+    - 0.3978
+    - 0.3303
+    - 0.272
+    bear_ic: 0.0814
+    bear_combined_ic: 0.1067
+  传感器:
+    factors:
+    - volatility
+    - fund_pe
+    - turnover_stability
+    weights:
+    - 0.3615
+    - 0.3352
+    - 0.3033
+    ic: 0.0744
+    combined_ic: 0.0982
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3964
+    - 0.3383
+    - 0.2654
+    bull_ic: 0.1029
+    bull_combined_ic: 0.1469
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.4386
+    - 0.3115
+    - 0.2498
+    bear_ic: 0.079
+    bear_combined_ic: 0.1075
+  低价股:
+    factors:
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.5471
+    - 0.4529
+    ic: 0.0794
+    combined_ic: 0.0965
+    bull_factors:
+    - turnover_stability
+    - low_downside
+    bull_weights:
+    - 0.5016
+    - 0.4984
+    bull_ic: 0.0833
+    bull_combined_ic: 0.1047
+    bear_factors:
+    - turnover_stability
+    - rsi_vol_combo
+    - momentum_reversal
+    bear_weights:
+    - 0.3989
+    - 0.3077
+    - 0.2934
+    bear_ic: 0.0716
+    bear_combined_ic: 0.0922
+  低空经济:
+    factors:
+    - fund_pg_improve
+    - volatility
+    - turnover_stability
+    weights:
+    - 0.3661
+    - 0.3373
+    - 0.2966
+    ic: 0.0572
+    combined_ic: 0.0773
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.3671
+    - 0.3388
+    - 0.2941
+    bull_ic: 0.098
+    bull_combined_ic: 0.1178
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0916
+    bear_combined_ic: 0.0916
+  体外诊断概念:
+    factors:
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.5126
+    - 0.4874
+    ic: 0.1014
+    combined_ic: 0.1377
+    bull_factors:
+    - volatility
+    - fund_pg_improve
+    - momentum_reversal
+    bull_weights:
+    - 0.3754
+    - 0.3394
+    - 0.2852
+    bull_ic: 0.0576
+    bull_combined_ic: 0.0851
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    - fund_pb
+    bear_weights:
+    - 0.4383
+    - 0.2958
+    - 0.266
+    bear_ic: 0.0662
+    bear_combined_ic: 0.1056
+  体育产业:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.0907
+    combined_ic: 0.0907
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.4372
+    - 0.2847
+    - 0.2781
+    bull_ic: 0.0777
+    bull_combined_ic: 0.1065
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5815
+    - 0.4185
+    bear_ic: 0.0809
+    bear_combined_ic: 0.1076
+  信创:
+    factors:
+    - fund_pe
+    - momentum_reversal
+    weights:
+    - 0.5333
+    - 0.4667
+    ic: 0.07
+    combined_ic: 0.0984
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3466
+    - 0.327
+    - 0.3264
+    bull_ic: 0.1073
+    bull_combined_ic: 0.1463
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.5175
+    - 0.4825
+    bear_ic: 0.093
+    bear_combined_ic: 0.1236
+  储能概念:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pe
+    weights:
+    - 0.3504
+    - 0.3286
+    - 0.321
+    ic: 0.055
+    combined_ic: 0.068
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0868
+    bull_combined_ic: 0.0869
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4764
+    - 0.2707
+    - 0.253
+    bear_ic: 0.0635
+    bear_combined_ic: 0.0857
+  元宇宙概念:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.3576
+    - 0.3287
+    - 0.3137
+    ic: 0.0665
+    combined_ic: 0.1025
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4185
+    - 0.3056
+    - 0.2759
+    bull_ic: 0.1054
+    bull_combined_ic: 0.1433
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.358
+    - 0.3368
+    - 0.3051
+    bear_ic: 0.0737
+    bear_combined_ic: 0.0925
+  充电桩:
+    factors:
+    - fund_pe
+    - volatility
+    - fund_profit_growth
+    weights:
+    - 0.403
+    - 0.2986
+    - 0.2984
+    ic: 0.0744
+    combined_ic: 0.0868
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5426
+    - 0.4574
+    bull_ic: 0.098
+    bull_combined_ic: 0.1104
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5096
+    - 0.4904
+    bear_ic: 0.0701
+    bear_combined_ic: 0.0893
+  先进封装:
+    factors:
+    - volatility
+    - fund_pe
+    - momentum_reversal
+    weights:
+    - 0.3761
+    - 0.3261
+    - 0.2978
+    ic: 0.0761
+    combined_ic: 0.1034
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3557
+    - 0.323
+    - 0.3213
+    bull_ic: 0.1143
+    bull_combined_ic: 0.1695
+    bear_factors:
+    - rsi_vol_combo
+    - fund_rg_improve
+    - fund_pg_improve
+    bear_weights:
+    - 0.3539
+    - 0.3284
+    - 0.3177
+    bear_ic: 0.0709
+    bear_combined_ic: 0.1058
+  光伏概念:
+    factors:
+    - fund_pe
+    - volatility
+    weights:
+    - 0.5134
+    - 0.4866
+    ic: 0.0763
+    combined_ic: 0.083
+    bull_factors:
+    - fund_pg_improve
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3449
+    - 0.3393
+    - 0.3158
+    bull_ic: 0.0807
+    bull_combined_ic: 0.0933
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4124
+    - 0.3226
+    - 0.265
+    bear_ic: 0.0582
+    bear_combined_ic: 0.0793
+  光刻机(胶):
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    weights:
+    - 0.4906
+    - 0.2953
+    - 0.214
+    ic: 0.0537
+    combined_ic: 0.0727
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1005
+    bull_combined_ic: 0.1005
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1336
+    bear_combined_ic: 0.1336
+  光纤概念:
+    factors:
+    - fund_pg_improve
+    - momentum_reversal
+    weights:
+    - 0.5326
+    - 0.4674
+    ic: 0.0738
+    combined_ic: 0.0871
+    bull_factors:
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.5223
+    - 0.4777
+    bull_ic: 0.0865
+    bull_combined_ic: 0.0971
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.5125
+    - 0.4875
+    bear_ic: 0.0862
+    bear_combined_ic: 0.1113
+  光通信模块:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pe
+    weights:
+    - 0.4181
+    - 0.2948
+    - 0.287
+    ic: 0.0688
+    combined_ic: 0.0955
+    bull_factors:
+    - fund_pe
+    - fund_pg_improve
+    bull_weights:
+    - 0.5773
+    - 0.4227
+    bull_ic: 0.0832
+    bull_combined_ic: 0.1092
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pg_improve
+    bear_weights:
+    - 0.3471
+    - 0.3352
+    - 0.3177
+    bear_ic: 0.0943
+    bear_combined_ic: 0.1214
+  免疫治疗:
+    factors:
+    - volatility
+    - fund_pe
+    - momentum_reversal
+    weights:
+    - 0.3906
+    - 0.3316
+    - 0.2778
+    ic: 0.089
+    combined_ic: 0.1182
+    bull_factors:
+    - momentum_reversal
+    - fund_pe
+    bull_weights:
+    - 0.6151
+    - 0.3849
+    bull_ic: 0.0607
+    bull_combined_ic: 0.0788
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_profit_growth
+    bear_weights:
+    - 0.4186
+    - 0.2923
+    - 0.2891
+    bear_ic: 0.0717
+    bear_combined_ic: 0.1238
+  养老概念:
+    factors:
+    - fund_pg_improve
+    - low_downside
+    - fund_rg_improve
+    weights:
+    - 0.404
+    - 0.3025
+    - 0.2935
+    ic: 0.0513
+    combined_ic: 0.0767
+    bull_factors:
+    - momentum_reversal
+    - fund_profit_growth
+    - low_downside
+    bull_weights:
+    - 0.3558
+    - 0.3234
+    - 0.3208
+    bull_ic: 0.0659
+    bull_combined_ic: 0.086
+    bear_factors:
+    - fund_rg_improve
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.3976
+    - 0.3089
+    - 0.2935
+    bear_ic: 0.0625
+    bear_combined_ic: 0.0916
+  养老金:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5935
+    - 0.4065
+    ic: 0.0577
+    combined_ic: 0.0758
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bull_weights:
+    - 0.3614
+    - 0.3313
+    - 0.3073
+    bull_ic: 0.0571
+    bull_combined_ic: 0.0812
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    bear_weights:
+    - 0.426
+    - 0.3099
+    - 0.2641
+    bear_ic: 0.0621
+    bear_combined_ic: 0.0928
+  内贸流通:
+    factors:
+    - volatility
+    - fund_pb
+    - turnover_stability
+    weights:
+    - 0.3503
+    - 0.3476
+    - 0.3021
+    ic: 0.0664
+    combined_ic: 0.0881
+    bull_factors:
+    - momentum_reversal
+    - low_downside
+    - turnover_stability
+    bull_weights:
+    - 0.3675
+    - 0.3301
+    - 0.3024
+    bull_ic: 0.0833
+    bull_combined_ic: 0.1355
+    bear_factors:
+    - turnover_stability
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.3631
+    - 0.3384
+    - 0.2985
+    bear_ic: 0.0802
+    bear_combined_ic: 0.122
+  军工:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    - volatility
+    weights:
+    - 0.3682
+    - 0.3271
+    - 0.3047
+    ic: 0.0648
+    combined_ic: 0.0825
+    bull_factors:
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.5172
+    - 0.4828
+    bull_ic: 0.1049
+    bull_combined_ic: 0.1247
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1082
+    bear_combined_ic: 0.1082
+  军民融合:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    - volatility
+    weights:
+    - 0.3545
+    - 0.3316
+    - 0.3139
+    ic: 0.063
+    combined_ic: 0.0834
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.4
+    - 0.3147
+    - 0.2853
+    bull_ic: 0.0887
+    bull_combined_ic: 0.1093
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.108
+    bear_combined_ic: 0.108
+  农业种植:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.0989
+    combined_ic: 0.0989
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bull_weights:
+    - 0.4099
+    - 0.3138
+    - 0.2763
+    bull_ic: 0.0578
+    bull_combined_ic: 0.081
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - rsi_vol_combo
+    bear_weights:
+    - 0.4249
+    - 0.3009
+    - 0.2742
+    bear_ic: 0.07
+    bear_combined_ic: 0.1055
+  农药兽药:
+    factors:
+    - fund_pb
+    - fund_pe
+    - fund_rg_improve
+    weights:
+    - 0.4182
+    - 0.341
+    - 0.2408
+    ic: 0.0708
+    combined_ic: 0.0943
+    bull_factors:
+    - fund_pe
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.3561
+    - 0.3449
+    - 0.299
+    bull_ic: 0.0734
+    bull_combined_ic: 0.1057
+    bear_factors:
+    - fund_pb
+    - fund_rg_improve
+    - fund_pe
+    bear_weights:
+    - 0.5048
+    - 0.2817
+    - 0.2135
+    bear_ic: 0.0724
+    bear_combined_ic: 0.1085
+  冰雪经济:
+    factors:
+    - fund_pe
+    - low_downside
+    - momentum_reversal
+    weights:
+    - 0.4421
+    - 0.2851
+    - 0.2727
+    ic: 0.0739
+    combined_ic: 0.1169
+    bull_factors:
+    - fund_rg_improve
+    - momentum_reversal
+    - turnover_stability
+    bull_weights:
+    - 0.3872
+    - 0.3696
+    - 0.2432
+    bull_ic: 0.0683
+    bull_combined_ic: 0.088
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0976
+    bear_combined_ic: 0.0976
+  冷链物流:
+    factors:
+    - fund_pe
+    - volatility
+    - fund_pb
+    weights:
+    - 0.364
+    - 0.3376
+    - 0.2984
+    ic: 0.082
+    combined_ic: 0.0962
+    bull_factors:
+    - volatility
+    - turnover_stability
+    - momentum_reversal
+    bull_weights:
+    - 0.3439
+    - 0.33
+    - 0.326
+    bull_ic: 0.0743
+    bull_combined_ic: 0.1054
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.4032
+    - 0.3448
+    - 0.252
+    bear_ic: 0.0746
+    bear_combined_ic: 0.1085
+  减肥药:
+    factors:
+    - fund_pe
+    - volatility
+    - fund_pb
+    weights:
+    - 0.3607
+    - 0.3251
+    - 0.3141
+    ic: 0.1097
+    combined_ic: 0.1334
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0599
+    bull_combined_ic: 0.0599
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3664
+    - 0.3248
+    - 0.3088
+    bear_ic: 0.0616
+    bear_combined_ic: 0.079
+  减速器:
+    factors:
+    - fund_pb
+    - fund_pe
+    - momentum_reversal
+    weights:
+    - 0.3865
+    - 0.3724
+    - 0.2411
+    ic: 0.0747
+    combined_ic: 0.1132
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.6296
+    - 0.3704
+    bull_ic: 0.1002
+    bull_combined_ic: 0.1172
+    bear_factors:
+    - fund_pe
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.348
+    - 0.3365
+    - 0.3155
+    bear_ic: 0.0812
+    bear_combined_ic: 0.1147
+  创业成份:
+    factors:
+    - fund_rg_improve
+    - fund_pe
+    - top_fractal_volume
+    weights:
+    - 0.3608
+    - 0.3547
+    - 0.2845
+    ic: 0.0443
+    combined_ic: 0.0824
+    bull_factors:
+    - fund_pe
+    - fund_pb
+    - fund_rg_improve
+    bull_weights:
+    - 0.4085
+    - 0.3112
+    - 0.2802
+    bull_ic: 0.0672
+    bull_combined_ic: 0.0927
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3883
+    - 0.3445
+    - 0.2672
+    bear_ic: 0.0447
+    bear_combined_ic: 0.0597
+  创新医疗服务:
+    factors:
+    - volatility
+    - low_downside
+    weights:
+    - 0.5501
+    - 0.4499
+    ic: 0.0693
+    combined_ic: 0.0775
+    bull_factors:
+    - fund_rg_improve
+    - momentum_reversal
+    bull_weights:
+    - 0.5419
+    - 0.4581
+    bull_ic: 0.0595
+    bull_combined_ic: 0.0768
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3797
+    - 0.3466
+    - 0.2737
+    bear_ic: 0.0592
+    bear_combined_ic: 0.0765
+  创新药:
+    factors:
+    - volatility
+    - fund_pe
+    weights:
+    - 0.5258
+    - 0.4742
+    ic: 0.0935
+    combined_ic: 0.1067
+    bull_factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - low_downside
+    bull_weights:
+    - 0.3692
+    - 0.3339
+    - 0.2969
+    bull_ic: 0.0419
+    bull_combined_ic: 0.0562
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.3968
+    - 0.311
+    - 0.2922
+    bear_ic: 0.071
+    bear_combined_ic: 0.0974
+  券商概念:
+    factors:
+    - fund_pe
+    - fund_score
+    - fund_profit_growth
+    weights:
+    - 0.337
+    - 0.3352
+    - 0.3278
+    ic: 0.0936
+    combined_ic: 0.1297
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - low_downside
+    bull_weights:
+    - 0.3912
+    - 0.3306
+    - 0.2783
+    bull_ic: 0.1313
+    bull_combined_ic: 0.1602
+    bear_factors:
+    - fund_pe
+    - fund_pg_improve
+    bear_weights:
+    - 0.5156
+    - 0.4844
+    bear_ic: 0.095
+    bear_combined_ic: 0.1294
+  动力电池回收:
+    factors:
+    - volatility
+    - fund_profit_growth
+    weights:
+    - 0.5334
+    - 0.4666
+    ic: 0.0542
+    combined_ic: 0.062
+    bull_factors:
+    - volatility
+    - low_downside
+    - fund_pg_improve
+    bull_weights:
+    - 0.3692
+    - 0.3394
+    - 0.2914
+    bull_ic: 0.0705
+    bull_combined_ic: 0.0984
+    bear_factors:
+    - fund_rg_improve
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.3741
+    - 0.3397
+    - 0.2862
+    bear_ic: 0.0652
+    bear_combined_ic: 0.09
+  包装材料:
+    factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    weights:
+    - 0.3707
+    - 0.3238
+    - 0.3055
+    ic: 0.0833
+    combined_ic: 0.1114
+    bull_factors:
+    - volatility
+    - fund_pb
+    - rsi_vol_combo
+    bull_weights:
+    - 0.3833
+    - 0.3141
+    - 0.3026
+    bull_ic: 0.0903
+    bull_combined_ic: 0.1222
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - fund_pe
+    bear_weights:
+    - 0.4693
+    - 0.2902
+    - 0.2405
+    bear_ic: 0.07
+    bear_combined_ic: 0.1115
+  化债(AMC)概念:
+    factors:
+    - fund_pg_improve
+    - fund_score
+    weights:
+    - 0.5581
+    - 0.4419
+    ic: 0.0901
+    combined_ic: 0.1119
+    bull_factors:
+    - low_downside
+    - rsi_vol_combo
+    bull_weights:
+    - 0.5479
+    - 0.4521
+    bull_ic: 0.0983
+    bull_combined_ic: 0.1462
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1077
+    bear_combined_ic: 0.1077
+  化妆品概念:
+    factors:
+    - fund_pe
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.4008
+    - 0.3517
+    - 0.2475
+    ic: 0.0935
+    combined_ic: 0.1125
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - momentum_reversal
+    bull_weights:
+    - 0.3878
+    - 0.3161
+    - 0.2961
+    bull_ic: 0.0847
+    bull_combined_ic: 0.1292
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    - fund_pb
+    bear_weights:
+    - 0.4039
+    - 0.3043
+    - 0.2918
+    bear_ic: 0.081
+    bear_combined_ic: 0.1319
+  化工原料:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.3655
+    - 0.3359
+    - 0.2986
+    ic: 0.0762
+    combined_ic: 0.1018
+    bull_factors:
+    - turnover_stability
+    - rsi_vol_combo
+    - momentum_reversal
+    bull_weights:
+    - 0.3633
+    - 0.3274
+    - 0.3093
+    bull_ic: 0.0655
+    bull_combined_ic: 0.0846
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_rg_improve
+    bear_weights:
+    - 0.4297
+    - 0.2911
+    - 0.2791
+    bear_ic: 0.0538
+    bear_combined_ic: 0.081
+  北交所概念:
+    factors:
+    - volatility
+    - fund_pb
+    weights:
+    - 0.5387
+    - 0.4613
+    ic: 0.0662
+    combined_ic: 0.0818
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - low_downside
+    bull_weights:
+    - 0.4604
+    - 0.277
+    - 0.2626
+    bull_ic: 0.1154
+    bull_combined_ic: 0.1569
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.091
+    bear_combined_ic: 0.091
+  北斗导航:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - turnover_stability
+    weights:
+    - 0.355
+    - 0.3414
+    - 0.3035
+    ic: 0.0632
+    combined_ic: 0.0969
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3879
+    - 0.3719
+    - 0.2402
+    bull_ic: 0.1193
+    bull_combined_ic: 0.1686
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1167
+    bear_combined_ic: 0.1167
+  区块链:
+    factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.3727
+    - 0.3513
+    - 0.276
+    ic: 0.0593
+    combined_ic: 0.0797
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.337
+    - 0.3345
+    - 0.3286
+    bull_ic: 0.1019
+    bull_combined_ic: 0.1395
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0965
+    bear_combined_ic: 0.0965
+  医废处理:
+    factors:
+    - fund_pb
+    - fund_profit_growth
+    weights:
+    - 0.599
+    - 0.401
+    ic: 0.104
+    combined_ic: 0.1358
+    bull_factors:
+    - momentum_reversal
+    - turnover_stability
+    bull_weights:
+    - 0.5635
+    - 0.4365
+    bull_ic: 0.0817
+    bull_combined_ic: 0.117
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - wash_sale_score
+    bear_weights:
+    - 0.3843
+    - 0.3179
+    - 0.2978
+    bear_ic: 0.0745
+    bear_combined_ic: 0.1251
+  医疗器械概念:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.5627
+    - 0.4373
+    ic: 0.0733
+    combined_ic: 0.0949
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3702
+    - 0.3236
+    - 0.3062
+    bull_ic: 0.0767
+    bull_combined_ic: 0.108
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.5712
+    - 0.4288
+    bear_ic: 0.0537
+    bear_combined_ic: 0.0774
+  医美概念:
+    factors:
+    - low_downside
+    - fund_pe
+    weights:
+    - 0.5245
+    - 0.4755
+    ic: 0.1033
+    combined_ic: 0.1208
+    bull_factors:
+    - momentum_reversal
+    - fund_rg_improve
+    - turnover_stability
+    bull_weights:
+    - 0.4038
+    - 0.3057
+    - 0.2904
+    bull_ic: 0.0671
+    bull_combined_ic: 0.1006
+    bear_factors:
+    - turnover_stability
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3856
+    - 0.34
+    - 0.2744
+    bear_ic: 0.0678
+    bear_combined_ic: 0.1094
+  半导体概念:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.371
+    - 0.369
+    - 0.2599
+    ic: 0.05
+    combined_ic: 0.0708
+    bull_factors:
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.5396
+    - 0.4604
+    bull_ic: 0.0982
+    bull_combined_ic: 0.1151
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.6344
+    - 0.3656
+    bear_ic: 0.0748
+    bear_combined_ic: 0.096
+  华为昇腾:
+    factors:
+    - volatility
+    - fund_pe
+    weights:
+    - 0.5889
+    - 0.4111
+    ic: 0.1063
+    combined_ic: 0.1323
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.3637
+    - 0.3214
+    - 0.3149
+    bull_ic: 0.1026
+    bull_combined_ic: 0.1373
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3563
+    - 0.3345
+    - 0.3093
+    bear_ic: 0.0629
+    bear_combined_ic: 0.0928
+  华为概念:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    weights:
+    - 0.3736
+    - 0.3263
+    - 0.3001
+    ic: 0.0489
+    combined_ic: 0.0755
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1101
+    bull_combined_ic: 0.1101
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3779
+    - 0.3154
+    - 0.3067
+    bear_ic: 0.0736
+    bear_combined_ic: 0.1015
+  华为汽车:
+    factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    weights:
+    - 0.3733
+    - 0.3595
+    - 0.2673
+    ic: 0.0726
+    combined_ic: 0.0907
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.5306
+    - 0.4694
+    bull_ic: 0.1042
+    bull_combined_ic: 0.1184
+    bear_factors:
+    - fund_profit_growth
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.3364
+    - 0.3332
+    - 0.3304
+    bear_ic: 0.0725
+    bear_combined_ic: 0.0957
+  华为海思:
+    factors:
+    - fund_pe
+    - fund_score
+    - momentum_reversal
+    weights:
+    - 0.3675
+    - 0.3315
+    - 0.301
+    ic: 0.0782
+    combined_ic: 0.1119
+    bull_factors:
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.5336
+    - 0.4664
+    bull_ic: 0.0927
+    bull_combined_ic: 0.1171
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3358
+    - 0.3355
+    - 0.3287
+    bear_ic: 0.0992
+    bear_combined_ic: 0.1262
+  单抗概念:
+    factors:
+    - fund_pg_improve
+    - low_downside
+    - fund_pe
+    weights:
+    - 0.3696
+    - 0.3169
+    - 0.3136
+    ic: 0.0732
+    combined_ic: 0.0986
+    bull_factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    bull_weights:
+    - 0.5044
+    - 0.4956
+    bull_ic: 0.0733
+    bull_combined_ic: 0.0807
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_profit_growth
+    bear_weights:
+    - 0.4412
+    - 0.2908
+    - 0.268
+    bear_ic: 0.0709
+    bear_combined_ic: 0.1028
+  卫星互联网:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    weights:
+    - 0.5132
+    - 0.4868
+    ic: 0.0881
+    combined_ic: 0.1148
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    bull_weights:
+    - 0.432
+    - 0.2925
+    - 0.2755
+    bull_ic: 0.0912
+    bull_combined_ic: 0.1088
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1147
+    bear_combined_ic: 0.1147
+  历史新高:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.3512
+    - 0.3441
+    - 0.3047
+    ic: 0.079
+    combined_ic: 0.1157
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5652
+    - 0.4348
+    bull_ic: 0.0851
+    bull_combined_ic: 0.1101
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.405
+    - 0.3213
+    - 0.2737
+    bear_ic: 0.0827
+    bear_combined_ic: 0.1165
+  参股保险:
+    factors:
+    - low_downside
+    - fund_pb
+    weights:
+    - 0.5893
+    - 0.4107
+    ic: 0.1009
+    combined_ic: 0.1142
+    bull_factors:
+    - turnover_stability
+    - low_downside
+    - momentum_reversal
+    bull_weights:
+    - 0.3975
+    - 0.3938
+    - 0.2087
+    bull_ic: 0.0738
+    bull_combined_ic: 0.1134
+    bear_factors:
+    - fund_pb
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0705
+    bear_combined_ic: 0.0706
+  参股券商:
+    factors:
+    - low_downside
+    - fund_profit_growth
+    - volatility
+    weights:
+    - 0.3729
+    - 0.3137
+    - 0.3135
+    ic: 0.0612
+    combined_ic: 0.0838
+    bull_factors:
+    - low_downside
+    - turnover_stability
+    - momentum_reversal
+    bull_weights:
+    - 0.3846
+    - 0.3155
+    - 0.3
+    bull_ic: 0.0742
+    bull_combined_ic: 0.1164
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0909
+    bear_combined_ic: 0.0909
+  参股新三板:
+    factors:
+    - fund_pe
+    - volatility
+    weights:
+    - 0.5073
+    - 0.4927
+    ic: 0.0714
+    combined_ic: 0.0711
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.5127
+    - 0.4873
+    bull_ic: 0.0776
+    bull_combined_ic: 0.1126
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.4057
+    - 0.3256
+    - 0.2687
+    bear_ic: 0.0731
+    bear_combined_ic: 0.1094
+  参股期货:
+    factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    weights:
+    - 0.3803
+    - 0.3598
+    - 0.2599
+    ic: 0.0704
+    combined_ic: 0.087
+    bull_factors:
+    - turnover_stability
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3967
+    - 0.3171
+    - 0.2862
+    bull_ic: 0.0823
+    bull_combined_ic: 0.119
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - fund_pe
+    bear_weights:
+    - 0.3659
+    - 0.3297
+    - 0.3045
+    bear_ic: 0.0651
+    bear_combined_ic: 0.1006
+  参股银行:
+    factors:
+    - fund_pg_improve
+    - low_downside
+    - volatility
+    weights:
+    - 0.38
+    - 0.319
+    - 0.3011
+    ic: 0.0703
+    combined_ic: 0.0941
+    bull_factors:
+    - fund_pb
+    - low_downside
+    - turnover_stability
+    bull_weights:
+    - 0.3866
+    - 0.3316
+    - 0.2818
+    bull_ic: 0.0761
+    bull_combined_ic: 0.1084
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - turnover_stability
+    bear_weights:
+    - 0.4526
+    - 0.3057
+    - 0.2417
+    bear_ic: 0.0638
+    bear_combined_ic: 0.0996
+  反内卷概念:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_pe
+    weights:
+    - 0.4871
+    - 0.2644
+    - 0.2486
+    ic: 0.0661
+    combined_ic: 0.0954
+    bull_factors:
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.5172
+    - 0.4828
+    bull_ic: 0.0786
+    bull_combined_ic: 0.0854
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    - fund_pe
+    bear_weights:
+    - 0.4463
+    - 0.2876
+    - 0.2661
+    bear_ic: 0.064
+    bear_combined_ic: 0.113
+  发电机概念:
+    factors:
+    - fund_profit_growth
+    - fund_score
+    - fund_revenue_growth
+    weights:
+    - 0.3451
+    - 0.3345
+    - 0.3204
+    ic: 0.0917
+    combined_ic: 0.104
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - rsi_vol_combo
+    bull_weights:
+    - 0.4263
+    - 0.3356
+    - 0.238
+    bull_ic: 0.0995
+    bull_combined_ic: 0.1218
+    bear_factors:
+    - fund_revenue_growth
+    - turnover_stability
+    - momentum_reversal
+    bear_weights:
+    - 0.3621
+    - 0.3217
+    - 0.3163
+    bear_ic: 0.0825
+    bear_combined_ic: 0.1249
+  可控核聚变:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pe
+    weights:
+    - 0.3919
+    - 0.3043
+    - 0.3038
+    ic: 0.0763
+    combined_ic: 0.098
+    bull_factors:
+    - fund_pg_improve
+    - volatility
+    - fund_profit_growth
+    bull_weights:
+    - 0.3455
+    - 0.3285
+    - 0.3259
+    bull_ic: 0.0543
+    bull_combined_ic: 0.0776
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3447
+    - 0.3298
+    - 0.3254
+    bear_ic: 0.0725
+    bear_combined_ic: 0.0949
+  合成生物:
+    factors:
+    - fund_pb
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.4112
+    - 0.3031
+    - 0.2857
+    ic: 0.0761
+    combined_ic: 0.0998
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.3547
+    - 0.3256
+    - 0.3198
+    bull_ic: 0.0913
+    bull_combined_ic: 0.1281
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.5007
+    - 0.4993
+    bear_ic: 0.0856
+    bear_combined_ic: 0.116
+  周期股:
+    factors:
+    - fund_pg_improve
+    - stroke_phase
+    - relative_strength
+    weights:
+    - 0.4126
+    - 0.3412
+    - 0.2462
+    ic: 0.0499
+    combined_ic: 0.0814
+    bull_factors:
+    - fund_pg_improve
+    - fund_roe
+    bull_weights:
+    - 0.6073
+    - 0.3927
+    bull_ic: 0.0458
+    bull_combined_ic: 0.0614
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    bear_weights:
+    - 0.5219
+    - 0.4781
+    bear_ic: 0.0743
+    bear_combined_ic: 0.1009
+  味蕾经济:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5433
+    - 0.4567
+    ic: 0.0861
+    combined_ic: 0.1037
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.4906
+    - 0.2569
+    - 0.2525
+    bull_ic: 0.0644
+    bull_combined_ic: 0.1037
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3857
+    - 0.3105
+    - 0.3038
+    bear_ic: 0.0633
+    bear_combined_ic: 0.0843
+  商业航天:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.4151
+    - 0.2981
+    - 0.2868
+    ic: 0.0558
+    combined_ic: 0.0841
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5414
+    - 0.4586
+    bull_ic: 0.0963
+    bull_combined_ic: 0.1173
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1014
+    bear_combined_ic: 0.1014
+  固态电池:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - top_fractal_volume
+    weights:
+    - 0.4655
+    - 0.3148
+    - 0.2197
+    ic: 0.042
+    combined_ic: 0.0618
+    bull_factors:
+    - fund_pg_improve
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3663
+    - 0.3455
+    - 0.2882
+    bull_ic: 0.0716
+    bull_combined_ic: 0.0837
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    bear_weights:
+    - 0.422
+    - 0.3337
+    - 0.2443
+    bear_ic: 0.0641
+    bear_combined_ic: 0.0959
+  国产芯片:
+    factors:
+    - fund_rg_improve
+    - fund_pe
+    - fund_pg_improve
+    weights:
+    - 0.3598
+    - 0.3537
+    - 0.2865
+    ic: 0.0546
+    combined_ic: 0.0777
+    bull_factors:
+    - fund_pe
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3631
+    - 0.3188
+    - 0.3181
+    bull_ic: 0.0943
+    bull_combined_ic: 0.1166
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5376
+    - 0.4624
+    bear_ic: 0.0773
+    bear_combined_ic: 0.0966
+  国产软件:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - momentum_reversal
+    weights:
+    - 0.3651
+    - 0.3311
+    - 0.3038
+    ic: 0.0684
+    combined_ic: 0.1004
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    bull_weights:
+    - 0.3737
+    - 0.3194
+    - 0.3069
+    bull_ic: 0.093
+    bull_combined_ic: 0.1295
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3882
+    - 0.3447
+    - 0.2672
+    bear_ic: 0.0787
+    bear_combined_ic: 0.1058
+  国资云概念:
+    factors:
+    - momentum_reversal
+    - fund_score
+    weights:
+    - 0.5651
+    - 0.4349
+    ic: 0.0938
+    combined_ic: 0.1194
+    bull_factors:
+    - volatility
+    - low_downside
+    - momentum_reversal
+    bull_weights:
+    - 0.3918
+    - 0.326
+    - 0.2822
+    bull_ic: 0.1347
+    bull_combined_ic: 0.1802
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.3662
+    - 0.343
+    - 0.2908
+    bear_ic: 0.0546
+    bear_combined_ic: 0.0816
+  土地流转:
+    factors:
+    - fund_score
+    - fund_roe
+    - fund_profit_growth
+    weights:
+    - 0.3943
+    - 0.3112
+    - 0.2945
+    ic: 0.0904
+    combined_ic: 0.1081
+    bull_factors:
+    - volatility
+    - fund_pe
+    - momentum_reversal
+    bull_weights:
+    - 0.3377
+    - 0.3357
+    - 0.3266
+    bull_ic: 0.0729
+    bull_combined_ic: 0.0953
+    bear_factors:
+    - turnover_stability
+    - momentum_reversal
+    bear_weights:
+    - 0.5631
+    - 0.4369
+    bear_ic: 0.1015
+    bear_combined_ic: 0.1336
+  土壤修复:
+    factors:
+    - fund_pb
+    - volatility
+    - turnover_stability
+    weights:
+    - 0.3579
+    - 0.3484
+    - 0.2937
+    ic: 0.0904
+    combined_ic: 0.1189
+    bull_factors:
+    - turnover_stability
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.3666
+    - 0.3516
+    - 0.2818
+    bull_ic: 0.0864
+    bull_combined_ic: 0.114
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    - fund_rg_improve
+    bear_weights:
+    - 0.3477
+    - 0.3463
+    - 0.306
+    bear_ic: 0.0847
+    bear_combined_ic: 0.1409
+  在线教育:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.5406
+    - 0.4594
+    ic: 0.0927
+    combined_ic: 0.1161
+    bull_factors:
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.52
+    - 0.48
+    bull_ic: 0.1244
+    bull_combined_ic: 0.1345
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1217
+    bear_combined_ic: 0.1217
+  地下管网:
+    factors:
+    - momentum_reversal
+    - volatility
+    - turnover_stability
+    weights:
+    - 0.354
+    - 0.3461
+    - 0.2999
+    ic: 0.089
+    combined_ic: 0.1359
+    bull_factors:
+    - fund_pb
+    - turnover_stability
+    - momentum_reversal
+    bull_weights:
+    - 0.3502
+    - 0.3467
+    - 0.3031
+    bull_ic: 0.078
+    bull_combined_ic: 0.1387
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.5835
+    - 0.4165
+    bear_ic: 0.0828
+    bear_combined_ic: 0.1138
+  地摊经济:
+    factors:
+    - fund_pb
+    - fund_pg_improve
+    weights:
+    - 0.5654
+    - 0.4346
+    ic: 0.0734
+    combined_ic: 0.0912
+    bull_factors:
+    - low_downside
+    - fund_rg_improve
+    bull_weights:
+    - 0.5247
+    - 0.4753
+    bull_ic: 0.0786
+    bull_combined_ic: 0.0871
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.5369
+    - 0.4631
+    bear_ic: 0.1147
+    bear_combined_ic: 0.1515
+  垃圾分类:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_score
+    weights:
+    - 0.4067
+    - 0.3018
+    - 0.2915
+    ic: 0.0694
+    combined_ic: 0.0902
+    bull_factors:
+    - fund_pb
+    - volatility
+    - turnover_stability
+    bull_weights:
+    - 0.4224
+    - 0.2889
+    - 0.2887
+    bull_ic: 0.0877
+    bull_combined_ic: 0.1117
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_profit_growth
+    bear_weights:
+    - 0.3896
+    - 0.3329
+    - 0.2775
+    bear_ic: 0.0586
+    bear_combined_ic: 0.0895
+  基因测序:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - fund_profit_growth
+    weights:
+    - 0.4126
+    - 0.3293
+    - 0.258
+    ic: 0.0887
+    combined_ic: 0.1236
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.5119
+    - 0.4881
+    bull_ic: 0.0829
+    bull_combined_ic: 0.0923
+    bear_factors:
+    - fund_pb
+    - volatility
+    - fund_pg_improve
+    bear_weights:
+    - 0.3442
+    - 0.3291
+    - 0.3266
+    bear_ic: 0.0688
+    bear_combined_ic: 0.1029
+  基金重仓:
+    factors:
+    - fund_pe
+    weights:
+    - 1.0
+    ic: 0.0689
+    combined_ic: 0.0684
+    bull_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_profit_growth
+    bull_weights:
+    - 0.3796
+    - 0.3226
+    - 0.2978
+    bull_ic: 0.0418
+    bull_combined_ic: 0.0572
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - fund_rg_improve
+    bear_weights:
+    - 0.3566
+    - 0.3313
+    - 0.3121
+    bear_ic: 0.0413
+    bear_combined_ic: 0.0577
+  增强现实:
+    factors:
+    - fund_profit_growth
+    - fund_score
+    - momentum_reversal
+    weights:
+    - 0.3746
+    - 0.3144
+    - 0.311
+    ic: 0.0726
+    combined_ic: 0.0989
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1211
+    bull_combined_ic: 0.1211
+    bear_factors:
+    - volatility
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3563
+    - 0.3373
+    - 0.3065
+    bear_ic: 0.1068
+    bear_combined_ic: 0.1228
+  复合集流体:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    weights:
+    - 0.5717
+    - 0.4283
+    ic: 0.0773
+    combined_ic: 0.0979
+    bull_factors:
+    - volatility
+    - low_downside
+    - fund_pe
+    bull_weights:
+    - 0.3962
+    - 0.3131
+    - 0.2908
+    bull_ic: 0.0707
+    bull_combined_ic: 0.0993
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.5802
+    - 0.4198
+    bear_ic: 0.0697
+    bear_combined_ic: 0.0981
+  多模态AI:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.359
+    - 0.3586
+    - 0.2824
+    ic: 0.0807
+    combined_ic: 0.1023
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3524
+    - 0.3523
+    - 0.2952
+    bull_ic: 0.0835
+    bull_combined_ic: 0.1149
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3753
+    - 0.3749
+    - 0.2498
+    bear_ic: 0.0927
+    bear_combined_ic: 0.1284
+  大数据:
+    factors:
+    - fund_pe
+    - momentum_reversal
+    weights:
+    - 0.5909
+    - 0.4091
+    ic: 0.0765
+    combined_ic: 0.1048
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3705
+    - 0.3187
+    - 0.3108
+    bull_ic: 0.1133
+    bull_combined_ic: 0.1536
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.5176
+    - 0.4824
+    bear_ic: 0.0725
+    bear_combined_ic: 0.0951
+  大盘价值:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_pe
+    weights:
+    - 0.3506
+    - 0.3362
+    - 0.3132
+    ic: 0.0684
+    combined_ic: 0.0865
+    bull_factors:
+    - fund_pe
+    - fund_pg_improve
+    - turnover_stability
+    bull_weights:
+    - 0.3685
+    - 0.3393
+    - 0.2922
+    bull_ic: 0.0546
+    bull_combined_ic: 0.0845
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.4047
+    - 0.3492
+    - 0.2461
+    bear_ic: 0.0746
+    bear_combined_ic: 0.0959
+  大盘成长:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - vol_opening_confirm
+    weights:
+    - 0.3924
+    - 0.3374
+    - 0.2703
+    ic: 0.0338
+    combined_ic: 0.0487
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - fund_pg_improve
+    bull_weights:
+    - 0.3965
+    - 0.3473
+    - 0.2562
+    bull_ic: 0.0558
+    bull_combined_ic: 0.0775
+    bear_factors:
+    - momentum_reversal
+    - fund_pe
+    bear_weights:
+    - 0.5041
+    - 0.4959
+    bear_ic: 0.06
+    bear_combined_ic: 0.0848
+  大飞机:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_profit_growth
+    weights:
+    - 0.341
+    - 0.339
+    - 0.32
+    ic: 0.0589
+    combined_ic: 0.0803
+    bull_factors:
+    - fund_rg_improve
+    - volatility
+    bull_weights:
+    - 0.5283
+    - 0.4717
+    bull_ic: 0.0717
+    bull_combined_ic: 0.0943
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1144
+    bear_combined_ic: 0.1144
+  天然气:
+    factors:
+    - volatility
+    - momentum_reversal
+    weights:
+    - 0.5481
+    - 0.4519
+    ic: 0.1097
+    combined_ic: 0.1335
+    bull_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - volatility
+    bull_weights:
+    - 0.4381
+    - 0.2951
+    - 0.2668
+    bull_ic: 0.0631
+    bull_combined_ic: 0.0863
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4406
+    - 0.3204
+    - 0.239
+    bear_ic: 0.057
+    bear_combined_ic: 0.0778
+  央视50_:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    - low_downside
+    weights:
+    - 0.3986
+    - 0.3187
+    - 0.2827
+    ic: 0.0718
+    combined_ic: 0.0914
+    bull_factors:
+    - fund_pg_improve
+    - turnover_stability
+    - low_downside
+    bull_weights:
+    - 0.3899
+    - 0.3163
+    - 0.2938
+    bull_ic: 0.0456
+    bull_combined_ic: 0.0693
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pe
+    bear_weights:
+    - 0.4314
+    - 0.2906
+    - 0.2779
+    bear_ic: 0.0764
+    bear_combined_ic: 0.0991
+  婴童概念:
+    factors:
+    - fund_pb
+    - volatility
+    weights:
+    - 0.5419
+    - 0.4581
+    ic: 0.1076
+    combined_ic: 0.1242
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5819
+    - 0.4181
+    bull_ic: 0.0914
+    bull_combined_ic: 0.1292
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5768
+    - 0.4232
+    bear_ic: 0.0744
+    bear_combined_ic: 0.1043
+  存储芯片:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.3957
+    - 0.3584
+    - 0.2459
+    ic: 0.0696
+    combined_ic: 0.1024
+    bull_factors:
+    - fund_pe
+    - volatility
+    bull_weights:
+    - 0.5078
+    - 0.4922
+    bull_ic: 0.0785
+    bull_combined_ic: 0.0827
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0989
+    bear_combined_ic: 0.0989
+  宁组合:
+    factors:
+    - fund_pe
+    - fund_pb
+    weights:
+    - 0.5022
+    - 0.4978
+    ic: 0.0584
+    combined_ic: 0.0728
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - fund_pg_improve
+    bull_weights:
+    - 0.4138
+    - 0.3718
+    - 0.2143
+    bull_ic: 0.0806
+    bull_combined_ic: 0.1151
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    bear_weights:
+    - 0.3723
+    - 0.3381
+    - 0.2896
+    bear_ic: 0.0621
+    bear_combined_ic: 0.0904
+  安防概念:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - volatility
+    weights:
+    - 0.4068
+    - 0.3019
+    - 0.2912
+    ic: 0.061
+    combined_ic: 0.08
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5521
+    - 0.4479
+    bull_ic: 0.0959
+    bull_combined_ic: 0.1106
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3708
+    - 0.3257
+    - 0.3035
+    bear_ic: 0.0799
+    bear_combined_ic: 0.1103
+  宠物经济:
+    factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    weights:
+    - 0.4271
+    - 0.3039
+    - 0.269
+    ic: 0.0907
+    combined_ic: 0.1158
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5653
+    - 0.4347
+    bull_ic: 0.0806
+    bull_combined_ic: 0.1126
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3865
+    - 0.3297
+    - 0.2838
+    bear_ic: 0.0593
+    bear_combined_ic: 0.0907
+  小米概念:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - momentum_reversal
+    weights:
+    - 0.3888
+    - 0.3395
+    - 0.2717
+    ic: 0.0492
+    combined_ic: 0.0682
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3858
+    - 0.3149
+    - 0.2993
+    bull_ic: 0.0935
+    bull_combined_ic: 0.1283
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.4693
+    - 0.3141
+    - 0.2166
+    bear_ic: 0.0706
+    bear_combined_ic: 0.1088
+  小米汽车:
+    factors:
+    - fund_score
+    - fund_profit_growth
+    weights:
+    - 0.5331
+    - 0.4669
+    ic: 0.0547
+    combined_ic: 0.0617
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3488
+    - 0.3332
+    - 0.3179
+    bull_ic: 0.0868
+    bull_combined_ic: 0.1146
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_profit_growth
+    bear_weights:
+    - 0.4282
+    - 0.3221
+    - 0.2497
+    bear_ic: 0.0665
+    bear_combined_ic: 0.0992
+  小红书概念:
+    factors:
+    - fund_pg_improve
+    - volatility
+    - fund_pb
+    weights:
+    - 0.3366
+    - 0.333
+    - 0.3305
+    ic: 0.082
+    combined_ic: 0.0999
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.3947
+    - 0.3711
+    - 0.2342
+    bull_ic: 0.1202
+    bull_combined_ic: 0.1494
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.3953
+    - 0.3434
+    - 0.2613
+    bear_ic: 0.0931
+    bear_combined_ic: 0.1154
+  小金属概念:
+    factors:
+    - volatility
+    - fund_pb
+    weights:
+    - 0.5236
+    - 0.4764
+    ic: 0.0719
+    combined_ic: 0.0783
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.5528
+    - 0.4472
+    bull_ic: 0.07
+    bull_combined_ic: 0.0813
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.6203
+    - 0.3797
+    bear_ic: 0.0661
+    bear_combined_ic: 0.0954
+  尾气治理:
+    factors:
+    - fund_pe
+    - fund_pb
+    - volatility
+    weights:
+    - 0.3619
+    - 0.3543
+    - 0.2838
+    ic: 0.0982
+    combined_ic: 0.1162
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.6181
+    - 0.3819
+    bull_ic: 0.1076
+    bull_combined_ic: 0.1263
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - momentum_reversal
+    bear_weights:
+    - 0.466
+    - 0.2883
+    - 0.2457
+    bear_ic: 0.0771
+    bear_combined_ic: 0.1135
+  工业互联:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_revenue_growth
+    weights:
+    - 0.3687
+    - 0.3182
+    - 0.3131
+    ic: 0.0532
+    combined_ic: 0.0763
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5915
+    - 0.4085
+    bull_ic: 0.0898
+    bull_combined_ic: 0.1302
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_profit_growth
+    bear_weights:
+    - 0.4346
+    - 0.3264
+    - 0.239
+    bear_ic: 0.0581
+    bear_combined_ic: 0.0847
+  工业大麻:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - fund_score
+    weights:
+    - 0.3666
+    - 0.3244
+    - 0.309
+    ic: 0.0714
+    combined_ic: 0.0977
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.5138
+    - 0.4862
+    bull_ic: 0.0536
+    bull_combined_ic: 0.0724
+    bear_factors:
+    - fund_pb
+    - fund_rg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.3485
+    - 0.3421
+    - 0.3094
+    bear_ic: 0.0844
+    bear_combined_ic: 0.1205
+  工业母机:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5784
+    - 0.4216
+    ic: 0.0649
+    combined_ic: 0.0855
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1233
+    bull_combined_ic: 0.1233
+    bear_factors:
+    - rsi_vol_combo
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3341
+    - 0.3336
+    - 0.3323
+    bear_ic: 0.0719
+    bear_combined_ic: 0.0935
+  工业气体:
+    factors:
+    - momentum_reversal
+    - volatility
+    - low_downside
+    weights:
+    - 0.423
+    - 0.3108
+    - 0.2662
+    ic: 0.0751
+    combined_ic: 0.1167
+    bull_factors:
+    - low_downside
+    - volatility
+    - fund_pe
+    bull_weights:
+    - 0.3696
+    - 0.3461
+    - 0.2842
+    bull_ic: 0.0886
+    bull_combined_ic: 0.1036
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - rsi_vol_combo
+    bear_weights:
+    - 0.4015
+    - 0.3068
+    - 0.2917
+    bear_ic: 0.085
+    bear_combined_ic: 0.1134
+  工程建设:
+    factors:
+    - fund_pe
+    - volatility
+    weights:
+    - 0.5111
+    - 0.4889
+    ic: 0.0893
+    combined_ic: 0.1079
+    bull_factors:
+    - momentum_reversal
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1093
+    bull_combined_ic: 0.1093
+    bear_factors:
+    - fund_profit_growth
+    - turnover_stability
+    - momentum_reversal
+    bear_weights:
+    - 0.4134
+    - 0.3172
+    - 0.2694
+    bear_ic: 0.057
+    bear_combined_ic: 0.0873
+  工程机械概念:
+    factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    weights:
+    - 0.3751
+    - 0.3514
+    - 0.2734
+    ic: 0.0807
+    combined_ic: 0.0865
+    bull_factors:
+    - volatility
+    - fund_pg_improve
+    bull_weights:
+    - 0.5245
+    - 0.4755
+    bull_ic: 0.0781
+    bull_combined_ic: 0.1053
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - volatility
+    bear_weights:
+    - 0.4672
+    - 0.2704
+    - 0.2624
+    bear_ic: 0.0612
+    bear_combined_ic: 0.0863
+  并购重组概念:
+    factors:
+    - volatility
+    - momentum_reversal
+    weights:
+    - 0.567
+    - 0.433
+    ic: 0.0689
+    combined_ic: 0.0879
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3779
+    - 0.3334
+    - 0.2887
+    bull_ic: 0.0947
+    bull_combined_ic: 0.1299
+    bear_factors:
+    - turnover_stability
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.383
+    - 0.3092
+    - 0.3078
+    bear_ic: 0.0727
+    bear_combined_ic: 0.1084
+  幽门螺杆菌概念:
+    factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    weights:
+    - 0.3598
+    - 0.3524
+    - 0.2878
+    ic: 0.1383
+    combined_ic: 0.168
+    bull_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bull_weights:
+    - 0.3458
+    - 0.3348
+    - 0.3194
+    bull_ic: 0.0778
+    bull_combined_ic: 0.0907
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4363
+    - 0.2928
+    - 0.2709
+    bear_ic: 0.0921
+    bear_combined_ic: 0.1363
+  建筑节能:
+    factors:
+    - fund_pb
+    - volatility
+    - fund_pe
+    weights:
+    - 0.3786
+    - 0.3676
+    - 0.2538
+    ic: 0.0921
+    combined_ic: 0.1194
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5031
+    - 0.4969
+    bull_ic: 0.1176
+    bull_combined_ic: 0.1407
+    bear_factors:
+    - fund_pg_improve
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3687
+    - 0.3324
+    - 0.2989
+    bear_ic: 0.0661
+    bear_combined_ic: 0.112
+  影视概念:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.5419
+    - 0.4581
+    ic: 0.0707
+    combined_ic: 0.0972
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.3448
+    - 0.3426
+    - 0.3126
+    bull_ic: 0.0827
+    bull_combined_ic: 0.0986
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.3774
+    - 0.3669
+    - 0.2558
+    bear_ic: 0.0826
+    bear_combined_ic: 0.1038
+  微利股:
+    factors:
+    - fund_pg_improve
+    - volatility
+    - fund_pb
+    weights:
+    - 0.3693
+    - 0.3527
+    - 0.278
+    ic: 0.0567
+    combined_ic: 0.0704
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3959
+    - 0.3081
+    - 0.2961
+    bull_ic: 0.0732
+    bull_combined_ic: 0.109
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.6092
+    - 0.3908
+    bear_ic: 0.0805
+    bear_combined_ic: 0.107
+  微盘精选:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - momentum_reversal
+    weights:
+    - 0.4042
+    - 0.3246
+    - 0.2712
+    ic: 0.086
+    combined_ic: 0.1216
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.385
+    - 0.3347
+    - 0.2803
+    bull_ic: 0.1117
+    bull_combined_ic: 0.1532
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - volatility
+    bear_weights:
+    - 0.4156
+    - 0.3075
+    - 0.2768
+    bear_ic: 0.0909
+    bear_combined_ic: 0.1331
+  快手概念:
+    factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    weights:
+    - 0.3734
+    - 0.3179
+    - 0.3087
+    ic: 0.093
+    combined_ic: 0.1267
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1839
+    bull_combined_ic: 0.1839
+    bear_factors:
+    - momentum_reversal
+    - volatility
+    bear_weights:
+    - 0.5187
+    - 0.4813
+    bear_ic: 0.1142
+    bear_combined_ic: 0.1306
+  快递概念:
+    factors:
+    - fund_pb
+    - low_downside
+    weights:
+    - 0.5071
+    - 0.4929
+    ic: 0.1061
+    combined_ic: 0.1157
+    bull_factors:
+    - low_downside
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3719
+    - 0.3344
+    - 0.2937
+    bull_ic: 0.0867
+    bull_combined_ic: 0.1214
+    bear_factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4133
+    - 0.307
+    - 0.2798
+    bear_ic: 0.0665
+    bear_combined_ic: 0.0931
+  成渝特区:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.3758
+    - 0.3288
+    - 0.2954
+    ic: 0.0601
+    combined_ic: 0.0804
+    bull_factors:
+    - low_downside
+    - fund_pb
+    bull_weights:
+    - 0.5255
+    - 0.4745
+    bull_ic: 0.0908
+    bull_combined_ic: 0.1051
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pb
+    bear_weights:
+    - 0.3809
+    - 0.3447
+    - 0.2745
+    bear_ic: 0.051
+    bear_combined_ic: 0.065
+  户外露营:
+    factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    weights:
+    - 0.3581
+    - 0.3563
+    - 0.2856
+    ic: 0.0943
+    combined_ic: 0.1214
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5074
+    - 0.4926
+    bull_ic: 0.0939
+    bull_combined_ic: 0.1076
+    bear_factors:
+    - fund_pb
+    - turnover_stability
+    - fund_rg_improve
+    bear_weights:
+    - 0.4205
+    - 0.2932
+    - 0.2863
+    bear_ic: 0.089
+    bear_combined_ic: 0.1298
+  房屋检测:
+    factors:
+    - turnover_stability
+    - momentum_reversal
+    weights:
+    - 0.5661
+    - 0.4339
+    ic: 0.0882
+    combined_ic: 0.1171
+    bull_factors:
+    - turnover_stability
+    - volatility
+    bull_weights:
+    - 0.5077
+    - 0.4923
+    bull_ic: 0.0818
+    bull_combined_ic: 0.106
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - turnover_stability
+    bear_weights:
+    - 0.3456
+    - 0.3444
+    - 0.31
+    bear_ic: 0.0748
+    bear_combined_ic: 0.0981
+  抖音概念(字节概念):
+    factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    weights:
+    - 0.3494
+    - 0.33
+    - 0.3206
+    ic: 0.0754
+    combined_ic: 0.1053
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5021
+    - 0.4979
+    bull_ic: 0.1209
+    bull_combined_ic: 0.1314
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.4113
+    - 0.324
+    - 0.2648
+    bear_ic: 0.0985
+    bear_combined_ic: 0.121
+  抽水蓄能:
+    factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pe
+    weights:
+    - 0.4013
+    - 0.3028
+    - 0.2959
+    ic: 0.0863
+    combined_ic: 0.114
+    bull_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - rsi_vol_combo
+    bull_weights:
+    - 0.3675
+    - 0.3554
+    - 0.2771
+    bull_ic: 0.0686
+    bull_combined_ic: 0.0971
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - momentum_reversal
+    bear_weights:
+    - 0.464
+    - 0.2975
+    - 0.2385
+    bear_ic: 0.0792
+    bear_combined_ic: 0.1125
+  拼多多概念:
+    factors:
+    - fund_pb
+    - momentum_reversal
+    - fund_pg_improve
+    weights:
+    - 0.3759
+    - 0.3283
+    - 0.2958
+    ic: 0.0932
+    combined_ic: 0.1259
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4001
+    - 0.3522
+    - 0.2477
+    bull_ic: 0.1233
+    bull_combined_ic: 0.1694
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.4044
+    - 0.3131
+    - 0.2825
+    bear_ic: 0.1068
+    bear_combined_ic: 0.137
+  换电概念:
+    factors:
+    - fund_profit_growth
+    - fund_score
+    - volatility
+    weights:
+    - 0.3547
+    - 0.3468
+    - 0.2986
+    ic: 0.0694
+    combined_ic: 0.0803
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4024
+    - 0.3425
+    - 0.2551
+    bull_ic: 0.1081
+    bull_combined_ic: 0.1389
+    bear_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pg_improve
+    bear_weights:
+    - 0.3622
+    - 0.3395
+    - 0.2983
+    bear_ic: 0.0938
+    bear_combined_ic: 0.1249
+  数字孪生:
+    factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_profit_growth
+    weights:
+    - 0.3942
+    - 0.3163
+    - 0.2894
+    ic: 0.0808
+    combined_ic: 0.1152
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    - rsi_vol_combo
+    bull_weights:
+    - 0.3675
+    - 0.3372
+    - 0.2954
+    bull_ic: 0.1087
+    bull_combined_ic: 0.1654
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3631
+    - 0.3522
+    - 0.2847
+    bear_ic: 0.082
+    bear_combined_ic: 0.117
+  数字经济:
+    factors:
+    - fund_profit_growth
+    - fund_rg_improve
+    - momentum_reversal
+    weights:
+    - 0.3627
+    - 0.3412
+    - 0.2961
+    ic: 0.0618
+    combined_ic: 0.0928
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3729
+    - 0.3198
+    - 0.3073
+    bull_ic: 0.1091
+    bull_combined_ic: 0.1514
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3647
+    - 0.3344
+    - 0.3009
+    bear_ic: 0.082
+    bear_combined_ic: 0.1036
+  数字货币:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    weights:
+    - 0.4079
+    - 0.2969
+    - 0.2952
+    ic: 0.0608
+    combined_ic: 0.0884
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3431
+    - 0.3304
+    - 0.3265
+    bull_ic: 0.0905
+    bull_combined_ic: 0.119
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.3387
+    - 0.3315
+    - 0.3298
+    bear_ic: 0.072
+    bear_combined_ic: 0.1022
+  数据中心:
+    factors:
+    - turnover_stability
+    - fund_pe
+    - volatility
+    weights:
+    - 0.3545
+    - 0.3424
+    - 0.3032
+    ic: 0.0629
+    combined_ic: 0.0839
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.3595
+    - 0.3542
+    - 0.2863
+    bull_ic: 0.0995
+    bull_combined_ic: 0.1203
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0983
+    bear_combined_ic: 0.0983
+  数据安全:
+    factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    weights:
+    - 0.51
+    - 0.49
+    ic: 0.0818
+    combined_ic: 0.0849
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3523
+    - 0.3293
+    - 0.3184
+    bull_ic: 0.111
+    bull_combined_ic: 0.1519
+    bear_factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3471
+    - 0.3273
+    - 0.3256
+    bear_ic: 0.0756
+    bear_combined_ic: 0.1104
+  数据确权:
+    factors:
+    - fund_pb
+    - momentum_reversal
+    - fund_roe
+    weights:
+    - 0.4197
+    - 0.2931
+    - 0.2872
+    ic: 0.0876
+    combined_ic: 0.1435
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4907
+    - 0.3054
+    - 0.2039
+    bull_ic: 0.1582
+    bull_combined_ic: 0.2153
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3885
+    - 0.3608
+    - 0.2507
+    bear_ic: 0.1022
+    bear_combined_ic: 0.1426
+  数据要素:
+    factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - momentum_reversal
+    weights:
+    - 0.4087
+    - 0.3116
+    - 0.2797
+    ic: 0.0675
+    combined_ic: 0.0989
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.4178
+    - 0.292
+    - 0.2902
+    bull_ic: 0.1135
+    bull_combined_ic: 0.1618
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5098
+    - 0.4902
+    bear_ic: 0.0775
+    bear_combined_ic: 0.1033
+  文娱消费:
+    factors:
+    - fund_pb
+    - volatility
+    - fund_pe
+    weights:
+    - 0.4174
+    - 0.3416
+    - 0.241
+    ic: 0.0858
+    combined_ic: 0.1031
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5708
+    - 0.4292
+    bull_ic: 0.0951
+    bull_combined_ic: 0.105
+    bear_factors:
+    - fund_pb
+    - rsi_vol_combo
+    - momentum_reversal
+    bear_weights:
+    - 0.3826
+    - 0.3198
+    - 0.2977
+    bear_ic: 0.0874
+    bear_combined_ic: 0.1075
+  新型城镇化:
+    factors:
+    - momentum_reversal
+    - volatility
+    weights:
+    - 0.5569
+    - 0.4431
+    ic: 0.0984
+    combined_ic: 0.1166
+    bull_factors:
+    - fund_pb
+    - turnover_stability
+    bull_weights:
+    - 0.5093
+    - 0.4907
+    bull_ic: 0.0876
+    bull_combined_ic: 0.1236
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1191
+    bear_combined_ic: 0.1191
+  新型工业化:
+    factors:
+    - volatility
+    - fund_revenue_growth
+    - momentum_reversal
+    weights:
+    - 0.3593
+    - 0.3207
+    - 0.3199
+    ic: 0.0845
+    combined_ic: 0.1081
+    bull_factors:
+    - fund_pb
+    - fund_rg_improve
+    - volatility
+    bull_weights:
+    - 0.3465
+    - 0.3445
+    - 0.309
+    bull_ic: 0.0951
+    bull_combined_ic: 0.1294
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3575
+    - 0.3508
+    - 0.2917
+    bear_ic: 0.0765
+    bear_combined_ic: 0.1104
+  新材料:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - volatility
+    weights:
+    - 0.4825
+    - 0.2707
+    - 0.2467
+    ic: 0.059
+    combined_ic: 0.0781
+    bull_factors:
+    - fund_pg_improve
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3572
+    - 0.338
+    - 0.3047
+    bull_ic: 0.066
+    bull_combined_ic: 0.0801
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4755
+    - 0.277
+    - 0.2475
+    bear_ic: 0.0629
+    bear_combined_ic: 0.0925
+  新消费:
+    factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    weights:
+    - 0.3772
+    - 0.3508
+    - 0.272
+    ic: 0.0859
+    combined_ic: 0.1166
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.5446
+    - 0.4554
+    bull_ic: 0.0921
+    bull_combined_ic: 0.1267
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.394
+    - 0.3654
+    - 0.2405
+    bear_ic: 0.0693
+    bear_combined_ic: 0.1067
+  新能源:
+    factors:
+    - fund_pe
+    weights:
+    - 1.0
+    ic: 0.0878
+    combined_ic: 0.0869
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.509
+    - 0.491
+    bull_ic: 0.0718
+    bull_combined_ic: 0.0907
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4333
+    - 0.2858
+    - 0.2809
+    bear_ic: 0.0584
+    bear_combined_ic: 0.0787
+  新能源车:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    - fund_profit_growth
+    weights:
+    - 0.4138
+    - 0.3043
+    - 0.2819
+    ic: 0.0553
+    combined_ic: 0.0741
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5198
+    - 0.4802
+    bull_ic: 0.0876
+    bull_combined_ic: 0.1227
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.6255
+    - 0.3745
+    bear_ic: 0.0708
+    bear_combined_ic: 0.094
+  新零售:
+    factors:
+    - low_downside
+    - volatility
+    weights:
+    - 0.549
+    - 0.451
+    ic: 0.0779
+    combined_ic: 0.0855
+    bull_factors:
+    - fund_pb
+    - low_downside
+    - fund_pe
+    bull_weights:
+    - 0.3622
+    - 0.3454
+    - 0.2923
+    bull_ic: 0.0694
+    bull_combined_ic: 0.0946
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5728
+    - 0.4272
+    bear_ic: 0.08
+    bear_combined_ic: 0.1142
+  旅游概念:
+    factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    weights:
+    - 0.3642
+    - 0.3345
+    - 0.3014
+    ic: 0.0605
+    combined_ic: 0.0711
+    bull_factors:
+    - momentum_reversal
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0932
+    bull_combined_ic: 0.0932
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1151
+    bear_combined_ic: 0.1151
+  旅游酒店:
+    factors:
+    - fund_pb
+    - wash_sale_score
+    - rsi_vol_combo
+    weights:
+    - 0.4119
+    - 0.3591
+    - 0.229
+    ic: 0.0466
+    combined_ic: 0.0795
+    bull_factors:
+    - momentum_reversal
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0939
+    bull_combined_ic: 0.0939
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.5338
+    - 0.4662
+    bear_ic: 0.0791
+    bear_combined_ic: 0.1022
+  无人机:
+    factors:
+    - fund_pe
+    - fund_pb
+    - volatility
+    weights:
+    - 0.3682
+    - 0.3193
+    - 0.3124
+    ic: 0.0674
+    combined_ic: 0.0902
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3751
+    - 0.373
+    - 0.2519
+    bull_ic: 0.0977
+    bull_combined_ic: 0.1309
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.3886
+    - 0.3071
+    - 0.3043
+    bear_ic: 0.0744
+    bear_combined_ic: 0.1058
+  无人驾驶:
+    factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - volatility
+    weights:
+    - 0.3636
+    - 0.3205
+    - 0.316
+    ic: 0.0531
+    combined_ic: 0.064
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.3471
+    - 0.3394
+    - 0.3135
+    bull_ic: 0.0979
+    bull_combined_ic: 0.1323
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.6503
+    - 0.3497
+    bear_ic: 0.0749
+    bear_combined_ic: 0.0992
+  无线充电:
+    factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    weights:
+    - 0.4259
+    - 0.3108
+    - 0.2633
+    ic: 0.0852
+    combined_ic: 0.1211
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - momentum_reversal
+    bull_weights:
+    - 0.3891
+    - 0.345
+    - 0.2659
+    bull_ic: 0.089
+    bull_combined_ic: 0.1069
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.357
+    - 0.3293
+    - 0.3136
+    bear_ic: 0.0611
+    bear_combined_ic: 0.0879
+  无线耳机:
+    factors:
+    - volatility
+    - fund_rg_improve
+    - fund_pg_improve
+    weights:
+    - 0.3629
+    - 0.3439
+    - 0.2932
+    ic: 0.082
+    combined_ic: 0.1124
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5546
+    - 0.4454
+    bull_ic: 0.1081
+    bull_combined_ic: 0.138
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3703
+    - 0.3201
+    - 0.3097
+    bear_ic: 0.0705
+    bear_combined_ic: 0.1039
+  时空大数据:
+    factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    weights:
+    - 0.4232
+    - 0.3277
+    - 0.2492
+    ic: 0.1033
+    combined_ic: 0.1389
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3535
+    - 0.3369
+    - 0.3096
+    bull_ic: 0.1012
+    bull_combined_ic: 0.1413
+    bear_factors:
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5497
+    - 0.4503
+    bear_ic: 0.0773
+    bear_combined_ic: 0.0943
+  昨日涨停:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    - volatility
+    weights:
+    - 0.346
+    - 0.3439
+    - 0.3101
+    ic: 0.0619
+    combined_ic: 0.0915
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3619
+    - 0.3215
+    - 0.3167
+    bull_ic: 0.0934
+    bull_combined_ic: 0.1271
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pg_improve
+    bear_weights:
+    - 0.3879
+    - 0.3283
+    - 0.2839
+    bear_ic: 0.0713
+    bear_combined_ic: 0.0897
+  昨日涨停_含一字:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.3557
+    - 0.3337
+    - 0.3106
+    ic: 0.0624
+    combined_ic: 0.092
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.5352
+    - 0.4648
+    bull_ic: 0.0949
+    bull_combined_ic: 0.1095
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pg_improve
+    bear_weights:
+    - 0.3844
+    - 0.326
+    - 0.2896
+    bear_ic: 0.0696
+    bear_combined_ic: 0.0885
+  昨日炸板:
+    factors:
+    - fund_pe
+    - volatility
+    weights:
+    - 0.5069
+    - 0.4931
+    ic: 0.0874
+    combined_ic: 0.0802
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3712
+    - 0.3686
+    - 0.2602
+    bull_ic: 0.1018
+    bull_combined_ic: 0.1369
+    bear_factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    bear_weights:
+    - 0.5111
+    - 0.4889
+    bear_ic: 0.0839
+    bear_combined_ic: 0.0839
+  昨日触板:
+    factors:
+    - volatility
+    - fund_score
+    - fund_roe
+    weights:
+    - 0.3568
+    - 0.3318
+    - 0.3114
+    ic: 0.0793
+    combined_ic: 0.094
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.367
+    - 0.3447
+    - 0.2883
+    bull_ic: 0.102
+    bull_combined_ic: 0.1378
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3423
+    - 0.335
+    - 0.3227
+    bear_ic: 0.069
+    bear_combined_ic: 0.0867
+  昨日首板:
+    factors:
+    - fund_pe
+    - fund_pg_improve
+    - fund_profit_growth
+    weights:
+    - 0.4125
+    - 0.3223
+    - 0.2652
+    ic: 0.0566
+    combined_ic: 0.0877
+    bull_factors:
+    - volatility
+    - fund_pb
+    - fund_pg_improve
+    bull_weights:
+    - 0.3614
+    - 0.3264
+    - 0.3122
+    bull_ic: 0.0799
+    bull_combined_ic: 0.1005
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pg_improve
+    bear_weights:
+    - 0.4069
+    - 0.3245
+    - 0.2686
+    bear_ic: 0.078
+    bear_combined_ic: 0.1008
+  显示技术:
+    factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - momentum_reversal
+    weights:
+    - 0.3533
+    - 0.3376
+    - 0.3091
+    ic: 0.0822
+    combined_ic: 0.1321
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - momentum_reversal
+    bull_weights:
+    - 0.3599
+    - 0.3204
+    - 0.3197
+    bull_ic: 0.0882
+    bull_combined_ic: 0.1381
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.3435
+    - 0.3342
+    - 0.3223
+    bear_ic: 0.0695
+    bear_combined_ic: 0.1067
+  智慧城市:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.5231
+    - 0.4769
+    ic: 0.0765
+    combined_ic: 0.0954
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5107
+    - 0.4893
+    bull_ic: 0.1093
+    bull_combined_ic: 0.1198
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5575
+    - 0.4425
+    bear_ic: 0.0775
+    bear_combined_ic: 0.1028
+  智慧政务:
+    factors:
+    - fund_rg_improve
+    - fund_pb
+    - volatility
+    weights:
+    - 0.3597
+    - 0.3248
+    - 0.3155
+    ic: 0.0665
+    combined_ic: 0.0803
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.3366
+    - 0.3328
+    - 0.3305
+    bull_ic: 0.1286
+    bull_combined_ic: 0.174
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3882
+    - 0.3178
+    - 0.2939
+    bear_ic: 0.087
+    bear_combined_ic: 0.1215
+  智慧灯杆:
+    factors:
+    - fund_profit_growth
+    - volatility
+    weights:
+    - 0.5443
+    - 0.4557
+    ic: 0.0941
+    combined_ic: 0.1134
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4064
+    - 0.3339
+    - 0.2597
+    bull_ic: 0.1015
+    bull_combined_ic: 0.1329
+    bear_factors:
+    - fund_revenue_growth
+    - fund_profit_growth
+    - rsi_vol_combo
+    bear_weights:
+    - 0.399
+    - 0.3142
+    - 0.2867
+    bear_ic: 0.064
+    bear_combined_ic: 0.0946
+  智能家居:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5616
+    - 0.4384
+    ic: 0.0588
+    combined_ic: 0.0841
+    bull_factors:
+    - fund_pb
+    - fund_profit_growth
+    - volatility
+    bull_weights:
+    - 0.3877
+    - 0.3165
+    - 0.2958
+    bull_ic: 0.0732
+    bull_combined_ic: 0.1039
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_profit_growth
+    bear_weights:
+    - 0.3736
+    - 0.3153
+    - 0.3112
+    bear_ic: 0.0607
+    bear_combined_ic: 0.0844
+  智能电网:
+    factors:
+    - fund_pe
+    - fund_pb
+    - volatility
+    weights:
+    - 0.4232
+    - 0.3039
+    - 0.273
+    ic: 0.0776
+    combined_ic: 0.0924
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1074
+    bull_combined_ic: 0.1074
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.4107
+    - 0.3231
+    - 0.2662
+    bear_ic: 0.073
+    bear_combined_ic: 0.1081
+  智能穿戴:
+    factors:
+    - momentum_reversal
+    - fund_pg_improve
+    weights:
+    - 0.5113
+    - 0.4887
+    ic: 0.0656
+    combined_ic: 0.0856
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4137
+    - 0.2934
+    - 0.2929
+    bull_ic: 0.0873
+    bull_combined_ic: 0.121
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3976
+    - 0.3015
+    - 0.3008
+    bear_ic: 0.087
+    bear_combined_ic: 0.12
+  智谱AI概念:
+    factors:
+    - volatility
+    - fund_pe
+    - fund_pb
+    weights:
+    - 0.4156
+    - 0.2991
+    - 0.2854
+    ic: 0.1101
+    combined_ic: 0.1492
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4076
+    - 0.3156
+    - 0.2768
+    bull_ic: 0.1153
+    bull_combined_ic: 0.1569
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bear_weights:
+    - 0.3468
+    - 0.3335
+    - 0.3197
+    bear_ic: 0.1043
+    bear_combined_ic: 0.1396
+  最近多板:
+    factors:
+    - fund_pe
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.3668
+    - 0.3261
+    - 0.3071
+    ic: 0.0621
+    combined_ic: 0.088
+    bull_factors:
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.5273
+    - 0.4727
+    bull_ic: 0.0952
+    bull_combined_ic: 0.1056
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0821
+    bear_combined_ic: 0.0821
+  有机硅概念:
+    factors:
+    - fund_pg_improve
+    - volatility
+    - fund_pb
+    weights:
+    - 0.4135
+    - 0.3059
+    - 0.2806
+    ic: 0.0821
+    combined_ic: 0.1085
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3599
+    - 0.3449
+    - 0.2952
+    bull_ic: 0.0811
+    bull_combined_ic: 0.1243
+    bear_factors:
+    - fund_score
+    - fund_pe
+    - turnover_stability
+    bear_weights:
+    - 0.3449
+    - 0.3375
+    - 0.3176
+    bear_ic: 0.0637
+    bear_combined_ic: 0.1049
+  机器人执行器:
+    factors:
+    - volatility
+    - momentum_reversal
+    - fund_pe
+    weights:
+    - 0.4284
+    - 0.3075
+    - 0.264
+    ic: 0.0816
+    combined_ic: 0.114
+    bull_factors:
+    - fund_pe
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3688
+    - 0.3262
+    - 0.305
+    bull_ic: 0.0668
+    bull_combined_ic: 0.0864
+    bear_factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    - fund_pe
+    bear_weights:
+    - 0.3488
+    - 0.3431
+    - 0.3081
+    bear_ic: 0.0995
+    bear_combined_ic: 0.1289
+  机器人概念:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.3662
+    - 0.3503
+    - 0.2835
+    ic: 0.0481
+    combined_ic: 0.0708
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1054
+    bull_combined_ic: 0.1054
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5287
+    - 0.4713
+    bear_ic: 0.0706
+    bear_combined_ic: 0.091
+  机器视觉:
+    factors:
+    - fund_pg_improve
+    - rsi_vol_combo
+    weights:
+    - 0.5478
+    - 0.4522
+    ic: 0.0706
+    combined_ic: 0.0934
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.362
+    - 0.3316
+    - 0.3064
+    bull_ic: 0.102
+    bull_combined_ic: 0.1436
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.427
+    - 0.2933
+    - 0.2798
+    bear_ic: 0.0969
+    bear_combined_ic: 0.1543
+  权重股:
+    factors:
+    - smart_money_flow
+    - top_fractal_volume
+    - vol_opening_confirm
+    weights:
+    - 0.387
+    - 0.3747
+    - 0.2383
+    ic: 0.0521
+    combined_ic: 0.0856
+    bull_factors:
+    - fund_pg_improve
+    - fund_pe
+    - turnover_stability
+    bull_weights:
+    - 0.3708
+    - 0.3484
+    - 0.2808
+    bull_ic: 0.0489
+    bull_combined_ic: 0.0717
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pe
+    bear_weights:
+    - 0.482
+    - 0.2936
+    - 0.2244
+    bear_ic: 0.0703
+    bear_combined_ic: 0.0951
+  柔性屏(折叠屏):
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    weights:
+    - 0.3735
+    - 0.3157
+    - 0.3108
+    ic: 0.0676
+    combined_ic: 0.1046
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    bull_weights:
+    - 0.3803
+    - 0.3436
+    - 0.2761
+    bull_ic: 0.1042
+    bull_combined_ic: 0.1434
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.4012
+    - 0.3555
+    - 0.2433
+    bear_ic: 0.0735
+    bear_combined_ic: 0.1159
+  核污染防治:
+    factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    weights:
+    - 0.4495
+    - 0.2767
+    - 0.2738
+    ic: 0.0842
+    combined_ic: 0.1273
+    bull_factors:
+    - fund_pe
+    - fund_pb
+    bull_weights:
+    - 0.6043
+    - 0.3957
+    bull_ic: 0.1184
+    bull_combined_ic: 0.1536
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.4244
+    - 0.296
+    - 0.2796
+    bear_ic: 0.092
+    bear_combined_ic: 0.1148
+  核能核电:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    - volatility
+    weights:
+    - 0.3492
+    - 0.3311
+    - 0.3198
+    ic: 0.0777
+    combined_ic: 0.0978
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.5899
+    - 0.4101
+    bull_ic: 0.0581
+    bull_combined_ic: 0.0677
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5505
+    - 0.4495
+    bear_ic: 0.0677
+    bear_combined_ic: 0.0928
+  毫米波概念:
+    factors:
+    - fund_pe
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.3449
+    - 0.3392
+    - 0.316
+    ic: 0.087
+    combined_ic: 0.1077
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4292
+    - 0.2872
+    - 0.2836
+    bull_ic: 0.0792
+    bull_combined_ic: 0.109
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3798
+    - 0.3108
+    - 0.3094
+    bear_ic: 0.0812
+    bear_combined_ic: 0.11
+  民爆概念:
+    factors:
+    - volatility
+    - rsi_vol_combo
+    - fund_pg_improve
+    weights:
+    - 0.3843
+    - 0.3372
+    - 0.2785
+    ic: 0.0486
+    combined_ic: 0.0595
+    bull_factors:
+    - low_downside
+    - fund_pb
+    - fund_rg_improve
+    bull_weights:
+    - 0.3466
+    - 0.3345
+    - 0.3188
+    bull_ic: 0.0546
+    bull_combined_ic: 0.0841
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_roe
+    bear_weights:
+    - 0.488
+    - 0.2787
+    - 0.2333
+    bear_ic: 0.086
+    bear_combined_ic: 0.131
+  氟化工概念:
+    factors:
+    - fund_pg_improve
+    weights:
+    - 1.0
+    ic: 0.112
+    combined_ic: 0.112
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0802
+    bull_combined_ic: 0.0802
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.4904
+    - 0.2657
+    - 0.2439
+    bear_ic: 0.084
+    bear_combined_ic: 0.1165
+  氢能源:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.5603
+    - 0.4397
+    ic: 0.0702
+    combined_ic: 0.0836
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - volatility
+    bull_weights:
+    - 0.3672
+    - 0.322
+    - 0.3108
+    bull_ic: 0.0747
+    bull_combined_ic: 0.0876
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3917
+    - 0.3124
+    - 0.2959
+    bear_ic: 0.0664
+    bear_combined_ic: 0.0935
+  氮化镓:
+    factors:
+    - volatility
+    - low_downside
+    - momentum_reversal
+    weights:
+    - 0.4152
+    - 0.3
+    - 0.2847
+    ic: 0.0887
+    combined_ic: 0.1219
+    bull_factors:
+    - fund_pe
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3663
+    - 0.3385
+    - 0.2952
+    bull_ic: 0.1055
+    bull_combined_ic: 0.1257
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3709
+    - 0.3252
+    - 0.304
+    bear_ic: 0.1025
+    bear_combined_ic: 0.1436
+  水利建设:
+    factors:
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.5049
+    - 0.4951
+    ic: 0.0764
+    combined_ic: 0.0925
+    bull_factors:
+    - momentum_reversal
+    - turnover_stability
+    bull_weights:
+    - 0.5577
+    - 0.4423
+    bull_ic: 0.066
+    bull_combined_ic: 0.0912
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - turnover_stability
+    bear_weights:
+    - 0.3662
+    - 0.3388
+    - 0.2949
+    bear_ic: 0.0631
+    bear_combined_ic: 0.0925
+  汽车一体化压铸:
+    factors:
+    - volatility
+    - rsi_vol_combo
+    - fund_pe
+    weights:
+    - 0.3634
+    - 0.3463
+    - 0.2903
+    ic: 0.0892
+    combined_ic: 0.1165
+    bull_factors:
+    - volatility
+    - fund_pe
+    - fund_pb
+    bull_weights:
+    - 0.3694
+    - 0.3215
+    - 0.3091
+    bull_ic: 0.1131
+    bull_combined_ic: 0.1606
+    bear_factors:
+    - momentum_reversal
+    - fund_pe
+    bear_weights:
+    - 0.5486
+    - 0.4514
+    bear_ic: 0.0756
+    bear_combined_ic: 0.0863
+  汽车整车:
+    factors:
+    - low_downside
+    - fund_pb
+    weights:
+    - 0.6081
+    - 0.3919
+    ic: 0.082
+    combined_ic: 0.1159
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1215
+    bull_combined_ic: 0.1215
+    bear_factors:
+    - fund_rg_improve
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0469
+    bear_combined_ic: 0.0469
+  汽车热管理:
+    factors:
+    - momentum_reversal
+    - fund_pe
+    - fund_pb
+    weights:
+    - 0.3962
+    - 0.3492
+    - 0.2546
+    ic: 0.0848
+    combined_ic: 0.1369
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - low_downside
+    bull_weights:
+    - 0.4112
+    - 0.3576
+    - 0.2313
+    bull_ic: 0.1084
+    bull_combined_ic: 0.1434
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5073
+    - 0.4927
+    bear_ic: 0.103
+    bear_combined_ic: 0.1402
+  汽车芯片:
+    factors:
+    - fund_profit_growth
+    - fund_pe
+    - volatility
+    weights:
+    - 0.3502
+    - 0.3334
+    - 0.3164
+    ic: 0.0579
+    combined_ic: 0.0823
+    bull_factors:
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.5056
+    - 0.4944
+    bull_ic: 0.124
+    bull_combined_ic: 0.1579
+    bear_factors:
+    - fund_pe
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3625
+    - 0.3539
+    - 0.2836
+    bear_ic: 0.0719
+    bear_combined_ic: 0.1196
+  沪企改革:
+    factors:
+    - fund_pb
+    - low_downside
+    - fund_pe
+    weights:
+    - 0.3737
+    - 0.3201
+    - 0.3062
+    ic: 0.0892
+    combined_ic: 0.1259
+    bull_factors:
+    - momentum_reversal
+    - low_downside
+    - fund_pb
+    bull_weights:
+    - 0.4235
+    - 0.3104
+    - 0.2661
+    bull_ic: 0.0753
+    bull_combined_ic: 0.1174
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1114
+    bear_combined_ic: 0.1114
+  油气设服:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.1382
+    combined_ic: 0.1382
+    bull_factors:
+    - fund_pg_improve
+    - low_downside
+    - fund_gross_margin
+    bull_weights:
+    - 0.4092
+    - 0.3218
+    - 0.269
+    bull_ic: 0.0536
+    bull_combined_ic: 0.0857
+    bear_factors:
+    - fund_profit_growth
+    - fund_rg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3529
+    - 0.342
+    - 0.3051
+    bear_ic: 0.0614
+    bear_combined_ic: 0.0937
+  油气资源:
+    factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    weights:
+    - 0.4112
+    - 0.3106
+    - 0.2782
+    ic: 0.0972
+    combined_ic: 0.1359
+    bull_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_rg_improve
+    bull_weights:
+    - 0.4294
+    - 0.2866
+    - 0.284
+    bull_ic: 0.0447
+    bull_combined_ic: 0.0646
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4651
+    - 0.2894
+    - 0.2455
+    bear_ic: 0.0591
+    bear_combined_ic: 0.0803
+  流感:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - low_downside
+    weights:
+    - 0.3452
+    - 0.343
+    - 0.3118
+    ic: 0.0949
+    combined_ic: 0.1169
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.5155
+    - 0.4845
+    bull_ic: 0.053
+    bull_combined_ic: 0.0696
+    bear_factors:
+    - fund_pb
+    - fund_rg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.4341
+    - 0.285
+    - 0.281
+    bear_ic: 0.0685
+    bear_combined_ic: 0.0987
+  海南自贸:
+    factors:
+    - volatility
+    - turnover_stability
+    - momentum_reversal
+    weights:
+    - 0.3708
+    - 0.349
+    - 0.2803
+    ic: 0.0588
+    combined_ic: 0.0789
+    bull_factors:
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.529
+    - 0.471
+    bull_ic: 0.0852
+    bull_combined_ic: 0.1023
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.5017
+    - 0.4983
+    bear_ic: 0.09
+    bear_combined_ic: 0.0951
+  海工装备:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.1112
+    combined_ic: 0.1112
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.079
+    bull_combined_ic: 0.079
+    bear_factors:
+    - fund_rg_improve
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.3576
+    - 0.3263
+    - 0.3162
+    bear_ic: 0.0591
+    bear_combined_ic: 0.0814
+  海洋经济:
+    factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    weights:
+    - 0.4438
+    - 0.2838
+    - 0.2724
+    ic: 0.0903
+    combined_ic: 0.1066
+    bull_factors:
+    - low_downside
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3813
+    - 0.3104
+    - 0.3083
+    bull_ic: 0.0715
+    bull_combined_ic: 0.0919
+    bear_factors:
+    - fund_rg_improve
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.3582
+    - 0.3238
+    - 0.3179
+    bear_ic: 0.067
+    bear_combined_ic: 0.0879
+  海绵城市:
+    factors:
+    - fund_profit_growth
+    - fund_score
+    - fund_pe
+    weights:
+    - 0.3906
+    - 0.3217
+    - 0.2877
+    ic: 0.1009
+    combined_ic: 0.1134
+    bull_factors:
+    - turnover_stability
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3973
+    - 0.3085
+    - 0.2943
+    bull_ic: 0.0814
+    bull_combined_ic: 0.1271
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.563
+    - 0.437
+    bear_ic: 0.0714
+    bear_combined_ic: 0.0959
+  消费电子概念:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.3682
+    - 0.3361
+    - 0.2957
+    ic: 0.0587
+    combined_ic: 0.0822
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.6296
+    - 0.3704
+    bull_ic: 0.0945
+    bull_combined_ic: 0.1344
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.3508
+    - 0.3287
+    - 0.3205
+    bear_ic: 0.0762
+    bear_combined_ic: 0.1092
+  液冷概念:
+    factors:
+    - fund_pe
+    - fund_pb
+    - fund_pg_improve
+    weights:
+    - 0.3786
+    - 0.3568
+    - 0.2646
+    ic: 0.0727
+    combined_ic: 0.0982
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1088
+    bull_combined_ic: 0.1088
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - fund_pe
+    bear_weights:
+    - 0.415
+    - 0.3242
+    - 0.2608
+    bear_ic: 0.0725
+    bear_combined_ic: 0.0962
+  深证100R:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - top_fractal_volume
+    weights:
+    - 0.3848
+    - 0.3382
+    - 0.277
+    ic: 0.0397
+    combined_ic: 0.0587
+    bull_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pe
+    bull_weights:
+    - 0.4265
+    - 0.3097
+    - 0.2638
+    bull_ic: 0.0458
+    bull_combined_ic: 0.0621
+    bear_factors:
+    - fund_pg_improve
+    - bb_width_20
+    bear_weights:
+    - 0.5054
+    - 0.4946
+    bear_ic: 0.0519
+    bear_combined_ic: 0.0688
+  混合现实:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pe
+    weights:
+    - 0.4036
+    - 0.3098
+    - 0.2866
+    ic: 0.0771
+    combined_ic: 0.117
+    bull_factors:
+    - fund_rg_improve
+    - fund_profit_growth
+    - momentum_reversal
+    bull_weights:
+    - 0.3882
+    - 0.3061
+    - 0.3057
+    bull_ic: 0.0874
+    bull_combined_ic: 0.1351
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - volatility
+    bear_weights:
+    - 0.4358
+    - 0.2866
+    - 0.2777
+    bear_ic: 0.0917
+    bear_combined_ic: 0.1317
+  湖北自贸:
+    factors:
+    - fund_rg_improve
+    weights:
+    - 1.0
+    ic: 0.0717
+    combined_ic: 0.0717
+    bull_factors:
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.5224
+    - 0.4776
+    bull_ic: 0.101
+    bull_combined_ic: 0.1185
+    bear_factors:
+    - momentum_reversal
+    - fund_rg_improve
+    - fund_profit_growth
+    bear_weights:
+    - 0.3728
+    - 0.3215
+    - 0.3057
+    bear_ic: 0.0685
+    bear_combined_ic: 0.0897
+  滨海新区:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_revenue_growth
+    weights:
+    - 0.3576
+    - 0.3356
+    - 0.3068
+    ic: 0.0721
+    combined_ic: 0.0994
+    bull_factors:
+    - fund_pg_improve
+    - low_downside
+    - momentum_reversal
+    bull_weights:
+    - 0.3981
+    - 0.3042
+    - 0.2977
+    bull_ic: 0.0897
+    bull_combined_ic: 0.1247
+    bear_factors:
+    - fund_pg_improve
+    - fund_revenue_growth
+    - momentum_reversal
+    bear_weights:
+    - 0.3531
+    - 0.3385
+    - 0.3085
+    bear_ic: 0.07
+    bear_combined_ic: 0.1226
+  激光雷达:
+    factors:
+    - fund_pe
+    - fund_roe
+    - momentum_reversal
+    weights:
+    - 0.3724
+    - 0.3179
+    - 0.3096
+    ic: 0.062
+    combined_ic: 0.0943
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.3626
+    - 0.3439
+    - 0.2936
+    bull_ic: 0.0918
+    bull_combined_ic: 0.137
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pe
+    bear_weights:
+    - 0.4129
+    - 0.3533
+    - 0.2338
+    bear_ic: 0.1121
+    bear_combined_ic: 0.1438
+  煤化工概念:
+    factors:
+    - volatility
+    - fund_pb
+    - fund_pe
+    weights:
+    - 0.3753
+    - 0.3179
+    - 0.3069
+    ic: 0.0786
+    combined_ic: 0.0907
+    bull_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_revenue_growth
+    bull_weights:
+    - 0.356
+    - 0.3288
+    - 0.3152
+    bull_ic: 0.05
+    bull_combined_ic: 0.0652
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - fund_pe
+    bear_weights:
+    - 0.3774
+    - 0.3311
+    - 0.2915
+    bear_ic: 0.082
+    bear_combined_ic: 0.1149
+  燃料电池概念:
+    factors:
+    - volatility
+    - fund_profit_growth
+    - momentum_reversal
+    weights:
+    - 0.3611
+    - 0.3342
+    - 0.3047
+    ic: 0.0676
+    combined_ic: 0.0889
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.5272
+    - 0.4728
+    bull_ic: 0.0807
+    bull_combined_ic: 0.1156
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4007
+    - 0.3347
+    - 0.2646
+    bear_ic: 0.0703
+    bear_combined_ic: 0.0987
+  物联网:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.6051
+    - 0.3949
+    ic: 0.066
+    combined_ic: 0.0833
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5224
+    - 0.4776
+    bull_ic: 0.1021
+    bull_combined_ic: 0.1158
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3523
+    - 0.3456
+    - 0.3021
+    bear_ic: 0.071
+    bear_combined_ic: 0.0873
+  特斯拉概念:
+    factors:
+    - fund_pe
+    - fund_pb
+    - volatility
+    weights:
+    - 0.3854
+    - 0.3299
+    - 0.2847
+    ic: 0.0687
+    combined_ic: 0.0823
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5375
+    - 0.4625
+    bull_ic: 0.094
+    bull_combined_ic: 0.1327
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pb
+    bear_weights:
+    - 0.4531
+    - 0.275
+    - 0.2718
+    bear_ic: 0.0704
+    bear_combined_ic: 0.1079
+  特色药:
+    factors:
+    - fund_pe
+    weights:
+    - 1.0
+    ic: 0.1205
+    combined_ic: 0.1203
+    bull_factors:
+    - fund_pe
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1087
+    bull_combined_ic: 0.109
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - fund_rg_improve
+    bear_weights:
+    - 0.3782
+    - 0.3359
+    - 0.2858
+    bear_ic: 0.0873
+    bear_combined_ic: 0.1233
+  特高压:
+    factors:
+    - fund_pe
+    - fund_score
+    weights:
+    - 0.5795
+    - 0.4205
+    ic: 0.0814
+    combined_ic: 0.0941
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5998
+    - 0.4002
+    bull_ic: 0.0703
+    bull_combined_ic: 0.0996
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pb
+    bear_weights:
+    - 0.4138
+    - 0.3315
+    - 0.2547
+    bear_ic: 0.0636
+    bear_combined_ic: 0.0929
+  独家药品:
+    factors:
+    - fund_pe
+    - volatility
+    - low_downside
+    weights:
+    - 0.3992
+    - 0.3153
+    - 0.2855
+    ic: 0.0978
+    combined_ic: 0.1234
+    bull_factors:
+    - fund_profit_growth
+    - low_downside
+    - turnover_stability
+    bull_weights:
+    - 0.3588
+    - 0.3388
+    - 0.3024
+    bull_ic: 0.0617
+    bull_combined_ic: 0.1034
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_pe
+    bear_weights:
+    - 0.3978
+    - 0.3487
+    - 0.2534
+    bear_ic: 0.0769
+    bear_combined_ic: 0.1093
+  独角兽:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.3398
+    - 0.3305
+    - 0.3296
+    ic: 0.0491
+    combined_ic: 0.0717
+    bull_factors:
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.5095
+    - 0.4905
+    bull_ic: 0.077
+    bull_combined_ic: 0.0936
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5399
+    - 0.4601
+    bear_ic: 0.0644
+    bear_combined_ic: 0.0795
+  猪肉概念:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.5383
+    - 0.4617
+    ic: 0.0735
+    combined_ic: 0.1069
+    bull_factors:
+    - turnover_stability
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3665
+    - 0.3651
+    - 0.2684
+    bull_ic: 0.0695
+    bull_combined_ic: 0.107
+    bear_factors:
+    - fund_pe
+    - volatility
+    bear_weights:
+    - 0.6395
+    - 0.3605
+    bear_ic: 0.0449
+    bear_combined_ic: 0.0776
+  环氧丙烷:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.5924
+    - 0.4076
+    ic: 0.092
+    combined_ic: 0.1253
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_profit_growth
+    bull_weights:
+    - 0.3948
+    - 0.3569
+    - 0.2483
+    bull_ic: 0.0948
+    bull_combined_ic: 0.1303
+    bear_factors:
+    - fund_pe
+    - fund_pb
+    bear_weights:
+    - 0.5481
+    - 0.4519
+    bear_ic: 0.0857
+    bear_combined_ic: 0.0919
+  玻璃基板:
+    factors:
+    - fund_rg_improve
+    weights:
+    - 1.0
+    ic: 0.086
+    combined_ic: 0.086
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4266
+    - 0.2916
+    - 0.2818
+    bull_ic: 0.0993
+    bull_combined_ic: 0.1388
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.5309
+    - 0.4691
+    bear_ic: 0.0857
+    bear_combined_ic: 0.1214
+  生态农业:
+    factors:
+    - volatility
+    - turnover_stability
+    - fund_pg_improve
+    weights:
+    - 0.4436
+    - 0.2883
+    - 0.2681
+    ic: 0.0945
+    combined_ic: 0.1323
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5823
+    - 0.4177
+    bull_ic: 0.0831
+    bull_combined_ic: 0.0955
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5836
+    - 0.4164
+    bear_ic: 0.0779
+    bear_combined_ic: 0.1012
+  生物疫苗:
+    factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    weights:
+    - 0.3462
+    - 0.3388
+    - 0.315
+    ic: 0.1046
+    combined_ic: 0.1246
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1014
+    bull_combined_ic: 0.1011
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.5077
+    - 0.4923
+    bear_ic: 0.083
+    bear_combined_ic: 0.1069
+  生物识别:
+    factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    weights:
+    - 0.3868
+    - 0.3102
+    - 0.303
+    ic: 0.0756
+    combined_ic: 0.1024
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.4179
+    - 0.3012
+    - 0.2809
+    bull_ic: 0.0765
+    bull_combined_ic: 0.1116
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.5165
+    - 0.2654
+    - 0.2181
+    bear_ic: 0.0952
+    bear_combined_ic: 0.1403
+  生物质能发电:
+    factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    weights:
+    - 0.4611
+    - 0.2984
+    - 0.2406
+    ic: 0.089
+    combined_ic: 0.1362
+    bull_factors:
+    - momentum_reversal
+    - turnover_stability
+    - rsi_vol_combo
+    bull_weights:
+    - 0.3443
+    - 0.3286
+    - 0.3271
+    bull_ic: 0.116
+    bull_combined_ic: 0.1509
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.6693
+    - 0.3307
+    bear_ic: 0.0846
+    bear_combined_ic: 0.1146
+  电商概念:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.556
+    - 0.444
+    ic: 0.0763
+    combined_ic: 0.0973
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.3631
+    - 0.3579
+    - 0.279
+    bull_ic: 0.0738
+    bull_combined_ic: 0.0908
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    - fund_pb
+    bear_weights:
+    - 0.3597
+    - 0.3592
+    - 0.281
+    bear_ic: 0.061
+    bear_combined_ic: 0.0938
+  电子后视镜:
+    factors:
+    - rsi_vol_combo
+    weights:
+    - 1.0
+    ic: 0.0706
+    combined_ic: 0.0706
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.5646
+    - 0.4354
+    bull_ic: 0.133
+    bull_combined_ic: 0.1872
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    - volatility
+    bear_weights:
+    - 0.3569
+    - 0.3239
+    - 0.3192
+    bear_ic: 0.0842
+    bear_combined_ic: 0.1197
+  电子烟:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - momentum_reversal
+    weights:
+    - 0.3646
+    - 0.3401
+    - 0.2953
+    ic: 0.0768
+    combined_ic: 0.1101
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3999
+    - 0.3132
+    - 0.2869
+    bull_ic: 0.1184
+    bull_combined_ic: 0.1623
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.3537
+    - 0.3264
+    - 0.3198
+    bear_ic: 0.0731
+    bear_combined_ic: 0.1068
+  电子竞技:
+    factors:
+    - fund_rg_improve
+    - fund_pb
+    - fund_pe
+    weights:
+    - 0.3506
+    - 0.3416
+    - 0.3078
+    ic: 0.0883
+    combined_ic: 0.1258
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5937
+    - 0.4063
+    bull_ic: 0.0939
+    bull_combined_ic: 0.1309
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5807
+    - 0.4193
+    bear_ic: 0.0771
+    bear_combined_ic: 0.1065
+  电子身份证:
+    factors:
+    - fund_pb
+    - momentum_reversal
+    - rsi_vol_combo
+    weights:
+    - 0.4472
+    - 0.2872
+    - 0.2656
+    ic: 0.079
+    combined_ic: 0.1207
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - rsi_vol_combo
+    bull_weights:
+    - 0.407
+    - 0.2999
+    - 0.2932
+    bull_ic: 0.1355
+    bull_combined_ic: 0.1774
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bear_weights:
+    - 0.4065
+    - 0.3309
+    - 0.2626
+    bear_ic: 0.1017
+    bear_combined_ic: 0.1446
+  电池技术:
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.6151
+    - 0.3849
+    ic: 0.0641
+    combined_ic: 0.0806
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.516
+    - 0.484
+    bull_ic: 0.0908
+    bull_combined_ic: 0.103
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.444
+    - 0.3206
+    - 0.2354
+    bear_ic: 0.0648
+    bear_combined_ic: 0.0924
+  电网概念:
+    factors:
+    - fund_pe
+    - fund_pb
+    - fund_score
+    weights:
+    - 0.4318
+    - 0.3388
+    - 0.2294
+    ic: 0.0719
+    combined_ic: 0.0957
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.6323
+    - 0.3677
+    bull_ic: 0.0961
+    bull_combined_ic: 0.1086
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_profit_growth
+    bear_weights:
+    - 0.4066
+    - 0.3025
+    - 0.2909
+    bear_ic: 0.0694
+    bear_combined_ic: 0.0985
+  病原体防治:
+    factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    weights:
+    - 0.4151
+    - 0.2976
+    - 0.2873
+    ic: 0.1081
+    combined_ic: 0.1338
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pg_improve
+    bull_weights:
+    - 0.3471
+    - 0.341
+    - 0.312
+    bull_ic: 0.0582
+    bull_combined_ic: 0.0774
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - volatility
+    bear_weights:
+    - 0.4024
+    - 0.3524
+    - 0.2452
+    bear_ic: 0.08
+    bear_combined_ic: 0.1058
+  病毒防治:
+    factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    weights:
+    - 0.3716
+    - 0.3493
+    - 0.2791
+    ic: 0.1043
+    combined_ic: 0.1292
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5455
+    - 0.4545
+    bull_ic: 0.0728
+    bull_combined_ic: 0.1034
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.5502
+    - 0.4498
+    bear_ic: 0.0906
+    bear_combined_ic: 0.1177
+  白酒:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5887
+    - 0.4113
+    ic: 0.0713
+    combined_ic: 0.0868
+    bull_factors:
+    - volatility
+    - low_downside
+    - fund_pg_improve
+    bull_weights:
+    - 0.3812
+    - 0.3148
+    - 0.304
+    bull_ic: 0.0477
+    bull_combined_ic: 0.0662
+    bear_factors:
+    - fund_pg_improve
+    - rsi_vol_combo
+    bear_weights:
+    - 0.629
+    - 0.371
+    bear_ic: 0.0758
+    bear_combined_ic: 0.1061
+  百度概念:
+    factors:
+    - fund_pb
+    weights:
+    - 1.0
+    ic: 0.0821
+    combined_ic: 0.0821
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3831
+    - 0.3402
+    - 0.2767
+    bull_ic: 0.1024
+    bull_combined_ic: 0.1353
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.37
+    - 0.3316
+    - 0.2983
+    bear_ic: 0.096
+    bear_combined_ic: 0.1208
+  百日新高:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.4064
+    - 0.3499
+    - 0.2437
+    ic: 0.0561
+    combined_ic: 0.0855
+    bull_factors:
+    - volatility
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.3523
+    - 0.3263
+    - 0.3214
+    bull_ic: 0.076
+    bull_combined_ic: 0.0949
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3631
+    - 0.3343
+    - 0.3026
+    bear_ic: 0.0663
+    bear_combined_ic: 0.0986
+  知识产权:
+    factors:
+    - fund_pb
+    - volatility
+    weights:
+    - 0.5319
+    - 0.4681
+    ic: 0.1044
+    combined_ic: 0.1181
+    bull_factors:
+    - volatility
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.3815
+    - 0.3571
+    - 0.2614
+    bull_ic: 0.1212
+    bull_combined_ic: 0.1544
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3589
+    - 0.3392
+    - 0.3019
+    bear_ic: 0.0991
+    bear_combined_ic: 0.143
+  短剧互动游戏:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.4018
+    - 0.3252
+    - 0.273
+    ic: 0.1012
+    combined_ic: 0.1408
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.541
+    - 0.459
+    bull_ic: 0.1145
+    bull_combined_ic: 0.1277
+    bear_factors:
+    - volatility
+    - rsi_vol_combo
+    bear_weights:
+    - 0.5033
+    - 0.4967
+    bear_ic: 0.1095
+    bear_combined_ic: 0.1434
+  石墨烯:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.6653
+    - 0.3347
+    ic: 0.0693
+    combined_ic: 0.095
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.3702
+    - 0.3158
+    - 0.314
+    bull_ic: 0.0887
+    bull_combined_ic: 0.1343
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_profit_growth
+    bear_weights:
+    - 0.5182
+    - 0.2562
+    - 0.2256
+    bear_ic: 0.0901
+    bear_combined_ic: 0.1395
+  碳交易:
+    factors:
+    - volatility
+    - momentum_reversal
+    weights:
+    - 0.5123
+    - 0.4877
+    ic: 0.0934
+    combined_ic: 0.1158
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5797
+    - 0.4203
+    bull_ic: 0.0813
+    bull_combined_ic: 0.1155
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.5134
+    - 0.4866
+    bear_ic: 0.082
+    bear_combined_ic: 0.0886
+  碳化硅:
+    factors:
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.5587
+    - 0.4413
+    ic: 0.0683
+    combined_ic: 0.0881
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.414
+    - 0.3144
+    - 0.2716
+    bull_ic: 0.0809
+    bull_combined_ic: 0.1244
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5391
+    - 0.4609
+    bear_ic: 0.0698
+    bear_combined_ic: 0.0967
+  碳纤维:
+    factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    weights:
+    - 0.4636
+    - 0.2873
+    - 0.2491
+    ic: 0.0818
+    combined_ic: 0.1198
+    bull_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bull_weights:
+    - 0.4208
+    - 0.3299
+    - 0.2493
+    bull_ic: 0.0919
+    bull_combined_ic: 0.1124
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.3688
+    - 0.3523
+    - 0.2789
+    bear_ic: 0.085
+    bear_combined_ic: 0.1213
+  磁悬浮概念:
+    factors:
+    - fund_profit_growth
+    - momentum_reversal
+    weights:
+    - 0.5273
+    - 0.4727
+    ic: 0.086
+    combined_ic: 0.0991
+    bull_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bull_weights:
+    - 0.541
+    - 0.459
+    bull_ic: 0.0831
+    bull_combined_ic: 0.1113
+    bear_factors:
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5523
+    - 0.4477
+    bear_ic: 0.0548
+    bear_combined_ic: 0.0733
+  磷化工:
+    factors:
+    - volatility
+    - fund_pb
+    - fund_pg_improve
+    weights:
+    - 0.3539
+    - 0.3308
+    - 0.3153
+    ic: 0.0905
+    combined_ic: 0.1201
+    bull_factors:
+    - fund_pe
+    - fund_pb
+    bull_weights:
+    - 0.5132
+    - 0.4868
+    bull_ic: 0.0892
+    bull_combined_ic: 0.1116
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pb
+    bear_weights:
+    - 0.3967
+    - 0.3914
+    - 0.2119
+    bear_ic: 0.077
+    bear_combined_ic: 0.1142
+  社区团购:
+    factors:
+    - fund_pb
+    - fund_pg_improve
+    weights:
+    - 0.5375
+    - 0.4625
+    ic: 0.0782
+    combined_ic: 0.0955
+    bull_factors:
+    - fund_rg_improve
+    - low_downside
+    - fund_pb
+    bull_weights:
+    - 0.4099
+    - 0.3007
+    - 0.2894
+    bull_ic: 0.0703
+    bull_combined_ic: 0.1013
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.4613
+    - 0.3033
+    - 0.2354
+    bear_ic: 0.0963
+    bear_combined_ic: 0.1432
+  科创板做市股:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    weights:
+    - 0.4193
+    - 0.2982
+    - 0.2826
+    ic: 0.0685
+    combined_ic: 0.1129
+    bull_factors:
+    - fund_rg_improve
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0492
+    bull_combined_ic: 0.0492
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    bear_weights:
+    - 0.5414
+    - 0.4586
+    bear_ic: 0.0726
+    bear_combined_ic: 0.0895
+  移动支付:
+    factors:
+    - fund_revenue_growth
+    - fund_score
+    - fund_pg_improve
+    weights:
+    - 0.3342
+    - 0.3331
+    - 0.3326
+    ic: 0.0614
+    combined_ic: 0.0845
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3683
+    - 0.3212
+    - 0.3105
+    bull_ic: 0.0919
+    bull_combined_ic: 0.1247
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1095
+    bear_combined_ic: 0.1095
+  稀土永磁:
+    factors:
+    - volatility
+    - fund_pg_improve
+    weights:
+    - 0.554
+    - 0.446
+    ic: 0.057
+    combined_ic: 0.0742
+    bull_factors:
+    - volatility
+    - fund_pg_improve
+    bull_weights:
+    - 0.5006
+    - 0.4994
+    bull_ic: 0.071
+    bull_combined_ic: 0.0938
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.3689
+    - 0.3177
+    - 0.3134
+    bear_ic: 0.0722
+    bear_combined_ic: 0.1075
+  稀缺资源:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.4295
+    - 0.3179
+    - 0.2526
+    ic: 0.0597
+    combined_ic: 0.0818
+    bull_factors:
+    - fund_pg_improve
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.3919
+    - 0.3044
+    - 0.3036
+    bull_ic: 0.0566
+    bull_combined_ic: 0.08
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    bear_weights:
+    - 0.5756
+    - 0.4244
+    bear_ic: 0.0947
+    bear_combined_ic: 0.1137
+  空气能热泵:
+    factors:
+    - momentum_reversal
+    - fund_pg_improve
+    weights:
+    - 0.5107
+    - 0.4893
+    ic: 0.064
+    combined_ic: 0.0804
+    bull_factors:
+    - fund_pb
+    - low_downside
+    - momentum_reversal
+    bull_weights:
+    - 0.5232
+    - 0.248
+    - 0.2288
+    bull_ic: 0.0977
+    bull_combined_ic: 0.1542
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.405
+    - 0.3136
+    - 0.2814
+    bear_ic: 0.0869
+    bear_combined_ic: 0.121
+  空间站概念:
+    factors:
+    - fund_pb
+    - rsi_vol_combo
+    - fund_rg_improve
+    weights:
+    - 0.4334
+    - 0.3086
+    - 0.258
+    ic: 0.0884
+    combined_ic: 0.116
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4184
+    - 0.3777
+    - 0.2039
+    bull_ic: 0.1213
+    bull_combined_ic: 0.167
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1467
+    bear_combined_ic: 0.1467
+  空间计算:
+    factors:
+    - volatility
+    - momentum_reversal
+    weights:
+    - 0.5211
+    - 0.4789
+    ic: 0.0954
+    combined_ic: 0.1163
+    bull_factors:
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.5382
+    - 0.4618
+    bull_ic: 0.1043
+    bull_combined_ic: 0.1389
+    bear_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3829
+    - 0.3307
+    - 0.2863
+    bear_ic: 0.1067
+    bear_combined_ic: 0.1533
+  第三代半导体:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.0947
+    combined_ic: 0.0947
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.3392
+    - 0.3346
+    - 0.3262
+    bull_ic: 0.0836
+    bull_combined_ic: 0.1169
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3528
+    - 0.3319
+    - 0.3154
+    bear_ic: 0.0899
+    bear_combined_ic: 0.1163
+  算力概念:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    - fund_rg_improve
+    weights:
+    - 0.3616
+    - 0.3355
+    - 0.3029
+    ic: 0.0588
+    combined_ic: 0.0884
+    bull_factors:
+    - fund_pe
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.3711
+    - 0.3552
+    - 0.2738
+    bull_ic: 0.0923
+    bull_combined_ic: 0.1034
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3684
+    - 0.3326
+    - 0.299
+    bear_ic: 0.0612
+    bear_combined_ic: 0.0766
+  粤港自贸:
+    factors:
+    - fund_pb
+    - volatility
+    weights:
+    - 0.5181
+    - 0.4819
+    ic: 0.0864
+    combined_ic: 0.0931
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1045
+    bull_combined_ic: 0.1045
+    bear_factors:
+    - momentum_reversal
+    - turnover_stability
+    bear_weights:
+    - 0.5284
+    - 0.4716
+    bear_ic: 0.0682
+    bear_combined_ic: 0.0923
+  粮食概念:
+    factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    - low_downside
+    weights:
+    - 0.3497
+    - 0.3314
+    - 0.3188
+    ic: 0.0906
+    combined_ic: 0.127
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0945
+    bull_combined_ic: 0.0945
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.343
+    - 0.3309
+    - 0.3261
+    bear_ic: 0.0924
+    bear_combined_ic: 0.1152
+  精准医疗:
+    factors:
+    - volatility
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.4438
+    - 0.2801
+    - 0.2761
+    ic: 0.0776
+    combined_ic: 0.1082
+    bull_factors:
+    - fund_profit_growth
+    - rsi_vol_combo
+    - momentum_reversal
+    bull_weights:
+    - 0.3747
+    - 0.3131
+    - 0.3122
+    bull_ic: 0.078
+    bull_combined_ic: 0.1231
+    bear_factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3622
+    - 0.3527
+    - 0.2851
+    bear_ic: 0.0791
+    bear_combined_ic: 0.1227
+  精准诊断:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.1076
+    combined_ic: 0.1076
+    bull_factors:
+    - momentum_reversal
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0701
+    bull_combined_ic: 0.0701
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    - volatility
+    bear_weights:
+    - 0.4489
+    - 0.3049
+    - 0.2462
+    bear_ic: 0.0577
+    bear_combined_ic: 0.0931
+  红利股:
+    factors:
+    - fund_pb
+    - fund_pe
+    weights:
+    - 0.5177
+    - 0.4823
+    ic: 0.1201
+    combined_ic: 0.1271
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_pe
+    bull_weights:
+    - 0.4253
+    - 0.3012
+    - 0.2735
+    bull_ic: 0.0614
+    bull_combined_ic: 0.0939
+    bear_factors:
+    - fund_pe
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1199
+    bear_combined_ic: 0.1198
+  统一大市场:
+    factors:
+    - fund_pb
+    - momentum_reversal
+    - fund_pe
+    weights:
+    - 0.3678
+    - 0.3318
+    - 0.3004
+    ic: 0.0887
+    combined_ic: 0.1169
+    bull_factors:
+    - low_downside
+    - momentum_reversal
+    bull_weights:
+    - 0.5231
+    - 0.4769
+    bull_ic: 0.0974
+    bull_combined_ic: 0.1406
+    bear_factors:
+    - momentum_reversal
+    - fund_pe
+    bear_weights:
+    - 0.5756
+    - 0.4244
+    bear_ic: 0.0974
+    bear_combined_ic: 0.113
+  维生素:
+    factors:
+    - fund_pb
+    - fund_pe
+    - volatility
+    weights:
+    - 0.4522
+    - 0.279
+    - 0.2689
+    ic: 0.0942
+    combined_ic: 0.1252
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - low_downside
+    bull_weights:
+    - 0.3839
+    - 0.3312
+    - 0.2849
+    bull_ic: 0.0721
+    bull_combined_ic: 0.0956
+    bear_factors:
+    - fund_pb
+    bear_weights:
+    - 1.0
+    bear_ic: 0.1045
+    bear_combined_ic: 0.1045
+  绿色电力:
+    factors:
+    - fund_pe
+    - fund_pb
+    - volatility
+    weights:
+    - 0.3414
+    - 0.3323
+    - 0.3263
+    ic: 0.0984
+    combined_ic: 0.1179
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bull_weights:
+    - 0.426
+    - 0.3031
+    - 0.2709
+    bull_ic: 0.0645
+    bull_combined_ic: 0.0957
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.4205
+    - 0.365
+    - 0.2145
+    bear_ic: 0.0713
+    bear_combined_ic: 0.1068
+  网红经济:
+    factors:
+    - fund_pb
+    - fund_rg_improve
+    - volatility
+    weights:
+    - 0.3571
+    - 0.3568
+    - 0.2861
+    ic: 0.0815
+    combined_ic: 0.1047
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4571
+    - 0.3031
+    - 0.2398
+    bull_ic: 0.1115
+    bull_combined_ic: 0.1404
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3675
+    - 0.3181
+    - 0.3144
+    bear_ic: 0.0745
+    bear_combined_ic: 0.1065
+  网络安全:
+    factors:
+    - fund_pe
+    - fund_pb
+    - momentum_reversal
+    weights:
+    - 0.3566
+    - 0.3556
+    - 0.2878
+    ic: 0.0891
+    combined_ic: 0.145
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4127
+    - 0.3122
+    - 0.2751
+    bull_ic: 0.0987
+    bull_combined_ic: 0.1311
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5353
+    - 0.4647
+    bear_ic: 0.0776
+    bear_combined_ic: 0.1037
+  网络游戏:
+    factors:
+    - fund_pe
+    weights:
+    - 1.0
+    ic: 0.1135
+    combined_ic: 0.1156
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4018
+    - 0.3296
+    - 0.2686
+    bull_ic: 0.0947
+    bull_combined_ic: 0.1234
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0935
+    bear_combined_ic: 0.0935
+  职业教育:
+    factors:
+    - fund_pb
+    - volatility
+    - turnover_stability
+    weights:
+    - 0.3881
+    - 0.3449
+    - 0.267
+    ic: 0.0844
+    combined_ic: 0.121
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4096
+    - 0.3517
+    - 0.2387
+    bull_ic: 0.1031
+    bull_combined_ic: 0.1288
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3993
+    - 0.3154
+    - 0.2853
+    bear_ic: 0.0932
+    bear_combined_ic: 0.1214
+  肝炎概念:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.1402
+    combined_ic: 0.1402
+    bull_factors:
+    - volatility
+    - fund_profit_growth
+    bull_weights:
+    - 0.5196
+    - 0.4804
+    bull_ic: 0.0583
+    bull_combined_ic: 0.0788
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3472
+    - 0.3288
+    - 0.324
+    bear_ic: 0.0831
+    bear_combined_ic: 0.1253
+  股权激励:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    weights:
+    - 0.4029
+    - 0.3635
+    - 0.2335
+    ic: 0.0573
+    combined_ic: 0.0801
+    bull_factors:
+    - fund_pb
+    bull_weights:
+    - 1.0
+    bull_ic: 0.0958
+    bull_combined_ic: 0.0958
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3769
+    - 0.3632
+    - 0.2599
+    bear_ic: 0.0587
+    bear_combined_ic: 0.0818
+  股权转让:
+    factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    weights:
+    - 0.4501
+    - 0.2894
+    - 0.2604
+    ic: 0.0898
+    combined_ic: 0.1226
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pb
+    bull_weights:
+    - 0.4335
+    - 0.2934
+    - 0.2731
+    bull_ic: 0.1069
+    bull_combined_ic: 0.1382
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.5564
+    - 0.4436
+    bear_ic: 0.0969
+    bear_combined_ic: 0.1224
+  胎压监测:
+    factors:
+    - volatility
+    - fund_pe
+    - momentum_reversal
+    weights:
+    - 0.3671
+    - 0.3376
+    - 0.2954
+    ic: 0.0915
+    combined_ic: 0.1419
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.4068
+    - 0.3505
+    - 0.2427
+    bull_ic: 0.1277
+    bull_combined_ic: 0.1805
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.5394
+    - 0.4606
+    bear_ic: 0.0696
+    bear_combined_ic: 0.092
+  腾讯云:
+    factors:
+    - fund_pe
+    - fund_profit_growth
+    weights:
+    - 0.6135
+    - 0.3865
+    ic: 0.0897
+    combined_ic: 0.1196
+    bull_factors:
+    - volatility
+    - low_downside
+    - fund_profit_growth
+    bull_weights:
+    - 0.3808
+    - 0.3724
+    - 0.2468
+    bull_ic: 0.0534
+    bull_combined_ic: 0.067
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.4817
+    - 0.276
+    - 0.2423
+    bear_ic: 0.0955
+    bear_combined_ic: 0.1357
+  航天航空:
+    factors:
+    - fund_pb
+    - fund_profit_growth
+    - volatility
+    weights:
+    - 0.4597
+    - 0.2759
+    - 0.2644
+    ic: 0.0751
+    combined_ic: 0.1078
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - low_downside
+    bull_weights:
+    - 0.5159
+    - 0.255
+    - 0.2292
+    bull_ic: 0.0737
+    bull_combined_ic: 0.1026
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.3646
+    - 0.3631
+    - 0.2723
+    bear_ic: 0.0649
+    bear_combined_ic: 0.0954
+  航母概念:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_profit_growth
+    weights:
+    - 0.459
+    - 0.3842
+    - 0.1568
+    ic: 0.0617
+    combined_ic: 0.092
+    bull_factors:
+    - fund_pb
+    - low_downside
+    - volatility
+    bull_weights:
+    - 0.3631
+    - 0.3199
+    - 0.317
+    bull_ic: 0.0718
+    bull_combined_ic: 0.0831
+    bear_factors:
+    - fund_pg_improve
+    - rsi_vol_combo
+    - momentum_reversal
+    bear_weights:
+    - 0.4067
+    - 0.2995
+    - 0.2938
+    bear_ic: 0.0893
+    bear_combined_ic: 0.1319
+  节能环保:
+    factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.3453
+    - 0.3396
+    - 0.3151
+    ic: 0.0638
+    combined_ic: 0.0888
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4128
+    - 0.3101
+    - 0.2771
+    bull_ic: 0.091
+    bull_combined_ic: 0.1064
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4164
+    - 0.2922
+    - 0.2914
+    bear_ic: 0.0552
+    bear_combined_ic: 0.078
+  英伟达概念:
+    factors:
+    - fund_pb
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.3629
+    - 0.3281
+    - 0.3089
+    ic: 0.0659
+    combined_ic: 0.0818
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4034
+    - 0.384
+    - 0.2126
+    bull_ic: 0.0868
+    bull_combined_ic: 0.1109
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.3655
+    - 0.3636
+    - 0.2709
+    bear_ic: 0.0639
+    bear_combined_ic: 0.0837
+  苹果概念:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - volatility
+    weights:
+    - 0.4715
+    - 0.267
+    - 0.2615
+    ic: 0.0703
+    combined_ic: 0.0981
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - volatility
+    bull_weights:
+    - 0.3768
+    - 0.3161
+    - 0.3071
+    bull_ic: 0.0875
+    bull_combined_ic: 0.1196
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3846
+    - 0.3256
+    - 0.2898
+    bear_ic: 0.0725
+    bear_combined_ic: 0.1049
+  茅指数:
+    factors:
+    - fund_pb
+    - fund_pe
+    - top_fractal_volume
+    weights:
+    - 0.477
+    - 0.2641
+    - 0.2589
+    ic: 0.0569
+    combined_ic: 0.0877
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    bull_weights:
+    - 0.5527
+    - 0.4473
+    bull_ic: 0.0581
+    bull_combined_ic: 0.0718
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - bb_width_20
+    bear_weights:
+    - 0.3984
+    - 0.3435
+    - 0.2581
+    bear_ic: 0.0685
+    bear_combined_ic: 0.0968
+  荣耀概念:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - low_downside
+    weights:
+    - 0.3515
+    - 0.3287
+    - 0.3198
+    ic: 0.0602
+    combined_ic: 0.0885
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4981
+    - 0.2641
+    - 0.2378
+    bull_ic: 0.1124
+    bull_combined_ic: 0.1491
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.5652
+    - 0.4348
+    bear_ic: 0.0867
+    bear_combined_ic: 0.1054
+  虚拟数字人:
+    factors:
+    - fund_pb
+    - volatility
+    weights:
+    - 0.5289
+    - 0.4711
+    ic: 0.1074
+    combined_ic: 0.122
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3751
+    - 0.3616
+    - 0.2633
+    bull_ic: 0.1128
+    bull_combined_ic: 0.1516
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.3732
+    - 0.3339
+    - 0.2929
+    bear_ic: 0.0934
+    bear_combined_ic: 0.1098
+  虚拟现实:
+    factors:
+    - fund_pe
+    - momentum_reversal
+    - volatility
+    weights:
+    - 0.4001
+    - 0.3291
+    - 0.2708
+    ic: 0.073
+    combined_ic: 0.0985
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4055
+    - 0.3265
+    - 0.268
+    bull_ic: 0.103
+    bull_combined_ic: 0.1394
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.5135
+    - 0.4865
+    bear_ic: 0.1012
+    bear_combined_ic: 0.109
+  虚拟电厂:
+    factors:
+    - fund_profit_growth
+    - momentum_reversal
+    - fund_pb
+    weights:
+    - 0.3503
+    - 0.325
+    - 0.3247
+    ic: 0.0697
+    combined_ic: 0.1144
+    bull_factors:
+    - fund_pb
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.4594
+    - 0.2785
+    - 0.2621
+    bull_ic: 0.0964
+    bull_combined_ic: 0.1175
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pb
+    bear_weights:
+    - 0.4004
+    - 0.3052
+    - 0.2945
+    bear_ic: 0.0781
+    bear_combined_ic: 0.114
+  蚂蚁概念:
+    factors:
+    - fund_score
+    - fund_pg_improve
+    weights:
+    - 0.5048
+    - 0.4952
+    ic: 0.0505
+    combined_ic: 0.0656
+    bull_factors:
+    - rsi_vol_combo
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3597
+    - 0.3271
+    - 0.3133
+    bull_ic: 0.094
+    bull_combined_ic: 0.136
+    bear_factors:
+    - fund_profit_growth
+    - momentum_reversal
+    bear_weights:
+    - 0.529
+    - 0.471
+    bear_ic: 0.0554
+    bear_combined_ic: 0.0725
+  行业龙头:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - stroke_phase
+    weights:
+    - 0.4455
+    - 0.2943
+    - 0.2602
+    ic: 0.0541
+    combined_ic: 0.0862
+    bull_factors:
+    - fund_pg_improve
+    - fund_pe
+    bull_weights:
+    - 0.5383
+    - 0.4617
+    bull_ic: 0.0464
+    bull_combined_ic: 0.0585
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    bear_weights:
+    - 0.4121
+    - 0.3389
+    - 0.2491
+    bear_ic: 0.0484
+    bear_combined_ic: 0.0663
+  被动元件概念:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    - wash_sale_score
+    weights:
+    - 0.431
+    - 0.299
+    - 0.27
+    ic: 0.0562
+    combined_ic: 0.0905
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5362
+    - 0.4638
+    bull_ic: 0.072
+    bull_combined_ic: 0.0985
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.107
+    bear_combined_ic: 0.107
+  装配建筑:
+    factors:
+    - fund_profit_growth
+    - fund_pg_improve
+    - low_downside
+    weights:
+    - 0.3727
+    - 0.3561
+    - 0.2712
+    ic: 0.0756
+    combined_ic: 0.1156
+    bull_factors:
+    - momentum_reversal
+    - fund_profit_growth
+    bull_weights:
+    - 0.5026
+    - 0.4974
+    bull_ic: 0.0771
+    bull_combined_ic: 0.0946
+    bear_factors:
+    - fund_rg_improve
+    - fund_profit_growth
+    - momentum_reversal
+    bear_weights:
+    - 0.3609
+    - 0.325
+    - 0.314
+    bear_ic: 0.0529
+    bear_combined_ic: 0.0794
+  裸眼3D:
+    factors:
+    - fund_pb
+    - fund_pg_improve
+    weights:
+    - 0.5293
+    - 0.4707
+    ic: 0.1002
+    combined_ic: 0.137
+    bull_factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    bull_weights:
+    - 0.3783
+    - 0.3287
+    - 0.2931
+    bull_ic: 0.0904
+    bull_combined_ic: 0.1194
+    bear_factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.381
+    - 0.379
+    - 0.24
+    bear_ic: 0.1058
+    bear_combined_ic: 0.135
+  证金持股:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    - low_downside
+    weights:
+    - 0.375
+    - 0.3178
+    - 0.3072
+    ic: 0.072
+    combined_ic: 0.0959
+    bull_factors:
+    - fund_pg_improve
+    - volatility
+    - turnover_stability
+    bull_weights:
+    - 0.3897
+    - 0.3082
+    - 0.3021
+    bull_ic: 0.0452
+    bull_combined_ic: 0.0737
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    bear_weights:
+    - 0.4019
+    - 0.3531
+    - 0.245
+    bear_ic: 0.0577
+    bear_combined_ic: 0.0779
+  调味品概念:
+    factors:
+    - fund_pg_improve
+    weights:
+    - 1.0
+    ic: 0.1447
+    combined_ic: 0.1447
+    bull_factors:
+    - fund_pg_improve
+    - rsi_vol_combo
+    - momentum_reversal
+    bull_weights:
+    - 0.4301
+    - 0.2958
+    - 0.2741
+    bull_ic: 0.0721
+    bull_combined_ic: 0.1064
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.5235
+    - 0.4765
+    bear_ic: 0.0882
+    bear_combined_ic: 0.1076
+  谷子经济:
+    factors:
+    - fund_pb
+    - fund_rg_improve
+    - volatility
+    weights:
+    - 0.3971
+    - 0.3177
+    - 0.2852
+    ic: 0.0846
+    combined_ic: 0.1098
+    bull_factors:
+    - volatility
+    bull_weights:
+    - 1.0
+    bull_ic: 0.1069
+    bull_combined_ic: 0.1069
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.3876
+    - 0.3758
+    - 0.2367
+    bear_ic: 0.1236
+    bear_combined_ic: 0.1508
+  财税数字化:
+    factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - low_downside
+    weights:
+    - 0.3578
+    - 0.3333
+    - 0.309
+    ic: 0.0766
+    combined_ic: 0.1021
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    - rsi_vol_combo
+    bull_weights:
+    - 0.3905
+    - 0.3344
+    - 0.275
+    bull_ic: 0.0946
+    bull_combined_ic: 0.1369
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    - fund_score
+    bear_weights:
+    - 0.3641
+    - 0.3188
+    - 0.3171
+    bear_ic: 0.0788
+    bear_combined_ic: 0.1286
+  贬值受益:
+    factors:
+    - fund_pe
+    - volatility
+    - fund_pb
+    weights:
+    - 0.3711
+    - 0.3152
+    - 0.3136
+    ic: 0.0836
+    combined_ic: 0.0996
+    bull_factors:
+    - fund_pb
+    - volatility
+    - fund_pg_improve
+    bull_weights:
+    - 0.3593
+    - 0.3402
+    - 0.3006
+    bull_ic: 0.0742
+    bull_combined_ic: 0.0998
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.5122
+    - 0.4878
+    bear_ic: 0.0765
+    bear_combined_ic: 0.0971
+  超清视频:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - fund_pe
+    weights:
+    - 0.3399
+    - 0.3368
+    - 0.3233
+    ic: 0.0639
+    combined_ic: 0.0852
+    bull_factors:
+    - fund_rg_improve
+    - fund_pe
+    - volatility
+    bull_weights:
+    - 0.3734
+    - 0.3241
+    - 0.3025
+    bull_ic: 0.0825
+    bull_combined_ic: 0.0939
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pg_improve
+    bear_weights:
+    - 0.3791
+    - 0.3581
+    - 0.2628
+    bear_ic: 0.079
+    bear_combined_ic: 0.1027
+  超级品牌:
+    factors:
+    - fund_pg_improve
+    - fund_pb
+    weights:
+    - 0.5506
+    - 0.4494
+    ic: 0.0905
+    combined_ic: 0.1071
+    bull_factors:
+    - fund_profit_growth
+    - momentum_reversal
+    - fund_score
+    bull_weights:
+    - 0.4156
+    - 0.2966
+    - 0.2879
+    bull_ic: 0.064
+    bull_combined_ic: 0.0936
+    bear_factors:
+    - fund_pg_improve
+    - bb_width_20
+    - fund_pb
+    bear_weights:
+    - 0.4596
+    - 0.3137
+    - 0.2267
+    bear_ic: 0.0661
+    bear_combined_ic: 0.0978
+  超级电容:
+    factors:
+    - fund_pe
+    - fund_rg_improve
+    weights:
+    - 0.5273
+    - 0.4727
+    ic: 0.0696
+    combined_ic: 0.0934
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - fund_pg_improve
+    bull_weights:
+    - 0.3616
+    - 0.3519
+    - 0.2865
+    bull_ic: 0.068
+    bull_combined_ic: 0.087
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.4137
+    - 0.3222
+    - 0.2641
+    bear_ic: 0.0801
+    bear_combined_ic: 0.1075
+  超超临界发电:
+    factors:
+    - fund_pb
+    - fund_profit_growth
+    weights:
+    - 0.5011
+    - 0.4989
+    ic: 0.0891
+    combined_ic: 0.1122
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.6
+    - 0.4
+    bull_ic: 0.091
+    bull_combined_ic: 0.1214
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.5834
+    - 0.4166
+    bear_ic: 0.0857
+    bear_combined_ic: 0.114
+  超跌股:
+    factors:
+    - fund_score
+    - fund_revenue_growth
+    - volatility
+    weights:
+    - 0.4293
+    - 0.288
+    - 0.2827
+    ic: 0.0897
+    combined_ic: 0.1115
+    bull_factors:
+    - fund_score
+    - volatility
+    bull_weights:
+    - 0.5348
+    - 0.4652
+    bull_ic: 0.135
+    bull_combined_ic: 0.1525
+    bear_factors:
+    - momentum_reversal
+    bear_weights:
+    - 1.0
+    bear_ic: 0.0814
+    bear_combined_ic: 0.0814
+  跨境支付:
+    factors:
+    - fund_roe
+    - fund_pb
+    weights:
+    - 0.503
+    - 0.497
+    ic: 0.0576
+    combined_ic: 0.0753
+    bull_factors:
+    - turnover_stability
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.3393
+    - 0.3314
+    - 0.3293
+    bull_ic: 0.1013
+    bull_combined_ic: 0.1246
+    bear_factors:
+    - fund_pg_improve
+    - fund_score
+    bear_weights:
+    - 0.5116
+    - 0.4884
+    bear_ic: 0.0529
+    bear_combined_ic: 0.0646
+  跨境电商:
+    factors:
+    - fund_pe
+    - volatility
+    weights:
+    - 0.5011
+    - 0.4989
+    ic: 0.0845
+    combined_ic: 0.1001
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5058
+    - 0.4942
+    bull_ic: 0.0955
+    bull_combined_ic: 0.1017
+    bear_factors:
+    - momentum_reversal
+    - turnover_stability
+    - fund_pb
+    bear_weights:
+    - 0.3946
+    - 0.3033
+    - 0.3021
+    bear_ic: 0.0745
+    bear_combined_ic: 0.1267
+  车联网(车路云):
+    factors:
+    - fund_pg_improve
+    - volatility
+    weights:
+    - 0.5402
+    - 0.4598
+    ic: 0.0623
+    combined_ic: 0.0758
+    bull_factors:
+    - volatility
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.3595
+    - 0.325
+    - 0.3155
+    bull_ic: 0.0965
+    bull_combined_ic: 0.1285
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3615
+    - 0.3433
+    - 0.2951
+    bear_ic: 0.0551
+    bear_combined_ic: 0.0749
+  辅助生殖:
+    factors:
+    - volatility
+    - fund_pb
+    weights:
+    - 0.5172
+    - 0.4828
+    ic: 0.1148
+    combined_ic: 0.1288
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - momentum_reversal
+    bull_weights:
+    - 0.3565
+    - 0.3403
+    - 0.3031
+    bull_ic: 0.0685
+    bull_combined_ic: 0.1037
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.6401
+    - 0.3599
+    bear_ic: 0.0794
+    bear_combined_ic: 0.113
+  边缘计算:
+    factors:
+    - fund_pe
+    - fund_rg_improve
+    - fund_pg_improve
+    weights:
+    - 0.4013
+    - 0.3113
+    - 0.2874
+    ic: 0.0601
+    combined_ic: 0.0893
+    bull_factors:
+    - fund_pb
+    - volatility
+    - fund_pe
+    bull_weights:
+    - 0.406
+    - 0.2987
+    - 0.2953
+    bull_ic: 0.0989
+    bull_combined_ic: 0.124
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    bear_weights:
+    - 0.505
+    - 0.495
+    bear_ic: 0.099
+    bear_combined_ic: 0.105
+  近期新高:
+    factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.3837
+    - 0.3533
+    - 0.263
+    ic: 0.0569
+    combined_ic: 0.0842
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.3726
+    - 0.3139
+    - 0.3135
+    bull_ic: 0.0778
+    bull_combined_ic: 0.0987
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3535
+    - 0.3393
+    - 0.3072
+    bear_ic: 0.0662
+    bear_combined_ic: 0.0978
+  通信技术:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.5016
+    - 0.4984
+    ic: 0.0664
+    combined_ic: 0.0884
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5809
+    - 0.4191
+    bull_ic: 0.1058
+    bull_combined_ic: 0.1268
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3418
+    - 0.3314
+    - 0.3268
+    bear_ic: 0.0809
+    bear_combined_ic: 0.1122
+  通用航空:
+    factors:
+    - fund_profit_growth
+    - fund_revenue_growth
+    - fund_pg_improve
+    weights:
+    - 0.3465
+    - 0.3408
+    - 0.3127
+    ic: 0.0574
+    combined_ic: 0.0845
+    bull_factors:
+    - volatility
+    - low_downside
+    - fund_pb
+    bull_weights:
+    - 0.4601
+    - 0.2783
+    - 0.2616
+    bull_ic: 0.0869
+    bull_combined_ic: 0.1129
+    bear_factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.4096
+    - 0.3823
+    - 0.2081
+    bear_ic: 0.0763
+    bear_combined_ic: 0.0992
+  造纸印刷:
+    factors:
+    - fund_profit_growth
+    - low_downside
+    weights:
+    - 0.5174
+    - 0.4826
+    ic: 0.0893
+    combined_ic: 0.1066
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5466
+    - 0.4534
+    bull_ic: 0.0897
+    bull_combined_ic: 0.1052
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    bear_weights:
+    - 0.3877
+    - 0.3164
+    - 0.2959
+    bear_ic: 0.0657
+    bear_combined_ic: 0.1019
+  酿酒概念:
+    factors:
+    - fund_pg_improve
+    - low_downside
+    weights:
+    - 0.6246
+    - 0.3754
+    ic: 0.0877
+    combined_ic: 0.1224
+    bull_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - low_downside
+    bull_weights:
+    - 0.422
+    - 0.3445
+    - 0.2335
+    bull_ic: 0.0638
+    bull_combined_ic: 0.1094
+    bear_factors:
+    - fund_rg_improve
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4137
+    - 0.3783
+    - 0.208
+    bear_ic: 0.0559
+    bear_combined_ic: 0.083
+  量子科技:
+    factors:
+    - fund_profit_growth
+    - fund_score
+    - fund_pb
+    weights:
+    - 0.3621
+    - 0.3276
+    - 0.3103
+    ic: 0.074
+    combined_ic: 0.0934
+    bull_factors:
+    - fund_pb
+    - fund_pg_improve
+    - volatility
+    bull_weights:
+    - 0.3908
+    - 0.34
+    - 0.2691
+    bull_ic: 0.0888
+    bull_combined_ic: 0.1106
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.3902
+    - 0.3168
+    - 0.293
+    bear_ic: 0.0897
+    bear_combined_ic: 0.1215
+  钒电池:
+    factors:
+    - volatility
+    - fund_pb
+    - wash_sale_score
+    weights:
+    - 0.3485
+    - 0.3297
+    - 0.3218
+    ic: 0.0782
+    combined_ic: 0.1214
+    bull_factors:
+    - low_downside
+    - fund_pb
+    - fund_pe
+    bull_weights:
+    - 0.4095
+    - 0.3019
+    - 0.2885
+    bull_ic: 0.1072
+    bull_combined_ic: 0.1448
+    bear_factors:
+    - fund_pe
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.4089
+    - 0.3369
+    - 0.2542
+    bear_ic: 0.0947
+    bear_combined_ic: 0.1498
+  钙钛矿电池:
+    factors:
+    - fund_pb
+    weights:
+    - 1.0
+    ic: 0.0878
+    combined_ic: 0.0877
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.4062
+    - 0.3158
+    - 0.278
+    bull_ic: 0.0817
+    bull_combined_ic: 0.1091
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3631
+    - 0.3249
+    - 0.312
+    bear_ic: 0.0677
+    bear_combined_ic: 0.1
+  钠离子电池:
+    factors:
+    - volatility
+    - fund_pb
+    weights:
+    - 0.5116
+    - 0.4884
+    ic: 0.073
+    combined_ic: 0.085
+    bull_factors:
+    - fund_pb
+    - low_downside
+    - volatility
+    bull_weights:
+    - 0.3351
+    - 0.3331
+    - 0.3318
+    bull_ic: 0.0771
+    bull_combined_ic: 0.0956
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - fund_pb
+    bear_weights:
+    - 0.4588
+    - 0.3178
+    - 0.2234
+    bear_ic: 0.0685
+    bear_combined_ic: 0.091
+  铁路基建:
+    factors:
+    - fund_pg_improve
+    - fund_score
+    weights:
+    - 0.5471
+    - 0.4529
+    ic: 0.0631
+    combined_ic: 0.0765
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.363
+    - 0.3578
+    - 0.2793
+    bull_ic: 0.0737
+    bull_combined_ic: 0.1126
+    bear_factors:
+    - fund_pg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.5255
+    - 0.4745
+    bear_ic: 0.0416
+    bear_combined_ic: 0.0507
+  铜缆高速连接:
+    factors:
+    - fund_pe
+    weights:
+    - 1.0
+    ic: 0.1062
+    combined_ic: 0.1049
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.4122
+    - 0.3484
+    - 0.2393
+    bull_ic: 0.1027
+    bull_combined_ic: 0.1408
+    bear_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    bear_weights:
+    - 0.501
+    - 0.499
+    bear_ic: 0.1132
+    bear_combined_ic: 0.1512
+  锂电池概念:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - volatility
+    weights:
+    - 0.4555
+    - 0.2871
+    - 0.2574
+    ic: 0.0513
+    combined_ic: 0.0674
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5488
+    - 0.4512
+    bull_ic: 0.0892
+    bull_combined_ic: 0.1014
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.4614
+    - 0.2958
+    - 0.2427
+    bear_ic: 0.0627
+    bear_combined_ic: 0.0877
+  锂矿概念:
+    factors:
+    - relative_strength
+    - ema20_slope
+    - fund_revenue_growth
+    weights:
+    - 0.3754
+    - 0.33
+    - 0.2945
+    ic: 0.0567
+    combined_ic: 0.0742
+    bull_factors:
+    - volatility
+    - low_downside
+    - fund_pg_improve
+    bull_weights:
+    - 0.3901
+    - 0.3462
+    - 0.2637
+    bull_ic: 0.0714
+    bull_combined_ic: 0.0867
+    bear_factors:
+    - fund_rg_improve
+    - fund_pe
+    bear_weights:
+    - 0.546
+    - 0.454
+    bear_ic: 0.0694
+    bear_combined_ic: 0.1075
+  长期破净:
+    factors:
+    - fund_pb
+    - fund_pe
+    - low_downside
+    weights:
+    - 0.4194
+    - 0.3426
+    - 0.238
+    ic: 0.1119
+    combined_ic: 0.1433
+    bull_factors:
+    - fund_pb
+    - low_downside
+    bull_weights:
+    - 0.5548
+    - 0.4452
+    bull_ic: 0.1
+    bull_combined_ic: 0.1073
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - turnover_stability
+    bear_weights:
+    - 0.4214
+    - 0.3059
+    - 0.2727
+    bear_ic: 0.0524
+    bear_combined_ic: 0.0728
+  阿兹海默:
+    factors:
+    - volatility
+    - turnover_stability
+    - fund_pe
+    weights:
+    - 0.37
+    - 0.3244
+    - 0.3057
+    ic: 0.1341
+    combined_ic: 0.1732
+    bull_factors:
+    - fund_profit_growth
+    - volatility
+    bull_weights:
+    - 0.527
+    - 0.473
+    bull_ic: 0.0534
+    bull_combined_ic: 0.0786
+    bear_factors:
+    - fund_pb
+    - fund_pg_improve
+    bear_weights:
+    - 0.5137
+    - 0.4863
+    bear_ic: 0.0916
+    bear_combined_ic: 0.1144
+  阿里概念:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - volatility
+    weights:
+    - 0.4039
+    - 0.335
+    - 0.2611
+    ic: 0.0495
+    combined_ic: 0.066
+    bull_factors:
+    - fund_pb
+    - volatility
+    - momentum_reversal
+    bull_weights:
+    - 0.3739
+    - 0.3144
+    - 0.3117
+    bull_ic: 0.0774
+    bull_combined_ic: 0.1047
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.5914
+    - 0.4086
+    bear_ic: 0.0745
+    bear_combined_ic: 0.1007
+  降解塑料:
+    factors:
+    - fund_pg_improve
+    - volatility
+    - low_downside
+    weights:
+    - 0.514
+    - 0.2472
+    - 0.2388
+    ic: 0.074
+    combined_ic: 0.1028
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.5031
+    - 0.4969
+    bull_ic: 0.0709
+    bull_combined_ic: 0.1126
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.501
+    - 0.499
+    bear_ic: 0.0626
+    bear_combined_ic: 0.0777
+  雄安新区:
+    factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - volatility
+    weights:
+    - 0.4286
+    - 0.3042
+    - 0.2672
+    ic: 0.0679
+    combined_ic: 0.0946
+    bull_factors:
+    - momentum_reversal
+    - low_downside
+    bull_weights:
+    - 0.538
+    - 0.462
+    bull_ic: 0.0928
+    bull_combined_ic: 0.1217
+    bear_factors:
+    - turnover_stability
+    - momentum_reversal
+    bear_weights:
+    - 0.5248
+    - 0.4752
+    bear_ic: 0.0664
+    bear_combined_ic: 0.0932
+  雅下水电概念:
+    factors:
+    - fund_pg_improve
+    - volatility
+    - fund_profit_growth
+    weights:
+    - 0.4568
+    - 0.2767
+    - 0.2665
+    ic: 0.0566
+    combined_ic: 0.0678
+    bull_factors:
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.543
+    - 0.457
+    bull_ic: 0.0622
+    bull_combined_ic: 0.096
+    bear_factors:
+    - fund_pg_improve
+    - fund_profit_growth
+    - momentum_reversal
+    bear_weights:
+    - 0.5035
+    - 0.2616
+    - 0.2348
+    bear_ic: 0.0562
+    bear_combined_ic: 0.0812
+  零售概念:
+    factors:
+    - fund_pe
+    - fund_pb
+    weights:
+    - 0.5687
+    - 0.4313
+    ic: 0.1116
+    combined_ic: 0.1267
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    bull_weights:
+    - 0.5244
+    - 0.4756
+    bull_ic: 0.0791
+    bull_combined_ic: 0.1168
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - turnover_stability
+    bear_weights:
+    - 0.4111
+    - 0.3618
+    - 0.2272
+    bear_ic: 0.0599
+    bear_combined_ic: 0.0981
+  页岩气:
+    factors:
+    - volatility
+    weights:
+    - 1.0
+    ic: 0.1395
+    combined_ic: 0.1395
+    bull_factors:
+    - fund_gross_margin
+    - fund_score
+    bull_weights:
+    - 0.5222
+    - 0.4778
+    bull_ic: 0.0718
+    bull_combined_ic: 0.0946
+    bear_factors:
+    - fund_rg_improve
+    - fund_profit_growth
+    - fund_pb
+    bear_weights:
+    - 0.4044
+    - 0.3
+    - 0.2956
+    bear_ic: 0.0516
+    bear_combined_ic: 0.0734
+  预制菜概念:
+    factors:
+    - fund_pg_improve
+    - volatility
+    - fund_pb
+    weights:
+    - 0.3971
+    - 0.3107
+    - 0.2922
+    ic: 0.0751
+    combined_ic: 0.1017
+    bull_factors:
+    - momentum_reversal
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.3466
+    - 0.3356
+    - 0.3178
+    bull_ic: 0.082
+    bull_combined_ic: 0.1173
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - fund_pb
+    bear_weights:
+    - 0.4243
+    - 0.3009
+    - 0.2749
+    bear_ic: 0.1075
+    bear_combined_ic: 0.1419
+  风能:
+    factors:
+    - fund_pe
+    weights:
+    - 1.0
+    ic: 0.1012
+    combined_ic: 0.1005
+    bull_factors:
+    - fund_pg_improve
+    - fund_pb
+    - fund_pe
+    bull_weights:
+    - 0.4204
+    - 0.3236
+    - 0.256
+    bull_ic: 0.0725
+    bull_combined_ic: 0.0944
+    bear_factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    bear_weights:
+    - 0.3966
+    - 0.3647
+    - 0.2387
+    bear_ic: 0.0603
+    bear_combined_ic: 0.0897
+  飞行汽车(eVTOL):
+    factors:
+    - fund_pb
+    - volatility
+    weights:
+    - 0.5086
+    - 0.4914
+    ic: 0.0733
+    combined_ic: 0.0824
+    bull_factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    bull_weights:
+    - 0.3639
+    - 0.3215
+    - 0.3145
+    bull_ic: 0.0897
+    bull_combined_ic: 0.1189
+    bear_factors:
+    - fund_pb
+    - momentum_reversal
+    - fund_pe
+    bear_weights:
+    - 0.3762
+    - 0.3135
+    - 0.3103
+    bear_ic: 0.0828
+    bear_combined_ic: 0.1157
+  食品安全:
+    factors:
+    - turnover_stability
+    - fund_profit_growth
+    - fund_pe
+    weights:
+    - 0.3736
+    - 0.3467
+    - 0.2797
+    ic: 0.0648
+    combined_ic: 0.1071
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - momentum_reversal
+    bull_weights:
+    - 0.3882
+    - 0.313
+    - 0.2988
+    bull_ic: 0.0757
+    bull_combined_ic: 0.1086
+    bear_factors:
+    - fund_pg_improve
+    - fund_pb
+    - momentum_reversal
+    bear_weights:
+    - 0.4375
+    - 0.3041
+    - 0.2584
+    bear_ic: 0.087
+    bear_combined_ic: 0.1443
+  首发经济:
+    factors:
+    - momentum_reversal
+    - fund_pb
+    weights:
+    - 0.5048
+    - 0.4952
+    ic: 0.0858
+    combined_ic: 0.115
+    bull_factors:
+    - momentum_reversal
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.3497
+    - 0.3429
+    - 0.3074
+    bull_ic: 0.0908
+    bull_combined_ic: 0.1204
+    bear_factors:
+    - momentum_reversal
+    - rsi_vol_combo
+    - volatility
+    bear_weights:
+    - 0.3895
+    - 0.3197
+    - 0.2908
+    bear_ic: 0.1069
+    bear_combined_ic: 0.1285
+  高压快充:
+    factors:
+    - volatility
+    - fund_pb
+    - momentum_reversal
+    weights:
+    - 0.3729
+    - 0.3183
+    - 0.3087
+    ic: 0.096
+    combined_ic: 0.1389
+    bull_factors:
+    - fund_pb
+    - volatility
+    bull_weights:
+    - 0.5674
+    - 0.4326
+    bull_ic: 0.1006
+    bull_combined_ic: 0.121
+    bear_factors:
+    - fund_pb
+    - fund_profit_growth
+    - fund_rg_improve
+    bear_weights:
+    - 0.3532
+    - 0.3359
+    - 0.3109
+    bear_ic: 0.0678
+    bear_combined_ic: 0.0946
+  高带宽内存:
+    factors:
+    - momentum_reversal
+    - fund_score
+    - fund_pe
+    weights:
+    - 0.3481
+    - 0.3398
+    - 0.3121
+    ic: 0.1118
+    combined_ic: 0.1687
+    bull_factors:
+    - momentum_reversal
+    - fund_pg_improve
+    - fund_pb
+    bull_weights:
+    - 0.3742
+    - 0.3179
+    - 0.3079
+    bull_ic: 0.0486
+    bull_combined_ic: 0.076
+    bear_factors:
+    - rsi_vol_combo
+    - momentum_reversal
+    - fund_pe
+    bear_weights:
+    - 0.4077
+    - 0.3533
+    - 0.239
+    bear_ic: 0.088
+    bear_combined_ic: 0.1329
+  鸡肉概念:
+    factors:
+    - fund_pg_improve
+    - fund_rg_improve
+    - momentum_reversal
+    weights:
+    - 0.4222
+    - 0.3443
+    - 0.2335
+    ic: 0.0762
+    combined_ic: 0.1115
+    bull_factors:
+    - momentum_reversal
+    - turnover_stability
+    - low_downside
+    bull_weights:
+    - 0.4593
+    - 0.3601
+    - 0.1806
+    bull_ic: 0.0752
+    bull_combined_ic: 0.1191
+    bear_factors:
+    - fund_pg_improve
+    - fund_pe
+    bear_weights:
+    - 0.5631
+    - 0.4369
+    bear_ic: 0.044
+    bear_combined_ic: 0.0785
+  鸿蒙概念:
+    factors:
+    - fund_pe
+    - momentum_reversal
+    weights:
+    - 0.5538
+    - 0.4462
+    ic: 0.0702
+    combined_ic: 0.0935
+    bull_factors:
+    - fund_pb
+    - fund_pe
+    - momentum_reversal
+    bull_weights:
+    - 0.385
+    - 0.3421
+    - 0.2729
+    bull_ic: 0.1137
+    bull_combined_ic: 0.1653
+    bear_factors:
+    - momentum_reversal
+    - fund_pb
+    - rsi_vol_combo
+    bear_weights:
+    - 0.3782
+    - 0.3138
+    - 0.3079
+    bear_ic: 0.0721
+    bear_combined_ic: 0.0957
+  黄金概念:
+    factors:
+    - fund_pg_improve
+    - fund_pe
+    weights:
+    - 0.6185
+    - 0.3815
+    ic: 0.0657
+    combined_ic: 0.0769
+    bull_factors:
+    - fund_pe
+    - volatility
+    - low_downside
+    bull_weights:
+    - 0.3854
+    - 0.3097
+    - 0.3049
+    bull_ic: 0.0614
+    bull_combined_ic: 0.075
+    bear_factors:
+    - fund_pg_improve
+    - momentum_reversal
+    - fund_pe
+    bear_weights:
+    - 0.365
+    - 0.3303
+    - 0.3047
+    bear_ic: 0.0646
+    bear_combined_ic: 0.1143
