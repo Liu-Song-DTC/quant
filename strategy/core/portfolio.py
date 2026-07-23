@@ -1241,14 +1241,12 @@ class PortfolioConstructor:
             desired_value = {c: 0.0 for c in current_positions}
             return desired_value
 
-        # === 熊市动态止损: 预警期适度收紧, 确认熊市靠敞口控制而非紧止损 ===
+        # === 止损不止盈: 亏损收紧, 盈利放宽, 让利润奔跑 ===
         if bear_risk_fast and not bear_risk:
-            _eff_stop_loss = 0.07  # 仅预警→7%
+            _eff_stop_loss = 0.07
         else:
-            _eff_stop_loss = self.position_stop_loss  # 正常/确认熊市→10%
-        _eff_peak_trail = max(_eff_stop_loss * 0.8, 0.04)
+            _eff_stop_loss = self.position_stop_loss  # 8%
 
-        # === 硬止损优先检查：任何路径都必须先过止损，不可被其他逻辑覆盖 ===
         for code, current_value in current_positions.items():
             if code not in prices or current_value <= 0:
                 continue
@@ -1256,7 +1254,8 @@ class PortfolioConstructor:
                 continue
             avg_cost = cost[code][1]
             pnl_pct = (prices[code] - avg_cost) / avg_cost
-            # 绝对止损: 熊市收紧(5-7%), 正常10%
+
+            # 成本止损: 亏损超过阈值→卖出
             if pnl_pct <= -_eff_stop_loss:
                 stop_loss_sells[code] = 0.0
                 _exit_tags[code] = 'cost_stop'
@@ -1266,10 +1265,12 @@ class PortfolioConstructor:
                 self._entry_reason_lost_count.pop(code, None)
                 self._post_sell_tracking.pop(code, None)
                 continue
-            # 最高点回落同步收紧(熊市5%→正常8%)
+
+            # 分级峰值回撤: 亏损收6%, 盈利放15%(让利润跑)
             if code in self._peak_prices and self._peak_prices[code] > 0:
                 dd_from_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
-                if dd_from_peak >= _eff_peak_trail:
+                trail = 0.06 if pnl_pct <= 0 else 0.15
+                if dd_from_peak >= trail:
                     stop_loss_sells[code] = 0.0
                     _exit_tags[code] = 'peak_trail'
                     self._entry_dates.pop(code, None)
@@ -1278,7 +1279,8 @@ class PortfolioConstructor:
                     self._entry_reason_lost_count.pop(code, None)
                     self._post_sell_tracking.pop(code, None)
                     continue
-            # simple模式: 仅成本止损+峰值回撤, 跳过其他复杂退出
+
+            # simple模式: 跳过复杂退出(chan/时间/止盈)
             if self.exit_mode == 'simple':
                 continue
             # 时间止损: 持仓>15天且亏损>5%
@@ -1501,8 +1503,8 @@ class PortfolioConstructor:
 
             sig = signal_store.get(code, date)
 
-            # === 信号层卖出：MA60止损、分数阈值卖出（信号层判断，组合层执行）===
-            if self.exit_mode != 'simple' and sig is not None and getattr(sig, 'sell', False):
+            # === 信号层卖出：score<阈值→因子卖出 (简单模式也保留) ===
+            if sig is not None and getattr(sig, 'sell', False):
                 stopped = True
                 stop_reason = "sig_sell"
                 stop_loss_sells[code] = 0.0
@@ -1512,6 +1514,13 @@ class PortfolioConstructor:
                 self._entry_reason_lost_count.pop(code, None)
                 self._post_sell_tracking.pop(code, None)
                 continue
+
+            # === 因子转负→卖出 (不管盈亏,信因子) ===
+            if sig is not None:
+                _sc = getattr(sig, 'score', 1.0)
+                if _sc < 0:
+                    stopped = True
+                    stop_reason = "factor_neg"
             chan_div_type = getattr(sig, 'chan_divergence_type', '') if sig else ''
             chan_div_strength = getattr(sig, 'chan_divergence_strength', 0.0) if sig else 0.0
             chan_buy_point = getattr(sig, 'chan_buy_point', 0) if sig else 0
