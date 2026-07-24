@@ -1,32 +1,29 @@
 {
-  "factor_selection": {
-    "DYN": 3268369,
-    "OTHER": 313
-  },
+  "factor_selection": {},
   "factor_family": {},
-  "buy_signals": 679112,
+  "buy_signals": 1003666,
   "buy_by_buy_point": {
-    "5": 15090,
-    "0": 471577,
-    "8": 36931,
-    "1": 25027,
-    "4": 63210,
-    "7": 13843,
-    "2": 6113,
-    "6": 37282,
-    "9": 3486,
-    "3": 6553
+    "7": 35113,
+    "1": 108858,
+    "0": 641006,
+    "5": 21310,
+    "8": 55088,
+    "4": 67408,
+    "6": 43211,
+    "2": 15236,
+    "9": 7908,
+    "3": 8528
   },
   "buy_by_factor_family": {
-    "DYN": 642181,
-    "REV": 36931
+    "OTHER": 948578,
+    "REV": 55088
   },
-  "ml_predictions_total": 1139858,
-  "ml_predictions_active": 1139858,
-  "ml_validation_ic": 0.06028546239210543,
+  "ml_predictions_total": 1461538,
+  "ml_predictions_active": 1461538,
+  "ml_validation_ic": 0.09055918477787284,
   "alt_hits": {
-    "northbound": 2811,
-    "margin": 2811,
+    "northbound": 2812,
+    "margin": 2812,
     "dragon_tiger": 1416
   },
   "fill_stats": {},
@@ -36,6 +33,7 @@
     "clb_max_losses": 0
   },
   "warnings": [
-    "无结构买入占比69% (>35%), B4/B5未生效或覆盖不足"
+    "DYN因子命中率<1%，动态因子选择几乎无效",
+    "无结构买入占比64% (>35%), B4/B5未生效或覆盖不足"
   ]
 }

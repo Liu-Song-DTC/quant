@@ -487,8 +487,12 @@ class PortfolioConstructor:
 
         # === 熊市仓位: bear_IC为负→因子反指, 空仓保本金 ===
         if bear_risk:
+            self._dbg['empty_return_days'] += 1
             return {}  # 熊市因子IC为负, 选股=选亏钱
-        elif bear_risk_fast:
+
+        _regime = 'FAST' if bear_risk_fast else 'NORM'
+
+        if bear_risk_fast:
             n_positions = max(1, n_positions // 5)
             _eff_min_rank = max(self.min_rank_pct, 0.80)
             _eff_min_score = max(self.min_absolute_score, 0.30)
@@ -597,6 +601,20 @@ class PortfolioConstructor:
                 'no_chan_penalty': no_chan_penalty,
             })
             _rej['accepted'] += 1
+            # DEBUG: 跟踪候选因子分布 + ML得分
+            fn = getattr(sig, 'factor_name', 'OTHER')
+            self._dbg.setdefault(f'factor_sel_{_regime}', {})
+            self._dbg[f'factor_sel_{_regime}'][fn] = self._dbg[f'factor_sel_{_regime}'].get(fn, 0) + 1
+            ml_s = getattr(sig, 'ml_score', 0.0)
+            if ml_s != 0:
+                self._dbg.setdefault(f'ml_score_{_regime}', [])
+                self._dbg[f'ml_score_{_regime}'].append(ml_s)
+
+        # DEBUG: 跟踪拒绝原因 per regime
+        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive']:
+            if _rej.get(rk, 0) > 0:
+                self._dbg.setdefault(f'reject_{_regime}', {})
+                self._dbg[f'reject_{_regime}'][rk] = self._dbg[f'reject_{_regime}'].get(rk, 0) + _rej[rk]
 
         if not candidates:
             for k, v in _rej.items():
@@ -641,11 +659,17 @@ class PortfolioConstructor:
                     # 保护: 产业链过滤后候选<3只 → 退回不限行业, 避免过度收缩
                     if len(_chained) >= 3:
                         candidates = _chained
+                        self._dbg.setdefault('bom_chain_hit', 0)
+                        self._dbg['bom_chain_hit'] += 1
                         print(f" [产业链] {_dom_industry} → {len(_chain_concepts)}个关联概念, "
                               f"候选 {_before}→{len(candidates)}")
                     else:
+                        self._dbg.setdefault('bom_chain_weak', 0)
+                        self._dbg['bom_chain_weak'] += 1
                         print(f" [产业链] {_dom_industry} 过滤后仅{len(_chained)}只(<3) → 退回不限行业")
                 else:
+                    self._dbg.setdefault('bom_no_chain', 0)
+                    self._dbg['bom_no_chain'] += 1
                     if _dom_industry not in _NO_CHAIN_CONCEPTS:
                         plog.alert(f"产业链缺失: \"{_dom_industry}\" 未在 INDUSTRY_CHAINS 中定义, 请补充")
                         print(f" [产业链] ⚠ \"{_dom_industry}\" 缺少产业链定义 → 退回不限行业")
@@ -778,6 +802,20 @@ class PortfolioConstructor:
         # === 选股: 绝对质量门槛 + 截面排名 ===
         # 两步过滤：1) 绝对分数门槛 2) 截面排名门槛
         # 熊市自动收紧(_eff_min_rank/_eff_min_score已在上面根据bear_risk设定)
+        # DEBUG: 追踪门槛过滤效果
+        _before_filter = len(candidates)
+        _rej_score = sum(1 for c in candidates if c.get('score', 0) < _eff_min_score)
+        _rej_rank = sum(1 for c in candidates if c['rank_pct'] <= _eff_min_rank)
+        self._dbg.setdefault(f'threshold_{_regime}', {'calls': 0, 'rej_score': 0, 'rej_rank': 0, 'score_cut': _eff_min_score, 'rank_cut': _eff_min_rank})
+        self._dbg[f'threshold_{_regime}']['calls'] += 1
+        self._dbg[f'threshold_{_regime}']['rej_score'] += _rej_score
+        self._dbg[f'threshold_{_regime}']['rej_rank'] += _rej_rank
+        # 记录被过滤股票的最低分/排名, 看是否误杀好股
+        if _rej_score > 0:
+            _rej_scores = [c.get('score', 0) for c in candidates if c.get('score', 0) < _eff_min_score]
+            self._dbg.setdefault(f'threshold_rej_scores_{_regime}', [])
+            self._dbg[f'threshold_rej_scores_{_regime}'].extend(_rej_scores)
+
         qualified = [
             c for c in candidates
             if c['rank_pct'] > _eff_min_rank
@@ -995,6 +1033,10 @@ class PortfolioConstructor:
             if c in selected:
                 continue
             selected.append(c)
+            # DEBUG: 统计买入结构
+            bp = c.get('chan_buy_point', 0)
+            key = f'buy_point_{_regime}_{bp}'
+            self._dbg[key] = self._dbg.get(key, 0) + 1
 
         # === 多策略后处理: 按子策略评分调整有效得分 → 可能重排 ===
         if self._multi_strategy.enabled and selected:
@@ -1207,6 +1249,25 @@ class PortfolioConstructor:
               f" exposure={target_exposure:.3f} stopped={int(self._stop_loss_triggered)}"
               f" hds={int(self._hds_triggered)} clb={int(self._clb_triggered)}")
 
+        # DEBUG: 资金利用率 + score分布
+        n_pos = sum(1 for v in desired_value.values() if v > 0)
+        max_pos = self._calc_max_position(total_equity, prices)
+        if bear_risk_fast:
+            max_pos = max(1, max_pos // 5)
+        n_qualified = len([c for c in candidates if c.get('score', 0) >= _eff_min_score])
+        cash_ratio = cash / max(total_equity, 1)
+        cap_reason = 'ok' if n_pos >= max_pos else (
+            'no_candidates' if n_qualified <= n_pos else
+            'cash_tight' if cash_ratio < 0.1 else
+            'gate_filtered'
+        )
+        self._dbg.setdefault('cap_util', [])
+        self._dbg['cap_util'].append((_regime, n_pos, max_pos, n_qualified, cap_reason))
+        scores = [c.get('score', 0) for c in selected if c.get('score', 0) > 0]
+        if scores:
+            self._dbg.setdefault(f'score_dist_{_regime}', [])
+            self._dbg[f'score_dist_{_regime}'].extend(scores)
+
         return desired_value
 
     def build(
@@ -1236,6 +1297,16 @@ class PortfolioConstructor:
         _exit_tags = {}  # 追踪退出原因 (code -> reason)
         profit_reduce = {}  # 止盈减仓 (code -> target_pct_of_current)
         total_equity = cash + sum(current_positions.values())
+
+        # DEBUG: 统计市场状态分布
+        self._dbg['calls'] += 1
+        _regime = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
+        if bear_risk:
+            self._dbg['bear_risk_days'] += 1
+        elif bear_risk_fast:
+            self._dbg['bear_risk_fast_days'] += 1
+        else:
+            self._dbg['normal_days'] += 1
 
         # === 趋势+熊市双确认才强制清仓: 单独trend<0可能是牛市回调===
         # 2024实证: trend<0的51天fwd20=+10.8%(反弹), 需bear_risk过滤
@@ -1280,14 +1351,18 @@ class PortfolioConstructor:
             if code in self._peak_prices and self._peak_prices[code] > 0:
                 dd_from_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
                 if bear_risk:
-                    trail = 0.04 if pnl_pct <= 0 else 0.07
+                    trail = 0.03 if pnl_pct <= 0 else 0.05
                 elif bear_risk_fast:
-                    trail = 0.05 if pnl_pct <= 0 else 0.10
+                    trail = 0.03 if pnl_pct <= 0 else 0.07
                 else:
-                    trail = 0.06 if pnl_pct <= 0 else 0.15
+                    trail = 0.04 if pnl_pct <= 0 else 0.10
                 if dd_from_peak >= trail:
                     stop_loss_sells[code] = 0.0
                     _exit_tags[code] = 'peak_trail'
+                    regime_tag = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
+                    self._dbg['peak_trail_hits'] += 1
+                    self._dbg['peak_trail_regime'][regime_tag] += 1
+                    self._dbg['peak_trail_trail_values'].append((regime_tag, trail, dd_from_peak, pnl_pct))
                     self._entry_dates.pop(code, None)
                     self._entry_reasons.pop(code, None)
                     self._peak_prices.pop(code, None)
@@ -1807,11 +1882,13 @@ class PortfolioConstructor:
             desired_value[code] = 0.0
             self._post_sell_tracking.pop(code, None)
             _reason = _exit_tags.get(code, 'stop_loss')
+            self._dbg['exit_reasons'][_reason] = self._dbg['exit_reasons'].get(_reason, 0) + 1
             _pnl = (prices.get(code, 0) - cost.get(code, [0,0])[1]) / max(cost.get(code, [0,0])[1], 0.01) if code in cost else 0
             plog.log_exit_reason(code, _reason, _pnl)
         for code in chan_force_sells:
             desired_value[code] = 0.0
             self._post_sell_tracking.pop(code, None)
+            self._dbg['exit_reasons']['chan_structure_exit'] = self._dbg['exit_reasons'].get('chan_structure_exit', 0) + 1
             _pnl = (prices.get(code, 0) - cost.get(code, [0,0])[1]) / max(cost.get(code, [0,0])[1], 0.01) if code in cost else 0
             plog.log_exit_reason(code, 'chan_structure_exit', _pnl)
         # 连续2期弱势板块: 强制清仓该行业现有持仓
@@ -1860,4 +1937,127 @@ class PortfolioConstructor:
                 self._entry_dates[code] = date
                 self._peak_prices[code] = prices.get(code, 0)
 
+        # DEBUG: 记录每期持仓分布
+        regime = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
+        n_pos = sum(1 for v in adjusted.values() if v > 0)
+        exposure = sum(adjusted.values()) / max(total_equity, 1)
+        self._dbg['positions_dist'].append((regime, n_pos, exposure))
+
         return adjusted
+
+    def print_dbg_summary(self):
+        """打印熊市行为调试统计"""
+        d = self._dbg
+        if d['calls'] == 0:
+            return
+        print("\n" + "=" * 60)
+        print(" [portfolio DEBUG] 市场状态与行为统计")
+        print("=" * 60)
+        print(f"  总调用次数: {d['calls']}")
+        print(f"  bear_risk (空仓): {d['bear_risk_days']} ({d['bear_risk_days']/max(d['calls'],1)*100:.0f}%)")
+        print(f"  bear_risk_fast (预警): {d['bear_risk_fast_days']} ({d['bear_risk_fast_days']/max(d['calls'],1)*100:.0f}%)")
+        print(f"  normal (正常): {d['normal_days']} ({d['normal_days']/max(d['calls'],1)*100:.0f}%)")
+        print(f"  空仓返回次数: {d['empty_return_days']}")
+        if d['positions_dist']:
+            for regime in ['BEAR', 'FAST', 'NORM']:
+                items = [x for x in d['positions_dist'] if x[0] == regime]
+                if not items:
+                    continue
+                n_pos_vals = [x[1] for x in items]
+                expo_vals = [x[2] for x in items]
+                n_pos_avg = sum(n_pos_vals) / len(n_pos_vals)
+                expo_avg = sum(expo_vals) / len(expo_vals)
+                print(f"  [{regime}] 平均持仓={n_pos_avg:.1f}只, 平均敞口={expo_avg:.2f}, 样本={len(items)}")
+        if d['exit_reasons']:
+            print(f"  退出原因分布: {dict(sorted(d['exit_reasons'].items(), key=lambda x:-x[1]))}")
+        if d['peak_trail_hits'] > 0:
+            print(f"  peak_trail触发: {d['peak_trail_hits']}次, 分regime={d['peak_trail_regime']}")
+            samples = d['peak_trail_trail_values'][:10]
+            for s in samples:
+                print(f"    [{s[0]}] trail={s[1]:.2f} dd={s[2]:.3f} pnl={s[3]:.3f}")
+        # BOM产业链统计
+        bom_hit = d.get('bom_chain_hit', 0)
+        bom_weak = d.get('bom_chain_weak', 0)
+        bom_no = d.get('bom_no_chain', 0)
+        bom_total = bom_hit + bom_weak + bom_no
+        if bom_total > 0:
+            print(f"  BOM产业链: hit={bom_hit} weak={bom_weak} no_chain={bom_no} (命中率={bom_hit/max(bom_total,1)*100:.0f}%)")
+        # 买入结构(chan_buy_point)分布 per regime
+        bp_keys = [k for k in d if k.startswith('buy_point_')]
+        if bp_keys:
+            print(f"  买入结构分布 (per regime):")
+            for regime in ['BEAR', 'FAST', 'NORM']:
+                r_keys = [k for k in bp_keys if f'_{regime}_' in k]
+                if not r_keys:
+                    continue
+                items = [(k.split('_')[-1], d[k]) for k in sorted(r_keys)]
+                total = sum(v for _, v in items)
+                detail = ' | '.join(f'B{bp}: {cnt} ({cnt/max(total,1)*100:.0f}%)' for bp, cnt in items)
+                print(f"    [{regime}] total={total}  {detail}")
+        # 拒绝原因 per regime
+        rej_keys = [k for k in d if k.startswith('reject_')]
+        if rej_keys:
+            print(f"  拒绝原因分布 (per regime):")
+            for regime in ['BEAR', 'FAST', 'NORM']:
+                rk = f'reject_{regime}'
+                if rk in d:
+                    print(f"    [{regime}] {dict(sorted(d[rk].items(), key=lambda x:-x[1]))}")
+        # 因子选择分布 per regime (top5)
+        fac_keys = [k for k in d if k.startswith('factor_sel_')]
+        if fac_keys:
+            print(f"  因子选择分布 (per regime, top5):")
+            for regime in ['BEAR', 'FAST', 'NORM']:
+                fk = f'factor_sel_{regime}'
+                if fk in d:
+                    top5 = sorted(d[fk].items(), key=lambda x:-x[1])[:5]
+                    detail = ' | '.join(f'{k}: {v}' for k, v in top5)
+                    print(f"    [{regime}] {detail}")
+        # 资金利用率
+        if d.get('cap_util'):
+            print(f"  资金利用率统计:")
+            for regime in ['BEAR', 'FAST', 'NORM']:
+                items = [x for x in d['cap_util'] if x[0] == regime]
+                if not items:
+                    continue
+                reasons = {}
+                for _, npos, maxpos, nqual, reason in items:
+                    reasons[reason] = reasons.get(reason, 0) + 1
+                avg_pos = sum(x[1] for x in items) / len(items)
+                avg_max = sum(x[2] for x in items) / len(items)
+                print(f"    [{regime}] 平均持仓={avg_pos:.1f}/{avg_max:.0f}只, 原因分布={reasons}")
+        # 入选score分布 per regime
+        score_keys = [k for k in d if k.startswith('score_dist_')]
+        if score_keys:
+            print(f"  入选score统计 (per regime):")
+            for regime in ['BEAR', 'FAST', 'NORM']:
+                sk = f'score_dist_{regime}'
+                if sk in d and d[sk]:
+                    arr = np.array(d[sk])
+                    print(f"    [{regime}] mean={np.mean(arr):.3f} p50={np.median(arr):.3f} "
+                          f"p25={np.percentile(arr,25):.3f} p75={np.percentile(arr,75):.3f} n={len(arr)}")
+        # 门槛过滤统计 per regime
+        th_keys = [k for k in d if k.startswith('threshold_') and not k.startswith('threshold_rej')]
+        if th_keys:
+            print(f"  熊市门槛过滤效果:")
+            for regime in ['BEAR', 'FAST', 'NORM']:
+                tk = f'threshold_{regime}'
+                if tk in d:
+                    td = d[tk]
+                    avg_cand = td['rej_score'] + td['rej_rank'] + sum(1 for _ in [])  # can't easily get total passed
+                    print(f"    [{regime}] score_cut={td['score_cut']:.2f} rank_cut={td['rank_cut']:.2f} "
+                          f"rej_score={td['rej_score']} rej_rank={td['rej_rank']} samples={td['calls']}")
+                rsk = f'threshold_rej_scores_{regime}'
+                if rsk in d and d[rsk]:
+                    arr = np.array(d[rsk])
+                    print(f"    [{regime}] 被过滤score分布: mean={np.mean(arr):.3f} max={np.max(arr):.3f} n={len(arr)}")
+        # ML得分统计 per regime
+        ml_keys = [k for k in d if k.startswith('ml_score_')]
+        if ml_keys:
+            print(f"  候选ML得分统计 (per regime):")
+            for regime in ['BEAR', 'FAST', 'NORM']:
+                mk = f'ml_score_{regime}'
+                if mk in d and d[mk]:
+                    arr = np.array(d[mk])
+                    print(f"    [{regime}] mean={np.mean(arr):.4f} p50={np.median(arr):.4f} "
+                          f"p25={np.percentile(arr,25):.4f} p75={np.percentile(arr,75):.4f} n={len(arr)}")
+        print("=" * 60)

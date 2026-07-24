@@ -1612,6 +1612,10 @@ if __name__ == "__main__":
     _malloc_trim()
     result = _vectorized_backtest(strategy, fundamental_data, FROMDATE, TODATE, CASH)
 
+    # DEBUG: 打印portfolio行为统计
+    if hasattr(strategy, 'portfolio') and hasattr(strategy.portfolio, 'print_dbg_summary'):
+        strategy.portfolio.print_dbg_summary()
+
     # 保存选股结果
     if result['selections']:
         selections_df = pd.DataFrame(result['selections'])
