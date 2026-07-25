@@ -81,7 +81,7 @@ def load_macro_data():
     sf_df['month'] = sf_df['date'].dt.to_period('M')
     mr_df['month'] = mr_df['date'].dt.to_period('M')
 
-    monthly = m1_df[['month', '货币(M1)-同比增长']].copy()
+    monthly = m1_df[['month', '货币(M1)-同比增长', '货币和准货币(M2)-同比增长']].copy()
     monthly = monthly.merge(sf_df[['month', '社会融资规模增量']], on='month', how='left')
     monthly = monthly.merge(mr_df.groupby('month')['融资余额'].mean().reset_index(), on='month', how='left')
 
@@ -112,14 +112,12 @@ def load_macro_data():
     monthly['m1_accel'] = monthly['M1_yoy'].diff(3)
     monthly['sf_improve'] = monthly['SF_ma3'].diff(3) > 0
 
-    # M1-M2剪刀差: 框架核心 — 由负转正=行情高发区间
+    # M1-M2剪刀差: 框架核心 — 停止恶化=底部确认
     if '货币和准货币(M2)-同比增长' in monthly.columns:
         monthly['M2_yoy'] = monthly['货币和准货币(M2)-同比增长']
         monthly['m1_m2_scissor'] = monthly['M1_yoy'] - monthly['M2_yoy']
-        monthly['scissor_turn_positive'] = (
-            (monthly['m1_m2_scissor'] > -1.0) &
-            (monthly['m1_m2_scissor'].shift(3) < -2.0)
-        )  # 剪刀差从<-2收敛到>-1=触底回升
+        monthly['scissor_change'] = monthly['m1_m2_scissor'].diff(2)
+        monthly['scissor_stabilized'] = monthly['scissor_change'] >= -0.5  # 2月内不再恶化
 
     # PPI改善 (三个月均值上升)
     if 'PPI' in monthly.columns:
@@ -178,14 +176,12 @@ def get_macro_regime(date, macro_df=None):
     m1_accel = row.get('m1_accel', 0)
     sf_ok = row.get('sf_improve', False)
     margin_ok = row.get('margin_chg_3m', -1) > -0.05
-    scissor_turn = row.get('scissor_turn_positive', False)
 
-    # 剪刀差触底回升=框架定义的行情启动信号
-    if scissor_turn and sf_ok:
-        return 'bullish'
-    elif m1_accel > 0.5 and sf_ok and margin_ok:
+    if m1_accel > 0.5 and sf_ok and margin_ok:
         return 'bullish'
     elif m1_accel < -1.0 and not sf_ok:
+        return 'bearish'
+    return 'neutral'
         return 'bearish'  # 信用+流动性双收紧才确认
     return 'neutral'
 
