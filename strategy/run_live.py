@@ -24,7 +24,7 @@ CONFIG_BAK = CONFIG_PATH + '.live_bak'
 
 
 def update_market_data(target_date: str):
-    """Step 1: 增量更新行情数据."""
+    """Step 1: 增量更新行情数据 + 宏观数据."""
     print("=" * 60)
     print("Step 1/3: 更新行情数据")
     print("=" * 60)
@@ -35,6 +35,15 @@ def update_market_data(target_date: str):
     )
     if result.returncode != 0:
         print("[WARN] 数据更新失败, 继续使用本地缓存...")
+
+    # 宏观数据增量更新 (M1/社融/两融/PPI/Fed利率)
+    try:
+        print("  更新宏观数据...")
+        from core.macro_data import download_macro_data
+        download_macro_data()
+        print("  宏观数据更新完成")
+    except Exception as e:
+        print(f"  [WARN] 宏观数据更新失败: {e}")
 
 
 def patch_config_todate(target_date: str):
