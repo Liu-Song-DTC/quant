@@ -484,7 +484,6 @@ class PortfolioConstructor:
         bear_risk=False,
         bear_risk_fast=False,
         severe_bear=False,
-        macro_triggered_fast=False,
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
@@ -501,9 +500,7 @@ class PortfolioConstructor:
 
         if bear_risk_fast:
             n_positions = max(1, n_positions // 5)
-            # macro触发FAST: 用稍松门槛避免零仓位踏空底部
-            _rank_cut = 0.70 if macro_triggered_fast else 0.80
-            _eff_min_rank = max(self.min_rank_pct, _rank_cut)
+            _eff_min_rank = max(self.min_rank_pct, 0.80)
             _eff_min_score = max(self.min_absolute_score, 0.30)
         else:
             _eff_min_rank = self.min_rank_pct
@@ -1311,7 +1308,6 @@ class PortfolioConstructor:
         self._dbg['calls'] += 1
 
         # Macro overlay: 宏观改善软化FAST, 宏观恶化提前收紧NORM→FAST
-        _macro_triggered_fast = False
         if self._macro_df is not None and date is not None:
             from .macro_data import get_macro_regime
             _macro = get_macro_regime(date, self._macro_df)
@@ -1319,7 +1315,6 @@ class PortfolioConstructor:
                 bear_risk_fast = False
             elif _macro == 'bearish' and not bear_risk:
                 bear_risk_fast = True
-                _macro_triggered_fast = True
 
         _regime = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
         if bear_risk:
@@ -1328,6 +1323,17 @@ class PortfolioConstructor:
             self._dbg['bear_risk_fast_days'] += 1
         else:
             self._dbg['normal_days'] += 1
+
+        # 连熊>60天→降级为FAST: V反行情不至于完全踏空
+        if not hasattr(self, '_bear_streak'):
+            self._bear_streak = 0
+        if bear_risk:
+            self._bear_streak += 1
+        else:
+            self._bear_streak = 0
+        if bear_risk and self._bear_streak > 60:
+            bear_risk = False
+            bear_risk_fast = True
 
         # === 趋势+熊市双确认强制清仓: 单独trend<0可能是牛市回调===
         # 2024实证: trend<0的51天fwd20=+10.8%(反弹), 需bear_risk过滤
