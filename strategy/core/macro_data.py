@@ -185,9 +185,25 @@ def get_macro_regime(date, macro_df=None):
         return 'bullish'
     elif m1_accel > 0.5 and sf_ok and margin_ok:
         return 'bullish'
-    elif m1_accel < -1.0 or (not sf_ok and margin_ok is False):
-        return 'bearish'
+    elif m1_accel < -1.0 and not sf_ok:
+        return 'bearish'  # M1加速跌+社融不改善=确认恶化
     return 'neutral'
+
+
+def get_macro_severity(date, macro_df=None):
+    """返回bearish深度: 'deep'(m1_accel<-2) / 'shallow' / 'none'"""
+    if macro_df is None:
+        macro_df = load_macro_data()
+    month = pd.Period(date.strftime('%Y-%m'), freq='M')
+    row = macro_df[macro_df['month'] == month]
+    if row.empty:
+        return 'none'
+    row = row.iloc[0]
+    if row.get('m1_accel', 0) < -2.0:
+        return 'deep'
+    elif row.get('m1_accel', 0) < -1.0:
+        return 'shallow'
+    return 'none'
 
 
 if __name__ == '__main__':
