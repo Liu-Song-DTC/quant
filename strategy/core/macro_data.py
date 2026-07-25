@@ -82,22 +82,6 @@ def load_macro_data():
     return monthly
 
 
-def is_macro_bull_confirmed(date, macro_df=None):
-    """连续2个月bull_signal(本月+上月)才确认, 过滤2022的2个月分散假阳性"""
-    if macro_df is None:
-        macro_df = load_macro_data()
-    month = pd.Period(date.strftime('%Y-%m'), freq='M')
-    idx = macro_df[macro_df['month'] == month].index
-    if len(idx) == 0:
-        return False
-    idx = idx[0]
-    if idx == 0:
-        return False
-    # 本月+上月都是bull才确认
-    return (macro_df.iloc[idx]['bull_signal'] == 1 and
-            macro_df.iloc[idx-1]['bull_signal'] == 1)
-
-
 def get_macro_regime(date, macro_df=None):
     """根据宏观数据判断市场状态倾向
 
@@ -119,7 +103,7 @@ def get_macro_regime(date, macro_df=None):
 
     if m1_accel > 0.5 and sf_ok and margin_ok:
         return 'bullish'
-    elif m1_accel < -2.0 and row.get('M1_yoy', 0) > 0:  # M1从正转负才真恶化, 已在负值=已price in
+    elif m1_accel < -1.0 or (not sf_ok and margin_ok is False):
         return 'bearish'
     return 'neutral'
 
