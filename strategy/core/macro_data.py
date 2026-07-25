@@ -158,6 +158,24 @@ def load_macro_data():
     return monthly
 
 
+def _count_consecutive_decline(macro_df, current_month):
+    """统计M1+PPI连续恶化月数(含本月)"""
+    count = 0
+    idx = macro_df[macro_df['month'] == current_month].index
+    if len(idx) == 0:
+        return 0
+    idx = idx[0]
+    for i in range(idx, -1, -1):
+        r = macro_df.iloc[i]
+        m1_down = r.get('m1_accel', 0) < -1.0
+        ppi_down = not r.get('ppi_improve', True)
+        if m1_down and ppi_down:
+            count += 1
+        else:
+            break
+    return count
+
+
 def get_macro_regime(date, macro_df=None):
     """根据宏观数据判断市场状态倾向
 
@@ -182,8 +200,11 @@ def get_macro_regime(date, macro_df=None):
     if m1_accel > 0.5 and sf_ok and margin_ok:
         return 'bullish'
     elif m1_accel < -1.0 and not sf_ok:
-        # PPI改善且通膨不高(<3%)=复苏中, 不收紧; PPI高通膨改善=过热, 继续收紧
+        # 连跌3月+ → 市场已price in, 释放收紧
         if ppi_improve and ppi_val < 3.0:
+            return 'neutral'
+        # 已连跌3个月以上 → 底部区域, 不放续
+        if _count_consecutive_decline(macro_df, month) >= 3:
             return 'neutral'
         return 'bearish'
     return 'neutral'
