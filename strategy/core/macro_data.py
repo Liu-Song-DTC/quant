@@ -176,13 +176,16 @@ def get_macro_regime(date, macro_df=None):
     m1_accel = row.get('m1_accel', 0)
     sf_ok = row.get('sf_improve', False)
     margin_ok = row.get('margin_chg_3m', -1) > -0.05
+    ppi_improve = row.get('ppi_improve', False)
+    ppi_val = row.get('PPI', 0) or 0
 
     if m1_accel > 0.5 and sf_ok and margin_ok:
         return 'bullish'
     elif m1_accel < -1.0 and not sf_ok:
+        # PPI改善且通膨不高(<3%)=复苏中, 不收紧; PPI高通膨改善=过热, 继续收紧
+        if ppi_improve and ppi_val < 3.0:
+            return 'neutral'
         return 'bearish'
-    return 'neutral'
-        return 'bearish'  # 信用+流动性双收紧才确认
     return 'neutral'
 
 
