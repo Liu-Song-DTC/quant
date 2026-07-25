@@ -484,12 +484,17 @@ class PortfolioConstructor:
         bear_risk=False,
         bear_risk_fast=False,
         severe_bear=False,
+        macro_bearish=False,
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
 
         total_equity = cash + sum(current_positions.values())
         n_positions = self._calc_max_position(total_equity, prices)
+
+        # 宏观恶化: NORM中减仓到3只, 保留分散度但收紧敞口
+        if macro_bearish:
+            n_positions = max(3, n_positions // 2)
 
         # === 熊市仓位: bear_IC为负→因子反指, 空仓保本金 ===
         if bear_risk:
@@ -1307,12 +1312,15 @@ class PortfolioConstructor:
         # DEBUG: 统计市场状态分布
         self._dbg['calls'] += 1
 
-        # Macro softening: 仅软化FAST→NORM, BEAR不动(宏观领先指标在熊市有假阳性)
-        if self._macro_df is not None and date is not None and bear_risk_fast:
+        # Macro overlay: 宏观改善软化FAST, 宏观恶化减仓(不封到1只)
+        _macro_bearish = False
+        if self._macro_df is not None and date is not None:
             from .macro_data import get_macro_regime
             _macro = get_macro_regime(date, self._macro_df)
-            if _macro == 'bullish':
+            if _macro == 'bullish' and bear_risk_fast:
                 bear_risk_fast = False
+            elif _macro == 'bearish' and not bear_risk and not bear_risk_fast:
+                _macro_bearish = True  # NORM期宏观恶化, 轻量减仓
 
         _regime = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
         if bear_risk:
@@ -1887,6 +1895,7 @@ class PortfolioConstructor:
                 bear_risk=bear_risk,
                 bear_risk_fast=bear_risk_fast,
                 severe_bear=severe_bear,
+                macro_bearish=_macro_bearish,
             )
 
         # 强制卖出 (止损 + Chan卖出 + 弱势板块)

@@ -103,7 +103,7 @@ def get_macro_regime(date, macro_df=None):
 
     if m1_accel > 0.5 and sf_ok and margin_ok:
         return 'bullish'
-    elif m1_accel < -1.0 or (not sf_ok and margin_ok is False):
+    elif m1_accel < -2.0 and row.get('M1_yoy', 0) > 0:  # M1从正转负才真恶化, 已在负值=已price in
         return 'bearish'
     return 'neutral'
 
