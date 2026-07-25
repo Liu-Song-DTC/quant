@@ -186,7 +186,7 @@ def get_macro_regime(date, macro_df=None):
     elif m1_accel > 0.5 and sf_ok and margin_ok:
         return 'bullish'
     elif m1_accel < -1.0 and not sf_ok:
-        return 'bearish'  # M1加速跌+社融不改善=确认恶化
+        return 'bearish'  # 信用+流动性双收紧才确认
     return 'neutral'
 
 
