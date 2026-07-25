@@ -78,6 +78,12 @@ class PortfolioConstructor:
     ):
         config = load_config()
         portfolio_config = config.get_portfolio_config()
+        # 宏观数据: M1/社融/两融 领先指标
+        try:
+            from .macro_data import load_macro_data
+            self._macro_df = load_macro_data()
+        except Exception:
+            self._macro_df = None
 
         self.position_stop_loss = position_stop_loss if position_stop_loss is not None else portfolio_config.get('position_stop_loss', 0.12)
         self.entry_speed = entry_speed if entry_speed is not None else portfolio_config.get('entry_speed', 0.5)
@@ -1300,6 +1306,14 @@ class PortfolioConstructor:
 
         # DEBUG: 统计市场状态分布
         self._dbg['calls'] += 1
+
+        # Macro softening: 仅软化FAST→NORM, BEAR不动(宏观领先指标在熊市有假阳性)
+        if self._macro_df is not None and date is not None and bear_risk_fast:
+            from .macro_data import get_macro_regime
+            _macro = get_macro_regime(date, self._macro_df)
+            if _macro == 'bullish':
+                bear_risk_fast = False
+
         _regime = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
         if bear_risk:
             self._dbg['bear_risk_days'] += 1
