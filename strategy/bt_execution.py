@@ -1379,6 +1379,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
             cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
             positions[j] = 0
+            cost_tracker.pop(code, None)  # 清仓: 移除成本记录
             _fill_stats['sell_filled'] += 1
 
         # Step 2: 先处理所有减仓(释放现金), 再处理加仓
@@ -1404,6 +1405,11 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
                 cash += abs(diff) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
                 positions[j] = target_shares
+                # 减仓: 减少成本追踪股数 (均价不变)
+                if code in cost_tracker:
+                    cost_tracker[code][0] = max(cost_tracker[code][0] - abs(diff), 0)
+                    if cost_tracker[code][0] <= 0:
+                        cost_tracker.pop(code, None)
                 _fill_stats['sell_filled'] += 1
 
         # 2b: 加仓 — 先计算总需资金, 按比例缩放确保不超现金
@@ -1442,6 +1448,13 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     cash -= scaled_cost
                     positions[j] = curr_shares + scaled_diff
                     _fill_stats['buy_filled'] += 1
+                    # 更新成本追踪: [总股数, 加权均价]
+                    if code in cost_tracker:
+                        old_s, old_avg = cost_tracker[code]
+                        new_s = old_s + scaled_diff
+                        cost_tracker[code] = [new_s, (old_s * old_avg + scaled_diff * buy_px) / max(new_s, 1)]
+                    else:
+                        cost_tracker[code] = [scaled_diff, buy_px]
                     if tplus1_enabled:
                         _today_buys.add(code)
                 else:

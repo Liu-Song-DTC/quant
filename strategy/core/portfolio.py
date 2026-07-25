@@ -1308,9 +1308,10 @@ class PortfolioConstructor:
         else:
             self._dbg['normal_days'] += 1
 
-        # === 趋势+熊市双确认才强制清仓: 单独trend<0可能是牛市回调===
+        # === 趋势+熊市双确认强制清仓: 单独trend<0可能是牛市回调===
         # 2024实证: trend<0的51天fwd20=+10.8%(反弹), 需bear_risk过滤
         if trend_score < 0 and bear_risk:
+            self._dbg['empty_return_days'] += 1
             for code in list(current_positions.keys()):
                 stop_loss_sells[code] = 0.0
                 _exit_tags[code] = 'trend_bear'
@@ -1319,15 +1320,12 @@ class PortfolioConstructor:
             self._peak_prices.clear()
             self._entry_reason_lost_count.clear()
             self._post_sell_tracking.clear()
+            self._dbg['positions_dist'].append(('BEAR', 0, 0.0))
             desired_value = {c: 0.0 for c in current_positions}
             return desired_value
 
-        # === 止损不止盈: 亏损收紧, 盈利放宽, 让利润奔跑 ===
-        if bear_risk_fast and not bear_risk:
-            _eff_stop_loss = 0.07
-        else:
-            _eff_stop_loss = self.position_stop_loss  # 8%
-
+        # === 基线390%靠持仓熬回调, 个股止损=千刀万剐 — 设为空屏蔽全部 ===
+        cost = {}  # 模拟基线空cost_tracker, 这样所有止损检查都会跳过
         for code, current_value in current_positions.items():
             if code not in prices or current_value <= 0:
                 continue

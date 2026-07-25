@@ -1,65 +1,53 @@
-# 7/24 调优计划
+# 7/25 调优计划
 
 ## 当前状态
-- 代码: f3e01b8 + 5ce59a2(止损不止盈) + bear_risk_fast bug修复 + peak_trail市场感知
-- 结果: 总收益 287%, Sharpe 1.34, 2022/2023亏损(-4%/-16%)
-- 目标: 年均40%+, 所有年份正收益
+- 基准: commit 8e0f082, 收益 390%, Sharpe 1.54, 2022 -4.62%, 2023 -2.32%
+- 全禁止损版: 收益 250%, Sharpe 1.35, 仍远低于390%
+- 当前未提交改动在 portfolio.py / bt_execution.py / industry_chain.py
+- 目标: 确认收益差异根因, 在390%基础上增量改善
 
-## Step 1: 跑全量诊断回测
+## 7/24 主要发现
+
+### Bug修复
+1. _regime 未定义 (603/613行) → 已修复
+2. candidates 未定义 (1931行) → 已修复  
+3. cost_tracker 从未填充 → 所有止损循环被跳过 → 看似390%实则在裸奔
+
+### 止损迭代结论
+- peak_trail 收紧→过早止盈, 收益崩溃(210次→390→95%)
+- cost_stop 12%→同样问题(75次@-9.6%)
+- 最终: 全禁(NORM cost_stop=99%, peak_trail仅BEAR), 仍无法恢复390%
+- **未解问题**: 逻辑上应与基线等价, 但收益仅217%
+
+### 选股分析
+- B0 (无结构) score=0.318 > B4+ score=0.279
+- 信号引擎质量OK (入选 vs 被拒 score差距显著)
+- Q1 2021 零信号 → 数据冷启动限制, 非bug
+
+### 行业链
+- BOM 命中率 28% → 已扩充至153概念+65 NO_CHAIN
+- 命中率低不是性能瓶颈, 风格概念无链是正常的
+
+## 明日Step 1: A/B对比定位差异
+
 ```bash
-cd /mnt/d/quant/strategy
-rm -f rolling_validation_results/backtest_signals.csv
-python bt_execution.py
+# 1. Stash 当前改动
+git stash
+
+# 2. 确认 390% 基线仍可复现
+/quant/.venv/bin/python strategy/bt_execution.py
+
+# 3. 逐个恢复改动, 每次跑回测:
+#    a. cost_tracker alone (bt_execution.py)
+#    b. + bear_risk 去 trend 要求  
+#    c. + no_chan_penalty -0.20→-0.15
+#    d. + peak_trail 仅 BEAR
+#    e. + cost_stop 99%
+
+# 4. 找到导致收益下降的具体改动
 ```
-等待约2h, 关注输出中的 `[portfolio DEBUG]` 段。
 
-## Step 2: 分析12项诊断数据
-
-### A. 熊市触发频率
-- bear_risk(空仓)触发天数 — 如果太少, 需要降低触发阈值
-- bear_risk_fast(预警)触发天数 — 当前仅1只仓位, 是否过紧
-
-### B. 持仓效率
-- 各regime平均持仓数/敞口
-- 资金利用率: 为什么常选2只不满仓? (no_candidates / cash_tight / gate_filtered)
-
-### C. 退出机制
-- 退出原因分布: cost_stop / peak_trail / sig_sell / factor_neg 占比
-- peak_trail在熊市是否有触发记录
-
-### D. 买入质量
-- B0/B4/B5 分布 per regime — B0占比是否熊市更高?
-- 入选score分布 per regime — 熊市选股质量是否明显差
-
-### E. 门槛效果
-- 各regime的score_cut / rank_cut
-- 被过滤股票score分布 — max(被拒) vs mean(入选) 的差距
-- 如果差距小 → 需要提高门槛
-
-### F. 因子 & BOM
-- 熊市用了什么因子(top5) — 是否激活了bear_factors
-- BOM产业链命中率 — 是否缺失产业链定义
-
-### G. ML贡献
-- 候选ML得分 per regime — 熊市ML得分是否偏低
-
-## Step 3: 根据诊断决定方向
-
-| 发现问题 | 解决方向 |
-|----------|---------|
-| bear_risk触发太少 | 降低market_regime_detector阈值 |
-| 熊市B0占比过高 | 提高min_score门槛, 或收紧buy_threshold |
-| 熊市score明显低 | bear_factors未生效, 需检查signal_engine激活条件 |
-| 资金利用率低 | 放宽candidate池, 或降低eff_min_rank |
-| BOM命中率低 | 补充缺失的产业链定义 |
-| 当前门槛有效(差距大) | 保持, 继续观察 |
-
-## Step 4: 验证改动
-- 每次只改一个方向, 跑回测验证
-- 对比基准: 287% / Sharpe 1.34
-- 通过标准: 2022/2023改善且总收益不降
-
-## Step 5: portfolio_selections.csv后分析
-- B0 vs B4 vs B5 买入后 forward return 对比
-- score分位数 vs forward return 相关性
-- 找出真正有效的选股信号特征
+## 待解决问题
+- 2022/2023 仍需正收益
+- cost_tracker 填充后如何利用而不是伤害收益
+- bear_risk_fast 期间的仓位管理
