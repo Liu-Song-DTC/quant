@@ -1004,8 +1004,11 @@ class PortfolioConstructor:
             elif bom_score > 0.55:
                 additive += 0.03
 
-            # 动量调整: 赢家动量更高(+4.3pp), 有数据支撑
-            mom_adj = (mom_60d - 0.0) * 0.18
+            # 动量调整: NORM奖励动量, FAST惩罚波动(偏好稳定股)
+            if bear_risk_fast:
+                mom_adj = -abs(mom_60d) * 0.10  # FAST: 偏好低波动稳定股
+            else:
+                mom_adj = (mom_60d - 0.0) * 0.18
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
             c['effective_score'] = rank * multiplier + additive + turnover + mom_adj + c.get('no_chan_penalty', 0.0)
