@@ -1310,14 +1310,23 @@ class PortfolioConstructor:
         # DEBUG: 统计市场状态分布
         self._dbg['calls'] += 1
 
-        # Macro overlay: 宏观改善软化FAST, 宏观恶化提前收紧NORM→FAST
+        # Macro overlay: 宏观改善软化FAST, 恶化收紧(震荡市不收紧)
         if self._macro_df is not None and date is not None:
             from .macro_data import get_macro_regime
             _macro = get_macro_regime(date, self._macro_df)
             if _macro == 'bullish' and bear_risk_fast:
                 bear_risk_fast = False
             elif _macro == 'bearish' and not bear_risk:
-                bear_risk_fast = True
+                # 震荡市检测: 近60天regime频繁切换→不收紧
+                if not hasattr(self, '_regime_history'):
+                    self._regime_history = []
+                self._regime_history.append('BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM'))
+                if len(self._regime_history) > 60:
+                    self._regime_history.pop(0)
+                _transitions = sum(1 for i in range(1, len(self._regime_history))
+                                   if self._regime_history[i] != self._regime_history[i-1])
+                if _transitions < 4:  # 连续熊/牛→收紧; 震荡(>=4次切换)→不紧
+                    bear_risk_fast = True
 
         _regime = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
         if bear_risk:
