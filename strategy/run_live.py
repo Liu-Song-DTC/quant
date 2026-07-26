@@ -36,14 +36,20 @@ def update_market_data(target_date: str):
     if result.returncode != 0:
         print("[WARN] 数据更新失败, 继续使用本地缓存...")
 
-    # 宏观数据增量更新 (M1/社融/两融/PPI/Fed利率)
+    # 宏观数据更新 (subprocess避免akshare import卡住主进程)
     try:
         print("  更新宏观数据...")
-        from core.macro_data import download_macro_data
-        download_macro_data()
-        print("  宏观数据更新完成")
+        macro_script = os.path.join(_SCRIPT_DIR, 'core', 'macro_data.py')
+        result = subprocess.run(
+            [_VENV_PYTHON, macro_script, 'download'],
+            cwd=_SCRIPT_DIR, capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            print(f"  [WARN] 宏观数据更新失败: {result.stderr[-200:]}")
+        else:
+            print(f"  宏观数据更新完成")
     except Exception as e:
-        print(f"  [WARN] 宏观数据更新失败: {e}")
+        print(f"  [WARN] 宏观数据更新异常: {e}")
 
 
 def patch_config_todate(target_date: str):

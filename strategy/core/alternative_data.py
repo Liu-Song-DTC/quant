@@ -46,8 +46,10 @@ class AlternativeDataProvider:
         """
         cache_path = self.data_dir / 'dragon_tiger.pkl'
         if cache_path.exists():
-            self._dragon_tiger = pd.read_pickle(cache_path)
-            return self._dragon_tiger
+            _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
+            if _age_hours < 24:
+                self._dragon_tiger = pd.read_pickle(cache_path)
+                return self._dragon_tiger
 
         try:
             import akshare as ak
@@ -225,8 +227,10 @@ class AlternativeDataProvider:
         """
         cache_path = self.data_dir / 'northbound_daily.pkl'
         if cache_path.exists():
-            self._northbound = pd.read_pickle(cache_path)
-            return self._northbound
+            _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
+            if _age_hours < 24:
+                self._northbound = pd.read_pickle(cache_path)
+                return self._northbound
 
         try:
             import akshare as ak
@@ -337,8 +341,10 @@ class AlternativeDataProvider:
         """
         cache_path = self.data_dir / 'margin_daily.pkl'
         if cache_path.exists():
-            self._margin = pd.read_pickle(cache_path)
-            return self._margin
+            _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
+            if _age_hours < 24:
+                self._margin = pd.read_pickle(cache_path)
+                return self._margin
 
         try:
             import akshare as ak

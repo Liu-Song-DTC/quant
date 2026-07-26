@@ -212,6 +212,7 @@ class StockDataManager:
         # 3. 排除停牌股票
         if self.config["exclude_suspended"]:
             # 假设停牌股票成交量为0
+            filtered_df['volume'] = pd.to_numeric(filtered_df['volume'], errors='coerce').fillna(0)
             mask = filtered_df['volume'] > 0
             filtered_df = filtered_df[mask]
             print(f"排除停牌股票后剩余: {len(filtered_df)}")
@@ -1440,18 +1441,6 @@ StockDataManager.download_concept_daily = download_concept_daily
 
 if __name__ == "__main__":
     main()
-
-    #  打印汇总信息
-    print(f"\n汇总信息:")
-    print(f"- 股票列表: {len(stock_list)} 只")
-    print(f"- 回测股票池: {len(universe)} 只")
-    print(f"- 数据目录: {manager.data_dir}")
-    print(f"- 原始数据: {len(list(manager.raw_data_dir.glob('*/*.csv')))} 个文件")
-    print(f"- 处理数据: {len(list(manager.backtrader_data_dir.glob('**/*.csv')))} 个文件")
-
-    # 增量更新基本面数据
-    print("\n======> 增量更新基本面数据...")
-    manager.incremental_update_fundamental()
 
 
 if __name__ == "__main__":
