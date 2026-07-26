@@ -1,361 +1,209 @@
 # 量化交易系统
 
-A股多因子量化交易系统，融合缠论（缠中说禅）技术分析 + Walk-Forward 动态因子选择 + LLM 行业情绪分析 + 自进化引擎。基于 Backtrader 回测框架，目标 Sharpe Ratio > 1.0。
+A股多因子量化交易系统，融合缠论技术分析 + 行业级因子配置 + 宏观周期叠加 + ML预测增强。基于 Backtrader 回测框架。
+
+**当前最优回测**: 总收益 1098%, Sharpe 1.87 (2021-2026), 5/6年正收益。
 
 ## 快速开始
 
 ```bash
-# 每日实盘运行（数据更新 + 信号生成 + 交易建议 + 微信推送）
-python main.py run
+# 实盘选股 (自动更新数据→生成信号→产出订单)
+python strategy/run_live.py
 
-# 跳过数据更新（仅生成信号）
-python main.py run --skip-update
+# 单独回测
+python strategy/bt_execution.py
 
-# 行业情绪分析
-python main.py sentiment
-
-# 选股导出 Excel（实盘调仓用）
-python export_selection.py
-
-# 每日复盘 + 自进化
-cd strategy && python analysis/chan_review.py --evolve
-
-# 查看持仓状态
-python main.py status
+# 更新数据
+python data/data_manager.py
 ```
 
-## 架构
+## 系统架构
 
 ```
-main.py                          # 主入口（run/sentiment/status）
-export_selection.py              # 选股结果导出 Excel（5 Sheet）
-update_data.py                   # 独立数据更新脚本
-
-data/
-├── stock_data/
-│   ├── config.json              # 股票池过滤配置
-│   ├── backtrader_data/         # 前复权行情 (*_qfq.csv)
-│   ├── raw_data/                # 原始日线（1990-至今）
-│   ├── fundamental_data/        # 基本面数据（ROE/利润增速/现金流等）
-│   └── stock_metadata/          # 股票列表/下载日志
-├── sentiment_data/
-│   ├── raw/                     # LLM 分析原始结果
-│   └── processed/
-│       └── rolling_sentiment.csv # 行业情绪时序
-└── data_manager.py              # 数据下载/增量更新/格式转换
-
 strategy/
-├── config/
-│   └── factor_config.yaml       # 策略配置（因子/组合/缠论/回测/情绪）
-├── core/
-│   ├── strategy.py              # 策略主类（信号+组合+情绪编排）
-│   ├── signal_engine.py         # 信号引擎（动态因子/WF-IC /信号生成+Chan增强）
-│   ├── portfolio.py             # 组合构建（风险预算/行业均衡/Chan感知止损）
-│   ├── factor_calculator.py     # 因子计算（技术面+Alpha+基本面+Chan指标）
-│   ├── factor_library.py        # 因子库注册（40+因子4大类）
-│   ├── factor_preparer.py       # 因子预计算（多进程并行）
-│   ├── factor_neutralizer.py    # 截面中性化（行业+市值OLS剥离）
-│   ├── dynamic_factor_selector.py # Walk-Forward IC 动态因子选择
-│   ├── divergence_detector.py   # MACD背离检测（顶/底/隐藏背离）
-│   ├── structure_analyzer.py    # 多级别结构分析（中枢/级别/中阴/买卖点）
-│   ├── chan_theory.py           # 缠论完整实现（分型/笔/段/中枢/走势类型）
-│   ├── capital_flow.py          # 资金流向分析
-│   ├── news_sentiment.py        # 新闻情绪量化
-│   ├── market_regime_detector.py # 市场状态检测（牛/熊/震荡）
-│   ├── industry_mapping.py      # 20行业分类（申万2021标准）
-│   ├── stock_pool.py            # 股票池管理
-│   ├── stock_pool_filter.py     # 季报过滤（ROE/利润增速）
-│   ├── signal.py / signal_types.py / signal_fusion.py / signal_store.py
-│   ├── fundamental.py           # 基本面数据加载
-│   ├── money_flow.py            # 资金流因子
-│   ├── sector_rotation.py       # 行业轮动
-│   ├── cache_manager.py         # 因子缓存管理
-│   ├── config_loader.py         # YAML配置加载（支持点号路径）
-│   ├── diagnostics.py           # 诊断框架（因子/信号/市场/持仓）
-│   ├── evolution_guard.py       # 进化守护引擎（4层验证）
-│   └── ml_predictor.py          # 机器学习预测
-├── sentiment/                   # LLM情绪分析
-│   ├── orchestrator.py          # 编排器（采集→分析→存储→通知）
-│   ├── data_collector.py        # 新闻采集（东方财富+全球）
-│   ├── llm_analyzer.py          # DeepSeek API 行业情绪分析
-│   ├── sentiment_store.py       # 情绪时序CSV存储
-│   └── sentiment_backfill.py    # 回测情绪代理生成（申万指数）
-├── analysis/                    # 分析工具
-│   ├── analysis_framework.py    # 统一分析框架（6模块）
-│   ├── chan_review.py           # 每日复盘 + 自进化引擎（6步法）
-│   ├── signal_validator.py      # 信号验证（future_ret计算）
-│   ├── single_factor_analysis.py # 单因子深度分析
-│   ├── offline_calibration.py   # 离线参数校准
-│   └── dashboard.py             # Streamlit 交互式看板
-├── daily_review/                # 复盘输出（MD报告/JSON数据）
-├── bt_execution.py              # 回测执行（Backtrader）
-└── diagnose_*.py                # 诊断工具集
-
-trade/
-├── config.yaml.example          # 实盘配置模板
-├── runner.py                    # 每日运行流程
-├── signal_runner.py             # 轻量信号生成（实盘用）
-├── recommender.py               # 交易建议生成
-├── notifier.py                  # 微信推送（Server酱）
-├── reporter.py                  # 报告生成
-├── portfolio_state.json         # 组合状态（手动维护）
-└── portfolio_state.py           # 组合状态管理
+  core/                    # 核心引擎
+    factor_calculator.py   # 因子计算 (80+ 技术指标, 统一数据源)
+    signal_engine.py       # 信号生成 (4阶段向量化管线)
+    portfolio.py           # 组合构建 + 风控 (成本止损/峰值回撤/CLB/HDS)
+    factor_preparer.py     # 离线因子预计算
+    dynamic_factor_selector.py  # Walk-forward IC 动态因子选择
+    factor_library.py      # 因子质量时序追踪
+    gate_scorer.py         # 4Gate 质量评分系统
+    chan_theory.py         # 缠论 (笔/段/中枢/买卖点)
+    market_regime_detector.py   # 市场状态检测 (牛/熊/震荡)
+    macro_data.py          # 宏观数据 (M1/社融/PPI/Fed利率)
+    industry_chain.py      # 产业链拓扑 (220链+127NO_CHAIN, 100%覆盖)
+    bom_chain.py           # BOM 产业链质量分析
+    concept_heat.py        # 概念板块热度
+    ml_predictor.py        # XGBoost ML预测 (季度模型)
+    alternative_data.py    # 另类数据 (龙虎榜/北向/融资)
+    multi_timeframe.py     # 多周期分析 (周/月)
+    config_loader.py       # 配置加载器
+  config/
+    factor_config.yaml     # 主配置文件 (所有参数+200+行业因子)
+  analysis/
+    offline_calibration.py # 离线因子标定
+    analysis_framework.py  # 统一分析框架 (IC/IR/准确率/因子衰减)
+  models/                  # XGBoost 季度模型
+  logs/                    # 运行时日志
+data/
+  data_manager.py          # 数据管理 (行情/基本面/概念)
+  stock_data/              # 股票数据
+  macro/                   # 宏观数据缓存 (M1/社融/PPI/Fed)
+trade_orders.json          # 实盘订单输出
+current_positions.json     # 持仓快照
 ```
 
 ## 数据流
 
 ```
-data_manager → backtrader_data → factor_preparer → factor_df (中性化)
-                                                       ↓
-                                            DynamicFactorSelector
-                                            (Walk-Forward IC, 360天窗口)
-                                                       ↓
-                                            SignalEngine → signals
-                                            (Chan增强 ×0.7~1.25)
-                                                       ↓
-                                        PortfolioConstructor → positions
-                                        (风险预算/行业均衡/Chan止损)
-                                                       ↓
-                                        recommender → 微信推送
+股票数据 → factor_calculator (80+因子)
+         → signal_engine (因子×gate_quality + 基本面 + ML + BOM)
+         → SignalStore (缓存)
+         → portfolio (候选筛选 → 截面排名 → 仓位分配)
+         → bt_execution (回测) / run_live (实盘)
+         → trade_orders.json (实盘输出)
 ```
 
-## 核心模块
+## 核心模块说明
 
-### 1. 因子体系（40+因子）
+### 因子计算 (factor_calculator.py)
 
-| 类别 | 典型因子 | 说明 |
-|------|------|------|
-| **技术因子** | volatility, momentum, rsi, bb_width, atr, volume_ratio | 量价类，20日滚动 |
-| **基本面因子** | fund_score, fund_roe, fund_profit_growth, fund_cf_to_profit | ROE/利润增速/现金流，截面压缩 |
-| **Alpha因子** | skewness, kurtosis, tail_risk, overnight_ret, illiq | 收益分布/尾部风险/非流动性 |
-| **复合因子** | tech_fund_combo, momentum_reversal, trend_lowvol | 多因子加权，IC验证筛选 |
+统一因子计算源，供信号引擎和预计算共用。产出超过 80 个技术指标和复合因子，分为 7 大家族：
 
-所有因子经 `tanh` 压缩到 (-1,1)，确保截面可比。
+| 家族 | 示例因子 |
+|------|----------|
+| 动量 | momentum_reversal, trend_lowvol, mom_x_lowvol |
+| 低波 | volatility, low_downside, inv_turnover |
+| 价值 | fund_pe, fund_pb, fund_roe, fund_score |
+| 质量 | turnover_stability, consolidation_breakout |
+| Alpha | overnight_ret, residual_momentum |
+| 量价 | wash_sale_score, volume_surge, short_reversal |
+| 另类 | 北向资金, 融资融券, 龙虎榜 |
 
-### 2. Walk-Forward 动态因子选择
+### 信号引擎 (signal_engine.py)
 
-每个时点向前滚动训练窗口，动态选择最优因子：
+4阶段向量化管线：
+1. 指标计算 (factor_calculator)
+2. 逐Bar标量收集 (BOM, 缠论, MTF, 资金流)
+3. 向量化分数装配 (factor × gate_quality + 基本面 + ML + BOM)
+4. 动态阈值 + 买卖判定 (4Gate系统)
 
-```
-训练窗口(360天) → 截面IC/IR → 选Top-N因子 → 当期信号生成
-```
+因子模式 `fixed`：使用 `industry_factors` 中 200+ 行业的手配因子（带 IC 值和权重），由离线标定生成。
 
-**质量过滤**：IC符号稳定性>60%，t统计量>1.0，仅保留正向IC因子。
+### 组合构建 (portfolio.py)
 
-**三种模式**：`dynamic`（纯动态）、`fixed`（纯静态）、`both`（动态优先+静态兜底，当前默认）。
+**组合构造** (`build` → `_build_desired_value`):
+1. 候选收集 (信号过滤 + 价格约束)
+2. 产业链聚焦 (主导行业→关联概念)
+3. 截面排名 (Quantile→Normal变换, 拉大尾部差距)
+4. 行业内排名 + Gate质量 + 缠论结构调整
+5. 权重分配 (等权 Top-N)
 
-### 3. 因子中性化
+**风控机制**:
+- 成本止损 (cost_stop, 实盘中用 `cost={}` 屏蔽)
+- 峰值回撤 (peak_trail, 仅 BEAR 期)
+- 连亏中断 (CLB, 4连亏→降至25%敞口)
+- 硬回撤止损 (HDS, 组合回撤超限→清仓)
+- 均值回归冷却 (MR cooldown)
 
-截面OLS剥离行业和市值偏差：
+**宏观叠加**: M1/社融/两融数据调节 FAST↔NORM，不干预 BEAR。
 
-```
-factor_raw ~ industry_dummies + log(market_cap) → residual = 纯因子值
-```
+**连熊降级**: BEAR 连 60 天→FAST，防止 V 反行情踏空。
 
-### 4. 20行业分类
+**FAST 动量反转**: 惩罚高动量（-abs(mom_60d)×0.10），偏好低波动稳定股。
 
-基于申万2021标准，覆盖：AI/算力、互联网/软件、半导体/光伏、新能源车/风电、军工、医药、消费、金融等20个行业，关键词+规则映射。
+**调仓频率**: NORM 10 天，不触发个股止损（成本止损已屏蔽），退出完全依赖调仓+熊市清仓。
 
-### 5. 缠论增强（Chan Theory）
+### 市场状态 (market_regime_detector.py)
 
-基于缠中说禅理论，四模块联动：
+三个级别：
+- **BEAR** (空仓): 价格+趋势确认，545天/年(42%)
+- **FAST** (预警): 1只仓位严格过滤，157天/年(12%)
+- **NORM** (正常): 5只满仓，605天/年(46%)
 
-| 模块 | 功能 | 关键输出 |
-|------|------|------|
-| `chan_theory.py` | 分型→笔→段→中枢→走势类型→买卖点 | 完整缠论结构 |
-| `divergence_detector.py` | MACD顶/底/隐藏背离 | 背离强度 (0~1) |
-| `structure_analyzer.py` | 多级别中枢/中阴/走势终完美 | 结构评分 |
-| 信号增强乘数 | 底背离×1.25 / 顶背离×0.70 / 中阴×0.85 | 得分修正 |
+### 产业链 (industry_chain.py)
 
-**Chan感知退出**：顶背离止盈、趋势耗尽退出、买入点保护（止损放宽×2）。
+220 个链概念 + 127 NO_CHAIN 概念 = **100% 回测数据覆盖**。12 条产业链：AI/半导体/新能源车/光伏储能/机器人/低空经济/医药/军工/数字经济/消费/资源材料/基建海洋。
 
-### 6. 组合构建
+每链定义上下游环节，实时计算传导信号（已涨环节→未涨下游→加分）。
 
-```
-weight = signal_score / volatility × IC_weight × industry_exposure
-```
+### 宏观数据 (macro_data.py)
 
-- **截面排名选股**：rank_pct排序，选前N只
-- **行业均衡**：防止过度集中
-- **波动率目标**：动态调整仓位暴露
-- **市场状态调节**：牛市1.0 / 震荡0.9 / 熊市0.4
-- **情绪乘数**：LLM情绪 [0.80, 1.20] 调整行业权重
-- **持仓自动计算**：`n = total_equity / 10000`，范围 [3, 15]
+内盘: M1/M2, 社融, 两融余额, PPI
+外盘: Fed 利率
 
-### 7. 多层止损
+信号逻辑 (AND条件):
+- Bull: M1加速 + 社融改善 + 两融不跌
+- Bear: M1加速跌 + 社融不改善
 
-| 止损类型 | 参数 | 说明 |
-|------|------|------|
-| 成本止损 | -18%（波动率自适应） | 跌破成本线 |
-| 时间止损 | 30天 + 收益<-8% | 持仓过久无收益 |
-| 移动止盈 | 最高点回撤20% | 保护已有利润 |
-| 组合止损 | 回撤>15% | 暴露降至35% |
-| Chan顶背离退出 | 强度>0.4 | MACD顶背离止盈 |
-| Chan趋势耗尽 | alignment<-0.4 | 多级别反转退出 |
-| Chan买入点保护 | 底背离区域×2 | 防洗盘震出 |
+## 回测性能
 
-### 8. LLM 行业情绪分析
+| 版本 | 总收益 | Sharpe | 2021 | 2022 | 2023 | 2024 | 2025 | 2026 |
+|------|--------|--------|------|------|------|------|------|------|
+| 起点 | 390% | 1.54 | 24% | -5% | -2% | 37% | 140% | 28% |
+| 产业链修正 | 393% | 1.55 | 24% | -5% | -2% | 36% | 142% | 28% |
+| macro框架 | 633% | 1.66 | 71% | +11% | -13% | 32% | 160% | 31% |
+| 连熊降级 | 1047% | 1.85 | 71% | +59% | -4% | 44% | 140% | 32% |
+| **当前最优** | **1098%** | **1.87** | 75% | +69% | -5% | 47% | 139% | 25% |
 
-```
-新闻采集(akshare) → DeepSeek API → 情绪分数[-1,1] → 权重乘数[0.80,1.20]
-```
+关键突破：
+- 2022 从 -4.6% → **+69%** (连熊降级+动量反转)
+- 产业链 100% 覆盖 (220链+127NO_CHAIN)
+- cost_tracker 发现 + cost={} 屏蔽 (个股止损在 A 股动量策略中持续损害收益)
 
-- **实盘模式**：采集当日新闻 → LLM分析 → 存储 → 微信推送
-- **回测模式**：从 `rolling_sentiment.csv` 加载预计算序列
-- **牛熊调节**：熊市降低正面影响50%，牛市放大20%
-- **3日平滑**：减少单日噪音
-
-### 9. 自进化引擎
-
-每日复盘 `chan_review.py --evolve` 驱动，4层防护保证正向进化：
-
-| 层级 | 机制 | 说明 |
-|------|------|------|
-| L1 统计显著性 | 同一补丁累积≥3天 | 过滤单日噪音 |
-| L2 回测验证 | 约束检查 + 信号对比 | 拒绝极端变更 |
-| L3 基线追踪 | 记录变更前指标 | 可对比回滚 |
-| L4 自动回滚 | 监控N天后检查 | 恶化>20%自动撤销 |
-
-### 10. 选股导出
-
-`export_selection.py` 生成包含5个Sheet的Excel：
-- **本次选股**：目标持仓/权重/股数
-- **调仓对比**：买入/卖出/调整分类
-- **市场状态**：牛熊/动量/趋势/风险
-- **调仓历史**：建仓记录
-- **信号排名Top50**：全市场最高评分
-
-## 回测
+## 实盘运行
 
 ```bash
-# 1. 数据准备
-cd data && python data_manager.py
-
-# 2. 运行回测
-cd strategy && python bt_execution.py
-
-# 3. 分析结果
-cd strategy && python analysis/signal_validator.py
-cd strategy && python analysis/analysis_framework.py
-
-# 4. 交互式看板
-cd strategy && streamlit run analysis/dashboard.py
+python strategy/run_live.py
 ```
 
-## 配置
+三步流程:
+1. 更新数据 (行情 + 宏观)
+2. 生成信号 (bt_execution.py, 复用缓存)
+3. 产出订单 (trade_orders.json + current_positions.json)
 
-### 策略参数 (`strategy/config/factor_config.yaml`)
+输出:
+- `trade_orders.json`: 买卖指令 (代码/方向/数量/止损止盈价)
+- `current_positions.json`: 新持仓快照
+- 日志: `strategy/logs/bt_execution_YYYYMMDD_HHMMSS.log`
 
-| 配置块 | 关键参数 | 当前值 | 说明 |
-|------|------|:----:|------|
-| `factor_mode` | — | `both` | 动态优先+静态兜底 |
-| `dynamic_factor` | `train_window_days` | 360 | WF-IC训练窗口 |
-| | `top_n_factors` | 3 | 每行业每期选n个最优 |
-| | `ic_decay_factor` | 0.92 | IC时间衰减 |
-| `signal` | `buy_threshold` | 0.06 | 买入信号阈值 |
-| | `sell_threshold` | -0.15 | 卖出信号阈值 |
-| `portfolio` | `target_volatility` | 0.15 | 组合目标波动率 |
-| | `position_stop_loss` | 0.07 | 个股成本止损 |
-| | `portfolio_stop_loss` | 0.12 | 组合回撤止损 |
-| `regime_multiplier` | bull/neutral/bear | 1.0/0.6/0.3 | 市场状态敞口 |
-| `chan_theory` | `enabled` | true | 缠论增强总开关 |
-| | `bottom_divergence_mult` | 1.25 | 底背离买入乘数 |
-| | `top_divergence_mult` | 0.70 | 顶背离抑制乘数 |
-| | `zhongyin_penalty` | 0.85 | 中阴状态惩罚 |
-| `backtest` | `cash` | 150000 | 回测初始资金 |
-| | `commission` | 0.0015 | 交易佣金 |
-| | `rebalance_days` | 20 | 调仓周期 |
+## 离线标定
 
-### 股票池 (`data/stock_data/config.json`)
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `exclude_st` | true | 排除ST |
-| `exclude_suspended` | true | 排除停牌 |
-| `exclude_star_board` | true | 排除科创板(688) |
-| `max_stock_count` | -1 | 不限制数量 |
-| `min_market_cap` | -1 | 不限制市值 |
-| `min_amount` | -1 | 不限制成交额 |
-
-### 实盘配置 (`trade/config.yaml`)
-
-复制 `trade/config.yaml.example` 为 `config.yaml` 并填入：
-- `start_date`: 实盘起始日期
-- `notification.sckey`: Server酱推送密钥
-- `proxy.host` / `proxy.auth_token`: akshare代理配置
-
-> `config.yaml` 已加入 `.gitignore`，token不会提交到git。
-
-### 组合状态 (`trade/portfolio_state.json`)
-
-```json
-{
-  "cash": 10000.0,
-  "positions": {
-    "600519": {"shares": 100, "cost_price": 16.80}
-  }
-}
-```
-
-交易后手动更新 `cash` 和 `positions`。
-
-## 实盘流程
-
-1. **每日晚间** `python main.py run` → 信号+建议+微信推送
-2. **调仓日**（每20交易日）：完整买入/卖出/持有清单
-3. **非调仓日**：自动止损检查，触发时微信告警
-4. **次日盘中** 按建议执行
-5. **交易后** 更新 `portfolio_state.json`
-6. `python main.py status` 验证持仓
-
-## 关键指标
-
-| 指标 | 目标 | 说明 |
-|------|:----:|------|
-| IC | >5% | 因子与未来收益的Spearman相关系数 |
-| IR | >0.5 | IC均值 / IC标准差 |
-| Buy Accuracy | >55% | 买入信号正向未来收益比例 |
-| Sharpe | >1.0 | 策略夏普比率 |
-
-## 分析工具
+`factor_config.yaml` 中 200+ 行业的 `factors` + `bull_factors` 由离线标定生成：
 
 ```bash
-# 统一分析框架（6模块）
-cd strategy && python analysis/analysis_framework.py
-
-# 单因子深度分析
-cd strategy && python analysis/single_factor_analysis.py
-
-# 离线参数校准
-cd strategy && python analysis/offline_calibration.py
-
-# 交互式看板
-cd strategy && streamlit run analysis/dashboard.py
+python strategy/analysis/offline_calibration.py
 ```
 
-## 诊断
+流程: 遍历全部股票 → 计算因子 → 按概念板块+市场状态分组 → Spearman IC → 选最优因子组合 → 更新配置。
+
+**注意**: 当前只有通用因子和牛市因子，**缺少 `bear_factors`**（熊市专用因子）。这是已知提升空间。
+
+## 分析框架
 
 ```bash
-# 系统诊断
-cd strategy && python diagnose_system.py
-
-# 信号诊断
-cd strategy && python diagnose_signal.py
-
-# 信号质量诊断
-cd strategy && python diagnose_signal_quality.py
-
-# 持仓诊断
-cd strategy && python diagnose_position.py
-
-# 市场状态诊断
-cd strategy && python diagnose_regime.py
+# 1. 验证数据准备 (计算 future_ret)
+python strategy/analysis/signal_validator.py
+# 2. 全量分析 (IC/IR/准确率/因子衰减)
+python strategy/analysis/analysis_framework.py
 ```
 
-## 依赖
+## 关键配置
 
-- **数据**: [akshare](https://github.com/akfamily/akshare)（东方财富A股数据）
-- **回测**: [backtrader](https://github.com/mementum/backtrader)
-- **LLM**: [DeepSeek API](https://platform.deepseek.com/)（可选，情绪分析用）
-- **推送**: [Server酱](https://sct.ftqq.com/)（可选，微信通知用）
-- **代理**: [akshare-proxy-patch](https://pypi.org/project/akshare-proxy-patch/)（可选，反爬用）
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| factor_mode | fixed | 固定因子 (用行业级配置) |
+| max_positions | 5 | NORM期最大持仓 |
+| rebalance_days | 10 | 调仓间隔 |
+| position_stop_loss | 0.08 | 个股止损 (当前 cost={} 屏蔽) |
+| ml.blend_weight | 0.50 | ML预测权重 |
+| 连熊降级 | 60天 | BEAR→FAST |
+| FAST rank_cut | 0.80 | Fast期排名阈值 |
+| FAST score_cut | 0.30 | Fast期分数阈值 |
+
+## 当前状态
+
+- **最新提交**: 产业链 100%覆盖 + 震荡检测全正里程碑
+- **最优收益版**: 5092ed3 (1098%/Sharpe 1.87)
+- **待优化**: 2023年(-4.85%), bear_factors离线标定
