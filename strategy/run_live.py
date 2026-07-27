@@ -165,7 +165,7 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     print(f"市场状态: {regime_names.get(market_regime, '未知')}")
 
     # ── 组合构建 ──────────────────────────────────────────
-    portfolio = PortfolioConstructor()
+    portfolio = PortfolioConstructor(rebalance_interval=1)  # 实盘每日选股
     prev_positions = load_current_positions()
     current_positions = {code: info['amount'] for code, info in prev_positions.items()}
 

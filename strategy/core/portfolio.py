@@ -75,6 +75,7 @@ class PortfolioConstructor:
         exit_speed=None,
         position_stop_loss=None,
         portfolio_stop_loss=None,
+        rebalance_interval=10,
     ):
         config = load_config()
         portfolio_config = config.get_portfolio_config()
@@ -89,6 +90,7 @@ class PortfolioConstructor:
         self.entry_speed = entry_speed if entry_speed is not None else portfolio_config.get('entry_speed', 0.5)
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 0.5)
         self.exit_mode = 'simple'  # 仅成本止损, 让利润奔跑, 保持高资金利用率
+        self._rebalance_interval = rebalance_interval  # 实盘=1每日, 回测=10
 
         # === 波动率控制 ===
         self.vol_control_enabled = portfolio_config.get('volatility_control_enabled', True)
@@ -1874,7 +1876,7 @@ class PortfolioConstructor:
 
         desired_value = {}
         # 调仓频率控制: 每10个交易日做一次完整选股, 非调仓日仅止损
-        _rebalance_interval = 10
+        _rebalance_interval = self._rebalance_interval
         _should_rebalance = False
         if not hasattr(self, '_last_rebalance_date'):
             self._last_rebalance_date = None

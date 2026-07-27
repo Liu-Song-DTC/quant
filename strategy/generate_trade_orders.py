@@ -42,6 +42,8 @@ DATA_PATH = config.get('paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data
 SIGNALS_CSV = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'backtest_signals.csv')
 POSITIONS_FILE = os.path.join(_PROJECT_DIR, 'current_positions.json')
 ORDERS_FILE = os.path.join(_PROJECT_DIR, 'trade_orders.json')
+OUTPUT_DIR = os.path.join(_PROJECT_DIR, 'output')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 INDEX_DATA_PATH = os.path.join(DATA_PATH, 'sh000001_qfq.csv')
 
 # ── 默认参数 ─────────────────────────────────────────────────────
@@ -393,7 +395,7 @@ def main():
     print(f"市场状态: {regime_names.get(market_regime, '未知')} (regime={market_regime})")
 
     # ── 5. 运行组合构建 ──────────────────────────────────────
-    portfolio = PortfolioConstructor()
+    portfolio = PortfolioConstructor(rebalance_interval=1)  # 实盘每日选股
 
     # 读取当前持仓
     prev_positions = load_current_positions()
@@ -475,15 +477,22 @@ def main():
     # 更新持仓状态
     save_current_positions(new_positions)
 
-    # ── 8. 打印选股详情 ──────────────────────────────────────
+    # ── 8. 打印选股详情 + 保存CSV ─────────────────────────────
     if hasattr(portfolio, 'last_selection') and portfolio.last_selection:
         print(f"\n选股详情:")
+        rows = []
         for sel in portfolio.last_selection:
             print(f"  {sel['code']:>8s}  score={sel['score']:.4f}  "
                   f"weight={sel.get('weight', 0):.3f}  "
                   f"rank_pct={sel.get('rank_pct', 0):.3f}  "
                   f"industry={sel.get('industry', '')}  "
                   f"factor={sel.get('factor_name', '')}")
+            rows.append(sel)
+        if rows:
+            sel_df = pd.DataFrame(rows)
+            csv_path = os.path.join(OUTPUT_DIR, f'选股数据_{target_date}.csv')
+            sel_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+            print(f"\n选股数据已保存: {csv_path}")
 
 
 if __name__ == '__main__':
