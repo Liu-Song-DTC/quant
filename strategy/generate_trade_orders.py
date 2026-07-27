@@ -244,20 +244,26 @@ def build_orders(
         prev = prev_positions.get(code)
 
         if prev is None:
-            # 新建仓
+            # 新建仓: 整百股取整, 不足1手则跳过
+            shares = int(target_amount / price / 100) * 100
+            if shares < 100:
+                print(f"  [SKIP] {code} 资金不足1手 (target={target_amount:.0f}, price={price:.2f})")
+                continue
+            actual_amount = shares * price
             sl, tp, detail = compute_support_resistance(
                 code, target_date, price, signal_store, stock_file_map
             )
             orders.append({
                 'stock_code': _normalize_code(code),
                 'action': 'open',
-                'amount': int(target_amount),
+                'amount': int(actual_amount),
                 'stop_loss_price': sl,
                 'take_profit_price': tp,
             })
             new_positions[code] = {
                 'entry_price': price,
-                'amount': int(target_amount),
+                'amount': int(actual_amount),
+                'shares': shares,
                 'entry_date': target_date,
             }
             order_details.append((_normalize_code(code), 'open', detail))
@@ -266,19 +272,28 @@ def build_orders(
             prev_amount = prev.get('amount', 0)
 
             if abs(target_amount - prev_amount) > total_equity * 0.01:
+                shares = int(target_amount / price / 100) * 100
+                if shares < 100:
+                    # 调整后不足1手→清仓
+                    orders.append({'stock_code': _normalize_code(code), 'action': 'close'})
+                    print(f"  [CLOSE] {code} 调整后不足1手 (target={target_amount:.0f})")
+                    new_positions.pop(code, None)
+                    continue
+                actual_amount = shares * price
                 sl, tp, detail = compute_support_resistance(
                     code, target_date, price, signal_store, stock_file_map
                 )
                 orders.append({
                     'stock_code': _normalize_code(code),
                     'action': 'adjust',
-                    'amount': int(target_amount),
+                    'amount': int(actual_amount),
                     'stop_loss_price': sl,
                     'take_profit_price': tp,
                 })
                 new_positions[code] = {
                     'entry_price': entry_price,
-                    'amount': int(target_amount),
+                    'amount': int(actual_amount),
+                    'shares': shares,
                     'entry_date': prev.get('entry_date', target_date),
                 }
                 order_details.append((_normalize_code(code), 'adjust', detail))
