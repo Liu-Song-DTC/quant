@@ -7606,7 +7606,7 @@ backtest:
   rebalance_days: 10
   num_workers: 8
   fromdate: '2021-01-01'
-  todate: '2026-05-30'
+  todate: '2026-07-29'
 cost_model:
   t_plus_1_enabled: true
   impact_cost_enabled: false
