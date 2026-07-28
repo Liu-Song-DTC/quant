@@ -325,7 +325,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # === 股票池过滤（先过滤再预计算，避免读不需要的文件） ===
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     if stock_pool_enabled:
-        stock_pool = get_stock_pool()
+        stock_pool = get_stock_pool(todate=TODATE)
         pool_codes = stock_pool | {'sh000001', '000001'}
         before_count = len(stock_file_map)
         stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
@@ -1570,7 +1570,7 @@ if __name__ == "__main__":
 
     # 股票池过滤
     if stock_pool_enabled:
-        stock_pool = get_stock_pool()
+        stock_pool = get_stock_pool(todate=TODATE)
         stock_codes = [c for c in stock_codes if c in stock_pool]
         print(f"基本面数据加载(股票池): {len(stock_codes)} 只")
     else:

@@ -41,12 +41,14 @@ def _load_market_cap_whitelist():
 
 
 def get_stock_pool(min_price: float = 2.0,
-                   data_dir: str = None) -> set:
+                   data_dir: str = None,
+                   todate: str = None) -> set:
     """获取股票池 — 全市场除科创板外全部纳入
 
     Args:
         min_price: 最低价格（排除仙股，复权后价格）
         data_dir: 数据目录路径
+        todate: 截止日期(YYYY-MM-DD), 流动性只看此日之前数据
 
     Returns:
         set of stock codes
@@ -84,6 +86,10 @@ def get_stock_pool(min_price: float = 2.0,
         filepath = os.path.join(data_dir, item)
         try:
             df = pd.read_csv(filepath)
+            # 截断到todate, 防止未来数据污染流动性判断
+            if todate is not None and 'datetime' in df.columns:
+                df['_dt'] = pd.to_datetime(df['datetime'])
+                df = df[df['_dt'] <= pd.Timestamp(todate)]
             if len(df) < 60:
                 data_errors += 1
                 continue
