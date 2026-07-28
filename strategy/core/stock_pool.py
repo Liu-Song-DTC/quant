@@ -92,14 +92,14 @@ def get_stock_pool(min_price: float = 2.0,
             if last_price <= 0 or np.isnan(last_price) or last_price < min_price:
                 continue
 
-            # 流动性过滤: 近20日日均成交额(过滤500亿市值以下, 500亿×0.5%换手≈2.5亿)
-            # 主板: 2亿 | 创业板(300): 1亿 | 科创板(688): 5000万
+            # 流动性过滤: 近20日日均成交额
+            # 主板: 1.6亿 | 创业板(300): 8000万 | 科创板(688): 4000万
             if code.startswith('688'):
-                min_amount = 50_000_000
+                min_amount = 40_000_000
             elif code.startswith('300'):
-                min_amount = 100_000_000
+                min_amount = 80_000_000
             else:
-                min_amount = 200_000_000
+                min_amount = 160_000_000
             min_vol = 300_000 if code.startswith('688') else 1_000_000
             if 'amount' in df.columns and len(df) >= 20:
                 avg_amount = df['amount'].iloc[-20:].mean()
