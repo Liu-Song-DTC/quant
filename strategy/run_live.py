@@ -178,14 +178,25 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     # ── 组合构建 ──────────────────────────────────────────
     portfolio = PortfolioConstructor(rebalance_interval=1)  # 实盘每日选股
     prev_positions = load_current_positions()
+
+    # 账户资金=总可部署资金; 实盘持仓市值必须是账户资金的子集,
+    # 否则(累计dry-run/脏数据导致持仓≫账户)强制视为无持仓重新满仓选股
+    account_capital = cash
+    _pos_sum = sum(info['amount'] for info in prev_positions.values())
+    if _pos_sum > account_capital:
+        print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 账户资金{account_capital:,.0f}, "
+              f"判定为脏数据, 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
+        prev_positions = {}
+        _pos_sum = 0.0
     current_positions = {code: info['amount'] for code, info in prev_positions.items()}
 
     cost = {}
     for code, info in prev_positions.items():
         cost[code] = [info['entry_price'], info['entry_price']]
 
-    total_equity = cash + sum(current_positions.values())
-    cash_available = max(cash - sum(info['amount'] for info in prev_positions.values()), 0)
+    # 排仓尺度=账户资金(而非 现金+持仓 双重放大); 可用现金=账户-已占用
+    total_equity = account_capital
+    cash_available = max(account_capital - _pos_sum, 0)
 
     adjusted = portfolio.build(
         date=target_date,

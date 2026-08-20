@@ -7314,7 +7314,7 @@ portfolio:
     exhaustion_reduce_mult: 0.5
     industry_max_weight: 0.4
     max_per_industry: 2
-    rank_weight_cap: 1.0
+    rank_weight_cap: 0.25
     speculative_max_weight: 0.4
   fv_exposure_params:
     fv_low: -0.02

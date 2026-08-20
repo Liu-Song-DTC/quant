@@ -399,6 +399,15 @@ def main():
 
     # 读取当前持仓
     prev_positions = load_current_positions()
+
+    # 账户资金=总可部署资金; 持仓市值必须是账户资金的子集, 否则视为脏数据重置
+    account_capital = args.cash
+    _pos_sum = sum(info['amount'] for info in prev_positions.values())
+    if _pos_sum > account_capital:
+        print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 账户资金{account_capital:,.0f}, "
+              f"判定为脏数据, 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
+        prev_positions = {}
+        _pos_sum = 0.0
     current_positions = {
         code: info['amount'] for code, info in prev_positions.items()
     }
@@ -408,11 +417,9 @@ def main():
     for code, info in prev_positions.items():
         cost[code] = [info['entry_price'], info['entry_price']]  # [avg_cost, current_cost]
 
-    total_equity = args.cash + sum(current_positions.values())
-    cash = args.cash - sum(
-        info['amount'] for code, info in prev_positions.items() if code not in current_positions
-    )
-    cash = max(cash, 0)
+    # 排仓尺度=账户资金(非 现金+持仓 双重放大); 可用现金=账户-已占用
+    total_equity = account_capital
+    cash = max(account_capital - _pos_sum, 0)
 
     adjusted = portfolio.build(
         date=target_date,
