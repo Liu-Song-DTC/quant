@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>排版派 · 公众号排版工具</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<link rel="stylesheet" href="/static/codemirror/lib/codemirror.min.css">
+<style>
+  :root{
+    --bg:#f4f5fb; --panel:rgba(255,255,255,.88); --border:#e9ebf5; --border2:#dde1f0;
+    --text:#1c1f2e; --dim:#8a8fa8; --faint:#b8bdd0;
+    --primary:#4f46e5; --primary2:#7c3aed; --cyan:#06b6d4;
+    --primary-weak:#eef0ff; --red:#e5484d; --green:#0ba464;
+    --grad:linear-gradient(135deg,#4f46e5 0%,#7c3aed 55%,#06b6d4 130%);
+    --sidebar-w:232px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:
+      radial-gradient(1200px 500px at 85% -10%, rgba(124,58,237,.07), transparent 60%),
+      radial-gradient(900px 420px at -10% 110%, rgba(6,182,212,.06), transparent 60%),
+      var(--bg);
+    color:var(--text);font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
+    height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+
+  /* ═══ 顶部栏 (玻璃拟态) ═══ */
+  .topbar{height:60px;background:rgba(255,255,255,.75);backdrop-filter:blur(14px);
+    border-bottom:1px solid rgba(230,233,245,.9);
+    display:flex;align-items:center;gap:14px;padding:0 20px;flex-shrink:0;}
+  .brand{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:800;
+    background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;white-space:nowrap;}
+  .brand .mark{width:30px;height:30px;border-radius:9px;background:var(--grad);
+    display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:800;
+    box-shadow:0 3px 10px rgba(99,102,241,.4);}
+  .doc-title{border:none;outline:none;font-size:14px;color:var(--text);background:transparent;padding:7px 12px;
+    border-radius:8px;flex:0 1 240px;transition:background .15s;}
+  .doc-title:hover,.doc-title:focus{background:rgba(79,70,229,.06);}
+  .topbar .spacer{flex:1;}
+  .btn{border:1px solid var(--border2);background:#fff;color:var(--text);border-radius:9px;
+    padding:8px 16px;font-size:13px;cursor:pointer;font-family:inherit;transition:all .18s;white-space:nowrap;
+    box-shadow:0 1px 2px rgba(28,31,46,.04);}
+  .btn:hover{border-color:var(--primary);color:var(--primary);transform:translateY(-1px);
+    box-shadow:0 4px 12px rgba(79,70,229,.12);}
+  .btn.primary{background:var(--grad);border:none;color:#fff;font-weight:600;
+    box-shadow:0 4px 14px rgba(99,102,241,.35);}
+  .btn.primary:hover{color:#fff;box-shadow:0 6px 20px rgba(99,102,241,.45);}
+  .btn.ghost{border-color:transparent;background:transparent;color:var(--dim);box-shadow:none;}
+  .btn.ghost:hover{border-color:var(--border2);background:#fff;color:var(--text);}
+
+  /* ═══ 主体 ═══ */
+  .main{flex:1;display:flex;overflow:hidden;}
+
+  /* 侧边栏 */
+  .sidebar{width:var(--sidebar-w);background:rgba(255,255,255,.75);backdrop-filter:blur(14px);
+    border-right:1px solid rgba(230,233,245,.9);
+    display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0;padding:6px 0;}
+  .side-section{padding:10px 12px 6px;border-bottom:1px solid rgba(233,235,245,.6);}
+  .side-section:last-child{border-bottom:none;}
+  .side-head{font-size:11px;font-weight:700;color:var(--faint);letter-spacing:2px;margin:8px 6px 8px;text-transform:uppercase;}
+  .side-item{display:flex;align-items:center;gap:9px;padding:8px 11px;border-radius:9px;cursor:pointer;
+    font-size:13px;color:var(--text);margin-bottom:2px;transition:all .15s;border:none;background:transparent;width:100%;text-align:left;font-family:inherit;}
+  .side-item:hover{background:rgba(79,70,229,.07);transform:translateX(2px);}
+  .side-item.active{background:var(--grad);color:#fff;font-weight:600;box-shadow:0 3px 10px rgba(99,102,241,.3);}
+  .side-item .ico{width:20px;text-align:center;flex-shrink:0;}
+  .side-item.danger{color:var(--red);}
+  .side-item.danger:hover{background:#fff1f1;}
+  .theme-dots{display:flex;gap:5px;margin-left:auto;}
+  .tdot{width:13px;height:13px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px var(--border2);}
+
+  /* 编辑区 (浅色, 与整体协调) */
+  .pane{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .pane-head{height:38px;display:flex;align-items:center;gap:10px;padding:0 16px;
+    border-bottom:1px solid rgba(230,233,245,.9);background:rgba(255,255,255,.6);font-size:12px;color:var(--dim);flex-shrink:0;}
+  #editor-pane{flex:1 1 0;min-width:280px;}
+  #editor-host{flex:1;overflow:hidden;background:var(--ed-bg,#fff);}
+  .editor-fallback{width:100%;height:100%;border:none;outline:none;resize:none;padding:18px 22px;
+    font-family:'SF Mono',Consolas,monospace;font-size:13.5px;line-height:1.75;
+    color:var(--ed-fg,#3a3f4e);background:var(--ed-bg,#fff);}
+  /* CodeMirror 5 编辑器配色 (CSS变量驱动, 可自由切换) */
+  #editor-host .CodeMirror{height:100%;font-size:13.5px;line-height:1.75;
+    background:var(--ed-bg,#fff);color:var(--ed-fg,#383a42);
+    font-family:'SF Mono',Consolas,'PingFang SC',monospace;padding:6px 0 40px;}
+  #editor-host .CodeMirror-gutters{background:var(--ed-bg,#fff);
+    border-right:1px solid var(--ed-border,#f0f1f8);color:var(--ed-fg,#383a42);opacity:.55;}
+  #editor-host .CodeMirror-linenumber{color:inherit;}
+  #editor-host .CodeMirror-cursor{border-left:2px solid var(--ed-accent,#4f46e5);}
+  #editor-host .CodeMirror-selected{background:var(--ed-sel,rgba(79,70,229,.16));}
+  #editor-host .CodeMirror-activeline-background{background:var(--ed-active,rgba(79,70,229,.04));}
+  #editor-host .CodeMirror-selectedtext{color:inherit;}
+
+  /* 分栏拖动条: 只有中间一条细线, 无变色背景 */
+  .divider{width:9px;flex-shrink:0;cursor:col-resize;position:relative;}
+  .divider::after{content:'';position:absolute;left:4px;top:0;bottom:0;width:1px;background:var(--border2);
+    transition:background .15s;}
+  .divider:hover::after,.divider.dragging::after{background:var(--primary);width:2px;left:3.5px;}
+
+  /* 预览区 */
+  .preview-wrap{flex:1;overflow-y:auto;}
+  .preview{max-width:680px;margin:26px auto 90px;padding:34px 38px 64px;background:#fff;
+    box-shadow:0 2px 6px rgba(28,31,46,.05),0 16px 40px rgba(28,31,46,.09);border-radius:10px;}
+
+  /* ═══ 状态栏 ═══ */
+  .statusbar{height:30px;background:rgba(255,255,255,.75);backdrop-filter:blur(14px);border-top:1px solid rgba(230,233,245,.9);
+    display:flex;align-items:center;gap:18px;padding:0 20px;font-size:11.5px;color:var(--dim);flex-shrink:0;}
+  .statusbar .ok{color:var(--green);}
+
+  /* ═══ 组件样式 (预览内) ═══ */
+  .callout{margin:14px 0;padding:12px 16px;border-radius:8px;border:1px solid;font-size:14px;line-height:1.8;}
+  .callout-title{font-weight:700;margin-bottom:4px;}
+  .callout-warning{background:#fff8f0;border-color:#f5c97b;color:#8a5a00;}
+  .callout-warning .callout-title{color:#d97706;}
+  .callout-info{background:#f0f7ff;border-color:#9ec5ff;color:#1e4a8a;}
+  .callout-info .callout-title{color:#2563eb;}
+  .callout-success{background:#f0fbf5;border-color:#7fd8ab;color:#0b5c3d;}
+  .callout-success .callout-title{color:#0a9c6a;}
+  .callout-danger{background:#fff5f5;border-color:#f5a3a3;color:#8a2020;}
+  .callout-danger .callout-title{color:#dc2626;}
+  .chart-block{margin:16px 0;text-align:center;}
+
+  .stats-row{display:flex;gap:10px;margin:16px 0;flex-wrap:wrap;}
+  .stat-card{flex:1;min-width:96px;border:1px solid #e5e7eb;border-radius:10px;padding:12px 10px;text-align:center;background:#fafbfc;}
+  .stat-card .sv{font-size:19px;font-weight:700;color:#1f2937;font-family:monospace;}
+  .stat-card .sv.pos{color:#e0393e;}
+  .stat-card .sv.neg{color:#0a9c6a;}
+  .stat-card .sk{font-size:11.5px;color:#9ca3af;margin-top:3px;}
+
+  /* ═══ 主题: 浅色商务 (默认) ═══ */
+  .theme-light .preview{background:#fff;color:#333;font-size:15px;line-height:1.85;}
+  .theme-light h1{font-size:22px;margin:0 0 14px;color:#111;font-weight:700;}
+  .theme-light h2{font-size:18px;margin:28px 0 12px;color:#111;padding-left:10px;border-left:4px solid #2563eb;}
+  .theme-light h3{font-size:16px;margin:20px 0 10px;color:#222;}
+  .theme-light p{margin:10px 0;}
+  .theme-light blockquote{margin:12px 0;padding:10px 14px;background:#f8fafc;border-left:3px solid #94a3b8;color:#64748b;font-size:14px;}
+  .theme-light table{border-collapse:collapse;margin:14px 0;width:100%;font-size:14px;}
+  .theme-light th{background:#f1f5f9;padding:8px 10px;border:1px solid #e2e8f0;text-align:left;font-weight:600;}
+  .theme-light td{padding:8px 10px;border:1px solid #e2e8f0;}
+  .theme-light code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:13px;color:#be123c;}
+  .theme-light pre{background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;overflow-x:auto;margin:12px 0;}
+  .theme-light pre code{background:none;color:inherit;padding:0;}
+  .theme-light img{max-width:100%;border-radius:6px;}
+  .theme-light hr{border:none;border-top:1px solid #eee;margin:20px 0;}
+  .theme-light a{color:#2563eb;}
+  .theme-light strong{color:#111;}
+
+  /* ═══ 主题: 深色专业 ═══ */
+  .theme-dark .preview{background:#0f1720;color:#e8eef5;}
+  .theme-dark h1{font-size:22px;margin:0 0 14px;color:#fff;font-weight:700;}
+  .theme-dark h2{font-size:18px;margin:28px 0 12px;color:#fff;padding-left:10px;border-left:4px solid #4da3ff;}
+  .theme-dark h3{font-size:16px;margin:20px 0 10px;color:#f0f4fa;}
+  .theme-dark p{margin:10px 0;}
+  .theme-dark blockquote{margin:12px 0;padding:10px 14px;background:#16202e;border-left:3px solid #4da3ff;color:#8a97a8;font-size:14px;}
+  .theme-dark table{border-collapse:collapse;margin:14px 0;width:100%;font-size:14px;}
+  .theme-dark th{background:#1a2430;padding:8px 10px;border:1px solid #2a3848;text-align:left;font-weight:600;color:#8a97a8;}
+  .theme-dark td{padding:8px 10px;border:1px solid #2a3848;}
+  .theme-dark code{background:#1a2430;padding:2px 6px;border-radius:4px;font-size:13px;color:#ffb84d;}
+  .theme-dark pre{background:#000;color:#e2e8f0;padding:16px;border-radius:8px;overflow-x:auto;margin:12px 0;}
+  .theme-dark pre code{background:none;color:inherit;padding:0;}
+  .theme-dark img{max-width:100%;border-radius:6px;}
+  .theme-dark hr{border:none;border-top:1px solid #1f2937;margin:20px 0;}
+  .theme-dark a{color:#4da3ff;}
+  .theme-dark strong{color:#fff;}
+  .theme-dark .stat-card{border-color:#2a3848;background:#1a2430;}
+  .theme-dark .stat-card .sv{color:#e8eef5;}
+  .theme-dark .stat-card .sk{color:#8a97a8;}
+
+  /* ═══ 主题: 极简 ═══ */
+  .theme-minimal .preview{background:#fff;color:#444;font-size:15px;line-height:1.9;}
+  .theme-minimal h1{font-size:21px;margin:0 0 14px;color:#000;font-weight:600;text-align:center;}
+  .theme-minimal h2{font-size:17px;margin:26px 0 10px;color:#000;font-weight:600;text-align:center;}
+  .theme-minimal h3{font-size:15px;margin:18px 0 8px;color:#333;}
+  .theme-minimal p{margin:10px 0;}
+  .theme-minimal blockquote{margin:12px 0;padding:8px 14px;color:#888;font-size:14px;border-left:2px solid #ddd;}
+  .theme-minimal table{border-collapse:collapse;margin:14px 0;width:100%;font-size:14px;border:none;}
+  .theme-minimal th{padding:8px 10px;border-bottom:1px solid #111;text-align:left;font-weight:600;}
+  .theme-minimal td{padding:8px 10px;border-bottom:1px solid #eee;}
+  .theme-minimal code{background:#f5f5f5;padding:2px 5px;border-radius:3px;font-size:13px;}
+  .theme-minimal img{max-width:100%;border-radius:4px;}
+  .theme-minimal hr{border:none;border-top:1px solid #eee;margin:18px 0;}
+  .theme-minimal strong{color:#111;}
+  .theme-minimal a{color:#555;text-decoration:underline;}
+
+  /* ═══ 主题: 清新绿 ═══ */
+  .theme-fresh .preview{background:#fcfdfc;color:#3a4a3f;font-size:15px;line-height:1.85;}
+  .theme-fresh h1{font-size:22px;margin:0 0 14px;color:#1a2e22;font-weight:700;}
+  .theme-fresh h2{font-size:18px;margin:28px 0 12px;color:#1a2e22;padding-left:10px;border-left:4px solid #2e9e5b;}
+  .theme-fresh h3{font-size:16px;margin:20px 0 10px;color:#24402f;}
+  .theme-fresh p{margin:10px 0;}
+  .theme-fresh blockquote{margin:12px 0;padding:10px 14px;background:#f0f7f2;border-left:3px solid #7fb795;color:#5a7564;font-size:14px;}
+  .theme-fresh table{border-collapse:collapse;margin:14px 0;width:100%;font-size:14px;}
+  .theme-fresh th{background:#eef5ef;padding:8px 10px;border:1px solid #d8e6db;text-align:left;font-weight:600;}
+  .theme-fresh td{padding:8px 10px;border:1px solid #d8e6db;}
+  .theme-fresh code{background:#eef5ef;padding:2px 6px;border-radius:4px;font-size:13px;color:#1d7a44;}
+  .theme-fresh img{max-width:100%;border-radius:6px;}
+  .theme-fresh hr{border:none;border-top:1px solid #e3ece5;margin:20px 0;}
+  .theme-fresh a{color:#2e9e5b;}
+  .theme-fresh strong{color:#1a2e22;}
+
+  /* ═══ 主题: 暖色杂志 ═══ */
+  .theme-magazine .preview{background:#fffdf8;color:#4a4238;font-size:15px;line-height:1.9;}
+  .theme-magazine h1{font-size:23px;margin:0 0 16px;color:#2b2320;font-weight:700;text-align:center;letter-spacing:1px;}
+  .theme-magazine h2{font-size:18px;margin:30px 0 12px;color:#2b2320;text-align:center;}
+  .theme-magazine h2::after{content:'';display:block;width:36px;height:2px;background:#c87941;margin:8px auto 0;}
+  .theme-magazine h3{font-size:16px;margin:20px 0 10px;color:#3d322a;}
+  .theme-magazine p{margin:10px 0;}
+  .theme-magazine blockquote{margin:14px 0;padding:12px 16px;background:#faf3ea;border-left:3px solid #c87941;color:#8a6f5a;font-size:14px;font-style:italic;}
+  .theme-magazine table{border-collapse:collapse;margin:14px 0;width:100%;font-size:14px;}
+  .theme-magazine th{background:#f6efe6;padding:8px 10px;border:1px solid #eadfce;text-align:left;font-weight:600;}
+  .theme-magazine td{padding:8px 10px;border:1px solid #eadfce;}
+  .theme-magazine code{background:#f6efe6;padding:2px 6px;border-radius:4px;font-size:13px;color:#a0562b;}
+  .theme-magazine img{max-width:100%;border-radius:4px;}
+  .theme-magazine hr{border:none;border-top:1px solid #eadfce;margin:20px 0;}
+  .theme-magazine a{color:#c87941;}
+  .theme-magazine strong{color:#2b2320;}
+
+  /* ═══ 主题: 科技蓝 ═══ */
+  .theme-tech .preview{background:#f0f7ff;color:#2c3e50;font-size:15px;line-height:1.85;}
+  .theme-tech h1{font-size:22px;margin:0 0 14px;color:#0c4a6e;font-weight:700;}
+  .theme-tech h2{font-size:18px;margin:28px 0 12px;color:#0c4a6e;padding-left:10px;border-left:4px solid #0ea5e9;}
+  .theme-tech h3{font-size:16px;margin:20px 0 10px;color:#155e75;}
+  .theme-tech p{margin:10px 0;}
+  .theme-tech blockquote{margin:12px 0;padding:10px 14px;background:#e0f2fe;border-left:3px solid #38bdf8;color:#0369a1;font-size:14px;}
+  .theme-tech table{border-collapse:collapse;margin:14px 0;width:100%;font-size:14px;}
+  .theme-tech th{background:#e0f2fe;padding:8px 10px;border:1px solid #bae6fd;text-align:left;font-weight:600;}
+  .theme-tech td{padding:8px 10px;border:1px solid #bae6fd;}
+  .theme-tech code{background:#e0f2fe;padding:2px 6px;border-radius:4px;font-size:13px;color:#0369a1;}
+  .theme-tech img{max-width:100%;border-radius:6px;}
+  .theme-tech hr{border:none;border-top:1px solid #dbeafe;margin:20px 0;}
+  .theme-tech a{color:#0284c7;}
+  .theme-tech strong{color:#0c4a6e;}
+
+  /* ═══ 主题: 石墨金 ═══ */
+  .theme-graphite .preview{background:#1c2028;color:#c8ccd4;font-size:15px;line-height:1.85;}
+  .theme-graphite h1{font-size:22px;margin:0 0 14px;color:#f0e6d2;font-weight:700;}
+  .theme-graphite h2{font-size:18px;margin:28px 0 12px;color:#f0e6d2;padding-left:10px;border-left:4px solid #d4a853;}
+  .theme-graphite h3{font-size:16px;margin:20px 0 10px;color:#e0d5bd;}
+  .theme-graphite p{margin:10px 0;}
+  .theme-graphite blockquote{margin:12px 0;padding:10px 14px;background:#262c36;border-left:3px solid #d4a853;color:#9aa1ad;font-size:14px;}
+  .theme-graphite table{border-collapse:collapse;margin:14px 0;width:100%;font-size:14px;}
+  .theme-graphite th{background:#262c36;padding:8px 10px;border:1px solid #333b47;text-align:left;font-weight:600;color:#d4a853;}
+  .theme-graphite td{padding:8px 10px;border:1px solid #333b47;}
+  .theme-graphite code{background:#262c36;padding:2px 6px;border-radius:4px;font-size:13px;color:#d4a853;}
+  .theme-graphite img{max-width:100%;border-radius:6px;}
+  .theme-graphite hr{border:none;border-top:1px solid #333b47;margin:20px 0;}
+  .theme-graphite a{color:#d4a853;}
+  .theme-graphite strong{color:#f0e6d2;}
+  .theme-graphite .stat-card{border-color:#333b47;background:#262c36;}
+  .theme-graphite .stat-card .sv{color:#e8eef5;}
+  .theme-graphite .stat-card .sk{color:#8a97a8;}
+
+  /* 盈亏高亮 */
+  .pnl-pos{color:#e0393e !important;font-weight:700;}
+  .pnl-neg{color:#0a9c6a !important;font-weight:700;}
+
+  /* ═══ 弹窗 ═══ */
+  .modal-bg{position:fixed;inset:0;background:rgba(20,22,40,.45);backdrop-filter:blur(5px);
+    display:none;align-items:center;justify-content:center;z-index:50;}
+  .modal-bg.show{display:flex;animation:fadeIn .18s ease;}
+  @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
+  .modal{background:#fff;border-radius:16px;padding:0;width:560px;max-width:94vw;max-height:82vh;
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(20,22,40,.3);
+    animation:slideUp .22s cubic-bezier(.2,.8,.3,1);}
+  @keyframes slideUp{from{opacity:0;transform:translateY(14px) scale(.98);}to{opacity:1;transform:none;}}
+  .modal-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px 14px;border-bottom:1px solid var(--border);}
+  .modal-head h3{font-size:15px;font-weight:700;}
+  .modal-close{border:none;background:transparent;font-size:17px;color:var(--dim);cursor:pointer;padding:3px 8px;border-radius:6px;}
+  .modal-close:hover{color:var(--text);background:var(--bg);}
+  .modal-body{padding:16px 22px;overflow-y:auto;font-size:13px;}
+  .modal-foot{padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fafbff;}
+  .tpl-item{padding:13px 15px;border:1px solid var(--border2);border-radius:11px;margin-bottom:10px;cursor:pointer;transition:all .16s;}
+  .tpl-item:hover{border-color:var(--primary);background:var(--primary-weak);transform:translateY(-1px);
+    box-shadow:0 4px 12px rgba(79,70,229,.1);}
+  .tpl-item .tpl-name{font-weight:700;font-size:13.5px;}
+  .tpl-item .tpl-desc{font-size:12px;color:var(--dim);margin-top:3px;}
+  .da-ta{width:100%;height:150px;border:1px solid var(--border2);border-radius:11px;padding:12px;
+    font-family:monospace;font-size:12.5px;line-height:1.6;resize:vertical;outline:none;transition:all .15s;}
+  .da-ta:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.12);}
+  .da-preview{font-size:12.5px;color:var(--dim);margin-top:10px;line-height:1.7;}
+  .hint-text{font-size:12px;color:var(--dim);margin-bottom:10px;line-height:1.7;}
+  .hint-text code{background:var(--bg);padding:1px 6px;border-radius:4px;font-size:11.5px;color:var(--primary);}
+</style>
+</head>
+<body>
+
+<!-- ═══ 顶部栏 ═══ -->
+<div class="topbar">
+  <div class="brand"><span class="mark">排</span>排版派</div>
+  <input class="doc-title" id="doc-title" placeholder="文章标题…">
+  <div class="spacer"></div>
+  <button class="btn ghost" onclick="exportMd()">导出 .md</button>
+  <button class="btn primary" onclick="copyToWechat()">一键复制到公众号</button>
+</div>
+
+<!-- ═══ 主体 ═══ -->
+<div class="main">
+  <!-- 侧边栏 -->
+  <div class="sidebar">
+    <div class="side-section">
+      <div class="side-head">主题</div>
+      <button class="side-item" data-theme="light"><span class="ico">📄</span>浅色商务<span class="theme-dots"><span class="tdot" style="background:#fff;"></span><span class="tdot" style="background:#2563eb;"></span></span></button>
+      <button class="side-item" data-theme="dark"><span class="ico">🌙</span>深色专业<span class="theme-dots"><span class="tdot" style="background:#0f1720;"></span><span class="tdot" style="background:#4da3ff;"></span></span></button>
+      <button class="side-item" data-theme="minimal"><span class="ico">◻️</span>极简<span class="theme-dots"><span class="tdot" style="background:#fff;"></span><span class="tdot" style="background:#ddd;"></span></span></button>
+      <button class="side-item" data-theme="fresh"><span class="ico">🌿</span>清新绿<span class="theme-dots"><span class="tdot" style="background:#fcfdfc;"></span><span class="tdot" style="background:#2e9e5b;"></span></span></button>
+      <button class="side-item" data-theme="magazine"><span class="ico">📰</span>暖色杂志<span class="theme-dots"><span class="tdot" style="background:#fffdf8;"></span><span class="tdot" style="background:#c87941;"></span></span></button>
+      <button class="side-item" data-theme="tech"><span class="ico">💠</span>科技蓝<span class="theme-dots"><span class="tdot" style="background:#f0f7ff;"></span><span class="tdot" style="background:#0ea5e9;"></span></span></button>
+      <button class="side-item" data-theme="graphite"><span class="ico">🪨</span>石墨金<span class="theme-dots"><span class="tdot" style="background:#1c2028;"></span><span class="tdot" style="background:#d4a853;"></span></span></button>
+    </div>
+    <div class="side-section">
+      <div class="side-head">编辑器配色</div>
+      <button class="side-item" data-editor-theme="light"><span class="ico">☀️</span>浅色<span class="theme-dots"><span class="tdot" style="background:#fff;"></span><span class="tdot" style="background:#e5e7eb;"></span></span></button>
+      <button class="side-item" data-editor-theme="github-dark"><span class="ico">🌙</span>GitHub Dark<span class="theme-dots"><span class="tdot" style="background:#0d1117;"></span><span class="tdot" style="background:#58a6ff;"></span></span></button>
+      <button class="side-item" data-editor-theme="dracula"><span class="ico">🧛</span>Dracula<span class="theme-dots"><span class="tdot" style="background:#282a36;"></span><span class="tdot" style="background:#bd93f9;"></span></span></button>
+      <button class="side-item" data-editor-theme="tokyo"><span class="ico">🗼</span>Tokyo Night<span class="theme-dots"><span class="tdot" style="background:#1a1b26;"></span><span class="tdot" style="background:#7aa2f7;"></span></span></button>
+      <button class="side-item" data-editor-theme="solarized"><span class="ico">🌅</span>Solarized<span class="theme-dots"><span class="tdot" style="background:#fdf6e3;"></span><span class="tdot" style="background:#268bd2;"></span></span></button>
+      <button class="side-item" data-editor-theme="custom" id="custom-editor-item"><span class="ico">🎨</span>自定义<span class="theme-dots" id="custom-editor-dots"></span></button>
+    </div>
+    <div class="side-section">
+      <div class="side-head">组件</div>
+      <button class="side-item" onclick="insertChart('bar')"><span class="ico">📊</span>条形图</button>
+      <button class="side-item" onclick="insertChart('line')"><span class="ico">📈</span>曲线图</button>
+      <button class="side-item" onclick="insertChart('funnel')"><span class="ico">🔻</span>漏斗图</button>
+      <button class="side-item" onclick="insertStats()"><span class="ico">🧮</span>指标卡</button>
+      <button class="side-item" onclick="insertCallout('info')"><span class="ico">💡</span>提示框·信息</button>
+      <button class="side-item" onclick="insertCallout('warning')"><span class="ico">⚠️</span>提示框·注意</button>
+      <button class="side-item" onclick="insertCallout('success')"><span class="ico">✅</span>提示框·成功</button>
+      <button class="side-item" onclick="insertCallout('danger')"><span class="ico">🛑</span>提示框·警告</button>
+    </div>
+    <div class="side-section">
+      <div class="side-head">工具</div>
+      <button class="side-item" style="font-weight:600;" onclick="showDataAssistant()"><span class="ico">📊</span>数据助手<span style="font-size:10px;color:#fff;background:var(--red);border-radius:4px;padding:1px 5px;margin-left:auto;">新</span></button>
+      <button class="side-item" onclick="showTemplates()"><span class="ico">📋</span>模板库</button>
+      <button class="side-item" onclick="uploadImage()"><span class="ico">🖼️</span>插入图片</button>
+      <input type="file" id="img-input" accept="image/*" style="display:none">
+    </div>
+    <div class="side-section" style="margin-top:auto;">
+      <label class="side-item" style="cursor:pointer;"><span class="ico">🔦</span>盈亏高亮
+        <input type="checkbox" id="pnl-toggle" checked style="margin-left:auto;accent-color:var(--primary);"></label>
+    </div>
+  </div>
+
+  <!-- 编辑器 -->
+  <div class="pane" id="editor-pane">
+    <div class="pane-head"><span>✏️ Markdown</span></div>
+    <div id="editor-host"><textarea class="editor-fallback" id="editor" spellcheck="false"></textarea></div>
+  </div>
+
+  <!-- 分栏拖动条 -->
+  <div class="divider" id="divider"></div>
+
+  <!-- 预览 -->
+  <div class="pane" id="preview-pane">
+    <div class="pane-head"><span>👁️ 预览</span><span class="spacer" style="flex:1;"></span><span id="theme-name" style="font-size:11px;"></span></div>
+    <div class="preview-wrap" id="preview-wrap">
+      <div class="preview" id="preview"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 状态栏 ═══ -->
+<div class="statusbar">
+  <span id="stats">0 字</span>
+  <span id="save-state" class="ok">● 自动保存</span>
+  <span style="margin-left:auto;" id="status"></span>
+</div>
+
+<!-- ═══ 模板弹窗 ═══ -->
+<div class="modal-bg" id="tpl-modal" onclick="if(event.target===this)closeTemplates()">
+  <div class="modal">
+    <div class="modal-head"><h3>模板库</h3><button class="modal-close" onclick="closeTemplates()">✕</button></div>
+    <div class="modal-body" id="tpl-list"></div>
+  </div>
+</div>
+
+<!-- ═══ 自定义编辑器配色弹窗 ═══ -->
+<div class="modal-bg" id="ec-modal" onclick="if(event.target===this)closeEditorCustom()">
+  <div class="modal" style="width:480px;">
+    <div class="modal-head"><h3>🎨 自定义编辑器配色</h3><button class="modal-close" onclick="closeEditorCustom()">✕</button></div>
+    <div class="modal-body">
+      <div style="display:flex;gap:12px;margin-bottom:14px;">
+        <label style="flex:1;">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:5px;">背景色</div>
+          <input type="color" id="ec-bg" value="#ffffff" style="width:100%;height:40px;border:1px solid var(--border2);border-radius:8px;cursor:pointer;">
+        </label>
+        <label style="flex:1;">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:5px;">文字色</div>
+          <input type="color" id="ec-fg" value="#383a42" style="width:100%;height:40px;border:1px solid var(--border2);border-radius:8px;cursor:pointer;">
+        </label>
+        <label style="flex:1;">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:5px;">强调色</div>
+          <input type="color" id="ec-accent" value="#4f46e5" style="width:100%;height:40px;border:1px solid var(--border2);border-radius:8px;cursor:pointer;">
+        </label>
+      </div>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:6px;">快捷底色：</div>
+      <div id="ec-presets" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;"></div>
+      <div style="border:1px solid var(--border2);border-radius:10px;overflow:hidden;">
+        <div style="font-size:12px;color:var(--dim);padding:6px 12px;border-bottom:1px solid var(--border2);background:#fafbff;">实时预览</div>
+        <div id="ec-preview" style="padding:16px;font-family:'SF Mono',Consolas,monospace;font-size:13px;line-height:1.8;min-height:90px;">
+# 标题示例
+- 列表项 &amp; **加粗**
+&gt; 引用文字
+<span id="ec-preview-accent">const x = 42;</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="resetEditorCustom()">恢复默认</button>
+      <button class="btn primary" onclick="applyEditorCustom()">应用配色</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 数据助手弹窗 ═══ -->
+<div class="modal-bg" id="da-modal" onclick="if(event.target===this)closeDataAssistant()">
+  <div class="modal" style="width:640px;">
+    <div class="modal-head"><h3>📊 数据助手 · 持仓数据 → 复盘文章</h3><button class="modal-close" onclick="closeDataAssistant()">✕</button></div>
+    <div class="modal-body">
+      <div class="hint-text">
+        每行一只股票：<code>代码,名称,成本,现价,买入金额,选股日</code><br>
+        支持 Excel 直接粘贴、逗号/制表符分隔。自动计算盈亏、批次统计，一键生成带图表高亮的复盘文章。
+      </div>
+      <textarea class="da-ta" id="da-input" spellcheck="false"></textarea>
+      <div class="da-preview" id="da-preview"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="loadSampleData()">加载示例</button>
+      <button class="btn" onclick="parseData()">解析预览</button>
+      <button class="btn primary" onclick="insertGeneratedArticle()">生成并插入文章</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const editor = $('editor');
+const preview = $('preview');
+const previewWrap = $('preview-wrap');
+const status = $('status');
+const AUTOSAVE_KEY = 'paiban-autosave-v1';
+
+const THEME_NAMES = {light:'浅色商务', dark:'深色专业', minimal:'极简', fresh:'清新绿',
+  magazine:'暖色杂志', tech:'科技蓝', graphite:'石墨金'};
+
+// ═══ 示例文章 ═══
+const SAMPLE = `# 量化选股复盘 | 08月15日，今天选出了什么？
+
+> 我的量化系统每天自动扫描全市场 5000+ 只股票，今天它给出了这些信号。所有内容仅供学习交流。
+
+## 一、市场环境
+
+- 上证指数：**3927.18** 点（上涨 0.01%）
+- 近5日：-0.33%
+
+:::info 说明
+以下为量化系统的自动交易记录，仅供学习交流。
+:::
+
+## 二、今日新入选股票
+
+:::stats
+持仓数|17|只
+胜率|61|%
+平均盈亏|+2.0|%
+亏损票金额占比|40|%
+:::
+
+| 代码 | 名称 | 系统评分 |
+|------|------|---------|
+| 300786 | 国林科技 | **0.73** |
+| 301257 | 普蕊斯 | **0.89** |
+| 688131 | 皓元医药 | **1.52** |
+
+## 三、各批次5日表现
+
+\`\`\`chart:bar
+批次,平均盈亏,方向
+08-06,+3.9,up
+08-10,+1.2,up
+08-12,+0.2,up
+08-13,-0.4,down
+\`\`\`
+
+### 08-06 批次 · 已完成 · 平均 +3.9%
+
+| 股票 | 5日盈亏 |
+|------|--------|
+| 龙磁科技 300835 | **+9.1%** |
+| 同宇新材 301630 | **+3.6%** |
+| 理工光科 300557 | **+2.1%** |
+| 弘信电子 300657 | **-0.5%** |
+
+---
+
+*免责声明：本文所有内容仅为个人量化交易系统的学习与记录，不构成任何投资建议。股市有风险，入市需谨慎。*`;
+
+// ═══ 模板 ═══
+const TEMPLATES = [
+  {name:'每日复盘', desc:'市场环境 + 选股清单 + 持仓表现', md:`# 标题 | MM月DD日
+
+> 一句话导读。
+
+## 一、市场环境
+
+- 上证指数：**XXXX.XX** 点（上涨/下跌 X.XX%）
+- 近5日：+X.XX%
+
+## 二、今日关注
+
+| 代码 | 名称 | 评分 |
+|------|------|------|
+| 000001 | 示例 | **0.85** |
+
+## 三、持仓表现
+
+| 股票 | 盈亏 |
+|------|------|
+| 示例 000001 | **+3.2%** |
+| 示例 000002 | **-1.5%** |
+
+---
+
+*免责声明：本文仅为学习记录，不构成任何投资建议。*`},
+  {name:'周度复盘', desc:'本周市场 + 操作回顾 + 下周计划', md:`# 周度复盘 | 第N周
+
+> 本周总结一句话。
+
+## 一、本周市场
+
+- 上证指数本周：+X.XX%
+
+## 二、本周操作回顾
+
+| 日期 | 操作 | 结果 |
+|------|------|------|
+| MM-DD | 买入 XXX | +X.X% |
+| MM-DD | 止损 XXX | -X.X% |
+
+## 三、下周计划
+
+1. 关注方向 A
+2. 关注方向 B
+
+---
+
+*免责声明：本文仅为学习记录，不构成任何投资建议。*`},
+  {name:'观点长文', desc:'观点 + 论据 + 总结的标准结构', md:`# 标题：一个明确的观点
+
+> 一句话概括本文核心观点。
+
+## 一、问题是什么
+
+背景描述，读者为什么关心这个问题。
+
+## 二、我的观点
+
+核心论点。
+
+## 三、三个论据
+
+### 论据一
+
+:::info 数据支撑
+这里放数据或图表
+:::
+
+### 论据二
+
+内容...
+
+### 论据三
+
+内容...
+
+## 四、总结
+
+回到开头的问题，给出明确答案。
+
+---
+
+*免责声明：本文仅为个人观点分享。*`},
+  {name:'干货教程', desc:'步骤式教程，适合工具/方法类内容', md:`# 教程：如何做到 XXX
+
+> 教程适合谁？需要什么基础？完成需要多久？
+
+## 准备
+
+1. 需要的工具
+2. 需要的账号/权限
+
+## 第一步：XXX
+
+详细步骤...
+
+:::warning 注意
+常见的坑：...
+:::
+
+## 第二步：XXX
+
+详细步骤...
+
+## 总结
+
+回顾核心步骤清单：
+
+- [ ] 步骤一
+- [ ] 步骤二
+- [ ] 步骤三
+
+---
+
+*本文为原创教程，转载请注明出处。*`},
+];
+
+// ═══ 特殊块解析 ═══
+function extractSpecialBlocks(md){
+  const blocks = [];
+  let out = md;
+  out = out.replace(/```chart:(\w+)\n([\s\S]*?)```/g, (m, type, body)=>{
+    const i = blocks.length;
+    blocks.push({kind:'chart', type, body, id:i});
+    return `<div id="block-anchor-${i}"></div>`;
+  });
+  out = out.replace(/:::(\w+)\s*([^\n]*)\n([\s\S]*?):::/g, (m, type, title, body)=>{
+    const i = blocks.length;
+    if(type === 'stats') blocks.push({kind:'stats', body: body.trim(), id:i});
+    else blocks.push({kind:'callout', type, title, body: body.trim(), id:i});
+    return `<div id="block-anchor-${i}"></div>`;
+  });
+  return {md: out, blocks};
+}
+
+function renderCallout(b){
+  const el = document.createElement('div');
+  el.className = `callout callout-${b.type}`;
+  const t = document.createElement('div');
+  t.className = 'callout-title';
+  t.textContent = b.title || {warning:'注意', info:'提示', success:'完成', danger:'警告'}[b.type] || '';
+  el.appendChild(t);
+  const bodyDiv = document.createElement('div');
+  bodyDiv.innerHTML = marked.parse(b.body);
+  el.appendChild(bodyDiv);
+  return el;
+}
+
+function renderStatsBlock(b){
+  const el = document.createElement('div');
+  el.className = 'stats-row';
+  b.body.split('\n').forEach(line=>{
+    const [label, value, unit] = line.split('|').map(s=>(s||'').trim());
+    if(!label) return;
+    const card = document.createElement('div');
+    card.className = 'stat-card';
+    const v = document.createElement('div');
+    v.className = 'sv';
+    if(value && (value.startsWith('+') || value.startsWith('-'))) v.classList.add(value.startsWith('-')?'neg':'pos');
+    v.textContent = `${value}${unit||''}`;
+    const k = document.createElement('div');
+    k.className = 'sk';
+    k.textContent = label;
+    card.appendChild(v); card.appendChild(k);
+    el.appendChild(card);
+  });
+  return el;
+}
+
+function renderChartBlock(b){
+  const el = document.createElement('div');
+  el.className = 'chart-block';
+  const lines = b.body.trim().split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows = lines.slice(1).map(l=>l.split(',').map(s=>s.trim()));
+  const chart = echarts.init(el, null, {renderer:'svg'});
+
+  if(b.type === 'bar'){
+    const labels = rows.map(r=>r[0]);
+    const vals = rows.map(r=>parseFloat(r[1]));
+    const colors = rows.map(r=> (r[2]==='down' ? '#0a9c6a' : '#e0393e'));
+    chart.setOption({
+      grid:{left:8, right:60, top:10, bottom:4, containLabel:true},
+      xAxis:{type:'value', splitLine:{lineStyle:{color:'#eee'}}},
+      yAxis:{type:'category', data:labels.slice().reverse(), axisLine:{show:false}, axisTick:{show:false}},
+      series:[{type:'bar', data:vals.slice().reverse().map((v,i)=>({value:v, itemStyle:{color:colors.slice().reverse()[i], borderRadius:[0,4,4,0]}})),
+        barWidth:18, label:{show:true, position:'right', formatter:'{c}%', color:'#666', fontSize:11}}]
+    });
+  } else if(b.type === 'line'){
+    const labels = rows.map(r=>r[0]);
+    const vals = rows.map(r=>parseFloat(r[1]));
+    chart.setOption({
+      grid:{left:8, right:20, top:16, bottom:4, containLabel:true},
+      xAxis:{type:'category', data:labels, boundaryGap:false},
+      yAxis:{type:'value', scale:true},
+      series:[{type:'line', data:vals, smooth:true, symbol:'circle', symbolSize:5,
+        lineStyle:{width:2, color:'#2f5af3'}, itemStyle:{color:'#2f5af3'},
+        areaStyle:{color:'rgba(47,90,243,0.08)'}}]
+    });
+  } else if(b.type === 'funnel'){
+    const labels = rows.map(r=>r[0]);
+    const vals = rows.map(r=>parseFloat(r[1]));
+    chart.setOption({
+      tooltip:{show:false},
+      series:[{type:'funnel', left:40, right:40, top:8, bottom:8,
+        data: labels.map((l,i)=>({name:l, value:vals[i]})),
+        label:{formatter:'{b}  {c}', color:'#666', fontSize:11},
+        itemStyle:{borderWidth:0}, gap:3,
+        color:['#2f5af3','#4da3ff','#ffb84d','#0a9c6a']}]
+    });
+  }
+  return {el, chart};
+}
+
+let chartInstances = [];
+
+function render(){
+  chartInstances.forEach(c=>c.dispose());
+  chartInstances = [];
+
+  const md = editor.value;
+  const {md: cleanMd, blocks} = extractSpecialBlocks(md);
+  preview.innerHTML = marked.parse(cleanMd || '');
+  blocks.forEach((b, i)=>{
+    const ph = preview.querySelector(`#block-anchor-${i}`);
+    if(!ph) return;
+    if(b.kind === 'callout') ph.replaceWith(renderCallout(b));
+    else if(b.kind === 'stats') ph.replaceWith(renderStatsBlock(b));
+    else {
+      const {el, chart} = renderChartBlock(b);
+      ph.replaceWith(el);
+      chartInstances.push(chart);
+    }
+  });
+  if($('pnl-toggle').checked) highlightPnL(preview);
+  updateStats();
+}
+
+function highlightPnL(root){
+  const re = /^[+-]?\d+(\.\d+)?%$/;
+  root.querySelectorAll('td').forEach(td=>{
+    const t = td.textContent.trim();
+    const inner = td.innerHTML.trim();
+    if((inner === `<strong>${t}</strong>` || inner === t) && re.test(t)){
+      td.classList.add(t.startsWith('-') ? 'pnl-neg' : 'pnl-pos');
+    }
+  });
+}
+
+function updateStats(){
+  const t = editor.value;
+  const chars = t.replace(/\s/g,'').length;
+  $('stats').textContent = `${chars} 字`;
+}
+
+// ═══ 主题 ═══
+function applyTheme(name){
+  previewWrap.classList.remove(...Object.keys(THEME_NAMES).map(k=>'theme-'+k));
+  previewWrap.classList.add('theme-'+name);
+  $('theme-name').textContent = THEME_NAMES[name];
+  localStorage.setItem('paiban-theme', name);
+  document.querySelectorAll('.side-item[data-theme]').forEach(el=>
+    el.classList.toggle('active', el.dataset.theme === name));
+}
+document.querySelectorAll('.side-item[data-theme]').forEach(el=>{
+  el.addEventListener('click', ()=>applyTheme(el.dataset.theme));
+});
+
+// ═══ 编辑器配色 ═══
+document.querySelectorAll('.side-item[data-editor-theme]').forEach(el=>{
+  el.addEventListener('click', ()=>{
+    if(el.dataset.editorTheme === 'custom'){
+      openEditorCustom();
+      return;
+    }
+    if(window.setEditorTheme) window.setEditorTheme(el.dataset.editorTheme);
+    document.querySelectorAll('.side-item[data-editor-theme]').forEach(x=>
+      x.classList.toggle('active', x===el));
+  });
+});
+// 初始高亮
+(function(){
+  const savedET = localStorage.getItem('paiban-editor-theme') || 'light';
+  document.querySelectorAll('.side-item[data-editor-theme]').forEach(el=>
+    el.classList.toggle('active', el.dataset.editorTheme === savedET));
+  renderCustomDots();
+})();
+
+// ═══ 自定义编辑器配色 ═══
+const EC_PRESETS = [
+  {bg:'#ffffff', fg:'#383a42', accent:'#4f46e5'},
+  {bg:'#fdf6e3', fg:'#657b83', accent:'#268bd2'},
+  {bg:'#f5f5dc', fg:'#333333', accent:'#c0392b'},
+  {bg:'#0d1117', fg:'#c9d1d9', accent:'#58a6ff'},
+  {bg:'#1e1e1e', fg:'#d4d4d4', accent:'#569cd6'},
+  {bg:'#282a36', fg:'#f8f8f2', accent:'#bd93f9'},
+  {bg:'#1a1b26', fg:'#a9b1d6', accent:'#7aa2f7'},
+  {bg:'#2b2b2b', fg:'#a9b7c6', accent:'#cc7832'},
+];
+
+function openEditorCustom(){
+  const c = window.getCustomColors ? window.getCustomColors() : null;
+  $('ec-bg').value = c ? c.bg : '#ffffff';
+  $('ec-fg').value = c ? c.fg : '#383a42';
+  $('ec-accent').value = c ? c.accent : '#4f46e5';
+  // 预设色块
+  $('ec-presets').innerHTML = EC_PRESETS.map((p,i)=>
+    `<div title="预设${i+1}" style="width:30px;height:30px;border-radius:8px;cursor:pointer;border:2px solid #fff;box-shadow:0 0 0 1px var(--border2);background:${p.bg};"
+      onclick="applyPreset(${i})"></div>`).join('');
+  updateEcPreview();
+  $('ec-modal').classList.add('show');
+}
+function closeEditorCustom(){ $('ec-modal').classList.remove('show'); }
+function applyPreset(i){
+  const p = EC_PRESETS[i];
+  $('ec-bg').value = p.bg;
+  $('ec-fg').value = p.fg;
+  $('ec-accent').value = p.accent;
+  updateEcPreview();
+}
+function updateEcPreview(){
+  const bg = $('ec-bg').value, fg = $('ec-fg').value, accent = $('ec-accent').value;
+  const pv = $('ec-preview');
+  pv.style.background = bg;
+  pv.style.color = fg;
+  $('ec-preview-accent').style.color = accent;
+}
+function applyEditorCustom(){
+  const bg = $('ec-bg').value, fg = $('ec-fg').value, accent = $('ec-accent').value;
+  localStorage.setItem('paiban-editor-custom', JSON.stringify({bg, fg, accent}));
+  if(window.setEditorTheme) window.setEditorTheme('custom');
+  document.querySelectorAll('.side-item[data-editor-theme]').forEach(x=>
+    x.classList.toggle('active', x.dataset.editorTheme === 'custom'));
+  renderCustomDots();
+  closeEditorCustom();
+}
+function resetEditorCustom(){
+  localStorage.removeItem('paiban-editor-custom');
+  $('ec-bg').value = '#ffffff';
+  $('ec-fg').value = '#383a42';
+  $('ec-accent').value = '#4f46e5';
+  updateEcPreview();
+  if(window.setEditorTheme) window.setEditorTheme('light');
+  document.querySelectorAll('.side-item[data-editor-theme]').forEach(x=>
+    x.classList.toggle('active', x.dataset.editorTheme === 'light'));
+  renderCustomDots();
+  closeEditorCustom();
+}
+function renderCustomDots(){
+  const c = window.getCustomColors ? window.getCustomColors() : null;
+  const dots = $('custom-editor-dots');
+  if(c && (localStorage.getItem('paiban-editor-theme')==='custom')){
+    dots.innerHTML = `<span class="tdot" style="background:${c.bg};"></span><span class="tdot" style="background:${c.accent};"></span>`;
+  } else {
+    dots.innerHTML = `<span class="tdot" style="background:#fff;"></span><span class="tdot" style="background:#4f46e5;"></span>`;
+  }
+}
+['ec-bg','ec-fg','ec-accent'].forEach(id=>{
+  $(id).addEventListener('input', updateEcPreview);
+});
+
+// ═══ 自动保存 ═══
+let saveTimer;
+function autosave(){
+  $('save-state').textContent = '● 保存中…';
+  $('save-state').classList.remove('ok');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(()=>{
+    localStorage.setItem(AUTOSAVE_KEY, editor.value);
+    $('save-state').textContent = '● 自动保存';
+    $('save-state').classList.add('ok');
+  }, 600);
+}
+
+// ═══ 模板弹窗 ═══
+function showTemplates(){
+  $('tpl-list').innerHTML = TEMPLATES.map((t,i)=>`
+    <div class="tpl-item" onclick="applyTemplate(${i})">
+      <div class="tpl-name">${t.name}</div>
+      <div class="tpl-desc">${t.desc}</div>
+    </div>`).join('');
+  $('tpl-modal').classList.add('show');
+}
+function closeTemplates(){ $('tpl-modal').classList.remove('show'); }
+function applyTemplate(i){
+  editor.value = TEMPLATES[i].md;
+  syncEditor();
+  render();
+  closeTemplates();
+}
+
+// ═══ 组件插入 ═══
+const CHART_SAMPLES = {
+  bar: '```chart:bar\n批次,平均盈亏,方向\n08-06,+3.9,up\n08-10,+1.2,up\n08-12,-0.4,down\n```',
+  line: '```chart:line\n日期,数值\n08-01,100\n08-02,102\n08-03,101\n08-04,105\n```',
+  funnel: '```chart:funnel\n阶段,数量\n全市场,5482\n股票池,2722\n信号,1373\n入选,5\n```',
+};
+function insertChart(type){ insertAtCursor(CHART_SAMPLES[type]+'\n\n'); }
+function insertStats(){
+  insertAtCursor(':::stats\n持仓数|17|只\n胜率|61|%\n平均盈亏|+2.0|%\n亏损票金额占比|40|%\n:::\n\n');
+}
+function insertCallout(type){
+  const names = {info:'提示', warning:'注意', success:'完成', danger:'警告'};
+  insertAtCursor(`:::${type} ${names[type]}\n这里写内容\n:::\n\n`);
+}
+function insertAtCursor(text){
+  if(window.cm){
+    window.cm.replaceRange(text, window.cm.getCursor());
+    window.cm.focus();
+  } else {
+    editor.value += text;
+    render();
+    editor.focus();
+  }
+}
+function syncEditor(){
+  if(window.cm){
+    window.cm.setValue(editor.value);
+  }
+}
+
+// ═══ 图片 ═══
+$('img-input').addEventListener('change', e=>{
+  const f = e.target.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    insertAtCursor(`![${f.name}](${reader.result})\n\n`);
+    flashStatus('图片已插入');
+  };
+  reader.readAsDataURL(f);
+  e.target.value = '';
+});
+function uploadImage(){ $('img-input').click(); }
+
+// ═══ 导出 ═══
+function exportMd(){
+  const blob = new Blob([editor.value], {type:'text/markdown'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = ($('doc-title').value || 'article') + '.md';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ═══ 复制到公众号 ═══
+const INLINE_PROPS = ['font-size','font-weight','font-style','color','background-color','border-left','border-bottom',
+  'border-top','border-right','border-radius','padding','padding-left','padding-right','padding-top',
+  'padding-bottom','margin','margin-top','margin-bottom','margin-left','margin-right','text-align',
+  'line-height','border-collapse','border','text-decoration','letter-spacing','max-width','display'];
+
+function styleElement(el){
+  const cs = getComputedStyle(el);
+  let style = '';
+  for(const p of INLINE_PROPS){
+    const v = cs.getPropertyValue(p);
+    if(v && v !== 'normal' && v !== 'none' && v !== '0px' && v !== 'auto'){
+      style += `${p}:${v};`;
+    }
+  }
+  if(style) el.setAttribute('style', style);
+  el.removeAttribute('class');
+  el.removeAttribute('id');
+}
+
+async function copyToWechat(){
+  flashStatus('生成中…');
+  await new Promise(r=>setTimeout(r,100));
+
+  const container = document.createElement('div');
+  container.className = previewWrap.className;
+  container.style.cssText = 'position:absolute;left:-99999px;top:0;';
+  const inner = document.createElement('div');
+  inner.className = 'preview';
+  inner.innerHTML = preview.innerHTML;
+  container.appendChild(inner);
+  document.body.appendChild(container);
+
+  const chartEls = Array.from(preview.querySelectorAll('.chart-block'));
+  const innerCharts = Array.from(inner.querySelectorAll('.chart-block'));
+  innerCharts.forEach((el, i)=>{
+    const src = chartEls[i] ? echarts.getInstanceByDom(chartEls[i]) : null;
+    if(src){
+      const url = src.getDataURL({type:'png', pixelRatio:2, backgroundColor:'#fff'});
+      el.innerHTML = `<img src="${url}" style="max-width:100%;">`;
+    }
+  });
+
+  inner.querySelectorAll('*').forEach(el=>styleElement(el));
+  const html = inner.innerHTML;
+  document.body.removeChild(container);
+
+  try{
+    const blob = new Blob([html], {type:'text/html'});
+    await navigator.clipboard.write([new ClipboardItem({'text/html': blob})]);
+    flashStatus('✓ 已复制，去公众号编辑器 Ctrl+V 粘贴');
+  }catch(e){
+    await navigator.clipboard.writeText(editor.value);
+    flashStatus('已复制（纯文本降级）');
+  }
+}
+
+function flashStatus(text){
+  status.textContent = text;
+  setTimeout(()=>status.textContent='', 5000);
+}
+
+// ═══ 数据助手 ═══
+const DA_SAMPLE = `代码,名称,成本,现价,买入金额,选股日
+300835,龙磁科技,142.08,166.80,15000,08-06
+301630,同宇新材,166.20,176.80,18000,08-06
+300557,理工光科,25.84,26.74,53000,08-06
+300657,弘信电子,35.27,36.31,29000,08-06
+603118,共进股份,14.68,17.56,26000,08-10
+600601,方正科技,13.22,12.66,22000,08-10
+600988,赤峰黄金,43.73,39.78,20000,08-10
+002897,意华股份,58.09,59.98,23000,08-12
+301603,乔锋智能,126.01,129.10,13000,08-12
+600733,北汽蓝谷,5.57,5.30,48000,08-12`;
+
+let parsedData = null;
+
+function showDataAssistant(){
+  if(!$('da-input').value) $('da-input').value = DA_SAMPLE;
+  $('da-modal').classList.add('show');
+}
+function closeDataAssistant(){ $('da-modal').classList.remove('show'); }
+function loadSampleData(){ $('da-input').value = DA_SAMPLE; parseData(); }
+
+function parseData(){
+  const raw = $('da-input').value.trim();
+  if(!raw){ $('da-preview').textContent = '请先粘贴数据'; return null; }
+  const lines = raw.split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows = [];
+  for(const line of lines){
+    const cols = line.split(/[\t,，]+/).map(s=>s.trim());
+    if(cols.length < 3) continue;
+    if(!/^\d{6}$/.test(cols[0])) continue;
+    const code = cols[0], name = cols[1] || '';
+    const cost = parseFloat(cols[2]), last = parseFloat(cols[3]);
+    const amt = cols.length > 4 ? parseFloat(cols[4]) : null;
+    const date = cols.length > 5 ? cols[5] : '';
+    if(isNaN(cost) || isNaN(last) || cost <= 0) continue;
+    rows.push({code, name, cost, last, amt, date,
+      pnl: (last-cost)/cost*100,
+      profit: (amt !== null && !isNaN(amt)) ? amt*(last-cost)/cost : null});
+  }
+  if(!rows.length){ $('da-preview').textContent = '未解析到有效数据'; return null; }
+
+  const groups = {};
+  for(const r of rows){ (groups[r.date||'未分组'] = groups[r.date||'未分组'] || []).push(r); }
+  const win = rows.filter(r=>r.pnl>0).length;
+  const avg = rows.reduce((s,r)=>s+r.pnl,0)/rows.length;
+  const lossAmt = rows.filter(r=>r.pnl<0).reduce((s,r)=>s+(r.amt||0),0);
+  const totalAmt = rows.reduce((s,r)=>s+(r.amt||0),0);
+
+  parsedData = {rows, groups, stats:{n:rows.length, win, avg, lossPct: totalAmt? lossAmt/totalAmt*100 : 0, totalAmt}};
+
+  let html = `<b>✓ 解析成功：${rows.length} 只，${Object.keys(groups).length} 个批次</b> · 胜率 ${win}/${rows.length} · 平均 ${avg>=0?'+':''}${avg.toFixed(1)}%<br>`;
+  for(const [d, rs] of Object.entries(groups)){
+    const a = rs.reduce((s,r)=>s+r.pnl,0)/rs.length;
+    html += `【${d}】${rs.length}只 平均${a>=0?'+':''}${a.toFixed(1)}% &nbsp; `;
+  }
+  $('da-preview').innerHTML = html;
+  return parsedData;
+}
+
+function insertGeneratedArticle(){
+  const data = parseData() || parsedData;
+  if(!data) return;
+  const {rows, groups, stats} = data;
+  let md = '';
+  md += `:::stats\n持仓数|${stats.n}|只\n胜率|${(stats.win/stats.n*100).toFixed(0)}|%\n平均盈亏|${stats.avg>=0?'+':''}${stats.avg.toFixed(1)}|%\n亏损票金额占比|${stats.lossPct.toFixed(0)}|%\n:::\n\n`;
+
+  for(const [d, rs] of Object.entries(groups)){
+    const a = rs.reduce((s,r)=>s+r.pnl,0)/rs.length;
+    const w = rs.filter(r=>r.pnl>0).length;
+    const sorted = [...rs].sort((x,y)=>y.pnl-x.pnl);
+    md += `### ${d} 批次 · ${rs.length}只 · 平均 ${a>=0?'+':''}${a.toFixed(1)}%（${w}/${rs.length}只盈利）\n\n`;
+    md += `| 股票 | 买入金额 | 现价 | 盈亏 | 盈利金额 |\n|------|---------|------|------|----------|\n`;
+    for(const r of sorted){
+      const amtS = r.amt ? (r.amt/10000).toFixed(1)+'万' : '-';
+      const pS = `**${r.pnl>=0?'+':''}${r.pnl.toFixed(1)}%**`;
+      const pfS = r.profit!==null ? `${r.profit>=0?'+':''}${Math.round(r.profit).toLocaleString()}元` : '-';
+      md += `| ${r.name} ${r.code} | ${amtS} | ${r.last.toFixed(2)} | ${pS} | ${pfS} |\n`;
+    }
+    md += '\n';
+  }
+
+  md += `\`\`\`chart:bar\n批次,平均盈亏,方向\n`;
+  for(const [d, rs] of Object.entries(groups)){
+    const a = rs.reduce((s,r)=>s+r.pnl,0)/rs.length;
+    md += `${d},${a.toFixed(1)},${a>=0?'up':'down'}\n`;
+  }
+  md += `\`\`\`\n\n`;
+
+  insertAtCursor(md);
+  closeDataAssistant();
+  flashStatus('复盘文章已插入');
+}
+
+// ═══ 启动 ═══
+const saved = localStorage.getItem(AUTOSAVE_KEY);
+editor.value = saved || SAMPLE;
+applyTheme(localStorage.getItem('paiban-theme') || 'light');
+render();
+editor.addEventListener('input', ()=>{render(); autosave();});
+$('pnl-toggle').addEventListener('change', render);
+$('doc-title').addEventListener('input', ()=>localStorage.setItem('paiban-doc-title', $('doc-title').value));
+$('doc-title').value = localStorage.getItem('paiban-doc-title') || '';
+</script>
+
+<!-- CodeMirror 5 (本地文件, 无CDN依赖, 配色CSS变量驱动) -->
+<script src="/static/codemirror/lib/codemirror.min.js"></script>
+<script src="/static/codemirror/mode/markdown/markdown.min.js"></script>
+<script>
+(function(){
+  const host = document.getElementById('editor-host');
+  const ta = document.getElementById('editor');
+
+  // 预设配色 (bg, fg, accent)
+  const EDITOR_PALETTES = {
+    'light':       ['#ffffff', '#383a42', '#4f46e5'],
+    'github-dark': ['#0d1117', '#c9d1d9', '#58a6ff'],
+    'dracula':     ['#282a36', '#f8f8f2', '#bd93f9'],
+    'tokyo':       ['#1a1b26', '#a9b1d6', '#7aa2f7'],
+    'solarized':   ['#fdf6e3', '#657b83', '#268bd2'],
+  };
+
+  function getCustomColors(){
+    try{ return JSON.parse(localStorage.getItem('paiban-editor-custom') || 'null'); }
+    catch(e){ return null; }
+  }
+  function hexLum(hex){
+    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+    return (0.299*r + 0.587*g + 0.114*b) / 255;
+  }
+
+  // 初始化 CodeMirror 5
+  window.cm = CodeMirror.fromTextArea(ta, {
+    mode: 'markdown',
+    lineNumbers: true,
+    lineWrapping: true,
+    styleActiveLine: true,
+  });
+  window.cm.on('change', function(){
+    window.cm.save();            // 同步到 textarea (render 读取 ta.value)
+    window.render();
+    window.autosave();
+  });
+
+  // 切换编辑器配色: 设置 CSS 变量
+  window.setEditorTheme = function(name){
+    let palette = EDITOR_PALETTES[name];
+    if(name === 'custom'){
+      const c = getCustomColors();
+      if(c) palette = [c.bg, c.fg, c.accent];
+    }
+    if(!palette) palette = EDITOR_PALETTES['light'];
+    const dark = hexLum(palette[0]) < 0.5;
+    host.style.setProperty('--ed-bg', palette[0]);
+    host.style.setProperty('--ed-fg', palette[1]);
+    host.style.setProperty('--ed-accent', palette[2]);
+    host.style.setProperty('--ed-border', dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)');
+    host.style.setProperty('--ed-sel', dark ? 'rgba(255,255,255,0.14)' : 'rgba(79,70,229,0.16)');
+    host.style.setProperty('--ed-active', dark ? 'rgba(255,255,255,0.05)' : 'rgba(79,70,229,0.04)');
+    host.classList.toggle('dark', dark);
+    localStorage.setItem('paiban-editor-theme', name);
+  };
+  window.getCustomColors = getCustomColors;
+
+  // 应用保存的配色
+  window.setEditorTheme(localStorage.getItem('paiban-editor-theme') || 'light');
+})();
+</script>
+
+<!-- 分栏拖动 -->
+<script>
+(function(){
+  const divider = document.getElementById('divider');
+  const editorPane = document.getElementById('editor-pane');
+  const main = document.querySelector('.main');
+  const sidebar = document.querySelector('.sidebar');
+  let dragging = false;
+
+  divider.addEventListener('mousedown', e=>{
+    dragging = true;
+    divider.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e=>{
+    if(!dragging) return;
+    const rect = main.getBoundingClientRect();
+    const sideW = sidebar.getBoundingClientRect().width;
+    let w = e.clientX - rect.left - sideW - 4.5;
+    w = Math.max(300, Math.min(w, rect.width - sideW - 380));
+    editorPane.style.flex = '0 0 ' + w + 'px';
+    localStorage.setItem('paiban-editor-w', w);
+  });
+  window.addEventListener('mouseup', ()=>{
+    if(!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+  const savedW = parseFloat(localStorage.getItem('paiban-editor-w'));
+  if(savedW && savedW > 200 && savedW < window.innerWidth * 0.65){
+    editorPane.style.flex = '0 0 ' + savedW + 'px';
+  } else {
+    localStorage.removeItem('paiban-editor-w');
+  }
+})();
+</script>
+</body>
+</html>

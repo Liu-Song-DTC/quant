@@ -23,10 +23,10 @@ CONFIG_PATH = os.path.join(_SCRIPT_DIR, 'config', 'factor_config.yaml')
 CONFIG_BAK = CONFIG_PATH + '.live_bak'
 
 
-def update_market_data(target_date: str):
-    """Step 1: 增量更新行情数据 + 宏观数据."""
+def update_kline_data():
+    """更新K线行情数据 (data_manager.py: 下载raw + 转换backtrader)."""
     print("=" * 60)
-    print("Step 1/3: 更新行情数据")
+    print("Step 1a: 更新K线行情数据")
     print("=" * 60)
     result = subprocess.run(
         [_VENV_PYTHON, os.path.join(_PROJECT_DIR, 'data', 'data_manager.py')],
@@ -34,11 +34,15 @@ def update_market_data(target_date: str):
         capture_output=False,
     )
     if result.returncode != 0:
-        print("[WARN] 数据更新失败, 继续使用本地缓存...")
+        print("[WARN] K线数据更新失败, 继续使用本地缓存...")
 
-    # 宏观数据更新 (subprocess避免akshare import卡住主进程)
+
+def update_macro_data():
+    """更新宏观数据 + 另类数据 (akshare, 积分消耗极低)."""
+    print("=" * 60)
+    print("Step 1b: 更新宏观/另类数据")
+    print("=" * 60)
     try:
-        print("  更新宏观数据...")
         macro_script = os.path.join(_SCRIPT_DIR, 'core', 'macro_data.py')
         result = subprocess.run(
             [_VENV_PYTHON, macro_script, 'download'],
@@ -82,6 +86,13 @@ def generate_signals():
     print("=" * 60)
     print("Step 2/3: 生成信号 (bt_execution.py)")
     print("=" * 60)
+
+    # 实盘必须重新生成: 删除旧信号文件, 强制 bt_execution 重新计算
+    _signals_csv = os.path.join(_SCRIPT_DIR, 'rolling_validation_results', 'backtest_signals.csv')
+    if os.path.exists(_signals_csv):
+        os.remove(_signals_csv)
+        print(f"  已删除旧信号文件, 强制重新生成")
+
     result = subprocess.run(
         [_VENV_PYTHON, os.path.join(_SCRIPT_DIR, 'bt_execution.py')],
         cwd=_SCRIPT_DIR,
@@ -131,7 +142,7 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     if test_code and signal_store.get(test_code, target_date) is None:
         # 回退到信号中最新日期
         sig_df = pd.read_csv(SIGNALS_CSV, usecols=['date'])
-        latest_sig_date = pd.Timestamp(sig_df['date'].max()).date()
+        latest_sig_date = pd.Timestamp(sig_df['date'].max()).strftime('%Y-%m-%d')
         del sig_df
         print(f"  目标日期 {target_date} 无信号, 回退到 {latest_sig_date}")
         target_date = latest_sig_date
@@ -243,6 +254,14 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
                   f"weight={sel.get('weight', 0):.3f}  "
                   f"industry={sel.get('industry', '')}")
 
+    # ── K线画图 ──────────────────────────────────────────
+    try:
+        from live_chart import generate_position_charts
+        print(f"\n生成K线图...")
+        generate_position_charts(ORDERS_FILE, POSITIONS_FILE, target_date)
+    except Exception as e:
+        print(f"  [WARN] K线图生成失败: {e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description='实盘选股一键执行')
@@ -251,7 +270,7 @@ def main():
     parser.add_argument('--cash', type=float, default=300000.0,
                         help='总资金 (默认: 300000)')
     parser.add_argument('--skip-data', action='store_true',
-                        help='跳过数据更新')
+                        help='跳过K线数据更新(用xtquant已下载的数据), 宏观/另类照常更新')
     parser.add_argument('--skip-signals', action='store_true',
                         help='跳过信号生成 (用已有信号)')
     parser.add_argument('--dry-run', action='store_true',
@@ -267,9 +286,10 @@ def main():
 
     # ── Step 1: 更新数据 ──────────────────────────────────
     if not args.skip_data:
-        update_market_data(target_date)
+        update_kline_data()
     else:
-        print("跳过数据更新")
+        print("跳过K线数据更新 (使用 xtquant 已下载的数据)")
+    update_macro_data()
 
     # ── Step 2: 生成信号 ──────────────────────────────────
     if not args.skip_signals:

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080">
+<title>量化选股 · 每日展示</title>
+<style>
+  :root{
+    --bg:#0a0e14; --card:#121826; --card2:#0e1420; --border:#232c3d;
+    --text:#e8eef5; --dim:#7d8ba1; --red:#f0475a; --green:#2fd08c;
+    --blue:#4da3ff; --gold:#f5b84d;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
+    width:1080px;margin:0 auto;padding:0 0 60px;}
+
+  /* ═══ 头部 ═══ */
+  .hero{padding:44px 40px 30px;background:linear-gradient(160deg,#101826 0%,#0a0e14 70%);
+    border-bottom:1px solid var(--border);}
+  .brand{display:flex;align-items:center;gap:14px;}
+  .logo{width:46px;height:46px;border-radius:12px;background:linear-gradient(135deg,var(--blue),#7c5cff);
+    display:flex;align-items:center;justify-content:center;font-size:24px;}
+  .brand-name{font-size:22px;font-weight:700;letter-spacing:1px;}
+  .brand-sub{font-size:12.5px;color:var(--dim);margin-top:3px;letter-spacing:2px;}
+  .hero-date{margin-left:auto;text-align:right;font-size:15px;color:var(--dim);}
+  .hero-date b{display:block;font-size:26px;color:#fff;margin-top:2px;}
+
+  .hero-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-top:26px;}
+  .hstat{background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:16px 20px;}
+  .hstat .k{font-size:12px;color:var(--dim);margin-bottom:6px;letter-spacing:1px;}
+  .hstat .v{font-size:26px;font-weight:700;color:#fff;}
+  .v.up{color:var(--red);} .v.down{color:var(--green);} .v.gold{color:var(--gold);}
+
+  /* ═══ 通用 ═══ */
+  .section{padding:34px 40px 6px;}
+  .sec-title{display:flex;align-items:center;gap:10px;margin-bottom:18px;}
+  .sec-title .bar{width:4px;height:20px;border-radius:2px;background:linear-gradient(180deg,var(--blue),#7c5cff);}
+  .sec-title h2{font-size:19px;font-weight:700;letter-spacing:1px;}
+  .sec-title .desc{font-size:12.5px;color:var(--dim);margin-left:6px;}
+
+  /* ═══ 今日选股卡片 ═══ */
+  .pick-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  .pick-card{background:var(--card);border:1px solid var(--border);border-radius:14px;
+    padding:18px 20px;position:relative;overflow:hidden;}
+  .pick-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;
+    background:linear-gradient(90deg,var(--blue),#7c5cff);}
+  .pick-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px;}
+  .pick-name{font-size:17px;font-weight:700;color:#fff;}
+  .pick-code{font-size:12px;color:var(--dim);font-family:monospace;}
+  .pick-amt{font-size:11.5px;color:var(--dim);margin-bottom:14px;letter-spacing:0.5px;}
+  .pick-amt b{color:var(--gold);font-weight:600;}
+  .pick-levels{display:flex;flex-direction:column;gap:8px;}
+  .lv{display:flex;justify-content:space-between;align-items:center;font-size:13px;
+    padding:7px 12px;border-radius:8px;background:var(--card2);}
+  .lv .k{color:var(--dim);font-size:12px;}
+  .lv .v{font-weight:700;font-family:monospace;font-size:14px;}
+  .lv-stop .v{color:var(--red);}
+  .lv-tp .v{color:var(--green);}
+  .lv-rr .v{color:var(--gold);}
+
+  /* ═══ 持仓表 ═══ */
+  .pos-table{width:100%;border-collapse:collapse;background:var(--card);
+    border:1px solid var(--border);border-radius:14px;overflow:hidden;}
+  .pos-table th{background:var(--card2);color:var(--dim);font-size:12.5px;font-weight:500;
+    text-align:left;padding:13px 16px;border-bottom:1px solid var(--border);letter-spacing:1px;}
+  .pos-table td{padding:12px 16px;font-size:14px;border-bottom:1px solid #1a2130;}
+  .pos-table tr:last-child td{border-bottom:none;}
+  .pos-table tr:hover td{background:rgba(77,163,255,0.04);}
+  .pos-name{font-weight:600;color:#fff;}
+  .pos-code{font-size:11.5px;color:var(--dim);font-family:monospace;display:block;margin-top:2px;}
+  .pnl{font-weight:700;font-family:monospace;font-size:14.5px;}
+  .pnl.pos{color:var(--red);} .pnl.neg{color:var(--green);}
+  .pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11.5px;font-weight:600;}
+  .pill-win{background:rgba(47,208,140,0.12);color:var(--green);}
+  .pill-lose{background:rgba(240,71,90,0.12);color:var(--red);}
+  .pill-hold{background:rgba(245,184,77,0.12);color:var(--gold);}
+
+  /* ═══ 批次条形 ═══ */
+  .batch-row{display:flex;align-items:center;gap:14px;background:var(--card);
+    border:1px solid var(--border);border-radius:12px;padding:13px 18px;margin-bottom:10px;}
+  .batch-date{font-size:14px;font-weight:700;min-width:86px;font-family:monospace;white-space:nowrap;}
+  .batch-bar-wrap{flex:1;height:26px;background:var(--card2);border-radius:6px;position:relative;overflow:hidden;}
+  .batch-bar{position:absolute;top:0;bottom:0;left:0;border-radius:6px;
+    display:flex;align-items:center;padding:0 10px;font-size:12.5px;font-weight:700;color:#fff;
+    min-width:44px;justify-content:flex-end;}
+  .batch-meta{font-size:12px;color:var(--dim);width:120px;text-align:right;white-space:nowrap;}
+
+  /* ═══ 批次分组明细 ═══ */
+  .batch-group{margin-bottom:18px;}
+  .batch-head{display:flex;align-items:center;gap:12px;padding:10px 16px;
+    background:var(--card2);border:1px solid var(--border);border-radius:12px 12px 0 0;}
+  .batch-head .d{font-family:monospace;font-size:14.5px;font-weight:700;color:#fff;}
+  .batch-head .avg{font-family:monospace;font-size:13.5px;font-weight:700;}
+  .batch-head .spacer{flex:1;}
+  .stock-table{width:100%;border-collapse:collapse;background:var(--card);
+    border:1px solid var(--border);border-top:none;border-radius:0 0 12px 12px;overflow:hidden;}
+  .stock-table th{background:var(--card);color:var(--dim);font-size:11.5px;font-weight:500;
+    text-align:left;padding:9px 14px;border-bottom:1px solid var(--border);letter-spacing:1px;}
+  .stock-table td{padding:10px 14px;font-size:13.5px;border-bottom:1px solid #1a2130;}
+  .stock-table tr:last-child td{border-bottom:none;}
+  .stock-name{font-weight:600;color:#fff;}
+  .stock-code{font-size:11px;color:var(--dim);font-family:monospace;display:block;margin-top:1px;}
+  .profit-amt{font-family:monospace;font-weight:700;font-size:13.5px;}
+  .profit-amt.pos{color:var(--red);} .profit-amt.neg{color:var(--green);}
+
+  /* ═══ 底部 ═══ */
+  .footer{margin-top:40px;padding:20px 40px 0;border-top:1px solid var(--border);
+    display:flex;justify-content:space-between;align-items:center;}
+  .footer .note{font-size:11.5px;color:var(--dim);line-height:1.8;}
+  .footer .qr{width:74px;height:74px;border-radius:10px;background:var(--card);
+    border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+    font-size:11px;color:var(--dim);text-align:center;}
+
+  /* 截图模式: 隐藏提示条 */
+  .shotbar{background:rgba(245,184,77,0.08);border:1px solid rgba(245,184,77,0.3);
+    color:var(--gold);font-size:12.5px;padding:10px 40px;display:flex;gap:10px;align-items:center;}
+  .shotbar button{background:var(--gold);border:none;color:#1a1a1a;font-size:12px;font-weight:600;
+    padding:5px 14px;border-radius:6px;cursor:pointer;font-family:inherit;}
+  body.shot .shotbar{display:none;}
+</style>
+</head>
+<body>
+
+<!-- 截图提示条 (截图模式自动隐藏) -->
+<div class="shotbar">
+  <span>📸 截图到公众号文章：点按钮隐藏本提示条后截图 (建议浏览器缩放 100%，用截图工具整页截图或分段截图)</span>
+  <button onclick="document.body.classList.toggle('shot')">进入截图模式</button>
+</div>
+
+<!-- ═══ HERO ═══ -->
+<div class="hero">
+  <div class="brand">
+    <div class="logo">📊</div>
+    <div>
+      <div class="brand-name">量化选股 · 每日复盘</div>
+      <div class="brand-sub">QUANT STOCK SELECTION · DAILY REVIEW</div>
+    </div>
+    <div class="hero-date">
+      数据截至
+      <b id="hero-date">-</b>
+    </div>
+  </div>
+  <div class="hero-stats">
+    <div class="hstat"><div class="k">上证指数</div><div class="v" id="s-idx">-</div></div>
+    <div class="hstat"><div class="k">今日涨跌</div><div class="v" id="s-chg">-</div></div>
+    <div class="hstat"><div class="k">当前持仓</div><div class="v" id="s-posn">-</div></div>
+    <div class="hstat"><div class="k">平均盈亏</div><div class="v gold" id="s-avg">-</div></div>
+    <div class="hstat"><div class="k">亏损票金额占比</div><div class="v" id="s-lossamt">-</div></div>
+  </div>
+</div>
+
+<!-- ═══ 今日选股 ═══ -->
+<div class="section">
+  <div class="sec-title">
+    <div class="bar"></div>
+    <h2>今日新入选</h2>
+    <span class="desc" id="picks-desc"></span>
+  </div>
+  <div class="pick-grid" id="pick-grid"></div>
+</div>
+
+<!-- ═══ 持仓表现 ═══ -->
+<div class="section">
+  <div class="sec-title">
+    <div class="bar"></div>
+    <h2>各批次5日表现</h2>
+    <span class="desc">调仓周期5个交易日 · 成本 = 选股日收盘价</span>
+  </div>
+  <div id="pos-body"></div>
+</div>
+
+<!-- ═══ 批次表现 ═══ -->
+<div class="section">
+  <div class="sec-title">
+    <div class="bar"></div>
+    <h2>历次选股表现</h2>
+    <span class="desc">按选股日分批统计</span>
+  </div>
+  <div id="batch-list"></div>
+</div>
+
+<!-- ═══ 底部 ═══ -->
+<div class="footer">
+  <div class="note">
+    本图由量化选股系统自动生成 · 仅供学习交流，不构成任何投资建议<br>
+    股市有风险，入市需谨慎
+  </div>
+  <div class="qr">关注<br>公众号</div>
+</div>
+
+<script>
+async function load(){
+  const r = await fetch('/api/media/overview');
+  const d = await r.json();
+  render(d);
+}
+function fmtPx(v){
+  if(v===null||v===undefined) return '-';
+  if(v<10) return v.toFixed(3);
+  if(v<100) return v.toFixed(2);
+  return v.toFixed(1);
+}
+
+function render(d){
+  const m = d.market;
+  if(m){
+    document.getElementById('hero-date').textContent = m.date;
+    document.getElementById('s-idx').textContent = m.close.toFixed(2);
+    const chg = document.getElementById('s-chg');
+    chg.textContent = (m.chg>=0?'+':'')+m.chg.toFixed(2)+'%';
+    chg.className = 'v ' + (m.chg>=0?'up':'down');
+  }
+
+  // 今日选股
+  const pg = document.getElementById('pick-grid');
+  document.getElementById('picks-desc').textContent =
+    d.orders_date ? '（'+d.orders_date+'）' : '';
+  if(d.opens && d.opens.length){
+    pg.innerHTML = d.opens.map(o=>{
+      const rr = (o.entry!==undefined && o.stop_loss && o.take_profit)
+        ? ((o.take_profit-o.entry)/(o.entry-o.stop_loss)).toFixed(1) : null;
+      return `<div class="pick-card">
+        <div class="pick-head">
+          <span class="pick-name">${o.name||o.code}</span>
+          <span class="pick-code">${o.code}</span>
+        </div>
+        <div class="pick-amt">计划买入 <b>${(o.amount/10000).toFixed(1)} 万</b></div>
+        <div class="pick-levels">
+          <div class="lv lv-stop"><span class="k">止损位</span><span class="v">${fmtPx(o.stop_loss)}</span></div>
+          <div class="lv lv-tp"><span class="k">止盈位</span><span class="v">${fmtPx(o.take_profit)}</span></div>
+          ${rr?`<div class="lv lv-rr"><span class="k">盈亏比</span><span class="v">1 : ${rr}</span></div>`:''}
+        </div>
+      </div>`;
+    }).join('');
+  }else{
+    pg.innerHTML = '<div style="grid-column:1/-1;color:var(--dim);padding:30px;text-align:center;background:var(--card);border:1px solid var(--border);border-radius:14px;">今日无新选股票</div>';
+  }
+
+  // 持仓: 按选股日批次分组汇总 (截图版不逐只展示, 细节在工作台)
+  const pos = [...d.positions].sort((a,b)=>(b.pnl??-999)-(a.pnl??-999));
+  document.getElementById('s-posn').textContent = pos.length+'只';
+  document.getElementById('s-avg').textContent =
+    d.total.n ? (d.total.avg>=0?'+':'')+d.total.avg.toFixed(2)+'%' : '-';
+  const la = document.getElementById('s-lossamt');
+  la.textContent = (d.total.loss_amt_pct??0) + '%';
+  la.className = 'v ' + ((d.total.loss_amt_pct??100) < 30 ? 'down' : '');
+
+  // 按批次分组 (5日跟踪窗口), 每批展示个股明细: 股票/买入金额/5日盈亏/盈利金额
+  const groups = {};
+  for(const p of pos){
+    if(p.pnl===null) continue;
+    (groups[p.sel_date] = groups[p.sel_date] || []).push(p);
+  }
+  const tb = document.getElementById('pos-body');
+  const blocks = [];
+  const dates = Object.keys(groups).sort();
+  for(const date of dates){
+    const ps = groups[date].sort((a,b)=>(b.pnl??-999)-(a.pnl??-999));
+    const avg = ps.reduce((s,p)=>s+p.pnl,0)/ps.length;
+    const win = ps.filter(p=>p.pnl>0).length;
+    const amt = ps.reduce((s,p)=>s+(p.amount||0),0);
+    const days = Math.max(...ps.map(p=>p.days_elapsed||0));
+    const done = ps.every(p=>p.done);
+    const prog = done
+      ? '<span class="pill pill-win">已完成</span>'
+      : `<span class="pill pill-hold">第${days}/5天</span>`;
+    const rows = ps.map(p=>{
+      const profitAmt = p.amount ? (p.amount * p.pnl / 100).toFixed(0) : '-';
+      const pc = p.pnl>=0 ? 'pos' : 'neg';
+      return `<tr>
+        <td><span class="stock-name">${p.name||p.code}</span><span class="stock-code">${p.code}</span></td>
+        <td style="font-family:monospace;">${p.amount? (p.amount/10000).toFixed(1)+'万' : '-'}</td>
+        <td><span class="pnl ${pc}">${p.pnl>=0?'+':''}${p.pnl.toFixed(1)}%</span></td>
+        <td><span class="profit-amt ${pc}">${profitAmt!=='-' ? (p.pnl>=0?'+':'')+Number(profitAmt).toLocaleString()+'元' : '-'}</span></td>
+      </tr>`;
+    }).join('');
+    blocks.push(`<div class="batch-group">
+      <div class="batch-head">
+        <span class="d">${date} 批次</span>
+        <span style="font-size:12px;color:var(--dim);">${ps.length}只 · 投入${(amt/10000).toFixed(1)}万</span>
+        ${prog}
+        <span class="spacer"></span>
+        <span style="font-size:12px;color:var(--dim);">胜${win}/${ps.length}</span>
+        <span class="avg ${avg>=0?'pnl-pos':'pnl-neg'}" style="color:${avg>=0?'var(--red)':'var(--green)'};">平均 ${avg>=0?'+':''}${avg.toFixed(1)}%</span>
+      </div>
+      <table class="stock-table">
+        <thead><tr><th>股票</th><th>买入金额</th><th>5日盈亏</th><th>盈利金额</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`);
+  }
+  tb.innerHTML = blocks.join('');
+
+  // 批次条形图
+  const bl = document.getElementById('batch-list');
+  if(d.batches && d.batches.length){
+    const maxAbs = Math.max(...d.batches.map(b=>Math.abs(b.avg)), 0.1);
+    bl.innerHTML = d.batches.map(b=>{
+      const w = Math.abs(b.avg)/maxAbs*100;
+      const color = b.avg>=0 ? 'var(--red)' : 'var(--green)';
+      const dir = b.avg>=0 ? 'left' : 'right';
+      return `<div class="batch-row">
+        <div class="batch-date">${b.date}</div>
+        <div class="batch-bar-wrap" style="text-align:${dir};">
+          <div class="batch-bar" style="width:${w}%;background:${color};${dir}:0;${dir==='left'?'border-radius:6px 0 0 6px':'border-radius:0 6px 6px 0'};justify-content:${dir==='left'?'flex-start':'flex-end'};">${b.avg>=0?'+':''}${b.avg.toFixed(1)}%</div>
+        </div>
+        <div class="batch-meta">${b.n}只 · 胜${b.win}/${b.n} · 最好+${b.best.toFixed(1)}%</div>
+      </div>`;
+    }).join('');
+  }else{
+    bl.innerHTML = '<div style="color:var(--dim);">暂无数据</div>';
+  }
+}
+
+load();
+</script>
+</body>
+</html>

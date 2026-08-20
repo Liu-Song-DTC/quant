@@ -33,13 +33,11 @@ class FundamentalData:
                 fpath = os.path.join(self.data_path, f"{code}.csv")
                 if os.path.exists(fpath):
                     self._file_map[code] = fpath
-            print(f"基本面数据索引: {len(self._file_map)} 只股票（指定范围，惰性加载）")
         else:
             for f in os.listdir(self.data_path):
                 if f.endswith('.csv'):
                     code = f.replace('.csv', '')
                     self._file_map[code] = os.path.join(self.data_path, f)
-            print(f"基本面数据索引: {len(self._file_map)} 只股票（惰性加载）")
 
     def _load_stock(self, code):
         """按需加载单只股票的基本面CSV到缓存"""

@@ -212,7 +212,9 @@ class StockDataManager:
         # 3. 排除停牌股票
         if self.config["exclude_suspended"]:
             # 假设停牌股票成交量为0
-            filtered_df['volume'] = pd.to_numeric(filtered_df['volume'], errors='coerce').fillna(0)
+            filtered_df['volume'] = pd.to_numeric(
+                filtered_df['volume'].astype(str), errors='coerce'
+            ).fillna(0.0)
             mask = filtered_df['volume'] > 0
             filtered_df = filtered_df[mask]
             print(f"排除停牌股票后剩余: {len(filtered_df)}")
@@ -285,7 +287,7 @@ class StockDataManager:
                 st = _type_start('qfq')
                 start_date = st.strftime("%Y%m%d")
                 end_date = datetime.today().strftime("%Y%m%d")
-                if start_date >= end_date:
+                if start_date > end_date:
                     return None
                 print(f"下载 {symbol} 数据: {start_date} 到 {end_date}")
                 sh_index_df = self._retry_call(
@@ -341,7 +343,7 @@ class StockDataManager:
                 try:
                     type_start = _type_start('none')
                     start_date = type_start.strftime("%Y%m%d")
-                    if start_date < end_date:
+                    if start_date <= end_date:
                         time.sleep(random.uniform(0, base_sleep))
                         df_none = self._retry_call(
                             lambda: ef.stock.get_quote_history(
@@ -363,7 +365,7 @@ class StockDataManager:
                 try:
                     type_start = _type_start('qfq')
                     start_date = type_start.strftime("%Y%m%d")
-                    if start_date < end_date:
+                    if start_date <= end_date:
                         time.sleep(random.uniform(0, base_sleep))
                         df_qfq = self._retry_call(
                             lambda: ef.stock.get_quote_history(
@@ -385,7 +387,7 @@ class StockDataManager:
                 try:
                     type_start = _type_start('hfq')
                     start_date = type_start.strftime("%Y%m%d")
-                    if start_date < end_date:
+                    if start_date <= end_date:
                         time.sleep(random.uniform(0, base_sleep))
                         df_hfq = self._retry_call(
                             lambda: ef.stock.get_quote_history(
@@ -859,16 +861,22 @@ class StockDataManager:
             bt_last_date = None
             bt_tail = None
 
-            # ── 快速判断是否需要更新：只读raw和bt的尾部 ──
+            # ── 快速判断是否需要更新：只读raw尾部最后一行比较日期 ──
             if bt_file.exists():
                 try:
-                    # 读raw最后几行取最后日期
-                    raw_tail = pd.read_csv(data_file, nrows=5)
-                    raw_last_date = pd.to_datetime(raw_tail.iloc[-1].iloc[0])
-                    # 读bt最后几行取最后日期
+                    # 读bt获取最后日期（bt很小，全量读）
                     bt_tail = pd.read_csv(bt_file)
                     bt_tail['datetime'] = pd.to_datetime(bt_tail['datetime'])
                     bt_last_date = bt_tail['datetime'].max()
+                    # 读raw最后一行取最后日期（seek尾部，避免读全量）
+                    file_size = data_file.stat().st_size
+                    seek_back = min(512, file_size)
+                    with open(data_file, 'rb') as _f:
+                        _f.seek(file_size - seek_back)
+                        _tail_bytes = _f.read().decode('utf-8', errors='ignore')
+                    _tail_lines = [l for l in _tail_bytes.strip().split('\n') if l.strip()]
+                    raw_last_date = pd.to_datetime(_tail_lines[-1].split(',')[0]) if _tail_lines else pd.NaT
+                    raw_tail = None  # 后续增量追加时会重新全量读
                     # 无新增 → 跳过
                     if raw_last_date == bt_last_date or raw_last_date == pd.NaT:
                         skipped += 1

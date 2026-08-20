@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文章工作台 - 公众号复盘</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+<style>
+  :root {
+    --bg:#0f1117; --card:#161822; --border:#2a2d3a;
+    --text:#e0e0e0; --dim:#8888aa; --red:#ef5350; --green:#26a69a;
+    --blue:#42a5f5; --gold:#ffa726;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;min-height:100vh;}
+  .header{background:var(--card);border-bottom:1px solid var(--border);padding:14px 24px;
+    display:flex;justify-content:space-between;align-items:center;}
+  .header h1{font-size:20px;font-weight:600;color:#fff;}
+  .header .sub{color:var(--dim);font-size:13px;margin-top:2px;}
+  .header a{color:var(--blue);text-decoration:none;font-size:13px;}
+  .header a:hover{text-decoration:underline;}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;padding:16px 24px 0;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px 16px;}
+  .card .label{font-size:12px;color:var(--dim);margin-bottom:4px;}
+  .card .value{font-size:22px;font-weight:700;color:#fff;}
+  .value.up{color:var(--red);} .value.down{color:var(--green);}
+
+  .wrap{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px 24px;}
+  @media(max-width:1100px){.wrap{grid-template-columns:1fr;}}
+
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+  .panel-title{padding:10px 14px;font-size:13px;font-weight:600;color:var(--dim);
+    border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+  .panel-body{padding:10px;overflow-x:auto;}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{color:var(--dim);font-weight:500;text-align:left;padding:7px 8px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  td{padding:7px 8px;border-bottom:1px solid #1e2130;white-space:nowrap;}
+  tr:hover td{background:rgba(255,255,255,0.02);}
+  .pnl-up{color:var(--red);font-weight:600;}
+  .pnl-down{color:var(--green);font-weight:600;}
+  .tag{font-size:11px;padding:2px 8px;border-radius:3px;}
+  .tag-open{background:rgba(239,83,80,0.15);color:var(--red);}
+  .tag-adjust{background:rgba(255,167,38,0.15);color:var(--gold);}
+
+  .toolbar{display:flex;gap:10px;padding:0 24px 12px;flex-wrap:wrap;}
+  .btn{padding:9px 20px;border:1px solid var(--border);border-radius:6px;font-size:13px;
+    font-weight:500;cursor:pointer;color:var(--text);background:var(--card);font-family:inherit;transition:all .2s;}
+  .btn:hover:not(:disabled){background:#252838;border-color:#444;}
+  .btn:disabled{opacity:0.4;cursor:not-allowed;}
+  .btn-primary{background:var(--green);border-color:var(--green);color:#fff;}
+  .btn-primary:hover:not(:disabled){background:#2ecc71;}
+  .btn-blue{background:var(--blue);border-color:var(--blue);color:#fff;}
+  .btn-blue:hover:not(:disabled){background:#64b5f6;}
+  .btn-gold{background:var(--gold);border-color:var(--gold);color:#1a1a1a;}
+  .msg{font-size:12px;color:var(--dim);align-self:center;}
+  .msg.ok{color:var(--green);}
+  .msg.err{color:var(--red);}
+
+  /* 预览区 */
+  .preview-wrap{padding:0 24px 24px;}
+  .preview{background:#fff;border-radius:8px;padding:28px 20px;max-width:720px;margin:0 auto;
+    color:#333;font-size:15px;line-height:1.8;box-shadow:0 4px 24px rgba(0,0,0,0.35);}
+  .preview.wx{max-width:394px;padding:24px 18px;}  /* 公众号手机宽度预览 */
+
+  select.theme{padding:9px 12px;border:1px solid var(--border);border-radius:6px;
+    background:var(--card);color:var(--text);font-size:13px;cursor:pointer;font-family:inherit;}
+  select.theme:focus{outline:none;border-color:#444;}
+  .seg{display:flex;background:var(--card);border:1px solid var(--border);border-radius:6px;overflow:hidden;font-size:12.5px;}
+  .seg button{border:none;background:transparent;color:var(--dim);padding:8px 14px;cursor:pointer;font-family:inherit;}
+  .seg button:hover{color:var(--text);}
+  .seg button.on{background:var(--blue);color:#fff;}
+  .preview h1{font-size:22px;margin-bottom:12px;color:#111;}
+  .preview h2{font-size:18px;margin:24px 0 10px;color:#111;border-left:3px solid var(--blue);padding-left:8px;}
+  .preview h3{font-size:16px;margin:18px 0 8px;color:#222;}
+  .preview blockquote{border-left:3px solid #ddd;padding:6px 12px;color:#666;margin:10px 0;background:#f8f8f8;}
+  .preview table{border-collapse:collapse;margin:12px 0;font-size:14px;color:#333;}
+  .preview th{background:#f5f5f5;color:#333;font-weight:600;}
+  .preview td,.preview th{border:1px solid #ddd;padding:6px 10px;}
+  .preview img{max-width:100%;border-radius:6px;}
+  .preview strong{color:#111;}
+  .preview hr{border:none;border-top:1px solid #eee;margin:20px 0;}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>📝 文章工作台</h1>
+    <div class="sub">每日公众号复盘文章生成 · 选股数据 → 图表 → 文章 → 复制发布</div>
+  </div>
+  <div style="text-align:right;">
+    <div style="font-size:13px;color:#fff;" id="hdr-date">-</div>
+    <a href="/">← 返回实盘 Dashboard</a>
+  </div>
+</div>
+
+<!-- 市场概况 -->
+<div class="cards">
+  <div class="card"><div class="label">上证指数</div><div class="value" id="m-close">-</div></div>
+  <div class="card"><div class="label">今日涨跌</div><div class="value" id="m-chg">-</div></div>
+  <div class="card"><div class="label">近5日</div><div class="value" id="m-chg5">-</div></div>
+  <div class="card"><div class="label">持仓数</div><div class="value" id="m-posn">-</div></div>
+  <div class="card"><div class="label">整体胜率</div><div class="value" id="m-winrate">-</div></div>
+  <div class="card"><div class="label">平均盈亏</div><div class="value" id="m-avg">-</div></div>
+</div>
+
+<!-- 工具栏 -->
+<div class="toolbar" style="padding-top:14px;">
+  <button class="btn btn-blue" id="btn-charts" onclick="genCharts()">🎨 生成图表</button>
+  <button class="btn btn-primary" id="btn-article" onclick="genArticle()">✍️ 生成复盘文章</button>
+  <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--gold);cursor:pointer;">
+    <input type="checkbox" id="chk-compliance" checked>
+    合规模式（进行中持仓不写金额/价位）
+  </label>
+  <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--dim);cursor:pointer;">
+    主题
+    <select id="sel-theme" class="theme" onchange="onThemeChange(event)">
+      <option value="minimal" selected>极简商务</option>
+      <option value="eyecare">护眼绿</option>
+      <option value="fresh">清新蓝</option>
+    </select>
+  </label>
+  <button class="btn btn-gold" id="btn-copy-wxml" onclick="copyWxHtml()">🎨 复制公众号 HTML</button>
+  <button class="btn" id="btn-copy" onclick="copyMd()">📋 复制 Markdown</button>
+  <button class="btn" onclick="reloadAll()">🔄 刷新数据</button>
+  <span class="msg" id="msg"></span>
+</div>
+
+<!-- 数据面板 -->
+<div class="wrap">
+  <div>
+    <div class="panel">
+      <div class="panel-title">📈 今日新选股票 <span id="orders-date" style="font-weight:400;"></span></div>
+      <div class="panel-body"><table id="tbl-opens"></table></div>
+    </div>
+    <div class="panel" style="margin-top:14px;">
+      <div class="panel-title">📊 批次统计（成本=选股日收盘价）</div>
+      <div class="panel-body"><table id="tbl-batches"></table></div>
+    </div>
+  </div>
+  <div>
+    <div class="panel">
+      <div class="panel-title">💼 持仓表现</div>
+      <div class="panel-body" style="max-height:420px;overflow-y:auto;"><table id="tbl-positions"></table></div>
+    </div>
+  </div>
+</div>
+
+<!-- 预览 -->
+<div class="preview-wrap">
+  <div class="panel-title" style="border-radius:8px 8px 0 0;padding:8px 16px;background:var(--card);border:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+    <span>📄 文章预览 <span id="preview-name" style="font-weight:400;"></span></span>
+    <div class="seg" id="seg-mode">
+      <button type="button" id="mode-wx" class="on" onclick="setPreviewMode('wx')">公众号样式</button>
+      <button type="button" id="mode-md" onclick="setPreviewMode('md')">Markdown</button>
+    </div>
+  </div>
+  <div id="preview" class="preview wx" style="border-radius:0 0 8px 8px;">
+    <p style="color:#999;">点击"生成复盘文章"，即可在左侧以公众号样式预览排版，再点右上"复制公众号 HTML"直接粘贴到微信编辑器。</p>
+  </div>
+</div>
+
+<script>
+let overview = null;
+let articleMd = '';
+let articleHtml = '';
+let previewMode = 'wx';   // 'wx' 公众号样式 | 'md' markdown
+let curTheme = 'minimal';
+
+async function loadJSON(url){const r=await fetch(url);if(!r.ok)throw new Error(`${url}:${r.status}`);return r.json();}
+
+function fmtPx(v){
+  if(v===null||v===undefined) return '-';
+  if(v<10) return v.toFixed(3);
+  if(v<100) return v.toFixed(2);
+  return v.toFixed(1);
+}
+function pnlCell(p){
+  if(p===null||p===undefined) return '<td>-</td>';
+  const cls = p>=0?'pnl-up':'pnl-down';
+  return `<td class="${cls}">${p>=0?'+':''}${p.toFixed(1)}%</td>`;
+}
+
+function renderTables(){
+  if(!overview) return;
+  const m = overview.market;
+  if(m){
+    document.getElementById('hdr-date').textContent = '数据截至 ' + m.date;
+    document.getElementById('m-close').textContent = m.close.toFixed(2);
+    const chg = document.getElementById('m-chg');
+    chg.textContent = (m.chg>=0?'+':'')+m.chg.toFixed(2)+'%';
+    chg.className = 'value ' + (m.chg>=0?'up':'down');
+    const chg5 = document.getElementById('m-chg5');
+    chg5.textContent = (m.chg_5d>=0?'+':'')+m.chg_5d.toFixed(2)+'%';
+    chg5.className = 'value ' + (m.chg_5d>=0?'up':'down');
+  } else {
+    document.getElementById('hdr-date').textContent = '指数数据不可用';
+  }
+
+  // 今日选股
+  document.getElementById('orders-date').textContent =
+    overview.orders_date ? `（${overview.orders_date}）` : '';
+  let h = '<tr><th>代码</th><th>名称</th><th>动作</th><th>金额</th><th>止损</th><th>止盈</th></tr>';
+  if(overview.opens && overview.opens.length){
+    for(const o of overview.opens){
+      h += `<tr><td>${o.code}</td><td>${o.name||''}</td>`
+         + `<td><span class="tag tag-${o.action}">${o.action==='open'?'买入':'调整'}</span></td>`
+         + `<td>${(o.amount/10000).toFixed(1)}万</td><td>${fmtPx(o.stop_loss)}</td><td>${fmtPx(o.take_profit)}</td></tr>`;
+    }
+  } else {
+    h += '<tr><td colspan="6" style="color:var(--dim);">今日无新选股票</td></tr>';
+  }
+  document.getElementById('tbl-opens').innerHTML = h;
+
+  // 批次统计
+  h = '<tr><th>选股日</th><th>数量</th><th>平均盈亏</th><th>胜率</th><th>最好</th><th>最差</th></tr>';
+  if(overview.batches && overview.batches.length){
+    for(const b of overview.batches){
+      h += `<tr><td>${b.date}</td><td>${b.n}只</td>${pnlCell(b.avg)}`
+         + `<td>${b.win}/${b.n}</td><td class="pnl-up">+${b.best.toFixed(1)}%</td><td class="pnl-down">${b.worst.toFixed(1)}%</td></tr>`;
+    }
+  } else {
+    h += '<tr><td colspan="6" style="color:var(--dim);">暂无数据</td></tr>';
+  }
+  document.getElementById('tbl-batches').innerHTML = h;
+
+  // 持仓
+  document.getElementById('m-posn').textContent = overview.positions.length + '只';
+  const t = overview.total;
+  document.getElementById('m-winrate').textContent = t.n ? (t.win/t.n*100).toFixed(0)+'%' : '-';
+  const avgEl = document.getElementById('m-avg');
+  avgEl.textContent = t.n ? (t.avg>=0?'+':'')+t.avg.toFixed(2)+'%' : '-';
+  avgEl.className = 'value ' + (t.avg>=0?'up':'down');
+
+  h = '<tr><th>代码</th><th>名称</th><th>选股日</th><th>成本</th><th>现价</th><th>盈亏</th></tr>';
+  if(overview.positions && overview.positions.length){
+    const sorted = [...overview.positions].sort((a,b)=>(b.pnl??-999)-(a.pnl??-999));
+    for(const p of sorted){
+      h += `<tr><td>${p.code}</td><td>${p.name||''}</td><td>${p.sel_date}</td>`
+         + `<td>${fmtPx(p.cost)}</td><td>${fmtPx(p.last)}</td>${pnlCell(p.pnl)}</tr>`;
+    }
+  } else {
+    h += '<tr><td colspan="6" style="color:var(--dim);">暂无持仓</td></tr>';
+  }
+  document.getElementById('tbl-positions').innerHTML = h;
+}
+
+async function reloadAll(){
+  try{
+    overview = await loadJSON('/api/media/overview');
+    renderTables();
+    setMsg('数据已刷新','ok');
+  }catch(e){ setMsg('刷新失败: '+e.message,'err'); }
+}
+
+function setMsg(text,cls=''){
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'msg ' + cls;
+  setTimeout(()=>{el.textContent='';el.className='msg';}, 6000);
+}
+
+async function genCharts(){
+  const btn = document.getElementById('btn-charts');
+  btn.disabled = true;
+  setMsg('生成图表中...');
+  try{
+    const r = await fetch('/api/media/charts',{method:'POST'});
+    const d = await r.json();
+    if(d.ok){ setMsg(`图表完成: ${d.images.length} 张`, 'ok'); }
+    else{ setMsg('图表失败: '+(d.error||d.output),'err'); }
+  }catch(e){ setMsg('图表失败: '+e.message,'err'); }
+  btn.disabled = false;
+}
+
+async function genArticle(){
+  const btn = document.getElementById('btn-article');
+  btn.disabled = true;
+  setMsg('生成文章中...');
+  try{
+    const compliance = document.getElementById('chk-compliance').checked;
+    const r = await fetch('/api/media/article',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({compliance:compliance})});
+    const d = await r.json();
+    if(d.ok){
+      articleMd = d.markdown;
+      document.getElementById('preview-name').textContent = '（'+d.path.split('/').pop()+'）';
+      setMsg('文章已生成','ok');
+      await renderWx(curTheme, articleMd);
+      if(previewMode!=='wx') setPreviewMode('md');
+    }else{
+      setMsg('生成失败: '+(d.error||''),'err');
+    }
+  }catch(e){ setMsg('生成失败: '+e.message,'err'); }
+  btn.disabled = false;
+}
+
+async function copyMd(){
+  if(!articleMd){
+    setMsg('请先生成文章','err');
+    return;
+  }
+  try{
+    await navigator.clipboard.writeText(articleMd);
+    setMsg('Markdown 已复制到剪贴板 → 粘贴到 mdnice.com','ok');
+  }catch(e){
+    // fallback
+    const ta = document.createElement('textarea');
+    ta.value = articleMd; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    setMsg('Markdown 已复制到剪贴板','ok');
+  }
+}
+
+async function copyWxHtml(){
+  if(!articleHtml){
+    setMsg('请先生成/排版文章','err');
+    return;
+  }
+  try{
+    await navigator.clipboard.writeText(articleHtml);
+    setMsg('公众号 HTML 已复制 → 直接粘贴到微信编辑器（图片需在微信内手动上传）','ok');
+  }catch(e){
+    const ta = document.createElement('textarea');
+    ta.value = articleHtml; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    setMsg('公众号 HTML 已复制','ok');
+  }
+}
+
+function putPreview(html){ document.getElementById('preview').innerHTML = html; }
+
+async function renderWx(theme, md){
+  if(!md) return;
+  try{
+    const r = await fetch('/api/media/render',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({markdown:md,theme:theme})});
+    const d = await r.json();
+    if(d.ok){ articleHtml = d.html; if(previewMode==='wx') putPreview(articleHtml); }
+    else{ setMsg('排版失败: '+(d.error||''),'err'); }
+  }catch(e){ setMsg('排版失败: '+e.message,'err'); }
+}
+
+function onThemeChange(e){
+  curTheme = e.target.value;
+  if(articleMd) renderWx(curTheme, articleMd);
+}
+
+function setPreviewMode(mode){
+  previewMode = mode;
+  document.getElementById('mode-wx').classList.toggle('on', mode==='wx');
+  document.getElementById('mode-md').classList.toggle('on', mode==='md');
+  document.getElementById('preview').classList.toggle('wx', mode==='wx');
+  if(mode==='wx' && articleHtml) putPreview(articleHtml);
+  if(mode==='md' && articleMd) putPreview(marked.parse(articleMd));
+}
+
+// 页面加载: 尝试加载最近文章 + 数据
+(async function(){
+  await reloadAll();
+  try{
+    const d = await loadJSON('/api/media/article-latest');
+    if(d.ok){
+      articleMd = d.markdown;
+      document.getElementById('preview-name').textContent = '（'+d.name+'）';
+      await renderWx('minimal', articleMd);
+      setPreviewMode('wx');
+    }
+  }catch(e){}
+})();
+</script>
+</body>
+</html>

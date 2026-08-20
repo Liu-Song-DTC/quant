@@ -49,7 +49,10 @@ REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
 # A股涨跌停限制数据（预计算，供BacktraderExecution使用）
 _LIMIT_DATA = {}   # {(code, date): 'up' | 'down'}
 
+# 安静模式开关: 默认全速(按配置并行); 显式设 STRATEGY_QUIET=1 或非0 = 安静(2进程降噪)
 NUM_WORKERS = config.get('backtest.num_workers', 2)
+if os.environ.get('STRATEGY_QUIET', '0') != '0':
+    NUM_WORKERS = 2
 
 def _malloc_trim(pad=0):
     """将 Python 已释放但未归还 OS 的内存归还给内核（Linux only）。

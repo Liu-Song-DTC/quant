@@ -31,13 +31,16 @@ def download_macro_data():
         os.path.join(MACRO_DIR, 'm1_m2.csv'), index=False)
     print(f'M1/M2: {len(m1)}条')
 
-    # 社融
-    sf = ak.macro_china_shrzgm()
-    sf['date'] = pd.to_datetime(sf['月份'].astype(str).str[:4] + '-' + sf['月份'].astype(str).str[4:] + '-01')
-    sf = sf.sort_values('date')
-    sf[['date', '社会融资规模增量', '其中-人民币贷款']].to_csv(
-        os.path.join(MACRO_DIR, 'social_financing.csv'), index=False)
-    print(f'社融: {len(sf)}条')
+    # 社融 (mofcom端点SSL不稳, 失败时保留旧CSV)
+    try:
+        sf = ak.macro_china_shrzgm()
+        sf['date'] = pd.to_datetime(sf['月份'].astype(str).str[:4] + '-' + sf['月份'].astype(str).str[4:] + '-01')
+        sf = sf.sort_values('date')
+        sf[['date', '社会融资规模增量', '其中-人民币贷款']].to_csv(
+            os.path.join(MACRO_DIR, 'social_financing.csv'), index=False)
+        print(f'社融: {len(sf)}条')
+    except Exception as e:
+        print(f'社融下载失败(按旧数据继续): {e}')
 
     # 两融
     try:
@@ -74,15 +77,17 @@ def download_macro_data():
 def load_macro_data():
     """加载内盘+外盘宏观数据, 返回统一DataFrame"""
     m1_df = pd.read_csv(os.path.join(MACRO_DIR, 'm1_m2.csv'), parse_dates=['date'])
-    sf_df = pd.read_csv(os.path.join(MACRO_DIR, 'social_financing.csv'), parse_dates=['date'])
+    sf_path = os.path.join(MACRO_DIR, 'social_financing.csv')
     mr_df = pd.read_csv(os.path.join(MACRO_DIR, 'margin_balance.csv'), parse_dates=['date'])
 
     m1_df['month'] = m1_df['date'].dt.to_period('M')
-    sf_df['month'] = sf_df['date'].dt.to_period('M')
     mr_df['month'] = mr_df['date'].dt.to_period('M')
 
     monthly = m1_df[['month', '货币(M1)-同比增长']].copy()
-    monthly = monthly.merge(sf_df[['month', '社会融资规模增量']], on='month', how='left')
+    if os.path.exists(sf_path):
+        sf_df = pd.read_csv(sf_path, parse_dates=['date'])
+        sf_df['month'] = sf_df['date'].dt.to_period('M')
+        monthly = monthly.merge(sf_df[['month', '社会融资规模增量']], on='month', how='left')
     monthly = monthly.merge(mr_df.groupby('month')['融资余额'].mean().reset_index(), on='month', how='left')
 
     # PPI
@@ -169,7 +174,8 @@ def get_macro_regime(date, macro_df=None):
     if macro_df is None:
         macro_df = load_macro_data()
 
-    month = pd.Period(date.strftime('%Y-%m'), freq='M')
+    month_str = date if isinstance(date, str) else date.strftime('%Y-%m')
+    month = pd.Period(month_str, freq='M')
     row = macro_df[macro_df['month'] == month]
     if row.empty:
         return 'neutral'
@@ -194,7 +200,8 @@ def get_macro_severity(date, macro_df=None):
     """返回bearish深度: 'deep'(m1_accel<-2) / 'shallow' / 'none'"""
     if macro_df is None:
         macro_df = load_macro_data()
-    month = pd.Period(date.strftime('%Y-%m'), freq='M')
+    month_str = date if isinstance(date, str) else date.strftime('%Y-%m')
+    month = pd.Period(month_str, freq='M')
     row = macro_df[macro_df['month'] == month]
     if row.empty:
         return 'none'

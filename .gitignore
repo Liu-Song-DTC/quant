@@ -228,3 +228,11 @@ trade/last_recommendations.json
 trade/reports/
 strategy/rolling_validation_results/backtest_signals.csv.bak
 strategy/rolling_validation_results/backtest_signals.csv.bak
+
+# Live trading runtime state (不提交)
+current_positions.json
+trade_orders.json
+strategy/logs/
+strategy/live_charts/
+strategy/media_out/
+.claude/
