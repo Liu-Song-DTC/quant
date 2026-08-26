@@ -1,5 +1,6 @@
 # core/fundamental.py
 import pandas as pd
+import numpy as np
 import logging
 import os
 from datetime import datetime
@@ -203,6 +204,32 @@ class FundamentalData:
             return False
         name = latest.get('股票简称', '')
         return '*ST' in str(name) or 'ST' in str(name)
+
+    def get_st_timeline(self, code):
+        """预计算ST状态时间线, 返回(可用日期升序数组, ST状态数组)
+
+        st_after[k] = 按"数据可用日期<=avail[k]"口径过滤后的最新报告期行的ST状态,
+        与逐日调用is_st(code, date)逐点等价(同报告期取文件序最前, 与stable排序+iloc[0]一致)。
+        无数据或缺少必要列时返回None(恒非ST)。
+        """
+        if code not in self.stock_data:
+            self._load_stock(code)
+        df = self.stock_data.get(code)
+        if df is None or df.empty or '数据可用日期' not in df.columns or '股票简称' not in df.columns:
+            return None
+        avail = df['数据可用日期'].astype(str).to_numpy()
+        names = df['股票简称'].astype(str).to_numpy()
+        has_rp = '报告期' in df.columns
+        rp = df['报告期'].astype(str).to_numpy() if has_rp else None
+        order = np.argsort(avail, kind='stable')
+        best_rp, best_idx, best_st = None, -1, False
+        st_after = np.zeros(len(order), dtype=bool)
+        for k, oi in enumerate(order):
+            r = rp[oi] if has_rp else ''
+            if best_rp is None or r > best_rp or (r == best_rp and oi < best_idx):
+                best_rp, best_idx, best_st = r, oi, 'ST' in names[oi]
+            st_after[k] = best_st
+        return avail[order], st_after
 
     def get_fundamental_score(self, code, current_date):
         """基本面综合评分"""

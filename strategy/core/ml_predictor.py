@@ -166,11 +166,13 @@ class MLFactorPredictor:
         # 特征过滤已关闭: XGBoost树模型自带方向学习 + L1/L2正则 + sample_weight时变加权
         # 负IC特征不删也不翻转 — 树分裂方向不依赖特征符号, regime交叉特征处理多空不对称
 
-        # 处理Inf/NaN
+        # 处理Inf/NaN: 先丢无标签行(尾部日期future_ret=NaN), 再fill特征NaN
+        # (顺序不能反: fillna会把NaN标签变成0.0=中位数排名, 污染训练)
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df = df.dropna(subset=['future_ret'])
         num_cols = df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
         df[num_cols] = df[num_cols].fillna(0.0)
-        train_df = df.dropna(subset=['future_ret'])
+        train_df = df
         if len(train_df) < 500:
             base_only = [c for c in self.feature_cols
                         if not c.startswith('cross_') and not c.startswith('regime_')]

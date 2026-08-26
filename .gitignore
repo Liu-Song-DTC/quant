@@ -236,3 +236,13 @@ strategy/logs/
 strategy/live_charts/
 strategy/media_out/
 .claude/
+
+# 大文件/备份防误提交 (2026-08-26)
+# 两融个股明细460MB, 可用 data/margin_detail_backfill.py 重建
+data/alternative_data/margin_detail.pkl
+# 8/21数据损坏事件备份(1.5G+)
+data/backup_*/
+# 持仓备份
+current_positions.json.bak*
+# 实验产物目录(32G: 信号CSV/因子缓存/归档), 实验脚本不入库
+strategy/rolling_validation_results/

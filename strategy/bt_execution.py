@@ -378,7 +378,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     before_excl_star = len(stock_file_map)
     print(f"科创板保留: {before_excl_star} 只 (不再排除)")
 
-    # ST股票不再静态排除 — 改为向量化回测中逐日调用 fundamental_data.is_st() (line ~1177)
+    # ST股票不再静态排除 — 改为向量化回测中按ST状态时间线逐日过滤(get_st_timeline)
     # 先加载sh000001获取交易日历（所有后续步骤依赖）
     sh000001_file = stock_file_map.get('sh000001') or stock_file_map.get('000001')
     if sh000001_file:
@@ -513,15 +513,27 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                 chunk_starts = list(range(0, len(_pred_dates), _retrain_freq))
                 _val_ics = []
                 _total_preds = 0
+                _last_good_predictor = None
+                _reused_chunks = 0
+                # 复用链上限: 连续复用N个chunk后旧模型已陈旧, 强制采用新模型保持适应性
+                _max_reuse = int(ml_config.get('max_consecutive_reuse', 3))
+                _consecutive_reuse = 0
 
                 for chunk_idx, chunk_start in enumerate(tqdm(chunk_starts, desc="ML滚动训练")):
                     chunk_end = min(chunk_start + _retrain_freq, len(_pred_dates))
                     chunk_dates = _pred_dates[chunk_start:chunk_end]
                     first_pred_date = chunk_dates[0]
 
+                    # Purged walk-forward: 标签=forward_period日前瞻收益,
+                    # 训练窗必须止于first_pred_date前forward_period个交易日,
+                    # 否则靠近训练期末的标签窗口越过预测日(回测前视, 实盘拿不到)
+                    _fp_days = int(config.get('dynamic_factor.forward_period', 10))
+                    _d0_ts = pd.Timestamp(first_pred_date)
+                    _d0_pos = int(np.searchsorted(np.asarray(all_dates), _d0_ts))
+                    _purge_end = all_dates[max(0, _d0_pos - _fp_days)]
                     train_start = first_pred_date - pd.Timedelta(days=_train_window)
                     train_mask = (factor_df['date'] >= train_start) & \
-                                 (factor_df['date'] < first_pred_date)
+                                 (factor_df['date'] < _purge_end)
                     train_df = factor_df[train_mask]
 
                     if len(train_df) < 50000:
@@ -537,16 +549,41 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     val_ic = ml_predictor.train(train_df, regime_info={'regime': _train_regime})
                     _min_val_ic = ml_config.get('min_val_ic', 0.03)
                     if val_ic is None or val_ic < _min_val_ic:
-                        if val_ic is not None and val_ic > 0:
-                            print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} < {_min_val_ic}, 跳过")
-                        continue
-                    _val_ics.append(val_ic)
-
-                    strategy_dir = os.path.dirname(os.path.abspath(__file__))
-                    model_dir = os.path.join(strategy_dir, 'models')
-                    os.makedirs(model_dir, exist_ok=True)
-                    _ml_model_path = os.path.join(model_dir, 'xgb_strategy_model.json')
-                    ml_predictor.save_model(_ml_model_path)
+                        if _last_good_predictor is None:
+                            if val_ic is not None and val_ic > 0:
+                                print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} < {_min_val_ic}, 跳过")
+                            continue
+                        if _consecutive_reuse < _max_reuse:
+                            # 验证失败不能整段跳过: 预测断档会让实盘信号
+                            # 前向填充到更早日期的陈旧ML分数(验证IC门是防坏模型,
+                            # 不是制造数据空洞). 复用上一有效模型预测本chunk日期.
+                            print(f"  chunk {chunk_idx}: 验证IC={val_ic}, "
+                                  f"<{_min_val_ic}, 复用上一有效模型")
+                            ml_predictor = _last_good_predictor
+                            _reused_chunks += 1
+                            _consecutive_reuse += 1
+                        elif val_ic is not None and val_ic > 0:
+                            # 复用链超上限且新模型IC>0: 旧模型已陈旧, 采用新模型
+                            print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} <{_min_val_ic}, "
+                                  f"连续复用{_consecutive_reuse}次达上限, 采用新模型")
+                            _last_good_predictor = ml_predictor
+                            _consecutive_reuse = 0
+                        else:
+                            # 新模型IC<=0: 比陈旧的好模型更差, 继续复用并告警
+                            print(f"  chunk {chunk_idx}: 验证IC={val_ic}, "
+                                  f"复用链已达{_consecutive_reuse}次且新模型无正向IC, 继续复用")
+                            ml_predictor = _last_good_predictor
+                            _reused_chunks += 1
+                            _consecutive_reuse += 1
+                    else:
+                        _val_ics.append(val_ic)
+                        _last_good_predictor = ml_predictor
+                        _consecutive_reuse = 0
+                        strategy_dir = os.path.dirname(os.path.abspath(__file__))
+                        model_dir = os.path.join(strategy_dir, 'models')
+                        os.makedirs(model_dir, exist_ok=True)
+                        _ml_model_path = os.path.join(model_dir, 'xgb_strategy_model.json')
+                        ml_predictor.save_model(_ml_model_path)
 
                     for date in chunk_dates:
                         date_df = factor_df[factor_df['date'] == date]
@@ -562,13 +599,15 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
 
                 _ml_total_preds = len(_ml_preds)
                 _ml_val_ic = float(np.mean(_val_ics)) if _val_ics else 0.0
-                _skipped = len(chunk_starts) - len(_val_ics)
-                print(f"ML滚动训练完成: {len(chunk_starts)} chunks, 有效={len(_val_ics)} 跳过={_skipped}, "
+                _true_skip = len(chunk_starts) - len(_val_ics) - _reused_chunks
+                print(f"ML滚动训练完成: {len(chunk_starts)} chunks, 有效={len(_val_ics)} "
+                      f"复用前模型={_reused_chunks} 跳过={_true_skip}, "
                       f"avg_IC={_ml_val_ic:.4f}, preds={_ml_total_preds:,}")
                 if _val_ics:
                     print(f"  IC范围: [{min(_val_ics):.4f}, {max(_val_ics):.4f}], "
                           f"中位数={sorted(_val_ics)[len(_val_ics)//2]:.4f}")
-                print(f"ML模型已保存: {_ml_model_path}")
+                if _val_ics:
+                    print(f"ML模型已保存: {_ml_model_path}")
 
         except ImportError as e:
             print(f"[ML] ImportError: {e}")
@@ -1248,7 +1287,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     del df
 
     # 预计算滚动ADV矩阵（20日回溯，shift(1)排除当日，无前视偏差）
-    _vol_df = pd.DataFrame(volume_m, index=calendar, columns=stock_codes)
+    # volume单位为手, ×100转股数(与下单股数同口径, 否则participation高估100x)
+    _vol_df = pd.DataFrame(volume_m * 100.0, index=calendar, columns=stock_codes)
     _adv_matrix = _vol_df.rolling(20, min_periods=5).mean().shift(1).values
     _adv_matrix = np.nan_to_num(_adv_matrix, nan=0.0)
 
@@ -1259,28 +1299,55 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     impact_exp = cm_config.get('impact_cost_exponent', 0.5)
     impact_min = cm_config.get('min_impact_cost', 0.00005)
 
+    # 滑点与涨跌停拦截 (诚实成本模型)
+    slip_enabled = cm_config.get('slippage_enabled', True)
+    slip_rate = float(config.get('backtest.slippage', 0.001))
+    limit_block_enabled = cm_config.get('limit_fill_block_enabled', True)
+
     def _impact(adv, size, price):
         if not impact_enabled or adv <= 0:
             return 0.0
         participation = abs(size) / max(adv, 1)
         return max(impact_base * (participation ** impact_exp), impact_min)
 
+    # 涨跌停矩阵: 创业板30/科创板68=20%, 北交所4x/8x=30%, 其余主板10%
+    # 前复权比例不受复权影响(除权日除外, 近似可接受); 触板阈值留0.3%容差
+    _limit_rate_arr = np.array([
+        0.20 if c[:2] in ('30', '68') else (0.30 if c[0] in ('4', '8') else 0.10)
+        for c in stock_codes
+    ])
+    _pct_chg = np.full_like(close_px, np.nan)
+    _pct_chg[1:] = close_px[1:] / close_px[:-1] - 1.0
+    _limit_up = _pct_chg >= (_limit_rate_arr[None, :] - 0.003)
+    _limit_down = _pct_chg <= -(_limit_rate_arr[None, :] - 0.003)
+    del _pct_chg
+
     # 2. 预计算可交易矩阵（含流动性过滤：日均成交额>500万）
-    daily_value = close_px * volume_m  # 每日成交额
+    # volume单位为手, ×100换算真实成交额(元); 2026-08-22修复: 此前漏乘100导致阈值实际为5亿
+    daily_value = close_px * volume_m * 100.0  # 每日成交额(元)
     # 20日滚动均值: 用 pandas rolling (沿 time axis=0)
     dv = pd.DataFrame(daily_value, index=calendar, columns=stock_codes)
     avg_daily_value = dv.rolling(20, min_periods=5).mean().shift(1).values
     tradable = (~np.isnan(close_px)) & (close_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
-    # ST 过滤: 逐日检查（默认不过滤，除非 fundamental_data 可用）
-    if fundamental_data is not None and hasattr(fundamental_data, 'is_st'):
-        for i, d in enumerate(calendar):
-            for j, code in enumerate(stock_codes):
-                if tradable[i, j]:
-                    try:
-                        if fundamental_data.is_st(code, d.date()):
-                            tradable[i, j] = False
-                    except Exception as e:
-                        import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
+    # ST 过滤: 预计算每只股票ST状态时间线后向量化匹配交易日
+    # 2026-08-22性能优化: 原双重循环约250万次is_st调用(每次含过滤+排序)耗时~42min
+    if fundamental_data is not None and hasattr(fundamental_data, 'get_st_timeline'):
+        cal_str = np.array([d.strftime('%Y%m%d') for d in calendar])
+        for j, code in enumerate(stock_codes):
+            try:
+                tl = fundamental_data.get_st_timeline(code)
+                if tl is None:
+                    continue
+                _av, _stf = tl
+                idx = np.searchsorted(_av, cal_str, side='right') - 1
+                m = idx >= 0
+                if not m.any():
+                    continue
+                col = np.zeros(n_dates, dtype=bool)
+                col[m] = _stf[idx[m]]
+                tradable[:, j] &= ~col
+            except Exception as e:
+                import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
 
     # 3. 主循环
     print("运行回测 ...")
@@ -1290,6 +1357,22 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     daily_ret = np.full(n_dates - 1, np.nan)
     selections = []
     cost_tracker = {}
+    _entry_dates = {}     # code -> 首次建仓日期
+    _realized_trades = []  # 逐笔平仓审计
+
+    def _log_realized(code, date, sell_px):
+        """全仓退出时记录逐笔交易 (口径与历史trade_realized.csv一致: ret=exit_px/avg_cost-1)"""
+        ct = cost_tracker.get(code)
+        if ct is None:
+            return
+        entry_d = _entry_dates.get(code, date)
+        _realized_trades.append({
+            'entry_date': entry_d, 'exit_date': date, 'code': code,
+            'hold_days': (date - entry_d).days,
+            'ret': sell_px / max(ct[1], 1e-9) - 1.0,
+            'avg_cost': ct[1], 'exit_px': sell_px,
+        })
+        _entry_dates.pop(code, None)
 
     # 成交统计
     _fill_stats = {'buy_attempted': 0, 'buy_filled': 0, 'buy_partial': 0,
@@ -1374,13 +1457,19 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             if tplus1_enabled and code in _today_buys:
                 _fill_stats['sell_tplus1_blocked'] += 1
                 continue
+            if limit_block_enabled and _limit_down[i, j]:
+                _fill_stats['sell_limit_down_skip'] += 1
+                continue  # 跌停无法卖出, 持仓留待下一交易日
             sell_px = float(px_today[j])
+            if slip_enabled:
+                sell_px *= (1.0 - slip_rate)
             if i > 0:
                 prev_px = close_px[i-1, j]
                 if not np.isnan(prev_px) and prev_px > 0 and (sell_px / prev_px - 1) < -0.095:
                     sell_px = sell_px * 0.97
             impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
             cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
+            _log_realized(code, date, sell_px)
             positions[j] = 0
             cost_tracker.pop(code, None)  # 清仓: 移除成本记录
             _fill_stats['sell_filled'] += 1
@@ -1400,11 +1489,16 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 if tplus1_enabled and code in _today_buys:
                     _fill_stats['sell_tplus1_blocked'] += 1
                     continue
+                if limit_block_enabled and _limit_down[i, j]:
+                    _fill_stats['sell_limit_down_skip'] += 1
+                    continue
                 sell_px = px
+                if slip_enabled:
+                    sell_px *= (1.0 - slip_rate)
                 if i > 0:
                     prev_px = close_px[i-1, j]
                     if not np.isnan(prev_px) and prev_px > 0 and (px / prev_px - 1) < -0.095:
-                        sell_px = px * 0.97
+                        sell_px = sell_px * 0.97
                 impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
                 cash += abs(diff) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
                 positions[j] = target_shares
@@ -1412,6 +1506,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 if code in cost_tracker:
                     cost_tracker[code][0] = max(cost_tracker[code][0] - abs(diff), 0)
                     if cost_tracker[code][0] <= 0:
+                        _log_realized(code, date, sell_px)
                         cost_tracker.pop(code, None)
                 _fill_stats['sell_filled'] += 1
 
@@ -1423,11 +1518,16 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             if j is None or not ok[j]:
                 continue
             px = float(px_today[j])
+            if limit_block_enabled and _limit_up[i, j]:
+                _fill_stats['buy_limit_up_skip'] += 1
+                continue  # 涨停无法买入, 留待下一调仓日
             buy_px = px
+            if slip_enabled:
+                buy_px *= (1.0 + slip_rate)
             if i > 0:
                 prev_px = close_px[i-1, j]
                 if not np.isnan(prev_px) and prev_px > 0 and (px / prev_px - 1) > 0.095:
-                    buy_px = px * 1.03
+                    buy_px = buy_px * 1.03
             target_shares = int(tv / buy_px / 100) * 100
             curr_shares = int(positions[j])
             diff = target_shares - curr_shares
@@ -1451,6 +1551,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     cash -= scaled_cost
                     positions[j] = curr_shares + scaled_diff
                     _fill_stats['buy_filled'] += 1
+                    if curr_shares == 0:
+                        _entry_dates[code] = date  # 首次建仓
                     # 更新成本追踪: [总股数, 加权均价]
                     if code in cost_tracker:
                         old_s, old_avg = cost_tracker[code]
@@ -1540,7 +1642,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             'max_drawdown': max_dd, 'annual_returns': annual_rets,
             'annual_max_drawdown': annual_mdd,
             'final_value': final_nav, 'selections': selections,
-            'n_dates': n_dates}
+            'n_dates': n_dates, 'realized_trades': _realized_trades,
+            'fill_stats': _fill_stats}
 
 
 if __name__ == "__main__":
@@ -1640,6 +1743,18 @@ if __name__ == "__main__":
         os.makedirs(os.path.dirname(selections_path), exist_ok=True)
         selections_df.to_csv(selections_path, index=False)
         print(f"\n选股结果已保存: {len(selections_df)} 条 -> {selections_path}")
+
+    # 保存逐笔平仓审计
+    if result.get('realized_trades'):
+        strategy_dir = os.path.dirname(os.path.abspath(__file__))
+        trades_path = os.path.join(strategy_dir, 'rolling_validation_results', 'trade_realized.csv')
+        pd.DataFrame(result['realized_trades']).to_csv(trades_path, index=False)
+        print(f"逐笔平仓审计已保存: {len(result['realized_trades'])} 笔 -> {trades_path}")
+    _fs = result.get('fill_stats', {})
+    print(f"成交统计: 买{ _fs.get('buy_filled', 0)}/{_fs.get('buy_attempted', 0)} "
+          f"(涨停跳过{_fs.get('buy_limit_up_skip', 0)}, 现金不足{_fs.get('buy_cash_insufficient', 0)}) "
+          f"卖{_fs.get('sell_filled', 0)}/{_fs.get('sell_attempted', 0)} "
+          f"(跌停跳过{_fs.get('sell_limit_down_skip', 0)}, T+1拦截{_fs.get('sell_tplus1_blocked', 0)})")
 
     # === 全链路追踪报告 ===
     plog.report()

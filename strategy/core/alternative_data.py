@@ -35,6 +35,20 @@ class AlternativeDataProvider:
         # 龙虎榜历史明细: 懒加载, 首次get_dragon_tiger_dates时自动下载
         self._dt_history = None
 
+        # 股东减持: 懒加载; _reduction_idx_*为get_reduction_codes的按日缓存
+        self._reduction: pd.DataFrame = None
+        self._reduction_idx: set = None
+        self._reduction_idx_date = None
+        self._reduction_idx_days = None
+
+        # 限售解禁: 懒加载; _unlock_idx_key为get_unlock_codes的按日缓存
+        self._unlock: pd.DataFrame = None
+        self._unlock_idx: set = None
+        self._unlock_idx_key = None
+
+        # 业绩预告: 懒加载(超预期事件研究/因子)
+        self._yjyg: pd.DataFrame = None
+
     # ========== 龙虎榜 ==========
 
     def load_dragon_tiger(self) -> pd.DataFrame:
@@ -350,7 +364,9 @@ class AlternativeDataProvider:
             import akshare as ak
             print("[AltData] 下载融资融券数据...")
             # akshare 1.18: 改用 stock_margin_sse (支持日期范围)
-            df = ak.stock_margin_sse(start_date='20220101', end_date='20260530')
+            # 2026-08-23修复: end_date曾硬编码'20260530'导致两融数据永远停在5/29
+            df = ak.stock_margin_sse(start_date='20220101',
+                                     end_date=pd.Timestamp.now().strftime('%Y%m%d'))
             if df is not None and len(df) > 0:
                 col_map = {
                     '信用交易日期': 'date', '融资余额': 'margin_balance',
@@ -403,6 +419,267 @@ class AlternativeDataProvider:
         else:
             signal = -bal_change * 2  # 极端=反向
         return float(np.tanh(signal))
+
+
+    # ========== 股东减持 ==========
+
+    def _fetch_reduction_em(self, since: str = None) -> pd.DataFrame:
+        """东财datacenter: RPT_SHARE_HOLDER_INCREASE, DIRECTION=减持.
+        since='YYYY-MM-DD'时只拉公告时间>=since的增量记录."""
+        import requests
+        url = 'https://datacenter-web.eastmoney.com/api/data/v1/get'
+        flt = '(DIRECTION="减持")'
+        if since:
+            flt += f"(EITIME>='{since}')"
+        params = {
+            'sortColumns': 'EITIME', 'sortTypes': '-1',
+            'pageSize': '500', 'pageNumber': '1',
+            'reportName': 'RPT_SHARE_HOLDER_INCREASE',
+            'columns': 'ALL', 'source': 'WEB', 'client': 'WEB',
+            'filter': flt,
+        }
+        frames = []
+        page = 1
+        while True:
+            params['pageNumber'] = str(page)
+            r = requests.get(url, params=params, timeout=30,
+                             headers={'User-Agent': 'Mozilla/5.0'})
+            j = r.json()
+            res = j.get('result') or {}
+            data = res.get('data') or []
+            if not data:
+                break
+            frames.append(pd.DataFrame(data))
+            if page >= (res.get('pages') or 1):
+                break
+            page += 1
+            if page > 2000:
+                break
+        if not frames:
+            return pd.DataFrame()
+        raw = pd.concat(frames, ignore_index=True)
+        df = pd.DataFrame({
+            'code': raw['SECURITY_CODE'].astype(str).str.zfill(6),
+            'name': raw.get('SECURITY_NAME_ABBR', ''),
+            'holder': raw.get('HOLDER_NAME', ''),
+            'change_num': pd.to_numeric(raw.get('CHANGE_NUM'), errors='coerce'),
+            'change_ratio': pd.to_numeric(raw.get('CHANGE_RATIO'), errors='coerce'),
+            'start_date': pd.to_datetime(raw['START_DATE'], errors='coerce'),
+            'end_date': pd.to_datetime(raw['END_DATE'], errors='coerce'),
+            'eitime': pd.to_datetime(raw['EITIME'], errors='coerce'),
+        })
+        return df.dropna(subset=['code', 'eitime'])
+
+    def load_reduction(self) -> pd.DataFrame:
+        """加载股东减持记录(全历史, 增量更新).
+        Returns DataFrame: code, name, holder, change_num(万股), change_ratio(占总股本),
+                           start_date(变动开始), end_date(变动截止), eitime(公告时刻)"""
+        cache_path = self.data_dir / 'reduction_records.pkl'
+        old = None
+        if cache_path.exists():
+            if self._reduction is not None:
+                return self._reduction
+            old = pd.read_pickle(cache_path)
+            _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
+            if _age_h < 24:
+                self._reduction = old
+                return old
+        try:
+            since = None
+            if old is not None and len(old):
+                since = (old['eitime'].max() - pd.Timedelta(days=2)).strftime('%Y-%m-%d')
+            print(f"[AltData] 下载股东减持数据{'(增量>=' + since + ')' if since else '(全量)'}...")
+            new = self._fetch_reduction_em(since)
+            if old is None:
+                df = new
+            elif len(new):
+                df = pd.concat([old, new], ignore_index=True)
+                df = df.drop_duplicates(subset=['code', 'holder', 'start_date', 'end_date', 'eitime'])
+            else:
+                df = old
+            if df is not None and len(df):
+                df = df.sort_values('eitime').reset_index(drop=True)
+                df.to_pickle(cache_path)
+            self._reduction = df
+            print(f"[AltData] 股东减持: {len(df)} 条 -> {cache_path}")
+            return df if df is not None else pd.DataFrame()
+        except Exception as e:
+            print(f"[AltData] 股东减持下载失败: {e}")
+            if old is not None:
+                self._reduction = old
+                return old
+            return pd.DataFrame()
+
+    def get_reduction_codes(self, date, recent_days: int = 30) -> set:
+        """date时点处于减持期的股票代码集合(时点安全: 仅用公告时刻<=date的记录).
+        规则(满足其一):
+          1) 减持公告披露于date前recent_days天内(披露滞后于实际窗口, 计划常持续数月)
+          2) date落在[变动开始日, 变动截止日]窗口内(多批次减持进行中)"""
+        if self._reduction is None:
+            self._reduction = self.load_reduction()
+        df = self._reduction
+        if df is None or len(df) == 0:
+            return set()
+        t = pd.Timestamp(str(date)[:10])
+        if self._reduction_idx_date != t or self._reduction_idx_days != recent_days:
+            eit = df['eitime'].dt.normalize()
+            known = eit <= t
+            recent = known & (eit >= t - pd.Timedelta(days=recent_days))
+            inwin = known & (df['start_date'] <= t) & (df['end_date'] >= t)
+            self._reduction_idx = set(df.loc[recent | inwin, 'code'])
+            self._reduction_idx_date = t
+            self._reduction_idx_days = recent_days
+        return self._reduction_idx
+
+
+    # ========== 限售解禁 ==========
+
+    def _fetch_unlock_em(self, start: str, end: str) -> pd.DataFrame:
+        """东财解禁明细: start/end='YYYYMMDD'."""
+        import akshare as ak
+        raw = ak.stock_restricted_release_detail_em(start_date=start, end_date=end)
+        if raw is None or len(raw) == 0:
+            return pd.DataFrame()
+        df = pd.DataFrame({
+            'code': raw['股票代码'].astype(str).str.zfill(6),
+            'unlock_date': pd.to_datetime(raw['解禁时间'], errors='coerce'),
+            'ratio': pd.to_numeric(raw['占解禁前流通市值比例'], errors='coerce'),
+            'shares': pd.to_numeric(raw['实际解禁数量'], errors='coerce'),
+            'market_value': pd.to_numeric(raw['实际解禁市值'], errors='coerce'),
+            'type': raw.get('限售股类型', ''),
+        })
+        return df.dropna(subset=['code', 'unlock_date'])
+
+    def load_unlock(self) -> pd.DataFrame:
+        """加载限售解禁日程(2021至今+已公告的未来日程).
+        Returns DataFrame: code, unlock_date, ratio(占解禁前流通市值比例), shares, market_value, type"""
+        cache_path = self.data_dir / 'unlock_schedule.pkl'
+        if self._unlock is not None:
+            return self._unlock
+        if cache_path.exists():
+            _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
+            if _age_h < 24:
+                self._unlock = pd.read_pickle(cache_path)
+                return self._unlock
+        try:
+            # 按月分段拉取(接口限制日期范围), 覆盖回测期+未来3个月日程
+            frames = []
+            cur = pd.Timestamp('2021-01-01')
+            end = pd.Timestamp.now() + pd.DateOffset(months=4)
+            while cur < end:
+                nxt = min(cur + pd.DateOffset(months=3), end)
+                frames.append(self._fetch_unlock_em(cur.strftime('%Y%m%d'), nxt.strftime('%Y%m%d')))
+                cur = nxt
+            df = pd.concat([f for f in frames if len(f)], ignore_index=True)
+            df = df.drop_duplicates(subset=['code', 'unlock_date', 'type', 'shares'])
+            df = df.sort_values('unlock_date').reset_index(drop=True)
+            df.to_pickle(cache_path)
+            self._unlock = df
+            print(f"[AltData] 限售解禁: {len(df)} 条 ({df['unlock_date'].min().date()}~{df['unlock_date'].max().date()}) -> {cache_path}")
+            return df
+        except Exception as e:
+            print(f"[AltData] 限售解禁下载失败: {e}")
+            self._unlock = pd.DataFrame()
+            return self._unlock
+
+    def get_unlock_codes(self, date, ahead_days: int = 30, min_ratio: float = 0.05) -> set:
+        """date时点'解禁临近'的股票集合: 未来ahead_days天内存在解禁且规模>=min_ratio(占流通市值比例).
+        解禁日程在发行/增发时即确定, 提前数月可知, 前视风险低."""
+        if self._unlock is None:
+            self._unlock = self.load_unlock()
+        df = self._unlock
+        if df is None or len(df) == 0:
+            return set()
+        t = pd.Timestamp(str(date)[:10])
+        key = (str(date)[:10], ahead_days, min_ratio)
+        if self._unlock_idx_key != key:
+            m = (df['unlock_date'] >= t) & (df['unlock_date'] <= t + pd.Timedelta(days=ahead_days)) \
+                & (df['ratio'] >= min_ratio)
+            self._unlock_idx = set(df.loc[m, 'code'])
+            self._unlock_idx_key = key
+        return self._unlock_idx
+
+
+    # ========== 业绩预告 ==========
+
+    @staticmethod
+    def _yjyg_periods(start='2008-12-31', end=None):
+        """全部季度末报告期列表(YYYYMMDD), 对齐真实季度末(0331/0630/0930/1231)."""
+        end = end or pd.Timestamp.now()
+        out, cur = [], pd.Timestamp(start) + pd.offsets.QuarterEnd(0)
+        while cur <= end:
+            out.append(cur.strftime('%Y%m%d'))
+            cur = cur + pd.DateOffset(months=3) + pd.offsets.QuarterEnd(0)
+        return out
+
+    def _fetch_yjyg_em(self, period: str) -> pd.DataFrame:
+        """东财业绩预告: period=报告期('YYYYMMDD'). 全历史自20081231.
+        时点安全字段=公告日期; 预测数值为区间中值."""
+        import akshare as ak
+        raw = ak.stock_yjyg_em(date=period)
+        if raw is None or len(raw) == 0:
+            return pd.DataFrame()
+        df = pd.DataFrame({
+            'code': raw['股票代码'].astype(str).str.zfill(6),
+            'name': raw.get('股票简称', ''),
+            'indicator': raw['预测指标'].astype(str),
+            'forecast_type': raw['预告类型'].astype(str),
+            'change_pct': pd.to_numeric(raw.get('业绩变动幅度'), errors='coerce'),
+            'predict_value': pd.to_numeric(raw.get('预测数值'), errors='coerce'),
+            'base_value': pd.to_numeric(raw.get('上年同期值'), errors='coerce'),
+            'notice_date': pd.to_datetime(raw['公告日期'], errors='coerce'),
+            'report_period': pd.Timestamp(period),
+        })
+        return df.dropna(subset=['code', 'notice_date'])
+
+    def load_yjyg(self) -> pd.DataFrame:
+        """加载业绩预告事件表(全历史2008至今, 增量刷新近3个季度).
+        Returns DataFrame: code, name, indicator, forecast_type, change_pct(%),
+                           predict_value(区间中值), base_value(上年同期), notice_date, report_period"""
+        cache_path = self.data_dir / 'yjyg_records.pkl'
+        old = None
+        if cache_path.exists():
+            if self._yjyg is not None:
+                return self._yjyg
+            old = pd.read_pickle(cache_path)
+            _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
+            if _age_h < 24:
+                self._yjyg = old
+                return old
+        try:
+            import time
+            # 增量: 预告最迟在报告期后~4.5个月内公告, 刷新近200天内的报告期即可
+            if old is not None and len(old):
+                cut = pd.Timestamp.now() - pd.Timedelta(days=200)
+                periods = [p for p in self._yjyg_periods()
+                           if pd.Timestamp(p) >= max(cut, old['report_period'].min())]
+            else:
+                periods = self._yjyg_periods()
+            frames = []
+            for i, p in enumerate(periods):
+                try:
+                    frames.append(self._fetch_yjyg_em(p))
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"[AltData] 业绩预告 {p} 拉取失败: {e}")
+            df = pd.concat([f for f in frames if len(f)], ignore_index=True) if frames else pd.DataFrame()
+            if old is not None and len(old):
+                df = pd.concat([old, df], ignore_index=True)
+            if df is None or len(df) == 0:
+                self._yjyg = old if old is not None else pd.DataFrame()
+                return self._yjyg
+            df = df.drop_duplicates(subset=['code', 'report_period', 'indicator', 'notice_date'])
+            df = df.sort_values('notice_date').reset_index(drop=True)
+            df.to_pickle(cache_path)
+            self._yjyg = df
+            print(f"[AltData] 业绩预告: {len(df)} 条 ({df['notice_date'].min().date()}~{df['notice_date'].max().date()}) -> {cache_path}")
+            return df
+        except Exception as e:
+            print(f"[AltData] 业绩预告下载失败: {e}")
+            if old is not None:
+                self._yjyg = old
+                return old
+            return pd.DataFrame()
 
 
 # ========== 单例 ==========

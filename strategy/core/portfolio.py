@@ -89,7 +89,7 @@ class PortfolioConstructor:
         self.position_stop_loss = position_stop_loss if position_stop_loss is not None else portfolio_config.get('position_stop_loss', 0.12)
         self.entry_speed = entry_speed if entry_speed is not None else portfolio_config.get('entry_speed', 0.5)
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 0.5)
-        self.exit_mode = 'simple'  # 仅成本止损, 让利润奔跑, 保持高资金利用率
+        self.exit_mode = portfolio_config.get('exit_mode', 'simple')  # simple=仅成本止损让利润奔跑; 其他值启用完整退出栈
         self._rebalance_interval = rebalance_interval  # 实盘=1每日, 回测=10
 
         # === 波动率控制 ===
@@ -107,6 +107,11 @@ class PortfolioConstructor:
         self.stop_loss_recovery_days = ps_top.get('recovery_days', 10)
         self.stop_loss_refill = ps_top.get('stop_refill', False)
 
+        # === 个股止损 A/B (2026-08-20): 开启后用执行层cost_tracker的成本价做成本止损 ===
+        ssl_top = config.get('stock_stop_loss', {}) if hasattr(config, 'get') else {}
+        self.stock_cost_stop_enabled = ssl_top.get('enabled', False)
+        self.stock_peak_trail_enabled = ssl_top.get('peak_trail_enabled', False)
+
         # === 单票权重上限 ===
         self.max_single_weight = portfolio_config.get('max_single_weight', 0.12)
 
@@ -115,6 +120,14 @@ class PortfolioConstructor:
         self.min_rank_pct = sel_config.get('min_rank_pct', 0.5)
         self.min_absolute_score = sel_config.get('min_absolute_score', 0.15)
         self.min_confidence = sel_config.get('min_confidence', 0.80)
+        # 2026-08-25: 股东减持期过滤(用户硬约束) - 减持期内股票不入选
+        self.exclude_reduction = sel_config.get('exclude_reduction_periods', False)
+        self.reduction_recent_days = sel_config.get('reduction_recent_days', 30)
+        # 2026-08-25: 限售解禁临近过滤 - 未来N天内有大额解禁(占流通市值比例)不入选
+        self.exclude_unlock = sel_config.get('exclude_unlock_periods', False)
+        self.unlock_ahead_days = sel_config.get('unlock_ahead_days', 30)
+        self.unlock_min_ratio = sel_config.get('unlock_min_ratio', 0.05)
+        self.hold_threshold = sel_config.get('hold_threshold', 0.2)  # 换手保护门: 持仓rank_pct需高于此才受保护
         self.exhaustion_max_weight = sel_config.get('exhaustion_max_weight', 0.03)
         self.exhaustion_reduce_mult = sel_config.get('exhaustion_reduce_mult', 0.5)
         self.industry_max_weight = sel_config.get('industry_max_weight', 0.35)
@@ -273,6 +286,50 @@ class PortfolioConstructor:
 
         # 另类数据: 懒加载, 用于调整市场暴露度
         self._alt_provider = None
+        # 减持期/解禁临近代码集按日缓存
+        self._reduction_codes_cache = None
+        self._reduction_codes_cache_date = None
+        self._unlock_codes_cache = None
+        self._unlock_codes_cache_date = None
+
+    def _reduction_codes(self, date):
+        """当日处于减持期的股票集合. 数据缺失/加载失败时返回空集(fail-open, 不阻塞实盘)."""
+        if not self.exclude_reduction:
+            return set()
+        if self._reduction_codes_cache_date != str(date)[:10]:
+            try:
+                if self._alt_provider is None:
+                    from .alternative_data import AlternativeDataProvider
+                    self._alt_provider = AlternativeDataProvider()
+                codes = self._alt_provider.get_reduction_codes(date, self.reduction_recent_days)
+            except Exception as e:
+                print(f" [减持过滤] 数据加载失败, 本期放行: {e}")
+                codes = set()
+            self._reduction_codes_cache = codes
+            self._reduction_codes_cache_date = str(date)[:10]
+            if codes:
+                print(f" [减持过滤] {str(date)[:10]} 减持期股票 {len(codes)} 只")
+        return self._reduction_codes_cache
+
+    def _unlock_codes(self, date):
+        """未来unlock_ahead_days天内有大额解禁的股票集合. fail-open."""
+        if not self.exclude_unlock:
+            return set()
+        if self._unlock_codes_cache_date != str(date)[:10]:
+            try:
+                if self._alt_provider is None:
+                    from .alternative_data import AlternativeDataProvider
+                    self._alt_provider = AlternativeDataProvider()
+                codes = self._alt_provider.get_unlock_codes(
+                    date, self.unlock_ahead_days, self.unlock_min_ratio)
+            except Exception as e:
+                print(f" [解禁过滤] 数据加载失败, 本期放行: {e}")
+                codes = set()
+            self._unlock_codes_cache = codes
+            self._unlock_codes_cache_date = str(date)[:10]
+            if codes:
+                print(f" [解禁过滤] {str(date)[:10]} 解禁临近股票 {len(codes)} 只")
+        return self._unlock_codes_cache
 
     def _get_smart_money_signal(self, date):
         """北向+融资融券复合信号: 大幅流出/去杠杆→防御, 流入→积极"""
@@ -518,7 +575,9 @@ class PortfolioConstructor:
         candidates = []
         # 过滤拒绝原因统计
         _rej = {'no_sig': 0, 'not_buy': 0, 'cooldown': 0, 'bad_factor': 0,
-                'no_price': 0, 'too_expensive': 0, 'accepted': 0}
+                'no_price': 0, 'too_expensive': 0, 'reducing': 0, 'unlocking': 0, 'accepted': 0}
+        _reducing_codes = self._reduction_codes(date)
+        _unlocking_codes = self._unlock_codes(date)
         for code in universe:
             sig = signal_store.get(code, date)
             if sig is None:
@@ -528,6 +587,16 @@ class PortfolioConstructor:
             # 信号层过滤: 必须通过买入信号检查（含MA20趋势过滤等）
             if not getattr(sig, 'buy', False):
                 _rej['not_buy'] += 1
+                continue
+
+            # 减持期过滤(2026-08-25): 股东减持期内不入选
+            if _reducing_codes and code in _reducing_codes:
+                _rej['reducing'] += 1
+                continue
+
+            # 解禁临近过滤(2026-08-25): 未来30天内大额解禁不入选
+            if _unlocking_codes and code in _unlocking_codes:
+                _rej['unlocking'] += 1
                 continue
 
             # Fix#7: 均值回归退出冷却期 — 防止入场-出场循环
@@ -619,7 +688,7 @@ class PortfolioConstructor:
                 self._dbg[f'ml_score_{_regime}'].append(ml_s)
 
         # DEBUG: 跟踪拒绝原因 per regime
-        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive']:
+        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking']:
             if _rej.get(rk, 0) > 0:
                 self._dbg.setdefault(f'reject_{_regime}', {})
                 self._dbg[f'reject_{_regime}'][rk] = self._dbg[f'reject_{_regime}'].get(rk, 0) + _rej[rk]
@@ -631,7 +700,8 @@ class PortfolioConstructor:
             print(f" [选股] 无候选股票通过初筛 (universe={len(universe)})")
             print(f"   拒绝明细: no_sig={_rej['no_sig']} not_buy={_rej['not_buy']} "
                   f"bad_factor={_rej['bad_factor']} no_price={_rej['no_price']} "
-                  f"too_expensive={_rej['too_expensive']} cooldown={_rej['cooldown']}")
+                  f"too_expensive={_rej['too_expensive']} cooldown={_rej['cooldown']} "
+                  f"reducing={_rej['reducing']} unlocking={_rej['unlocking']}")
             plog.alert(f"portfolio: 0 candidates from {len(universe)} universe at {date}")
             plog.log_selection_context(date, 0, len(universe), 0, 0)
             return {}
@@ -891,7 +961,7 @@ class PortfolioConstructor:
         current_codes = set(current_positions.keys())
 
         # 换手控制：现有持仓给予换手惩罚加分，需超过交易成本才能被替换
-        hold_threshold = 0.2  # P2: 0.3→0.2, 更宽松的保留条件
+        hold_threshold = self.hold_threshold  # P2: 0.3→0.2, 更宽松的保留条件
 
         # 计算有效得分: 纯score(已含门控质量) 截面排名 + 时序调整
         # Gate 1-4已在信号层编码为adjusted_score，组合层只做时序/行业/换手微调
@@ -1038,11 +1108,16 @@ class PortfolioConstructor:
 
         # === 纯score排序选股 ===
         selected = []
+        _ind_count = {}  # 同行业只数上限(max_per_industry, 0=不限制)
         for c in qualified:
             if len(selected) >= n_positions:
                 break
             if c in selected:
                 continue
+            _ind = c.get('industry', '') or 'default'
+            if self.max_per_industry and _ind_count.get(_ind, 0) >= self.max_per_industry:
+                continue
+            _ind_count[_ind] = _ind_count.get(_ind, 0) + 1
             selected.append(c)
             # DEBUG: 统计买入结构
             bp = c.get('chan_buy_point', 0)
@@ -1357,7 +1432,8 @@ class PortfolioConstructor:
             return desired_value
 
         # === 基线390%靠持仓熬回调, 个股止损=千刀万剐 — 设为空屏蔽全部 ===
-        cost = {}  # 模拟基线空cost_tracker, 这样所有止损检查都会跳过
+        cost = {} if not self.stock_cost_stop_enabled else cost  # A/B开关: 关闭=空cost屏蔽全部成本类退出(基线), 开启=用执行层cost_tracker
+        _eff_stop_loss = self.position_stop_loss
         for code, current_value in current_positions.items():
             if code not in prices or current_value <= 0:
                 continue
@@ -1377,8 +1453,8 @@ class PortfolioConstructor:
                 self._post_sell_tracking.pop(code, None)
                 continue
 
-            # 分级峰值回撤: 熊市收紧保护, 牛市让利润奔跑
-            if code in self._peak_prices and self._peak_prices[code] > 0:
+            # 分级峰值回撤: 熊市收紧保护, 牛市让利润奔跑 (A/B默认关: 追踪止损与右尾持有冲突)
+            if self.stock_peak_trail_enabled and code in self._peak_prices and self._peak_prices[code] > 0:
                 dd_from_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
                 if bear_risk:
                     trail = 0.03 if pnl_pct <= 0 else 0.05

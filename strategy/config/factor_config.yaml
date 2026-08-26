@@ -7304,18 +7304,54 @@ portfolio:
   position_stop_loss: 0.08
   portfolio_stop_loss: 0.1
   selection:
-    min_rank_pct: 0.4
+    # 2026-08-24: 0.4->0.3. 池门槛曲线(8/22快照, blend04+mp6, 同数据A/B):
+    # 0.5=243.1/1.143, 0.4=248.3/1.16, 0.3=257.6/1.179/19.5(峰值), 0.2=219.5, 0.1=244.1
+    # 跨快照复核(8/21): 0.3=247.3 vs 0.4=244.1, 方向一致. "alpha在池不在序", 放宽池门槛扩候选
+    # (min_confidence为死参数: confidence恒>=1.0, 见portfolio.py:841-849)
+    min_rank_pct: 0.3
     min_absolute_score: 0.0
     min_confidence: 0.60
+    # 换手保护门: 持仓rank_pct高于此值才受turnover_bonus保护(2026-08-25从硬编码0.2参数化)
+    hold_threshold: 0.2
+    # 2026-08-25 股东减持期过滤(硬约束): 减持公告30天内或变动窗口内的股票不入选.
+    # 数据=东财股东增减持(全历史11万+条, 时点安全用公告时刻), 缺失时自动放行.
+    exclude_reduction_periods: true
+    reduction_recent_days: 30
+    # 2026-08-25 限售解禁临近过滤: 未来30天内有占流通市值>=5%的解禁不入选(供给压力, 与减持同族)
+    exclude_unlock_periods: true
+    unlock_ahead_days: 30
+    unlock_min_ratio: 0.05
     chan_gate_enabled: true
     chan_gate_min_count: 2
     chan_fallback_score: 0.4
     exhaustion_max_weight: 0.08
     exhaustion_reduce_mult: 0.5
     industry_max_weight: 0.4
-    max_per_industry: 2
+    max_per_industry: 0
     rank_weight_cap: 0.25
     speculative_max_weight: 0.4
+    # 因子短线准确率加减分 (buy_accuracy.py 实证: 中线第5日P与短线第3日一致, 非噪声)
+    # 因子短线准确率加减分(已停用) — 系统诊断结论:
+    #   单独看第3日P: score单调但弱(48.7→51.4%), 因子族静态过滤=非平稳过拟合,
+    #   180D滚动胜率校准平坦无预测力. 策略纯右尾驱动, 短期胜率结构顶~52%不可强抬.
+    factor_accuracy_adj:
+      enabled: false  # 停用: 因子胜率跨年非平稳(59%→43%)且180D滚动胜率对未来无预测力(校准平坦)=过拟合, 保留代码待条件成熟再评估
+      boost: 0.15
+      penalty: 0.15
+      boost_substrings:
+        - 'fund_pg_improve+fund_rg_improve'
+        - 'fund_pg_improve+fund_profit_growth'
+        - 'fund_pg_improve+fund_pe'
+        - 'turnover_stability+fund_pg'
+        - 'fund_score+fund_revenue'
+        - 'low_downside+volatility'
+      penalty_substrings:
+        - 'fund_pg_improve+trend_lowvol'
+        - 'trend_lowvol_FLAV'
+        - 'trend_initiation+fund_roe'
+        - 'momentum_reversal+rsi_vol_combo'
+        - 'fund_rg_improve+turnover_stability'
+        - 'fund_rg_improve+low_downside'
   fv_exposure_params:
     fv_low: -0.02
     fv_high: 0.03
@@ -7323,9 +7359,11 @@ portfolio:
     exposure_max: 1.0
   turnover_bonus: 0.1
   params:
-    max_positions: 5
+    # 2026-08-23: 5->6. ADV修复后universe 1181->3768, 旧E2结论(7仓-117pp)翻转;
+    # mp6跨两快照稳定胜出mp5(+23~25pp, Sharpe+0.09, MDD更低), mp6ind组合与trigger/emergency复核均不采纳
+    max_positions: 6
     risk_parity_min_weight_ratio: 0.4
-    rank_decay: 0.3
+    rank_decay: 0.15
     chan_bonus_sl2: 0.04
     chan_bonus_buy_point: 0.02
     chan_bonus_trend2: 0.01
@@ -7346,7 +7384,17 @@ portfolio:
     sector_signal_density_weight: 0.6
 base_exposure: 1.0
 portfolio_stop_loss:
+  # 组合回撤熔断(2026-08-20实验C2): 回撤>10%时敞口压到0.65并10日渐进恢复
+  # 诚实成本下 270.6%->305.8%, Sharpe 1.213->1.263, MDD持平 -> 保留开启
+  enabled: true
+  trigger_drawdown: 0.10
+  emergency_exposure: 0.65
+  recovery_days: 10
+stock_stop_loss:
+  # 个股成本止损A/B(2026-08-20): 开启后用执行层cost_tracker的avg_cost, 阈值=portfolio.position_stop_loss(0.08)
+  # 实验C结论: 开启后收益270->235%, Sharpe 1.21->1.16, MDD 33%->43%, 106笔被砍, 2022胜率20.8% -> 已否决
   enabled: false
+  peak_trail_enabled: false  # 分级峰值回撤追踪止损, 默认关(与右尾持有冲突)
 hard_drawdown_stop:
   enabled: false
   trigger_drawdown: 0.15
@@ -7401,7 +7449,9 @@ mean_reversion_exit:
   dist_ma60_reduce: 0.35
   reduce_pct: 0.3
 risk_parity:
-  enabled: true
+  # 2026-08-21实验G: 逆波动率风险平价压收益(305.8%->338.8%, Sharpe+0.03, 2022年-15.3%->-10.9%)
+  # 关闭后走 rank_decay+行业IC 信心加权分支, rank_decay=0.15为网格峰值(0.05/0.15/0.30/0.45: 336/344/339/299)
+  enabled: false
   target_risk_per_stock: 0.1
   max_iterations: 50
 dynamic_rebalance:
@@ -7500,8 +7550,13 @@ stock_pool:
 ml:
   enabled: true
   model_dir: strategy/models
-  blend_weight: 0.5
+  # 2026-08-24: 0.5->0.4. 同数据确定性A/B(mp6, 8/22快照, 全量信号再生):
+  # 0.6=125.6/0.79, 0.5=163.6/0.90, 0.4=248.3/1.16/MDD19.7, 0.3=234.7/1.12, 0.25=156.8/0.88
+  # 单峰曲线峰值0.4; 信号级验证: top-50池超额2021-2025五年fwd10/fwd20双升(+0.07~+0.30pp)
+  # ML在0.5权重稀释因子分; mp5/mp6在0.4下复核: mp6胜出幅度更大(171 vs 248)
+  blend_weight: 0.4
   min_val_ic: 0.02
+  max_consecutive_reuse: 3
   train_window_days: 750
   retrain_frequency: 30
   pred_start_date: '2021-01-01'
@@ -7610,6 +7665,9 @@ backtest:
 cost_model:
   t_plus_1_enabled: true
   impact_cost_enabled: false
+  # 诚实成本模型(2026-08-20): 滑点落地 + 涨跌停不成交拦截, 消除回测乐观偏差
+  slippage_enabled: true
+  limit_fill_block_enabled: true
 live_monitoring:
   enabled: true
   reference_path: strategy/rolling_validation_results/backtest_reference.csv

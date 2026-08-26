@@ -240,13 +240,15 @@ def _compute_stock_factors_worker(args):
             if raw_cf_to_profit is not None and isinstance(raw_cf_to_profit, (int, float)):
                 row['fund_cf_to_profit'] = compress_fundamental_factor(raw_cf_to_profit, 'fund_cf_to_profit')
 
-        # 计算未来收益
+        # 计算未来收益: 尾部forward_period日无未来价格, future_ret=NaN但行保留
+        # (ML预测/实盘信号需要最新交易日的截面因子值)
+        row['future_ret'] = np.nan
         if idx + forward_period < n:
             future_price = close_arr[idx + forward_period]
             current_price = close_arr[idx]
             if current_price > 0:
                 row['future_ret'] = (future_price - current_price) / current_price
-                results.append(row)
+        results.append(row)
 
     return results
 
@@ -301,8 +303,10 @@ def prepare_factor_data(stock_file_map: dict, fd,
             unmatched_count += 1
 
     # 日期采样：每N个交易日采样1次（减少计算量）
+    # 尾部forward_period日不再截断: NaN标签由消费方(IC训练窗/ML purge)自行排除,
+    # 保留尾部行使ML预测/实盘信号覆盖最新交易日
     date_step = config_loader.get('dynamic_factor.date_sample_step', 3)
-    all_factor_dates = all_dates[lookback:-forward_period]
+    all_factor_dates = all_dates[lookback:]
     factor_dates = all_factor_dates[::date_step]
     del all_factor_dates  # 释放中间列表
     print(f"预计算因子数据: {len(factor_dates)} 个时间点 (每{date_step}日采样), {len(stock_file_map)} 只股票")
@@ -419,12 +423,13 @@ def prepare_factor_data(stock_file_map: dict, fd,
     except Exception:
         pass
 
-    # 数据清洗：过滤极端未来收益
+    # 数据清洗：过滤极端未来收益 (NaN=尾部无标签日期, 保留)
     if 'future_ret' in factor_data.columns:
         original_len = len(factor_data)
         factor_data = factor_data[
-            (factor_data['future_ret'] > -0.5) &
-            (factor_data['future_ret'] < 0.5)
+            ((factor_data['future_ret'] > -0.5) &
+             (factor_data['future_ret'] < 0.5)) |
+            factor_data['future_ret'].isna()
         ]
         print(f"因子数据: {original_len} 条 -> {len(factor_data)} 条 (过滤极端值 {original_len - len(factor_data)} 条)")
 
