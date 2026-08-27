@@ -142,6 +142,10 @@ class MLFactorPredictor:
                        and factor_df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
         meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry'] if c in factor_df.columns]
         df = factor_df[meta_cols + numeric_cols].copy()
+        # 行序无关性: XGBoost subsample按行位置抽样, merge_asof等上游重排序会改变
+        # 抽样子集导致同数据不同模型. 固定按(date, code)排序保证确定性.
+        if 'date' in df.columns and 'code' in df.columns:
+            df = df.sort_values(['date', 'code'], kind='stable').reset_index(drop=True)
 
         # 截面标准化: 消除跨日期量级差异, 模型学习相对排名而非绝对量级
         df = self._cross_sectional_zscore(df, numeric_cols)

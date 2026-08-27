@@ -115,6 +115,7 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     from generate_trade_orders import (
         build_stock_file_map, load_prices_for_date, build_orders,
         get_index_regime, load_current_positions, save_current_positions,
+        build_monitor_list, print_monitor_list,
     )
     from core.config_loader import load_config
     from core.signal_store import SignalStore
@@ -241,6 +242,15 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
             sl_price = next((o['stop_loss_price'] for o in orders if o.get('stock_code') == code and 'stop_loss_price' in o), 0)
             tp_price = next((o['take_profit_price'] for o in orders if o.get('stock_code') == code and 'take_profit_price' in o), 0)
             print(f"  {code:>12s} {d['price']:>8.2f} {sl_price:>10.2f} {d.get('support_reason',''):>12s} {tp_price:>10.2f} {d.get('resistance_reason',''):>12s}")
+
+    # ── 持仓监控清单: 全持仓最新支撑/压力 + 过滤警示 ──────────
+    try:
+        monitor = build_monitor_list(str(target_date), new_positions, prices,
+                                     signal_store, stock_file_map)
+        output['monitor'] = monitor
+        print_monitor_list(monitor)
+    except Exception as e:
+        print(f"  [monitor] 生成失败(不影响订单): {e}")
 
     if dry_run:
         import json

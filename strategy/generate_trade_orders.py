@@ -305,6 +305,83 @@ def build_orders(
     return orders, new_positions, order_details
 
 
+def build_monitor_list(
+    target_date: str,
+    positions: Dict[str, dict],
+    prices: Dict[str, float],
+    signal_store,
+    stock_file_map: Dict[str, str],
+) -> List[dict]:
+    """持仓监控清单(2026-08-27): 全部持仓的最新支撑/压力位+浮盈亏+过滤警示.
+
+    订单只给 open/adjust 的票带止损止盈, 老持仓缺盘中参考位 ->
+    每晚为全部持仓重算, 写入 trade_orders.json 的 'monitor' 字段.
+    过滤警示复用三套过滤集(减持计划期/已执行减持/解禁), fail-open.
+    """
+    monitor = []
+    if not positions:
+        return monitor
+
+    warn_map = {}
+    try:
+        from core.alternative_data import AlternativeDataProvider
+        p = AlternativeDataProvider()
+        plan_codes = p.get_reduction_plan_codes(target_date)
+        exec_codes = p.get_reduction_codes(target_date, 30)
+        unlock_codes = p.get_unlock_codes(target_date, 30, 0.05)
+        for c in positions:
+            w = []
+            if c in plan_codes:
+                w.append('减持计划期')
+            if c in exec_codes:
+                w.append('减持期')
+            if c in unlock_codes:
+                w.append('解禁临近')
+            if w:
+                warn_map[c] = w
+    except Exception as e:
+        print(f"  [monitor] 过滤集加载失败(跳过警示): {e}")
+
+    for code in sorted(positions):
+        pos = positions[code]
+        price = prices.get(code, 0) or pos.get('entry_price', 0)
+        try:
+            sl, tp, _ = compute_support_resistance(
+                code, target_date, price, signal_store, stock_file_map)
+        except Exception:
+            sl, tp = 0.0, 0.0
+        entry = pos.get('entry_price', 0)
+        pnl_pct = (price / entry - 1) * 100 if entry else 0.0
+        days_held = ''
+        try:
+            days_held = (date_type.fromisoformat(str(target_date)[:10])
+                         - date_type.fromisoformat(str(pos.get('entry_date', target_date))[:10])).days
+        except Exception:
+            pass
+        monitor.append({
+            'stock_code': _normalize_code(code),
+            'shares': pos.get('shares'),
+            'latest_price': round(price, 2),
+            'market_value': round(price * pos.get('shares', 0)),
+            'pnl_pct': round(pnl_pct, 1),
+            'days_held': days_held,
+            'stop_loss_price': round(sl, 2) if sl else None,
+            'take_profit_price': round(tp, 2) if tp else None,
+            'warnings': warn_map.get(code, []),
+        })
+    return monitor
+
+
+def print_monitor_list(monitor: List[dict]):
+    print(f"\n持仓监控清单 ({len(monitor)}只, 次日执行参考):")
+    print(f"  {'代码':>12s} {'现价':>8s} {'盈亏%':>7s} {'持有天':>5s} {'止损(支撑)':>10s} {'止盈(压力)':>10s} {'警示'}")
+    for m in monitor:
+        warn = ' '.join(m['warnings'])
+        print(f"  {m['stock_code']:>12s} {m['latest_price']:>8.2f} {m['pnl_pct']:>+7.1f} "
+              f"{str(m['days_held']):>5s} {m['stop_loss_price'] or 0:>10.2f} "
+              f"{m['take_profit_price'] or 0:>10.2f} {warn}")
+
+
 def _normalize_code(code: str) -> str:
     """归一化股票代码: 6位数字 → 交易所后缀格式."""
     code = str(code).zfill(6)
@@ -470,6 +547,15 @@ def main():
             sl_price = next((o['stop_loss_price'] for o in orders if o.get('stock_code') == code and 'stop_loss_price' in o), 0)
             tp_price = next((o['take_profit_price'] for o in orders if o.get('stock_code') == code and 'take_profit_price' in o), 0)
             print(f"  {code:>12s} {d['price']:>8.2f} {sl_price:>10.2f} {sl:>12s} {tp_price:>10.2f} {tp:>12s}")
+
+    # ── 持仓监控清单: 全持仓最新支撑/压力 + 过滤警示 ──────────
+    try:
+        monitor = build_monitor_list(str(target_date), new_positions, prices,
+                                     signal_store, stock_file_map)
+        output['monitor'] = monitor
+        print_monitor_list(monitor)
+    except Exception as e:
+        print(f"  [monitor] 生成失败(不影响订单): {e}")
 
     if args.dry_run:
         print("\n[Dry-run] 不写入文件")

@@ -507,6 +507,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                                                direction='backward', allow_exact_matches=False)
                         print(f"[ML] 两融特征已接入: rz_chg5覆盖率 "
                               f"{_ml_df['rz_chg5'].notna().mean() * 100:.1f}%")
+                        # ml_predictor按feature_whitelist过滤特征, 两融特征需显式加入才进模型
+                        _wl = ml_config.get('feature_whitelist')
+                        if _wl is not None:
+                            for _c in ('rz_chg5', 'rz_chg20', 'rz_buy_ratio', 'rqyl_chg5'):
+                                if _c not in _wl:
+                                    _wl.append(_c)
                         del _fdf
                 except Exception as e:
                     print(f"[ML] 两融特征接入失败(降级为不用): {e}")

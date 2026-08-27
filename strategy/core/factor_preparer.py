@@ -346,6 +346,7 @@ def prepare_factor_data(stock_file_map: dict, fd,
     tmp_csv_path = os.path.join(tmp_dir, 'factor_data_tmp.csv')
     tmp_csv_file = open(tmp_csv_path, 'w', encoding='utf-8')
     header_written = False
+    column_order = None
 
     # 加载题材热度计算器（fork前, COW共享）
     concept_calc = None
@@ -359,10 +360,17 @@ def prepare_factor_data(stock_file_map: dict, fd,
 
     def _flush_batch(batch):
         """将一批数据写入临时CSV，避免在内存中累积DataFrame"""
-        nonlocal header_written, total_results
+        nonlocal header_written, total_results, column_order
         if not batch:
             return
         df = pd.DataFrame(batch)
+        # 关键: 不同batch的DataFrame列序可能不同(有/无基本面数据的行键集不同),
+        # 直接to_csv会导致后续batch按各自列序写入 -> 读回时值错位。
+        # 必须按首个batch固定的列序对齐后再写。
+        if column_order is None:
+            column_order = list(df.columns)
+        else:
+            df = df.reindex(columns=column_order)
         total_results += len(df)
         df.to_csv(tmp_csv_file, header=not header_written, index=False)
         header_written = True
