@@ -49,6 +49,14 @@ class AlternativeDataProvider:
         # 业绩预告: 懒加载(超预期事件研究/因子)
         self._yjyg: pd.DataFrame = None
 
+        # 两融个股明细特征frame: 懒加载(build一次, ML每次复放重建provider会重建)
+        self._margin_feat: pd.DataFrame = None
+
+        # 减持计划公告(start/end事件): 懒加载+过期自动增量
+        # 减持计划公告缓存(计划层过滤, 2026-08-27)
+        self._reduction_plans: pd.DataFrame = None
+        self._plan_codes_cache: dict = {}
+
     # ========== 龙虎榜 ==========
 
     def load_dragon_tiger(self) -> pd.DataFrame:
@@ -680,6 +688,163 @@ class AlternativeDataProvider:
                 self._yjyg = old
                 return old
             return pd.DataFrame()
+
+    # ========== 两融个股明细(ML截面特征) ==========
+    # 数据由 data/margin_detail_backfill.py 回填/增量维护(每日收盘后披露, T-1滞后使用)
+
+    def load_margin_detail(self) -> pd.DataFrame:
+        """加载个股融资融券明细(全标的日度, 2021至今). 不存在时返回空框."""
+        cache_path = self.data_dir / 'margin_detail.pkl'
+        if not cache_path.exists():
+            print(f"[AltData] 两融明细缺失: {cache_path}")
+            return pd.DataFrame()
+        df = pd.read_pickle(cache_path)
+        if len(df) == 0:
+            return df
+        df['date'] = df['date'].astype(str)
+        df['code'] = df['code'].astype(str).str.zfill(6)
+        for c in ('rzye', 'rzmre', 'rqyl'):
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        return df
+
+    def get_margin_feature_frame(self) -> pd.DataFrame:
+        """两融截面特征frame: (date, code, rz_chg5, rz_chg20, rz_buy_ratio, rqyl_chg5).
+
+        融资余额变化率=杠杆资金拥挤度/投机需求; 融券余量变化=看空压力.
+        调用方负责T-1滞后(merge_asof allow_exact_matches=False);
+        非两融标的不在此frame中(join后为NaN, XGBoost原生处理).
+        """
+        if getattr(self, '_margin_feat', None) is not None:
+            return self._margin_feat
+        df = self.load_margin_detail()
+        if df is None or len(df) == 0:
+            self._margin_feat = pd.DataFrame()
+            return self._margin_feat
+        df = df.dropna(subset=['rzye']).sort_values(['code', 'date'])
+        g = df.groupby('code', sort=False)
+        feat = pd.DataFrame({
+            'date': df['date'].values,
+            'code': df['code'].values,
+            'rz_chg5': g['rzye'].pct_change(5).values,
+            'rz_chg20': g['rzye'].pct_change(20).values,
+            'rz_buy_ratio': (df['rzmre'] / df['rzye']).values,
+            'rqyl_chg5': g['rqyl'].pct_change(5).values,
+        })
+        # pct_change对0余额产生inf; 极值截断到±3
+        num_cols = ['rz_chg5', 'rz_chg20', 'rz_buy_ratio', 'rqyl_chg5']
+        feat[num_cols] = feat[num_cols].replace([np.inf, -np.inf], np.nan).clip(-3, 3).astype('float32')
+        feat = feat.sort_values('date')
+        self._margin_feat = feat
+        print(f"[AltData] 两融特征frame: {len(feat)} 行, {feat['code'].nunique()} 标的, "
+              f"{feat['date'].min()}~{feat['date'].max()}")
+        return feat
+
+    # ========== 减持计划公告(计划层过滤, 2026-08-27) ==========
+    # 背景(301257事件): 增减持明细只记录已执行减持, 预披露的减持计划不进库,
+    # 刚预披露的标的仍会被选入. 计划层靠公告标题状态机补齐:
+    # start(预披露/拟减持) -> end(实施完成/期限届满/结果公告/实施完毕/终止).
+    # 全量数据由 data/reduction_plan_backfill.py 回填(2021至今); 此处懒加载+自动增量.
+
+    def _fetch_reduction_plans_recent(self, months: int = 2) -> pd.DataFrame:
+        """拉取近N个月持股变动公告中的减持类公告(东财公告大全), 供增量补齐."""
+        import time as _time
+        import calendar
+        from akshare.stock_fundamental.stock_notice import _stock_notice_report
+        now = pd.Timestamp.now()
+        ym_list = []
+        y, m = now.year, now.month
+        for _ in range(months):
+            ym_list.append((y, m))
+            m -= 1
+            if m < 1:
+                y, m = y - 1, 12
+        rows = []
+        for y, m in reversed(ym_list):
+            last = calendar.monthrange(y, m)[1]
+            b, e = f'{y:04d}-{m:02d}-01', f'{y:04d}-{m:02d}-{last:02d}'
+            try:
+                raw = _stock_notice_report(symbol='持股变动', begin_date=b, end_date=e)
+            except Exception as ex:
+                print(f"[AltData] 减持计划增量拉取{b[:7]}失败: {str(ex)[:60]}")
+                continue
+            _time.sleep(0.8)
+            if raw is None or len(raw) == 0:
+                continue
+            jc = raw[raw['公告标题'].astype(str).str.contains('减持')]
+            if len(jc):
+                rows.append(pd.DataFrame({
+                    'ann_date': jc['公告日期'].astype(str).str[:10],
+                    'code': jc['代码'].astype(str).str.zfill(6),
+                    'name': jc['名称'].astype(str),
+                    'title': jc['公告标题'].astype(str),
+                }))
+        if not rows:
+            return pd.DataFrame()
+        df = pd.concat(rows, ignore_index=True)
+        end_keys = ('实施完成', '期限届满', '结果公告', '实施完毕', '终止')
+
+        def _kind(t):
+            t = str(t)
+            if '预披露' in t or '拟减持' in t or '拟计划减持' in t:
+                return 'start'
+            if any(k in t for k in end_keys):
+                return 'end'
+            return 'other'
+
+        df['kind'] = df['title'].map(_kind)
+        return df
+
+    def load_reduction_plans(self) -> pd.DataFrame:
+        """减持计划公告frame(懒加载+自动增量). 列: ann_date/code/name/title/kind.
+
+        增量触发: 最后公告日<今天(落后), 或pkl超过4小时未刷新(当天日间新发公告,
+        18:00实盘前会重拉一次; 拉取失败fail-open用已有数据).
+        """
+        if self._reduction_plans is not None:
+            return self._reduction_plans
+        pkl = self.data_dir / 'reduction_plans.pkl'
+        df = pd.read_pickle(pkl) if pkl.exists() else pd.DataFrame()
+        today = str(pd.Timestamp.now().date())
+        last = df['ann_date'].max() if len(df) else None
+        pkl_age_h = (pd.Timestamp.now().timestamp() - pkl.stat().st_mtime) / 3600 if pkl.exists() else 99
+        if last is None or last < today or pkl_age_h > 4:
+            try:
+                fresh = self._fetch_reduction_plans_recent()
+                if len(fresh):
+                    df = fresh if not len(df) else pd.concat([df, fresh], ignore_index=True)
+                    df = df.drop_duplicates(subset=['code', 'ann_date', 'title']).reset_index(drop=True)
+                if len(df):
+                    df.to_pickle(pkl)
+                new_last = df['ann_date'].max() if len(df) else 'NA'
+                print(f"[AltData] 减持计划已增量更新: {len(df)} 条, 最新公告 {new_last}")
+            except Exception as e:
+                print(f"[AltData] 减持计划增量失败(用已有数据): {e}")
+        else:
+            print(f"[AltData] 减持计划: {len(df)} 条, 最新公告 {last}")
+        self._reduction_plans = df
+        return df
+
+    def get_reduction_plan_codes(self, date) -> set:
+        """当日处于减持计划期内的股票集合(计划层).
+
+        状态机: 取ann_date<=date的最近一条start/end事件; 该事件为start且
+        距date<=210天 => 计划期内(预披露后未见到完成/届满公告).
+        210天兜底: 一般减持计划期限<=6个月, 无end公告的start不会永久污染.
+        """
+        d = str(date)[:10]
+        if d in self._plan_codes_cache:
+            return self._plan_codes_cache[d]
+        df = self.load_reduction_plans()
+        codes = set()
+        if len(df):
+            ev = df[df['kind'].isin(['start', 'end']) & (df['ann_date'] <= d)]
+            ev = ev.sort_values('ann_date').groupby('code', sort=False).tail(1)
+            active = ev[ev['kind'] == 'start']
+            if len(active):
+                age = (pd.Timestamp(d) - pd.to_datetime(active['ann_date'])).dt.days
+                codes = set(active.loc[age <= 210, 'code'])
+        self._plan_codes_cache[d] = codes
+        return codes
 
 
 # ========== 单例 ==========

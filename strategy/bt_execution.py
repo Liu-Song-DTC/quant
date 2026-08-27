@@ -490,6 +490,28 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         try:
             from core.ml_predictor import MLFactorPredictor
 
+            # 两融截面特征接入(仅ML训练/预测用, 不进信号引擎的factor_df;
+            # T-1滞后: 融资融券收盘后披露, merge_asof不取当日匹配)
+            _ml_df = factor_df
+            if config.get('margin_features.enabled', False):
+                try:
+                    from core.alternative_data import get_provider
+                    _mfeat = get_provider().get_margin_feature_frame()
+                    if _mfeat is not None and len(_mfeat):
+                        _mfeat = _mfeat.copy()
+                        _fdf = factor_df.sort_values('date')
+                        _mfeat['date'] = pd.to_datetime(_mfeat['date']).astype(_fdf['date'].dtype)
+                        _fdf['code'] = _fdf['code'].astype(str)
+                        _mfeat['code'] = _mfeat['code'].astype(str)
+                        _ml_df = pd.merge_asof(_fdf, _mfeat, on='date', by='code',
+                                               direction='backward', allow_exact_matches=False)
+                        print(f"[ML] 两融特征已接入: rz_chg5覆盖率 "
+                              f"{_ml_df['rz_chg5'].notna().mean() * 100:.1f}%")
+                        del _fdf
+                except Exception as e:
+                    print(f"[ML] 两融特征接入失败(降级为不用): {e}")
+                    _ml_df = factor_df
+
             _train_window = ml_config.get('train_window_days', 750)
             _retrain_freq = ml_config.get('retrain_frequency', 60)
             _pred_start = pd.Timestamp(ml_config.get('pred_start_date', '2021-01-01'))
@@ -532,9 +554,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     _d0_pos = int(np.searchsorted(np.asarray(all_dates), _d0_ts))
                     _purge_end = all_dates[max(0, _d0_pos - _fp_days)]
                     train_start = first_pred_date - pd.Timedelta(days=_train_window)
-                    train_mask = (factor_df['date'] >= train_start) & \
-                                 (factor_df['date'] < _purge_end)
-                    train_df = factor_df[train_mask]
+                    train_mask = (_ml_df['date'] >= train_start) & \
+                                 (_ml_df['date'] < _purge_end)
+                    train_df = _ml_df[train_mask]
 
                     if len(train_df) < 50000:
                         print(f"  chunk {chunk_idx}: 训练样本不足({len(train_df)}), 跳过")
@@ -586,7 +608,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                         ml_predictor.save_model(_ml_model_path)
 
                     for date in chunk_dates:
-                        date_df = factor_df[factor_df['date'] == date]
+                        date_df = _ml_df[_ml_df['date'] == date]
                         if len(date_df) == 0:
                             continue
                         _regime_val = _regime_map.get(date.strftime('%Y-%m-%d'), 0) if _regime_map else 0

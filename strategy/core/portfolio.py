@@ -125,6 +125,9 @@ class PortfolioConstructor:
         self.reduction_recent_days = sel_config.get('reduction_recent_days', 30)
         # 2026-08-25: 限售解禁临近过滤 - 未来N天内有大额解禁(占流通市值比例)不入选
         self.exclude_unlock = sel_config.get('exclude_unlock_periods', False)
+        # 2026-08-27: 减持计划期过滤(计划层) - 预披露~实施完成/届满之间不入选
+        # (增减持明细只记录已执行减持, 计划层靠公告状态机: 301257事件)
+        self.exclude_reduction_plans = sel_config.get('exclude_reduction_plans', False)
         self.unlock_ahead_days = sel_config.get('unlock_ahead_days', 30)
         self.unlock_min_ratio = sel_config.get('unlock_min_ratio', 0.05)
         self.hold_threshold = sel_config.get('hold_threshold', 0.2)  # 换手保护门: 持仓rank_pct需高于此才受保护
@@ -291,6 +294,8 @@ class PortfolioConstructor:
         self._reduction_codes_cache_date = None
         self._unlock_codes_cache = None
         self._unlock_codes_cache_date = None
+        self._plan_codes_cache = None
+        self._plan_codes_cache_date = None
 
     def _reduction_codes(self, date):
         """当日处于减持期的股票集合. 数据缺失/加载失败时返回空集(fail-open, 不阻塞实盘)."""
@@ -310,6 +315,25 @@ class PortfolioConstructor:
             if codes:
                 print(f" [减持过滤] {str(date)[:10]} 减持期股票 {len(codes)} 只")
         return self._reduction_codes_cache
+
+    def _reduction_plan_codes(self, date):
+        """当日处于减持计划期内(预披露未完成)的股票集合. fail-open, 不阻塞实盘."""
+        if not self.exclude_reduction_plans:
+            return set()
+        if self._plan_codes_cache_date != str(date)[:10]:
+            try:
+                if self._alt_provider is None:
+                    from .alternative_data import AlternativeDataProvider
+                    self._alt_provider = AlternativeDataProvider()
+                codes = self._alt_provider.get_reduction_plan_codes(date)
+            except Exception as e:
+                print(f" [减持计划过滤] 数据加载失败, 本期放行: {e}")
+                codes = set()
+            self._plan_codes_cache = codes
+            self._plan_codes_cache_date = str(date)[:10]
+            if codes:
+                print(f" [减持计划过滤] {str(date)[:10]} 计划期内股票 {len(codes)} 只")
+        return self._plan_codes_cache
 
     def _unlock_codes(self, date):
         """未来unlock_ahead_days天内有大额解禁的股票集合. fail-open."""
@@ -575,8 +599,10 @@ class PortfolioConstructor:
         candidates = []
         # 过滤拒绝原因统计
         _rej = {'no_sig': 0, 'not_buy': 0, 'cooldown': 0, 'bad_factor': 0,
-                'no_price': 0, 'too_expensive': 0, 'reducing': 0, 'unlocking': 0, 'accepted': 0}
+                'no_price': 0, 'too_expensive': 0, 'reducing': 0, 'unlocking': 0,
+                'plan_reducing': 0, 'accepted': 0}
         _reducing_codes = self._reduction_codes(date)
+        _plan_codes = self._reduction_plan_codes(date)
         _unlocking_codes = self._unlock_codes(date)
         for code in universe:
             sig = signal_store.get(code, date)
@@ -592,6 +618,11 @@ class PortfolioConstructor:
             # 减持期过滤(2026-08-25): 股东减持期内不入选
             if _reducing_codes and code in _reducing_codes:
                 _rej['reducing'] += 1
+                continue
+
+            # 减持计划期过滤(2026-08-27): 预披露~实施完成/届满之间不入选(计划层)
+            if _plan_codes and code in _plan_codes:
+                _rej['plan_reducing'] += 1
                 continue
 
             # 解禁临近过滤(2026-08-25): 未来30天内大额解禁不入选
@@ -688,7 +719,7 @@ class PortfolioConstructor:
                 self._dbg[f'ml_score_{_regime}'].append(ml_s)
 
         # DEBUG: 跟踪拒绝原因 per regime
-        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking']:
+        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking', 'plan_reducing']:
             if _rej.get(rk, 0) > 0:
                 self._dbg.setdefault(f'reject_{_regime}', {})
                 self._dbg[f'reject_{_regime}'][rk] = self._dbg[f'reject_{_regime}'].get(rk, 0) + _rej[rk]

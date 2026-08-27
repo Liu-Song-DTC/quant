@@ -7317,6 +7317,11 @@ portfolio:
     # 数据=东财股东增减持(全历史11万+条, 时点安全用公告时刻), 缺失时自动放行.
     exclude_reduction_periods: true
     reduction_recent_days: 30
+    # 2026-08-27 减持计划期过滤(计划层, 硬约束): 预披露/拟减持公告~实施完成/届满之间不入选.
+    # 背景(301257事件): 增减持明细只记录已执行减持, 刚预披露的标的原过滤不命中.
+    # 数据=东财公告大全持股变动类(2021至今5.2万条, data/reduction_plan_backfill.py回填,
+    # 加载时自动增量), 状态机判定计划期内(start后<=210天未见end), 缺失时放行.
+    exclude_reduction_plans: true
     # 2026-08-25 限售解禁临近过滤: 未来30天内有占流通市值>=5%的解禁不入选(供给压力, 与减持同族)
     exclude_unlock_periods: true
     unlock_ahead_days: 30
@@ -7653,6 +7658,13 @@ multi_timeframe:
   structure:
     enabled: true
     pivot_lookback: 5
+# 两融截面特征接入ML(2026-08-26). 特征: rz_chg5/rz_chg20(融资余额5/20日变化率),
+# rz_buy_ratio(融资买入/余额), rqyl_chg5(融券余量5日变化). T-1滞后(收盘后披露,
+# merge_asof不取当日), 非两融标的NaN由XGBoost原生处理. 数据由
+# data/margin_detail_backfill.py维护(4.47M行, 2021至今全标的).
+# 双态A/B验证中(8/26数据态配对 vs 实盘ctrl 279.48), 两态同向前不开启.
+margin_features:
+  enabled: false
 backtest:
   cash: 250000.0
   commission: 0.0005
