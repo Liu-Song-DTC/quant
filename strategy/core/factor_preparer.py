@@ -194,7 +194,13 @@ def _compute_stock_factors_worker(args):
         # 使用 factor_calculator 计算所有组合因子（含 tech_fund_combo）
         combo_factors = compute_composite_factors(ind, idx, fund_score=compressed_fund_score)
 
-        row = {'code': code, 'date': sample_date, 'industry': stock_industry or ''}
+        # 行键模板: 条件添加的键(fund_*/concept_heat/ln_cap)先占位None,
+        # 保证每行键集完全一致 -> 任何批次切分下列序恒等, 不会丢列/错位
+        row = {'code': code, 'date': sample_date, 'industry': stock_industry or '',
+               'ln_cap': None, 'concept_heat': None,
+               'fund_roe': None, 'fund_profit_growth': None, 'fund_revenue_growth': None,
+               'fund_score': None, 'fund_gross_margin': None, 'fund_cf_to_profit': None,
+               'future_ret': None}
         row.update(combo_factors)
 
         # 市值因子 (size): A股小盘效应, 流通市值≈成交额/换手率
