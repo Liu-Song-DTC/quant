@@ -58,6 +58,7 @@ class SignalStore:
             'vol_opening_confirm': float, 'vol_opening_strength': float,
             'bom_quality_score': float, 'gate_quality': float,
             'profit_declining': bool, 'ma_trend_up': bool,
+            'ml_score': float, 'adjusted_score': float,
         }
         # 只读取CSV中存在的列（向后兼容旧格式，缺少新字段时用默认值）
         available_cols = pd.read_csv(csv_path, nrows=0).columns.tolist()
@@ -171,4 +172,6 @@ class SignalStore:
             _gate_quality=_f('gate_quality', 0.5),
             profit_declining=_b('profit_declining'),
             ma_trend_up=_b('ma_trend_up'),
+            ml_score=_f('ml_score'),
+            adjusted_score=_f('adjusted_score'),
         )

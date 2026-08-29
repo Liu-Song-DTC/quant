@@ -69,6 +69,15 @@ def _malloc_trim(pad=0):
 FROMDATE = config.get('backtest.fromdate', None)
 TODATE = config.get('backtest.todate', None)
 
+# 实验钩子: 股票池截止日覆盖 (仅实验用, 默认None=跟随TODATE)
+# 用途: 隔离"池子变化 vs 数据追加"对回测的影响, 例 POOL_TODATE=2026-08-28
+_POOL_TODATE_OVERRIDE = os.environ.get('POOL_TODATE') or None
+
+
+def _pool_todate():
+    """股票池截止日: 实验覆盖优先, 否则跟随回测TODATE"""
+    return _POOL_TODATE_OVERRIDE if _POOL_TODATE_OVERRIDE else TODATE
+
 # 数据路径 - 从配置文件读取，默认相对于策略目录（而非 CWD）
 _STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_STRATEGY_DIR)
@@ -328,7 +337,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # === 股票池过滤（先过滤再预计算，避免读不需要的文件） ===
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     if stock_pool_enabled:
-        stock_pool = get_stock_pool(todate=TODATE)
+        stock_pool = get_stock_pool(todate=_pool_todate())
         pool_codes = stock_pool | {'sh000001', '000001'}
         before_count = len(stock_file_map)
         stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
@@ -758,7 +767,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                      'mtf_discount_factor,mtf_alignment_score,avg_trend_strength,'
                      'risk_vol,daily_return,volume_ratio,stroke_phase,exhaustion_risk,'
                      'gap_breakout_confirm,vol_opening_confirm,vol_opening_strength,'
-                     'bom_quality_score,gate_quality,profit_declining,ma_trend_up\n')
+                     'bom_quality_score,gate_quality,profit_declining,ma_trend_up,'
+                     'ml_score,adjusted_score\n')
     signal_count = [0]  # 用list实现闭包写入计数
 
     # 多进程并行生成信号
@@ -879,7 +889,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                 f'{getattr(sig, "bom_quality_score", 0.3)},'
                 f'{getattr(sig, "_gate_quality", 0.5)},'
                 f'{getattr(sig, "profit_declining", False)},'
-                f'{getattr(sig, "ma_trend_up", False)}\n'
+                f'{getattr(sig, "ma_trend_up", False)},'
+                f'{getattr(sig, "ml_score", 0.0)},'
+                f'{getattr(sig, "adjusted_score", 0.0)}\n'
             )
             signal_csv.write(row)
             signal_count[0] += 1
@@ -1704,7 +1716,7 @@ if __name__ == "__main__":
 
     # 股票池过滤
     if stock_pool_enabled:
-        stock_pool = get_stock_pool(todate=TODATE)
+        stock_pool = get_stock_pool(todate=_pool_todate())
         stock_codes = [c for c in stock_codes if c in stock_pool]
         print(f"基本面数据加载(股票池): {len(stock_codes)} 只")
     else:
