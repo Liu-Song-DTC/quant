@@ -91,6 +91,9 @@ class ConfigLoader:
                 'fv_low': -0.01, 'fv_high': 0.02, 'exposure_min': 0.4, 'exposure_max': 1.0,
             }),
             'turnover_bonus': self.get('portfolio.turnover_bonus', 0.05),
+            # C实验(2026-08-29): 换仓缓冲 — 注意此白名单逐键映射, 新键必须显式加入否则永不生效
+            'replacement_buffer': self.get('portfolio.replacement_buffer', 0.0),
+            'min_hold_days': self.get('portfolio.params.min_hold_days', 5),
             'selection': self.get('portfolio.selection', {
                 'min_rank_pct': 0.50, 'min_absolute_score': 0.0, 'min_confidence': 0.80,
             }),

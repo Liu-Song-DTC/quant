@@ -7363,6 +7363,8 @@ portfolio:
     exposure_min: 0.35
     exposure_max: 1.0
   turnover_bonus: 0.1
+  # C实验(2026-08-29): 换仓缓冲 — 已持仓在effective_score上的额外δ(rank尺度), 挑战者须超过δ才替换, 0=关闭
+  replacement_buffer: 0.0
   params:
     # 2026-08-23: 5->6. ADV修复后universe 1181->3768, 旧E2结论(7仓-117pp)翻转;
     # mp6跨两快照稳定胜出mp5(+23~25pp, Sharpe+0.09, MDD更低), mp6ind组合与trigger/emergency复核均不采纳
@@ -7542,6 +7544,8 @@ chan_theory_enhanced:
     enabled: true
     min_signal_level: 2
     min_trend_type: 0
+    # D实验(2026-08-30): B6族整族摘除 — 两抽取+72.7~88.5pp/Sharpe+0.169~0.186, 正式采纳为新基线
+    reject_all: true
   bp5_gate:
     enabled: true
     min_signal_level: 2

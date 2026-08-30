@@ -371,6 +371,8 @@ class SignalEngine:
         self.bp6_gate_enabled = bp6_cfg.get('enabled', True)
         self.chan_bp6_min_signal_level = bp6_cfg.get('min_signal_level', 1)
         self.chan_bp6_min_trend_type = bp6_cfg.get('min_trend_type', 0)  # TT>=0: 盘整或上涨才允许均线回踩
+        # D实验(2026-08-30): B6族整族摘除 — 三抽取逐笔审计一致负贡献(WR 32-40%), reject_all=true直接拒绝
+        self.bp6_reject_all = bp6_cfg.get('reject_all', False)
         # B5质量门控 (趋势启动, 占4.3%信号, 待数据验证)
         self.b5_gate_enabled = bp5_cfg.get('enabled', True)
         self.chan_b5_min_signal_level = bp5_cfg.get('min_signal_level', 1)
@@ -858,6 +860,11 @@ class SignalEngine:
                     buy = False
 
             # === BP6 质量门控: 均线回踩, 占10.7%信号, WR=49.6%低于平均 ===
+            if buy and bp_buy == 6 and self.bp6_reject_all:
+                # D实验(2026-08-30): 整族摘除(全拒绝), 两抽取+72.7~88.5pp, Sharpe+0.169~0.186
+                plog.log_buy_point_gate('BP6', True)
+                buy = False
+
             if buy and bp_buy == 6 and self.bp6_gate_enabled:
                 _b6_sl = int(result['signal_level'][i])
                 _b6_tt = int(result['trend_type'][i])

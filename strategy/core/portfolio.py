@@ -150,6 +150,9 @@ class PortfolioConstructor:
         self.turnover_bonus = portfolio_config.get('turnover_bonus', 0.04)
         self.max_turnover_ratio = portfolio_config.get('max_turnover_ratio', 0.60)
         self.min_hold_days = portfolio_config.get('min_hold_days', 5)
+        # C实验(2026-08-29): 换仓缓冲 — 已持仓在effective_score上的额外δ(rank尺度),
+        # 挑战者须超过δ才替换, 压住top-K边界翻转, 不扩仓。0=关闭(与原行为一致)
+        self.replacement_buffer = portfolio_config.get('replacement_buffer', 0.0)
 
         # === 累计入选追踪：老朋友优先 ===
         self._selection_history = {}  # {code: count}
@@ -1113,8 +1116,11 @@ class PortfolioConstructor:
             else:
                 mom_adj = (mom_60d - 0.0) * 0.18
 
+            # C实验: 换仓缓冲 — 已持仓δ保护(有卖点不保护), 0=关闭
+            repl_buffer = self.replacement_buffer if (c['is_held'] and c.get('chan_sell_point', 0) == 0) else 0.0
+
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
-            c['effective_score'] = rank * multiplier + additive + turnover + mom_adj + c.get('no_chan_penalty', 0.0)
+            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0)
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
