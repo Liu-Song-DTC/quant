@@ -259,6 +259,74 @@ def _compute_stock_factors_worker(args):
     return results
 
 
+def _data_fingerprint(stock_file_map: dict, fd, extra_paths: list) -> str:
+    """数据内容指纹 (mtime_ns+size): 因子计算消费的全部输入文件。
+
+    缓存键缺陷修复 (344复现陷阱): 旧键只含池代码/日期/参数, 不含数据内容 ->
+    K线/基本面/题材数据刷新后键不变, 旧缓存被静默复用 (8/31新基本面缓存与
+    8/28原版缓存键相同, 谁先建好谁占据该键)。加入指纹后, 任何输入文件变动
+    都会使缓存失效并触发重算 — 失效方向安全 (只多算一次, 不会错用旧值)。
+    """
+    import hashlib
+    h = hashlib.md5()
+
+    def _feed(path):
+        try:
+            st = os.stat(path)
+            h.update(f"{path}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
+        except OSError:
+            h.update(f"{path}|MISSING;".encode('utf-8'))
+
+    for p in sorted(set(stock_file_map.values())):
+        _feed(p)
+    if fd is not None and getattr(fd, 'data_path', None):
+        for root, _, files in os.walk(fd.data_path):
+            for f in sorted(files):
+                _feed(os.path.join(root, f))
+    for p in sorted(set(extra_paths)):
+        if os.path.isdir(p):
+            for root, _, files in os.walk(p):
+                for f in sorted(files):
+                    _feed(os.path.join(root, f))
+        else:
+            _feed(p)
+    return h.hexdigest()[:8]
+
+
+# 因子值计算所消费的代码/配置 (改动任一 → 因子缓存失效重算, 方向安全)
+_FACTOR_CODE_FILES = [
+    'core/factor_preparer.py',
+    'core/factor_calculator.py',
+    'core/concept_heat.py',
+    'core/industry_chain.py',
+    'core/alternative_data.py',
+    'core/fundamental.py',
+    'core/market_regime_detector.py',
+    'core/bom_chain.py',
+    'core/gate_scorer.py',
+    'config/factor_config.yaml',
+]
+
+
+def _code_fingerprint() -> str:
+    """代码指纹: 因子计算逻辑/配置的 (mtime_ns+size)。
+
+    数据指纹只覆盖输入文件; 代码改动(如 concept_heat EMA污染修复)后缓存键
+    若不变, 旧因子值会被静默复用 — 与344陷阱同款。代码指纹杜绝此类复用。
+    """
+    import hashlib
+    h = hashlib.md5()
+    base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    for rel in _FACTOR_CODE_FILES:
+        p = os.path.join(base, rel)
+        try:
+            st = os.stat(p)
+            h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
+        except OSError:
+            h.update(f"{rel}|MISSING;".encode('utf-8'))
+    return h.hexdigest()[:8]
+
+
 def prepare_factor_data(stock_file_map: dict, fd,
                        detailed_industries: dict,
                        all_dates: list,
@@ -318,13 +386,24 @@ def prepare_factor_data(stock_file_map: dict, fd,
     print(f"预计算因子数据: {len(factor_dates)} 个时间点 (每{date_step}日采样), {len(stock_file_map)} 只股票")
 
     # === 因子数据缓存: 避免重复计算 ===
+    # 缓存键 = 池/日期/参数 + 数据内容指纹 (输入文件变化 → 键变化 → 缓存自动失效)
     from .cache_manager import load_factor_cache, save_factor_cache
     import hashlib
     _n_stocks = len(stock_file_map)
     _n_dates = len(factor_dates)
+    _data_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                              '..', '..', 'data'))
+    _data_fp = _data_fingerprint(stock_file_map, fd, [
+        os.path.join(_data_root, 'stock_concept_map.pkl'),
+        os.path.join(_data_root, 'concept_hist.pkl'),
+        os.path.join(_data_root, 'concept_daily.csv'),
+    ])
+    _code_fp = _code_fingerprint()
     _cache_key_str = ','.join(sorted(stock_file_map.keys())[:100]) + str(_n_stocks) + \
-                     str(factor_dates[0]) + str(factor_dates[-1]) + str(date_step) + str(lookback)
+                     str(factor_dates[0]) + str(factor_dates[-1]) + str(date_step) + str(lookback) + \
+                     '_fp' + _data_fp + '_cfp' + _code_fp
     _cache_hash = hashlib.md5(_cache_key_str.encode()).hexdigest()[:8]
+    print(f"数据指纹: {_data_fp} (K线{len(stock_file_map)}文件 + 基本面 + 题材输入); 代码指纹: {_code_fp}")
     _cached = load_factor_cache(_n_stocks, _n_dates, _cache_hash)
     if _cached is not None and len(_cached) > 0:
         print(f"使用因子缓存，跳过因子计算")

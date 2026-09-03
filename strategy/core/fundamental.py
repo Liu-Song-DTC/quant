@@ -67,8 +67,19 @@ class FundamentalData:
         """
         if code is not None:
             self.stock_data.pop(code, None)
+            if FundamentalData._avail_cache is not None:
+                FundamentalData._avail_cache.pop(code, None)
         else:
             self.stock_data.clear()
+            if FundamentalData._avail_cache is not None:
+                FundamentalData._avail_cache.clear()
+
+    # 性能优化缓存 (2026-09-01): code -> (df_id, sorted_df, avail_arr)
+    # sorted_df = df.sort_values('报告期', ascending=False) 一次性预排序,
+    # avail_arr = sorted_df['数据可用日期'] object数组 (加载时已 astype(str)),
+    # 命中时返回 sorted_df[mask], 与旧实现 df[mask].sort_values 逐行等价
+    # (全池5585只CSV 报告期 均无重复 — 2026-09-01全量扫描, 排序结果唯一确定)。
+    _avail_cache = None
 
     def _get_available_data(self, code, current_date):
         """获取当前日期可用的基本面数据（防止信息泄露）
@@ -93,15 +104,40 @@ class FundamentalData:
         else:
             current_date = str(current_date).replace('-', '')
 
-        # 只返回数据可用日期 <= 当前日期的数据
-        if '数据可用日期' in df.columns:
-            df = df[df['数据可用日期'] <= current_date]
+        # 快速路径 (性能优化): 结果与下方旧路径逐行等价, 回退条件:
+        # 重复报告期(排序不确定性) / 列缺失 / 缓存构建异常 / 比较异常
+        cache = FundamentalData._avail_cache
+        if cache is None:
+            cache = FundamentalData._avail_cache = {}
+        entry = cache.get(code)
+        if entry is None or entry[0] is not df:
+            sorted_df = None
+            if '数据可用日期' in df.columns and '报告期' in df.columns:
+                try:
+                    if not df['报告期'].duplicated().any():
+                        sorted_df = df.sort_values('报告期', ascending=False)
+                        avail_arr = sorted_df['数据可用日期'].to_numpy(dtype=object)
+                        entry = cache[code] = (df, sorted_df, avail_arr)
+                except Exception:
+                    entry = cache[code] = (df, None, None)
+            else:
+                entry = cache[code] = (df, None, None)
+        _, sorted_df, avail_arr = entry
+        if sorted_df is not None:
+            try:
+                mask = avail_arr <= current_date
+            except TypeError:
+                mask = None  # 混合类型比较异常 → 回退旧路径(旧路径同样会抛)
+            if mask is not None:
+                return sorted_df[mask]
 
-        # 按报告期排序，取最新的
-        if '报告期' in df.columns:
-            df = df.sort_values('报告期', ascending=False)
-
-        return df
+        # 旧路径 (缓存未构建 / 异常回退) — 与历史版本行为完全一致
+        out = df
+        if '数据可用日期' in out.columns:
+            out = out[out['数据可用日期'] <= current_date]
+        if '报告期' in out.columns:
+            out = out.sort_values('报告期', ascending=False)
+        return out
 
     def _get_latest(self, code, current_date):
         """获取最新可用的基本面数据"""

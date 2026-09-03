@@ -246,3 +246,20 @@ data/backup_*/
 current_positions.json.bak*
 # 实验产物目录(32G: 信号CSV/因子缓存/归档), 实验脚本不入库
 strategy/rolling_validation_results/
+
+# 实验/备份/恢复产物 (2026-09-03): 不进git
+*.preAfix_*
+*.preBfix_*
+*.prePerf_*
+*.preIso_*
+*.preNoFund_*
+*.preRefresh_*
+*.preRestore_*
+*.preFill_*
+*.preMapRefresh_*
+*.contam_*
+*.ctrl_*
+*.expC_bak
+*.official_*
+current_positions.*.json
+fundamental_*_pre_fix_*.pkl

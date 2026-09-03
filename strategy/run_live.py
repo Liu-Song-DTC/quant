@@ -115,7 +115,7 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     from generate_trade_orders import (
         build_stock_file_map, load_prices_for_date, build_orders,
         get_index_regime, load_current_positions, save_current_positions,
-        build_monitor_list, print_monitor_list,
+        build_monitor_list, print_monitor_list, build_st_filter,
     )
     from core.config_loader import load_config
     from core.signal_store import SignalStore
@@ -169,6 +169,15 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
         if allowed_codes is not None and code not in allowed_codes:
             continue
         universe.append(code)
+
+    # ST过滤 + 基本面新鲜度检查 (2026-08-31修复): 出单路径独立校验, 不依赖回测信号CSV
+    st_codes, stale_codes = build_st_filter(universe, target_date)
+    if st_codes:
+        print(f"  [ST排除] {len(st_codes)} 只: {sorted(st_codes)}")
+        universe = [c for c in universe if c not in st_codes]
+    if stale_codes:
+        print(f"  [WARN] {len(stale_codes)} 只基本面数据陈旧>120天, ST判定可能失效")
+
     print(f"可交易股票: {len(universe)} 只")
 
     # ── 市场状态 ──────────────────────────────────────────
@@ -180,12 +189,13 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     portfolio = PortfolioConstructor(rebalance_interval=1)  # 实盘每日选股
     prev_positions = load_current_positions()
 
-    # 账户资金=总可部署资金; 实盘持仓市值必须是账户资金的子集,
-    # 否则(累计dry-run/脏数据导致持仓≫账户)强制视为无持仓重新满仓选股
+    # 账户资金=总可部署资金; 实盘持仓市值含浮盈可合理略超名义资金,
+    # 只有显著超出(>1.5倍)才判脏数据重置 — 修复(2026-08-30 review P0):
+    # 旧阈值1.0倍导致8/28实盘误触发(305,420>300,000), 清空真实持仓重选
     account_capital = cash
     _pos_sum = sum(info['amount'] for info in prev_positions.values())
-    if _pos_sum > account_capital:
-        print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 账户资金{account_capital:,.0f}, "
+    if _pos_sum > account_capital * 1.5:
+        print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 1.5×账户资金{account_capital:,.0f}, "
               f"判定为脏数据, 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
         prev_positions = {}
         _pos_sum = 0.0
@@ -213,6 +223,16 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
         bear_risk_fast=bear_risk_fast,
         cost=cost,
     )
+
+    # 持仓中的ST强制清仓 (2026-08-31修复): 从目标中移除 → build_orders生成close
+    held_st = [c for c in current_positions if c in st_codes]
+    if held_st:
+        print(f"  [ST强制卖出] 持仓含ST: {held_st}")
+        for c in held_st:
+            adjusted.pop(c, None)
+    held_stale = [c for c in current_positions if c in stale_codes]
+    if held_stale:
+        print(f"  [WARN] 持仓基本面数据陈旧, ST状态无法验证: {held_stale}")
 
     # ── 生成订单 ──────────────────────────────────────────
     orders, new_positions, order_details = build_orders(

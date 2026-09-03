@@ -35,6 +35,14 @@ class AlternativeDataProvider:
         # 龙虎榜历史明细: 懒加载, 首次get_dragon_tiger_dates时自动下载
         self._dt_history = None
 
+        # 信号级逐日memo (2026-09-01性能优化): 北向/两融市场级信号是date的纯函数,
+        # 每股逐bar重复计算 → 按date_str缓存, 跨股票复用
+        self._nb_sig_cache: dict = {}
+        self._mg_sig_cache: dict = {}
+        # 龙虎榜预解析缓存: (df, code_col, date_col, code_strs, dt_arr, buy_col, sell_col)
+        # 原实现每次调用都对全表 astype+extract+to_datetime, 均为df的纯函数, 一次性缓存等价
+        self._dt_parsed = None
+
         # 股东减持: 懒加载; _reduction_idx_*为get_reduction_codes的按日缓存
         self._reduction: pd.DataFrame = None
         self._reduction_idx: set = None
@@ -124,16 +132,20 @@ class AlternativeDataProvider:
         try:
             import akshare as ak
             import time as _time
+            import calendar
             import re
-            print("[AltData] 下载龙虎榜历史明细 (2024-01 ~ 2026-06)...")
+            _now = pd.Timestamp.now()
+            print(f"[AltData] 下载龙虎榜历史明细 (2024-01 ~ {_now:%Y-%m})...")
             all_records = []
-            for year in [2024, 2025, 2026]:
+            for year in [2024, 2025, _now.year]:
                 for month in range(1, 13):
-                    if year == 2026 and month > 6:
+                    if year == _now.year and month > _now.month:
                         break
-                    date_str = f'{year}-{month:02d}'
+                    _start = f'{year}{month:02d}01'
+                    _end = f'{year}{month:02d}{calendar.monthrange(year, month)[1]}'
                     try:
-                        df = ak.stock_lhb_detail_daily_em(date=date_str)
+                        # akshare 1.18: stock_lhb_detail_daily_em 已移除, 改用区间版
+                        df = ak.stock_lhb_detail_em(start_date=_start, end_date=_end)
                         if df is not None and len(df) > 0:
                             all_records.append(df)
                         _time.sleep(0.3)
@@ -213,28 +225,41 @@ class AlternativeDataProvider:
 
         date_str = str(date)[:10]
         df = self._dragon_tiger
-        code_col = next((c for c in df.columns if '代码' in str(c) or c == 'code'), None)
-        date_col = next((c for c in df.columns if '日期' in str(c) or '上榜' in str(c) or c == 'date'), None)
+
+        # 预解析 (2026-09-01性能优化): 代码提取/日期解析/买卖列名均为df的纯函数,
+        # 一次性缓存; 每次调用仅剩 numpy mask + 小子集 sort_values (与原实现逐位等价)
+        parsed = self._dt_parsed
+        if parsed is None or parsed[0] is not df:
+            code_col = next((c for c in df.columns if '代码' in str(c) or c == 'code'), None)
+            date_col = next((c for c in df.columns if '日期' in str(c) or '上榜' in str(c) or c == 'date'), None)
+            if code_col is None or date_col is None:
+                parsed = self._dt_parsed = (df, None, None, None, None, None, None)
+            else:
+                code_strs = df[code_col].astype(str).str.extract(r'(\d{6})', expand=False)
+                try:
+                    dt_arr = pd.to_datetime(df[date_col]).to_numpy()
+                except Exception:
+                    print(f"[AltData] 龙虎榜日期解析失败，date_col={date_col}")
+                    dt_arr = None
+                buy_col = next((c for c in df.columns if '买入' in str(c)), None)
+                sell_col = next((c for c in df.columns if '卖出' in str(c)), None)
+                parsed = self._dt_parsed = (df, code_col, date_col, code_strs, dt_arr, buy_col, sell_col)
+        _, code_col, date_col, code_strs, dt_arr, buy_col, sell_col = parsed
         if code_col is None or date_col is None:
             return 0.0
 
-        code_strs = df[code_col].astype(str).str.extract(r'(\d{6})', expand=False)
-        code_mask = code_strs == code[:6] if code_col else pd.Series([False]*len(df))
+        code_mask = code_strs.to_numpy() == code[:6]  # NaN → False, 与原Series比较一致
         # 日期过滤：仅使用 <= 查询日期的记录，防止前视偏差
-        try:
-            dt_series = pd.to_datetime(df[date_col])
-            date_mask = dt_series <= pd.to_datetime(date_str)
-        except Exception:
-            print(f"[AltData] 龙虎榜日期解析失败，date_col={date_col}")
-            date_mask = pd.Series([True] * len(df))
+        if dt_arr is not None:
+            date_mask = dt_arr <= pd.to_datetime(date_str)
+        else:
+            date_mask = np.ones(len(df), dtype=bool)
         mask = code_mask & date_mask
         recent = df[mask].sort_values(date_col) if date_col and not df[mask].empty else df[mask]
         if recent.empty:
             return 0.0
 
         # 按日期排序后取最近记录的机构净买入占比
-        buy_col = next((c for c in df.columns if '买入' in str(c)), None)
-        sell_col = next((c for c in df.columns if '卖出' in str(c)), None)
         if buy_col and sell_col:
             net = recent.iloc[-1][buy_col] - recent.iloc[-1][sell_col]
             total = recent.iloc[-1][buy_col] + recent.iloc[-1][sell_col] + 1e-10
@@ -296,6 +321,14 @@ class AlternativeDataProvider:
 
         df = self._northbound
         date_str = str(date)[:10]
+        # 逐日memo (2026-09-01性能优化): 信号是date的纯函数, 每股逐bar重复计算
+        if date_str in self._nb_sig_cache:
+            return self._nb_sig_cache[date_str]
+        result = self._nb_signal_impl(df, date_str)
+        self._nb_sig_cache[date_str] = result
+        return result
+
+    def _nb_signal_impl(self, df, date_str) -> float:
         mask = df['date'] <= date_str
         if not mask.any():
             return 0.0
@@ -407,6 +440,14 @@ class AlternativeDataProvider:
 
         df = self._margin
         date_str = str(date)[:10]
+        # 逐日memo (2026-09-01性能优化): 信号是date的纯函数, 每股逐bar重复计算
+        if date_str in self._mg_sig_cache:
+            return self._mg_sig_cache[date_str]
+        result = self._mg_signal_impl(df, date_str)
+        self._mg_sig_cache[date_str] = result
+        return result
+
+    def _mg_signal_impl(self, df, date_str) -> float:
         mask = df['date'] <= date_str
         if not mask.any():
             return 0.0

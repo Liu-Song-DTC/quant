@@ -20,6 +20,42 @@ import yaml
 import os
 
 
+def _has_fundamental_flaw(fd, code, date):
+    """基本面硬伤 (2026-09-03 实验#27):
+
+    - 盈利股: 净利润同比 < -30% (利润大降) → 硬伤
+    - 亏损股: 仅当同比继续恶化(growth<0, 亏损扩大) → 硬伤;
+      亏损收窄/走平/扭亏的转机股放行 (用户确认: 亏损大幅缩窄可以选)
+    - 数据缺失/异常 → False (fail-open, 与减持/解禁过滤同策略)
+
+    fd: FundamentalData 提供者 (as-of: 只取 数据可用日期 <= date 的报告).
+    量纲: get_profit_growth 当前CSV为百分制裸float(如 -30.0 = -30%), 字符串'%'路径返回分数.
+    """
+    try:
+        profit = fd.get_profit(code, date)
+        growth = fd.get_profit_growth(code, date)
+    except Exception:
+        return False
+    pf = None
+    if profit is not None:
+        try:
+            pf = float(profit)
+        except (TypeError, ValueError):
+            pass
+    gf = None
+    if growth is not None:
+        try:
+            gf = float(growth)
+        except (TypeError, ValueError):
+            pass
+    if pf is not None and pf < 0:
+        # 亏损股: 只在亏损扩大时排除; 收窄(growth>=0)或数据缺失 → 放行
+        return gf is not None and gf < 0
+    if gf is not None and gf < -30.0:
+        return True
+    return False
+
+
 def _load_industry_ic_weights():
     """加载行业IC权重，用于因子值惩罚（包含分市场IC）"""
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -128,6 +164,8 @@ class PortfolioConstructor:
         # 2026-08-27: 减持计划期过滤(计划层) - 预披露~实施完成/届满之间不入选
         # (增减持明细只记录已执行减持, 计划层靠公告状态机: 301257事件)
         self.exclude_reduction_plans = sel_config.get('exclude_reduction_plans', False)
+        # 2026-09-03 实验#27: 基本面硬伤过滤 - 最新报告亏损或利润同比大降(-30%)不入选
+        self.exclude_fundamental_flaws = sel_config.get('exclude_fundamental_flaws', False)
         self.unlock_ahead_days = sel_config.get('unlock_ahead_days', 30)
         self.unlock_min_ratio = sel_config.get('unlock_min_ratio', 0.05)
         self.hold_threshold = sel_config.get('hold_threshold', 0.2)  # 换手保护门: 持仓rank_pct需高于此才受保护
@@ -246,6 +284,7 @@ class PortfolioConstructor:
         self.current_exposure = 1.0
         self._stop_loss_triggered = False
         self._stop_loss_recovery_days = 0
+        self._stop_loss_trigger_date = None  # 熔断触发日(自然日), A批修复: 恢复期按自然日计时
         self.industry_ic = _load_industry_ic_weights()
         self.position_cost = {}
         self.sentiment_multipliers: dict = {}
@@ -276,6 +315,7 @@ class PortfolioConstructor:
         self.hds_close_days = hds_config.get('close_positions_days', 3)
         self._hds_triggered = False
         self._hds_close_day = 0
+        self._hds_peak_ref = None  # A批修复: 旧代码 save_tracking_state 读未定义属性必崩
 
         # === 连续亏损熔断 ===
         clb_config = config.get('consecutive_loss_breaker', {}) if hasattr(config, 'get') else {}
@@ -299,6 +339,8 @@ class PortfolioConstructor:
         self._unlock_codes_cache_date = None
         self._plan_codes_cache = None
         self._plan_codes_cache_date = None
+        # 基本面数据提供者 (bt_execution 注入, as-of 正确; 未注入则硬伤过滤不生效)
+        self._fundamental_provider = None
 
     def _reduction_codes(self, date):
         """当日处于减持期的股票集合. 数据缺失/加载失败时返回空集(fail-open, 不阻塞实盘)."""
@@ -404,6 +446,7 @@ class PortfolioConstructor:
             "current_exposure": self.current_exposure,
             "stop_loss_triggered": self._stop_loss_triggered,
             "stop_loss_recovery_days": self._stop_loss_recovery_days,
+            "stop_loss_trigger_date": self._stop_loss_trigger_date.isoformat() if self._stop_loss_trigger_date else None,
             "peak_equity": self.peak_equity,
             # 硬回撤停止
             "hds_triggered": self._hds_triggered,
@@ -451,6 +494,8 @@ class PortfolioConstructor:
         self.current_exposure = state.get("current_exposure", 1.0)
         self._stop_loss_triggered = state.get("stop_loss_triggered", False)
         self._stop_loss_recovery_days = state.get("stop_loss_recovery_days", 0)
+        _stld = state.get("stop_loss_trigger_date")
+        self._stop_loss_trigger_date = _date.fromisoformat(_stld) if _stld else None
         self.peak_equity = state.get("peak_equity")
         self._hds_triggered = state.get("hds_triggered", False)
         self._hds_close_day = state.get("hds_close_day", 0)
@@ -463,6 +508,10 @@ class PortfolioConstructor:
         if dr:
             from collections import deque
             self._daily_returns = deque(dr, maxlen=self.vol_lookback * 2)
+
+    def set_fundamental_provider(self, fd):
+        """注入基本面数据提供者 (实验#27 硬伤过滤用). 未注入时过滤自动不生效."""
+        self._fundamental_provider = fd
 
     def set_sentiment_multipliers(self, multipliers: dict):
         """设置行业情绪乘数（含小说逆向投资调整）
@@ -603,7 +652,7 @@ class PortfolioConstructor:
         # 过滤拒绝原因统计
         _rej = {'no_sig': 0, 'not_buy': 0, 'cooldown': 0, 'bad_factor': 0,
                 'no_price': 0, 'too_expensive': 0, 'reducing': 0, 'unlocking': 0,
-                'plan_reducing': 0, 'accepted': 0}
+                'plan_reducing': 0, 'fund_flaw': 0, 'accepted': 0}
         _reducing_codes = self._reduction_codes(date)
         _plan_codes = self._reduction_plan_codes(date)
         _unlocking_codes = self._unlock_codes(date)
@@ -631,6 +680,12 @@ class PortfolioConstructor:
             # 解禁临近过滤(2026-08-25): 未来30天内大额解禁不入选
             if _unlocking_codes and code in _unlocking_codes:
                 _rej['unlocking'] += 1
+                continue
+
+            # 基本面硬伤过滤(2026-09-03 实验#27): 最新报告亏损或利润同比<-30%不入选
+            if (self.exclude_fundamental_flaws and self._fundamental_provider
+                    and _has_fundamental_flaw(self._fundamental_provider, code, date)):
+                _rej['fund_flaw'] += 1
                 continue
 
             # Fix#7: 均值回归退出冷却期 — 防止入场-出场循环
@@ -722,7 +777,7 @@ class PortfolioConstructor:
                 self._dbg[f'ml_score_{_regime}'].append(ml_s)
 
         # DEBUG: 跟踪拒绝原因 per regime
-        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking', 'plan_reducing']:
+        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking', 'plan_reducing', 'fund_flaw']:
             if _rej.get(rk, 0) > 0:
                 self._dbg.setdefault(f'reject_{_regime}', {})
                 self._dbg[f'reject_{_regime}'][rk] = self._dbg[f'reject_{_regime}'].get(rk, 0) + _rej[rk]
@@ -735,7 +790,8 @@ class PortfolioConstructor:
             print(f"   拒绝明细: no_sig={_rej['no_sig']} not_buy={_rej['not_buy']} "
                   f"bad_factor={_rej['bad_factor']} no_price={_rej['no_price']} "
                   f"too_expensive={_rej['too_expensive']} cooldown={_rej['cooldown']} "
-                  f"reducing={_rej['reducing']} unlocking={_rej['unlocking']}")
+                  f"reducing={_rej['reducing']} unlocking={_rej['unlocking']} "
+                  f"fund_flaw={_rej['fund_flaw']}")
             plog.alert(f"portfolio: 0 candidates from {len(universe)} universe at {date}")
             plog.log_selection_context(date, 0, len(universe), 0, 0)
             return {}
@@ -873,17 +929,22 @@ class PortfolioConstructor:
             target_exposure = min(target_exposure, self.emergency_exposure)
             if not self._stop_loss_triggered:
                 self._stop_loss_triggered = True
-                self._stop_loss_recovery_days = self.stop_loss_recovery_days
+                self._stop_loss_trigger_date = date  # 记录触发日(自然日)
                 # 重置峰值: 全清仓后从当前净值开始新的drawdown计算, 避免立即再次触发
                 if self.emergency_exposure < 0.01:
                     self.peak_equity = total_equity
-        elif self._stop_loss_triggered and self._stop_loss_recovery_days > 0:
-            # 恢复期：逐步提升敞口，防止whipsaw
-            target_exposure = min(target_exposure, self.emergency_exposure +
-                                  (1.0 - self.emergency_exposure) * (1.0 - self._stop_loss_recovery_days / self.stop_loss_recovery_days))
-            self._stop_loss_recovery_days -= 1
-            if self._stop_loss_recovery_days <= 0:
+        elif self._stop_loss_triggered:
+            # 恢复期：按自然日进度逐步提升敞口，防止whipsaw
+            # A批修复(2026-08-30 review): 旧实现按调仓日递减, recovery_days=10≈10次调仓≈100自然日
+            _elapsed = ((date - self._stop_loss_trigger_date).days
+                        if self._stop_loss_trigger_date is not None and isinstance(date, date_type) else 999)
+            if _elapsed < self.stop_loss_recovery_days:
+                _progress = _elapsed / max(self.stop_loss_recovery_days, 1)
+                target_exposure = min(target_exposure, self.emergency_exposure +
+                                      (1.0 - self.emergency_exposure) * _progress)
+            else:
                 self._stop_loss_triggered = False
+                self._stop_loss_trigger_date = None
 
         # === 连续亏损熔断：连亏→减半敞口 → 连盈→恢复（每日检查，非仅调仓日）===
         if self.clb_enabled:
@@ -1129,7 +1190,7 @@ class PortfolioConstructor:
         for c in qualified:
             code = c.get('code', '')
             if c['is_held'] and code in self._position_entry_dates:
-                held_days = (date - self._position_entry_dates[code]).days if hasattr(date, 'days') else 999
+                held_days = (date - self._position_entry_dates[code]).days if isinstance(date, date_type) else 999
                 lock_bypass = False
                 if held_days < self.min_hold_days:
                     # 持仓score显著弱于候选池中位数 → 提前解锁, 允许被替换

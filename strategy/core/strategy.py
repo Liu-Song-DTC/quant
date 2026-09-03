@@ -20,6 +20,9 @@ class Strategy:
             self.signal_engine.set_fundamental_data(fundamental_data)
 
         self.portfolio = PortfolioConstructor()
+        if fundamental_data:
+            # 实验#27: 组合层基本面硬伤过滤依赖此提供者
+            self.portfolio.set_fundamental_provider(fundamental_data)
         self.sector_rotation = SectorRotation()
         self.market_regime = []
         self.signal_store = SignalStore()

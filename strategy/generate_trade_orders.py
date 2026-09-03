@@ -18,10 +18,10 @@
     6. 输出 trade_orders.json + 更新 current_positions.json
 """
 
-import os, sys, json, argparse
+import os, sys, json, argparse, shutil, subprocess
 import pandas as pd
 import numpy as np
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 from typing import Dict, List, Tuple
 
 # 确保 strategy 目录在 path 中
@@ -39,6 +39,7 @@ config = load_config()
 
 # ── 路径 ────────────────────────────────────────────────────────
 DATA_PATH = config.get('paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data/backtrader_data/'))
+FUNDAMENTAL_DIR = os.path.join(_PROJECT_DIR, 'data/stock_data/fundamental_data')
 SIGNALS_CSV = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'backtest_signals.csv')
 POSITIONS_FILE = os.path.join(_PROJECT_DIR, 'current_positions.json')
 ORDERS_FILE = os.path.join(_PROJECT_DIR, 'trade_orders.json')
@@ -65,6 +66,37 @@ def build_stock_file_map() -> Dict[str, str]:
             continue
         file_map[code] = path
     return file_map
+
+
+def build_st_filter(codes: List[str], target_date) -> Tuple[set, set]:
+    """ST排除 + 基本面新鲜度检查 (2026-08-31 ST漏判修复).
+
+    出单路径的独立ST校验, 不依赖回测信号CSV的过滤:
+      - ST判定与回测一致: 数据可用日期<=target_date的最新报告期行, 股票简称含"ST" → 排除
+      - 新鲜度: 最新数据可用日期早于 target_date-120天 → 数据陈旧, ST判定可能失效 → 告警
+    返回 (st_codes, stale_codes)。
+    """
+    from core.fundamental import FundamentalData
+    fd = FundamentalData(FUNDAMENTAL_DIR)
+    st_codes, stale_codes = set(), set()
+    td = pd.Timestamp(target_date)
+    cutoff = td - pd.Timedelta(days=120)
+    for code in codes:
+        df = fd._get_available_data(code, td)
+        if df is None or df.empty:
+            stale_codes.add(code)  # 无任何可用数据, 视为无法验证
+            continue
+        name = str(df.iloc[0].get('股票简称', ''))
+        if 'ST' in name:
+            st_codes.add(code)
+            continue
+        try:
+            latest_avail = pd.Timestamp(df['数据可用日期'].astype(str).max())
+            if latest_avail < cutoff:
+                stale_codes.add(code)
+        except Exception:
+            stale_codes.add(code)
+    return st_codes, stale_codes
 
 
 def load_prices_for_date(stock_file_map: Dict[str, str], target_date) -> Dict[str, float]:
@@ -198,7 +230,12 @@ def load_current_positions() -> Dict[str, dict]:
 
 
 def save_current_positions(positions: Dict[str, dict]):
-    """保存当前持仓."""
+    """保存当前持仓(覆写前自动备份, 防止误运行不可逆)."""
+    if os.path.exists(POSITIONS_FILE):
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        bak = f"{POSITIONS_FILE}.bak_{ts}"
+        shutil.copy2(POSITIONS_FILE, bak)
+        print(f"旧持仓已备份: {bak}")
     with open(POSITIONS_FILE, 'w', encoding='utf-8') as f:
         json.dump(positions, f, ensure_ascii=False, indent=2)
     print(f"持仓已保存: {POSITIONS_FILE}")
@@ -399,7 +436,18 @@ def main():
                         help=f'总资金 (默认: {DEFAULT_CASH})')
     parser.add_argument('--dry-run', action='store_true',
                         help='仅打印结果, 不写入文件')
+    parser.add_argument('--skip-freshness', action='store_true',
+                        help='跳过数据新鲜度门禁 (仅调试用, 实盘勿用)')
     args = parser.parse_args()
+
+    # ── 数据新鲜度门禁 (fail-closed) ──────────────────────────
+    if not args.skip_freshness:
+        gate = os.path.join(_STRATEGY_DIR, 'check_data_freshness.py')
+        rc = subprocess.call([sys.executable, gate])
+        if rc != 0:
+            print("\n数据新鲜度门禁未通过, 拒绝出单。"
+                  "刷新数据后重试, 或调试用 --skip-freshness 绕过。")
+            sys.exit(1)
 
     # ── 确定目标日期 ──────────────────────────────────────────
     if args.date:
@@ -462,6 +510,14 @@ def main():
             continue
         universe.append(code)
 
+    # ST过滤 + 基本面新鲜度检查 (2026-08-31修复): 出单路径独立校验, 不依赖回测信号CSV
+    st_codes, stale_codes = build_st_filter(universe, target_date)
+    if st_codes:
+        print(f"  [ST排除] {len(st_codes)} 只: {sorted(st_codes)}")
+        universe = [c for c in universe if c not in st_codes]
+    if stale_codes:
+        print(f"  [WARN] {len(stale_codes)} 只基本面数据陈旧>120天, ST判定可能失效")
+
     print(f"可交易股票: {len(universe)} 只 (过滤后)")
 
     # ── 4. 获取市场状态 ──────────────────────────────────────
@@ -477,11 +533,13 @@ def main():
     # 读取当前持仓
     prev_positions = load_current_positions()
 
-    # 账户资金=总可部署资金; 持仓市值必须是账户资金的子集, 否则视为脏数据重置
+    # 账户资金=总可部署资金; 持仓市值含浮盈可合理略超名义资金,
+    # 只有显著超出(>1.5倍)才判脏数据重置 — 修复(2026-08-30 review P0):
+    # 旧阈值1.0倍导致8/28实盘误触发(305,420>300,000), 清空真实持仓重选
     account_capital = args.cash
     _pos_sum = sum(info['amount'] for info in prev_positions.values())
-    if _pos_sum > account_capital:
-        print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 账户资金{account_capital:,.0f}, "
+    if _pos_sum > account_capital * 1.5:
+        print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 1.5×账户资金{account_capital:,.0f}, "
               f"判定为脏数据, 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
         prev_positions = {}
         _pos_sum = 0.0
@@ -512,6 +570,16 @@ def main():
         bear_risk_fast=bear_risk_fast,
         cost=cost,
     )
+
+    # 持仓中的ST强制清仓 (2026-08-31修复): 从目标中移除 → build_orders生成close
+    held_st = [c for c in current_positions if c in st_codes]
+    if held_st:
+        print(f"  [ST强制卖出] 持仓含ST: {held_st}")
+        for c in held_st:
+            adjusted.pop(c, None)
+    held_stale = [c for c in current_positions if c in stale_codes]
+    if held_stale:
+        print(f"  [WARN] 持仓基本面数据陈旧, ST状态无法验证: {held_stale}")
 
     # ── 6. 生成订单 ──────────────────────────────────────────
     orders, new_positions, order_details = build_orders(

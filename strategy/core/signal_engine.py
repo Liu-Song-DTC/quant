@@ -607,7 +607,11 @@ class SignalEngine:
         regimes = self._precompute_regimes(dates, n)
 
         # ===== Phase 0: BOM产业链质量分 (高壁垒+高利润段) =====
-        bom_score = self._get_bom_score(code) if code else 0.3
+        # B批修复(B2): 逐bar as-of取分(修"取全历史最后一期财报"的未来泄漏), 缓存命中O(1)
+        bom_score = np.full(n, 0.3)
+        if code:
+            for i in range(60, n):
+                bom_score[i] = self._get_bom_score(code, pd.to_datetime(dates[i]).date())
 
         # ===== Phase 1: 逐bar收集复杂方法调用的标量结果 =====
         scalars = self._collect_bar_scalars(indicators, code, dates, n,
@@ -950,7 +954,7 @@ class SignalEngine:
                 gap_breakout_confirm=float(result['gap_breakout_confirm'][i]),
                 vol_opening_confirm=float(vol_oc),
                 vol_opening_strength=float(vol_os),
-                bom_quality_score=float(bom_score),
+                bom_quality_score=float(bom_score[i]),
                 stroke_phase=float(result['stroke_phase'][i]),
                 top_fractal_volume=float(result['top_fractal_volume'][i]),
                 ma_trend_up=bool(result['ma_trend_up'][i]),
@@ -1122,12 +1126,28 @@ class SignalEngine:
 
     # _calc_b3_multiplier removed — was only called by deleted _get_chan_boost
 
-    def _get_bom_score(self, code: str) -> float:
-        """获取股票的BOM质量分(带缓存，含基本面对齐)"""
+    def _get_bom_score(self, code: str, date=None) -> float:
+        """获取股票的BOM质量分(带缓存，含基本面对齐).
+
+        B批修复(B2, 2026-09-01): date给定→按 _get_available_data 的as-of口径取最新一期财报
+        (修掉"取全历史最后一期财报"的未来泄漏)。旧路径 getattr 对中文列DataFrame恒取默认值
+        (基本面接线是死的) → 改用中文列直读(净资产收益率/销售毛利率, % → 分数)。
+        缓存键(code, date): 仅报告期变更日miss, 其余O(1)命中。
+        """
         if not hasattr(self, '_bom_cache'):
             self._bom_cache = {}
-        if code in self._bom_cache:
-            return self._bom_cache[code]
+        key = (code, date) if date is not None else code
+        if key in self._bom_cache:
+            return self._bom_cache[key]
+
+        def _pct(v):
+            try:
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return None
+                return float(str(v).replace('%', '').strip()) / 100.0
+            except Exception:
+                return None
+
         d = self._bom_diag
         d['total'] += 1
         d['_unique_codes'].add(code)
@@ -1136,21 +1156,39 @@ class SignalEngine:
             calc = get_calculator()
             # 构建基本面查询（roe/gross_margin/market_cap）
             fund = None
-            if hasattr(self, 'fundamental_data') and self.fundamental_data:
-                try:
-                    fd = self.fundamental_data
-                    # fundamental_data may be {code: DataFrame} or {code: dict}
-                    if code in fd:
-                        row = fd[code]
-                        if hasattr(row, 'iloc'):
-                            row = row.iloc[-1] if len(row) > 0 else row
-                        fund = {
-                            'roe': float(getattr(row, 'roe', 0.10) or 0.10),
-                            'gross_margin': float(getattr(row, 'gross_margin', 0.30) or 0.30),
-                            'market_cap': float(getattr(row, 'market_cap', 0) or 0),
-                        }
-                except Exception:
-                    fund = None
+            if date is not None:
+                fd = getattr(self, 'fundamental_data', None)
+                if fd is not None:
+                    try:
+                        df = fd._get_available_data(code, pd.to_datetime(date))
+                        if df is not None and len(df) > 0:
+                            row = df.iloc[0]
+                            roe = _pct(row.get('净资产收益率'))
+                            gm = _pct(row.get('销售毛利率'))
+                            fund = {
+                                'roe': roe if roe is not None else 0.10,
+                                'gross_margin': gm if gm is not None else 0.30,
+                                'market_cap': 0,
+                            }
+                    except Exception:
+                        fund = None
+            else:
+                # 旧路径(无date): 保留兼容
+                if hasattr(self, 'fundamental_data') and self.fundamental_data:
+                    try:
+                        fd = self.fundamental_data
+                        # fundamental_data may be {code: DataFrame} or {code: dict}
+                        if code in fd:
+                            row = fd[code]
+                            if hasattr(row, 'iloc'):
+                                row = row.iloc[-1] if len(row) > 0 else row
+                            fund = {
+                                'roe': float(getattr(row, 'roe', 0.10) or 0.10),
+                                'gross_margin': float(getattr(row, 'gross_margin', 0.30) or 0.30),
+                                'market_cap': float(getattr(row, 'market_cap', 0) or 0),
+                            }
+                    except Exception:
+                        fund = None
             scores = compute_stock_bom_score(code, calc._stock_concepts, fundamentals={code: fund} if fund else None)
             result = scores.get('bom_quality_score', 0.3)
             if result > 0.30:
@@ -1164,7 +1202,7 @@ class SignalEngine:
         except Exception:
             result = 0.3
             d['miss'] += 1
-        self._bom_cache[code] = result
+        self._bom_cache[key] = result
         return result
 
     def _is_industry_strong(self, industry: str) -> bool:
@@ -1511,9 +1549,10 @@ class SignalEngine:
                 alt_market = np.zeros(n)
                 nb = mg = 0.0
                 for i in range(60, n):
-                    bar_date = pd.to_datetime(dates[i]).date()
-                    nb = self._alt_data.get_northbound_signal(bar_date)
-                    mg = self._alt_data.get_margin_signal(bar_date)
+                    # B批修复(B1): 另类数据lag1 — 北向/两融D日值收盘后/次晨才公布, D日信号只可用D-1
+                    prev_date = (pd.to_datetime(dates[i]) - pd.Timedelta(days=1)).date()
+                    nb = self._alt_data.get_northbound_signal(prev_date)
+                    mg = self._alt_data.get_margin_signal(prev_date)
                     alt_market[i] = (nb * 0.6 + mg * 0.4) * 0.15
                 # NaN 兜底：replace NaN with 0 before adding to adjusted_score
                 alt_market = np.nan_to_num(alt_market, nan=0.0)
@@ -1527,7 +1566,7 @@ class SignalEngine:
                 dt_signal = np.zeros(n)
                 if code:
                     for i in range(60, n):
-                        dt_sig = self._alt_data.get_dragon_tiger_signal(code, pd.to_datetime(dates[i]).date())
+                        dt_sig = self._alt_data.get_dragon_tiger_signal(code, (pd.to_datetime(dates[i]) - pd.Timedelta(days=1)).date())
                         if abs(dt_sig) > 0.01:
                             dt_signal[i] = dt_sig
                             adjusted_score[i] += dt_sig * 0.30
@@ -1632,7 +1671,7 @@ class SignalEngine:
                 div_type[i] = f'bi{bi_buy[i]}_seg{buy_point_raw[i]}_buy'
 
         # === 6.5 BOM产业链质量乘数: 中位BOM(0.5)→1.0, 高BOM(1.0)→+30%, 低BOM(0.3)→-12% ===
-        bom_mult_arr = np.full(n, 0.7 + 0.6 * bom_score)
+        bom_mult_arr = 0.7 + 0.6 * np.asarray(bom_score, dtype=float)  # B批修复(B2): bom_score现为逐bar数组
         adjusted_score *= bom_mult_arr
 
         # === 6.6 评分诊断采样 (每100只股票采样1次, 只记录有效bar) ===

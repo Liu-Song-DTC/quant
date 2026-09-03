@@ -36,7 +36,8 @@ class ConceptHeatCalculator:
         self._auto_edges: dict = {}  # 自动发现的产业链传导边
         self._auto_edges_computed = False
         self._scores_cache: Dict[str, tuple] = {}  # 日期→(concept_scores, chain_signals)
-        self._ema_concept_scores: Dict[str, float] = {}  # EMA平滑后的概念分数 (halflife=3天)
+        self._ema_concept_scores: Dict[str, float] = {}  # EMA平滑后的概念分数 (仅实盘增量模式)
+        self._hist_ema: Dict[str, pd.Series] = {}  # 回测: 概念→截至每日的EMA序列(确定性)
         self._loaded = False
 
     def load(self, hist_path: str = None):
@@ -60,6 +61,17 @@ class ConceptHeatCalculator:
             print(f"[ConceptHeat] 已加载 {len(self._stock_concepts)} 股票映射 + {len(self._concept_hist)} 概念历史")
         except FileNotFoundError:
             print(f"[ConceptHeat] 已加载 {len(self._stock_concepts)} 股票映射 (无历史数据)")
+
+        # 预计算每概念"截至每日"的EMA序列(回测确定性查询, 与增量公式逐位等价:
+        #   e_t = e_{t-1}*decay + x_t*(1-decay), decay=0.5^(1/3), e_0=x_0)
+        decay = 0.5 ** (1.0 / 3.0)
+        for name, df in self._concept_hist.items():
+            try:
+                s = (df.drop_duplicates('date').set_index('date')['return']
+                       .astype(float).sort_index())
+                self._hist_ema[name] = s.ewm(alpha=1.0 - decay, adjust=False).mean()
+            except Exception:
+                pass
 
         # 自动发现产业链传导关系（从历史数据中挖掘）
         if len(self._concept_hist) >= 10:
@@ -114,11 +126,10 @@ class ConceptHeatCalculator:
         """
         # 统一规范化日期键，确保所有路径使用一致缓存键
         cache_key = str(pd.Timestamp(date).date())
-        # _scores_cache 已在 __init__ 初始化
 
         if concept_returns is not None:
+            # 实盘/手动模式: 传入当日全量概念涨跌幅, 进程内增量EMA平滑
             self._concept_scores = concept_returns
-            # 应用EMA衰减 (halflife=3天)
             self._apply_heat_ema()
             self._chain_signals = compute_chain_signals(
                 self._concept_scores, auto_discovered_edges=self._auto_edges
@@ -128,8 +139,18 @@ class ConceptHeatCalculator:
         elif cache_key in self._scores_cache:
             self._concept_scores, self._chain_signals = self._scores_cache[cache_key]
             return
+        elif self._hist_ema:
+            # 回测模式: 从预计算EMA序列按日确定性取值
+            # 不读concept_daily.csv(那是当日实盘数据, 回测引用=前视泄漏)
+            # 不依赖全局增量状态(旧实现首日之后冻结/跨股票污染)
+            date_ts = pd.Timestamp(date)
+            self._concept_scores = {}
+            for name, ema_s in self._hist_ema.items():
+                v = ema_s.asof(date_ts)
+                if pd.notna(v):
+                    self._concept_scores[name] = float(v)
         else:
-            # 尝试从当日概念数据CSV读取 (实盘 data_manager 已下载)
+            # 实盘模式(无历史缓存): 尝试从当日概念数据CSV读取
             if not hasattr(self, '_daily_csv_path'):
                 self._daily_csv_path = Path(__file__).parent.parent.parent / "data" / "concept_daily.csv"
                 self._daily_csv_exists = self._daily_csv_path.exists()
@@ -141,22 +162,7 @@ class ConceptHeatCalculator:
                             df['板块名称'], df['涨跌幅'].astype(float) / 100.0))
                 except Exception:
                     self._daily_csv_exists = False
-
-        if not self._concept_scores and self._concept_hist:
-            # 回测: 从缓存历史中查找
-            date_ts = pd.Timestamp(date)
-            self._concept_scores = {}
-            for name, df in self._concept_hist.items():
-                row = df[df['date'] == date_ts]
-                if len(row) > 0:
-                    self._concept_scores[name] = float(row.iloc[0]['return'])
-                else:
-                    nearby = df[df['date'] <= date_ts]
-                    if len(nearby) > 0:
-                        self._concept_scores[name] = float(nearby.iloc[-1]['return'])
-
-        # 应用EMA衰减 (halflife=3天)
-        self._apply_heat_ema()
+            self._apply_heat_ema()
 
         # 计算产业链传导信号 (基于EMA平滑后的分数)
         if self._concept_scores:
@@ -167,7 +173,6 @@ class ConceptHeatCalculator:
             self._chain_signals = {}
 
         # 缓存结果供同日期其他股票复用（限300条防内存膨胀）
-        # _scores_cache 已在 __init__ 初始化
         if len(self._scores_cache) > 300:
             oldest = min(self._scores_cache.keys())
             del self._scores_cache[oldest]

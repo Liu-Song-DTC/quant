@@ -7326,6 +7326,10 @@ portfolio:
     exclude_unlock_periods: true
     unlock_ahead_days: 30
     unlock_min_ratio: 0.05
+    # 2026-09-03 实验#27 基本面硬伤过滤(默认关, 保留基线):
+    # 排除: 盈利股利润同比<-30%; 亏损股仅当亏损继续扩大(同比恶化)时排除 —
+    # 亏损收窄/走平/扭亏的转机股放行. 数据缺失自动放行.
+    exclude_fundamental_flaws: false
     chan_gate_enabled: true
     chan_gate_min_count: 2
     chan_fallback_score: 0.4
@@ -7675,9 +7679,9 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
-  num_workers: 8
+  num_workers: 4
   fromdate: '2021-01-01'
-  todate: '2026-08-27'
+  todate: '2026-09-02'
 cost_model:
   t_plus_1_enabled: true
   impact_cost_enabled: false

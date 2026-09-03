@@ -22,6 +22,16 @@ def _get_data_dir():
     return str(base / 'data' / 'stock_data' / 'backtrader_data')
 
 
+# 北交所代码段 (2026-09-03 用户指令: 北交所股票全部不要).
+# 与沪深主/创/科(000/001/002/003/300/301/302/600/601/603/605/688/689)无交集, 无碰撞风险.
+_BSE_PREFIXES = ('43', '82', '83', '87', '88', '92')
+
+
+def is_bse_code(code: str) -> bool:
+    """北交所股票判定 (新段920xxx / 旧段82/83/87/88xxxx / 新三板43xxxx)"""
+    return code.startswith(_BSE_PREFIXES)
+
+
 def _get_metadata_dir():
     """获取stock_metadata目录"""
     base = Path(__file__).parent.parent.parent
@@ -62,18 +72,27 @@ def get_stock_pool(min_price: float = 2.0,
     exclusion_set = get_exclusion_set()
 
     valid_files = []
+    bse_skipped = 0
     for f in os.listdir(data_dir):
         if f.startswith('._') or f.startswith('sh000001'):
             continue
         if f.endswith('_qfq.csv'):
             code = f[:-8]
-            valid_files.append((f, code))
         elif f.endswith('_hfq.csv'):
             code = f[:-8]
             # 避免 qfq/hfq 重复
             qfq_path = os.path.join(data_dir, f'{code}_qfq.csv')
-            if not os.path.exists(qfq_path):
-                valid_files.append((f, code))
+            if os.path.exists(qfq_path):
+                continue
+        else:
+            continue
+        if is_bse_code(code):
+            # 2026-09-03: 北交所股票全部排除 (用户指令)
+            bse_skipped += 1
+            continue
+        valid_files.append((f, code))
+    if bse_skipped:
+        print(f"股票池: 排除北交所 {bse_skipped} 只 (用户指令, 2026-09-03)")
 
     selected = set()
     data_errors = 0

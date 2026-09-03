@@ -1308,6 +1308,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
 
     print(f"构建价格矩阵: {n_dates}天 × {len(stock_codes)}股 ...")
     close_px = np.full((n_dates, len(stock_codes)), np.nan, dtype=np.float32)
+    open_px = np.full_like(close_px, np.nan)  # B批修复(B3): T+1开盘成交价
     volume_m = np.zeros_like(close_px)
     tradable = np.zeros_like(close_px, dtype=bool)
 
@@ -1315,7 +1316,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         fp = os.path.join(DATA_PATH, f'{code}_qfq.csv')
         if not os.path.exists(fp):
             continue
-        df = pd.read_csv(fp, usecols=['datetime', 'close', 'volume'])
+        df = pd.read_csv(fp, usecols=['datetime', 'open', 'close', 'volume'])
         df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
         df = df.dropna(subset=['datetime'])
         df = df.set_index('datetime')
@@ -1323,6 +1324,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         df = df[df.index <= pd.Timestamp(todate)]
         df = df.reindex(calendar)
         close_px[:, j] = df['close'].ffill().values.astype(np.float32)
+        open_px[:, j] = df['open'].ffill().values.astype(np.float32)
         volume_m[:, j] = df['volume'].fillna(0).values.astype(np.float32)
     del df
 
@@ -1424,6 +1426,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     tplus1_enabled = config.get('cost_model', {}).get('t_plus_1_enabled', True)
     _today_buys = set()
 
+    _pending = {}  # B批修复(B3): 前一日收盘目标 → 次日开盘成交
     for i in tqdm(range(n_dates), desc="backtest"):
         date = calendar[i].date()
         px_today = close_px[i]
@@ -1437,11 +1440,142 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             if not _idx_row.empty:
                 _regime_today = int(_idx_row['regime'].values[0])
 
-        # 当前持仓市值
+        # ===== 开盘执行前一日挂单 (B批修复B3: T+1开盘成交, 替代T日收盘成交) =====
+        # 先卖后买: 卖在开盘释放现金供买; 末日无D+1挂单作废, 首日无挂单
+        if i > 0 and _pending:
+            open_today = open_px[i]
+            prev_close = close_px[i - 1]
+
+            # Step A: 卖出不在目标中的持仓 (全清)
+            for j in range(len(stock_codes)):
+                if positions[j] <= 0:
+                    continue
+                code = stock_codes[j]
+                if code in _pending:
+                    continue  # 仍在目标中, 交给Step B调整
+                if not ok[j]:
+                    continue
+                if np.isnan(open_today[j]):
+                    continue
+                _fill_stats['sell_attempted'] += 1
+                if tplus1_enabled and code in _today_buys:
+                    _fill_stats['sell_tplus1_blocked'] += 1
+                    continue
+                if limit_block_enabled and _limit_down[i, j]:
+                    _fill_stats['sell_limit_down_skip'] += 1
+                    continue  # 跌停无法卖出, 挂单作废
+                sell_px = float(open_today[j])
+                if slip_enabled:
+                    sell_px *= (1.0 - slip_rate)
+                if not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -0.095:
+                    sell_px = sell_px * 0.97  # 跳空低开>9.5%: 成交价再折让
+                impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
+                cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
+                _log_realized(code, date, sell_px)
+                positions[j] = 0
+                cost_tracker.pop(code, None)  # 清仓: 移除成本记录
+                _fill_stats['sell_filled'] += 1
+
+            # Step B: 减仓 (释放现金)
+            for code, tv in _pending.items():
+                j = code_to_idx.get(code)
+                if j is None or not ok[j]:
+                    continue
+                if np.isnan(open_today[j]):
+                    continue
+                openx = float(open_today[j])
+                target_shares = int(tv / openx / 100) * 100
+                curr_shares = int(positions[j])
+                diff = target_shares - curr_shares
+                if diff <= -100:  # 减仓 → 释放现金
+                    _fill_stats['sell_attempted'] += 1
+                    if tplus1_enabled and code in _today_buys:
+                        _fill_stats['sell_tplus1_blocked'] += 1
+                        continue
+                    if limit_block_enabled and _limit_down[i, j]:
+                        _fill_stats['sell_limit_down_skip'] += 1
+                        continue
+                    sell_px = openx
+                    if slip_enabled:
+                        sell_px *= (1.0 - slip_rate)
+                    if not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -0.095:
+                        sell_px = sell_px * 0.97
+                    impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
+                    cash += abs(diff) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
+                    positions[j] = target_shares
+                    # 减仓: 减少成本追踪股数 (均价不变)
+                    if code in cost_tracker:
+                        cost_tracker[code][0] = max(cost_tracker[code][0] - abs(diff), 0)
+                        if cost_tracker[code][0] <= 0:
+                            _log_realized(code, date, sell_px)
+                            cost_tracker.pop(code, None)
+                    _fill_stats['sell_filled'] += 1
+
+            # Step C: 加仓 — 先算总需资金, 按比例缩放确保不超现金
+            _buy_plan = []
+            _total_buy_cost = 0.0
+            for code, tv in _pending.items():
+                j = code_to_idx.get(code)
+                if j is None or not ok[j]:
+                    continue
+                if np.isnan(open_today[j]):
+                    continue
+                if limit_block_enabled and _limit_up[i, j]:
+                    _fill_stats['buy_limit_up_skip'] += 1
+                    continue  # 涨停无法买入, 挂单作废
+                buy_px = float(open_today[j])
+                if slip_enabled:
+                    buy_px *= (1.0 + slip_rate)
+                if not np.isnan(prev_close[j]) and prev_close[j] > 0 and (buy_px / prev_close[j] - 1) > 0.095:
+                    buy_px = buy_px * 1.03  # 跳空高开>9.5%: 成交价再折让
+                target_shares = int(tv / buy_px / 100) * 100
+                curr_shares = int(positions[j])
+                diff = target_shares - curr_shares
+                if diff >= 100:
+                    impact = _impact(_adv_matrix[i, j], diff, buy_px)
+                    cost = diff * buy_px * (1.0 + COMMISSION + impact)
+                    _buy_plan.append((code, j, buy_px, target_shares, curr_shares, diff, impact, cost))
+                    _total_buy_cost += cost
+
+            # 现金不足时按比例缩放所有买入
+            _buy_scale = 1.0
+            if _total_buy_cost > 0 and _total_buy_cost > cash:
+                _buy_scale = cash / _total_buy_cost
+            _buy_plan.sort(key=lambda x: -x[5])  # sort by diff descending
+            for (code, j, buy_px, target_shares, curr_shares, diff, impact, cost) in _buy_plan:
+                _fill_stats['buy_attempted'] += 1
+                scaled_diff = max(int(diff * _buy_scale / 100) * 100, 0)
+                if scaled_diff >= 100:
+                    scaled_cost = scaled_diff * buy_px * (1.0 + COMMISSION + impact)
+                    if scaled_cost <= cash + 1e-6:
+                        cash -= scaled_cost
+                        positions[j] = curr_shares + scaled_diff
+                        _fill_stats['buy_filled'] += 1
+                        if curr_shares == 0:
+                            _entry_dates[code] = date  # 首次建仓=成交日(开盘)
+                        # 更新成本追踪: [总股数, 加权均价]
+                        if code in cost_tracker:
+                            old_s, old_avg = cost_tracker[code]
+                            new_s = old_s + scaled_diff
+                            cost_tracker[code] = [new_s, (old_s * old_avg + scaled_diff * buy_px) / max(new_s, 1)]
+                        else:
+                            cost_tracker[code] = [scaled_diff, buy_px]
+                        if tplus1_enabled:
+                            _today_buys.add(code)
+                    else:
+                        _fill_stats['buy_cash_insufficient'] += 1
+                else:
+                    _fill_stats['buy_cash_insufficient'] += 1
+            _pending = {}  # 挂单执行完毕
+
+        # 当前持仓市值 (开盘成交后, 按当日收盘价计)
         pos_value = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
         nav[i] = cash + pos_value
         if i > 0:
             daily_ret[i - 1] = (nav[i] - nav[i - 1]) / max(nav[i - 1], 1.0)
+            # 波动率控制喂数 — A批修复(2026-08-30 review): 旧代码只在死的Backtrader路径调用,
+            # 主回测 _daily_returns 恒空 → vol control 从未生效
+            strategy.portfolio.update_returns(daily_ret[i - 1])
             if i >= 60:  # 市场状态检测需要60根bar
                 plog.log_regime_execution(_regime_today, daily_ret[i - 1], nav[i])
 
@@ -1483,129 +1617,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                                    'weight': tv / max(nav[i], 1.0),
                                    'score': sig_score})
 
-        # 调仓执行: 先卖出不在目标的持仓, 再买入目标仓位
-        # Step 1: 卖出不在target中的当前持仓
-        for j in range(len(stock_codes)):
-            if positions[j] <= 0:
-                continue
-            code = stock_codes[j]
-            if code in target:
-                continue  # 仍在目标中, 下一步调整
-            if not ok[j]:
-                continue
-            _fill_stats['sell_attempted'] += 1
-            if tplus1_enabled and code in _today_buys:
-                _fill_stats['sell_tplus1_blocked'] += 1
-                continue
-            if limit_block_enabled and _limit_down[i, j]:
-                _fill_stats['sell_limit_down_skip'] += 1
-                continue  # 跌停无法卖出, 持仓留待下一交易日
-            sell_px = float(px_today[j])
-            if slip_enabled:
-                sell_px *= (1.0 - slip_rate)
-            if i > 0:
-                prev_px = close_px[i-1, j]
-                if not np.isnan(prev_px) and prev_px > 0 and (sell_px / prev_px - 1) < -0.095:
-                    sell_px = sell_px * 0.97
-            impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
-            cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
-            _log_realized(code, date, sell_px)
-            positions[j] = 0
-            cost_tracker.pop(code, None)  # 清仓: 移除成本记录
-            _fill_stats['sell_filled'] += 1
-
-        # Step 2: 先处理所有减仓(释放现金), 再处理加仓
-        # 2a: 减仓
-        for code, tv in target.items():
-            j = code_to_idx.get(code)
-            if j is None or not ok[j]:
-                continue
-            px = float(px_today[j])
-            target_shares = int(tv / px / 100) * 100
-            curr_shares = int(positions[j])
-            diff = target_shares - curr_shares
-            if diff <= -100:  # 减仓 → 释放现金
-                _fill_stats['sell_attempted'] += 1
-                if tplus1_enabled and code in _today_buys:
-                    _fill_stats['sell_tplus1_blocked'] += 1
-                    continue
-                if limit_block_enabled and _limit_down[i, j]:
-                    _fill_stats['sell_limit_down_skip'] += 1
-                    continue
-                sell_px = px
-                if slip_enabled:
-                    sell_px *= (1.0 - slip_rate)
-                if i > 0:
-                    prev_px = close_px[i-1, j]
-                    if not np.isnan(prev_px) and prev_px > 0 and (px / prev_px - 1) < -0.095:
-                        sell_px = sell_px * 0.97
-                impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
-                cash += abs(diff) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
-                positions[j] = target_shares
-                # 减仓: 减少成本追踪股数 (均价不变)
-                if code in cost_tracker:
-                    cost_tracker[code][0] = max(cost_tracker[code][0] - abs(diff), 0)
-                    if cost_tracker[code][0] <= 0:
-                        _log_realized(code, date, sell_px)
-                        cost_tracker.pop(code, None)
-                _fill_stats['sell_filled'] += 1
-
-        # 2b: 加仓 — 先计算总需资金, 按比例缩放确保不超现金
-        _buy_plan = []
-        _total_buy_cost = 0.0
-        for code, tv in target.items():
-            j = code_to_idx.get(code)
-            if j is None or not ok[j]:
-                continue
-            px = float(px_today[j])
-            if limit_block_enabled and _limit_up[i, j]:
-                _fill_stats['buy_limit_up_skip'] += 1
-                continue  # 涨停无法买入, 留待下一调仓日
-            buy_px = px
-            if slip_enabled:
-                buy_px *= (1.0 + slip_rate)
-            if i > 0:
-                prev_px = close_px[i-1, j]
-                if not np.isnan(prev_px) and prev_px > 0 and (px / prev_px - 1) > 0.095:
-                    buy_px = buy_px * 1.03
-            target_shares = int(tv / buy_px / 100) * 100
-            curr_shares = int(positions[j])
-            diff = target_shares - curr_shares
-            if diff >= 100:
-                impact = _impact(_adv_matrix[i, j], diff, buy_px)
-                cost = diff * buy_px * (1.0 + COMMISSION + impact)
-                _buy_plan.append((code, j, buy_px, target_shares, curr_shares, diff, impact, cost))
-                _total_buy_cost += cost
-
-        # 现金不足时按比例缩放所有买入
-        _buy_scale = 1.0
-        if _total_buy_cost > 0 and _total_buy_cost > cash:
-            _buy_scale = cash / _total_buy_cost
-        _buy_plan.sort(key=lambda x: -x[5])  # sort by diff descending
-        for (code, j, buy_px, target_shares, curr_shares, diff, impact, cost) in _buy_plan:
-            _fill_stats['buy_attempted'] += 1
-            scaled_diff = max(int(diff * _buy_scale / 100) * 100, 0)
-            if scaled_diff >= 100:
-                scaled_cost = scaled_diff * buy_px * (1.0 + COMMISSION + impact)
-                if scaled_cost <= cash + 1e-6:
-                    cash -= scaled_cost
-                    positions[j] = curr_shares + scaled_diff
-                    _fill_stats['buy_filled'] += 1
-                    if curr_shares == 0:
-                        _entry_dates[code] = date  # 首次建仓
-                    # 更新成本追踪: [总股数, 加权均价]
-                    if code in cost_tracker:
-                        old_s, old_avg = cost_tracker[code]
-                        new_s = old_s + scaled_diff
-                        cost_tracker[code] = [new_s, (old_s * old_avg + scaled_diff * buy_px) / max(new_s, 1)]
-                    else:
-                        cost_tracker[code] = [scaled_diff, buy_px]
-                    if tplus1_enabled:
-                        _today_buys.add(code)
-                else:
-                    _fill_stats['buy_cash_insufficient'] += 1
-            else:
-                _fill_stats['buy_cash_insufficient'] += 1
+        # 调仓执行 (B批修复B3): 目标只入挂单簿, 次日开盘成交; 当日收盘只决策不成交
+        _pending = target
 
         # 跟踪回撤
         running_peak = np.maximum.accumulate(nav[:i+1])

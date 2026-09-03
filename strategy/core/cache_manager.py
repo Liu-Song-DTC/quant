@@ -9,6 +9,7 @@ import os
 import pickle
 import hashlib
 import json
+import datetime
 from pathlib import Path
 import pandas as pd
 
@@ -34,11 +35,19 @@ def get_factor_cache_path(stock_count: int, date_count: int, cache_hash: str = '
     return os.path.join(cache_dir, f'factor_df_{stock_count}s_{date_count}d{tag}.parquet')
 
 
+def _build_time(path: str) -> str:
+    """缓存文件构建时间 (mtime), 用于日志排查旧缓存静默复用"""
+    try:
+        return datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime('%Y-%m-%d %H:%M')
+    except OSError:
+        return '?'
+
+
 def save_factor_cache(factor_df: pd.DataFrame, stock_count: int, date_count: int, cache_hash: str = ''):
     """保存factor_df缓存"""
     path = get_factor_cache_path(stock_count, date_count, cache_hash)
     factor_df.to_parquet(path, index=False)
-    print(f"因子缓存已保存: {path} ({len(factor_df)} 行)")
+    print(f"因子缓存已保存: {path} ({len(factor_df)} 行, 构建于 {_build_time(path)})")
 
 
 def load_factor_cache(stock_count: int, date_count: int, cache_hash: str = '') -> pd.DataFrame:
@@ -46,7 +55,7 @@ def load_factor_cache(stock_count: int, date_count: int, cache_hash: str = '') -
     path = get_factor_cache_path(stock_count, date_count, cache_hash)
     if os.path.exists(path):
         df = pd.read_parquet(path)
-        print(f"因子缓存已加载: {path} ({len(df)} 行)")
+        print(f"因子缓存已加载: {path} ({len(df)} 行, 构建于 {_build_time(path)})")
         return df
     return None
 
