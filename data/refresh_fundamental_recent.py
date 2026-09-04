@@ -23,9 +23,34 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd  # noqa: E402
+import requests  # noqa: E402
 from data_manager import StockDataManager  # noqa: E402 (含akshare代理patch)
 
 QUARTERS = ['20251231', '20260331', '20260630']
+
+QT_GET_UT = 'fa5fd1943c7b386f172d6893dbfba10b'
+
+
+def fetch_industry_eastmoney(code, timeout=8):
+    """单股行业字段 f127 (push2/qt/stock/get)。
+
+    2026-09-04: akshare新版yjbb四表不再提供'所处行业'列, 新上市股(无历史行可ffill)
+    整列缺失 → 88只实锤。用行情接口单股补: push2正线被东财断流(RemoteDisconnected),
+    push2delay 可用 (同日概念板块兜底同主机)。返回行业字符串, 全失败返回 None。
+    """
+    secid = ('1.' if code.startswith('6') else '0.') + code
+    for host in ('https://push2delay.eastmoney.com', 'https://push2.eastmoney.com'):
+        url = (f'{host}/api/qt/stock/get?secid={secid}&fields=f57,f127&ut={QT_GET_UT}')
+        try:
+            r = requests.get(url, timeout=timeout, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://quote.eastmoney.com/'})
+            d = (r.json() or {}).get('data') or {}
+            if d.get('f127'):
+                return str(d['f127'])
+        except Exception:
+            continue
+    return None
 
 # akshare 新版 yjbb 列名漂移 → 映射回系统旧命名
 # (2026-09-02 修复: 新版'营业收入同比增长'等与旧列'营业总收入-同比增长'错位,
@@ -132,6 +157,16 @@ def main():
             merged = add
         if '报告期' in merged.columns:
             merged = merged.sort_values('报告期', kind='stable').reset_index(drop=True)
+        # 2026-09-04: akshare新版yjbb四表均无'所处行业'列 → 新行行业全NaN
+        # (全市场5565只实锤, signal_engine回退路径崩溃33次)。行业为静态属性,
+        # 从该股自身历史行前向填充, 恢复9/3前"所有行有值"的行为。
+        if '所处行业' in merged.columns:
+            merged['所处行业'] = merged['所处行业'].ffill()
+        else:
+            # 新上市股(本脚本首次为其建CSV, 无历史行): 新版yjbb无行业列 → 整列缺失。
+            # 单股接口补; 补不到也建列留NaN, 让门禁行业NaN探针可见 (fail-closed)。
+            ind = fetch_industry_eastmoney(code)
+            merged['所处行业'] = ind if ind else None
         tmp = fpath.with_suffix('.tmp')
         merged.to_csv(tmp, index=False, encoding='utf-8')
         os.replace(tmp, fpath)

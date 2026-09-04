@@ -7560,6 +7560,7 @@ stock_pool:
   enabled: true
   size: 0
   source: 全市场(除科创板688xxx, 价格>2元, 数据>60日)
+  bse_exclude: true  # 2026-09-04: 北交所排除开关(实盘恒true). 回测归因实验可置false
 ml:
   enabled: true
   model_dir: strategy/models
@@ -7679,7 +7680,7 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
-  num_workers: 4
+  num_workers: 8
   fromdate: '2021-01-01'
   todate: '2026-09-02'
 cost_model:

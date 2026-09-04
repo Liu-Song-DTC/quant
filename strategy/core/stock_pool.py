@@ -52,13 +52,15 @@ def _load_market_cap_whitelist():
 
 def get_stock_pool(min_price: float = 2.0,
                    data_dir: str = None,
-                   todate: str = None) -> set:
+                   todate: str = None,
+                   bse_exclude: bool = True) -> set:
     """获取股票池 — 全市场除科创板外全部纳入
 
     Args:
         min_price: 最低价格（排除仙股，复权后价格）
         data_dir: 数据目录路径
         todate: 截止日期(YYYY-MM-DD), 流动性只看此日之前数据
+        bse_exclude: 排除北交所 (2026-09-04 实验开关; 实盘路径默认True=用户指令恒排除)
 
     Returns:
         set of stock codes
@@ -74,7 +76,8 @@ def get_stock_pool(min_price: float = 2.0,
     valid_files = []
     bse_skipped = 0
     for f in os.listdir(data_dir):
-        if f.startswith('._') or f.startswith('sh000001'):
+        # 指数文件不参与候选筛选 (Fix#43: sh000852中证1000同sh000001)
+        if f.startswith('._') or f.startswith(('sh000001', 'sh000852')):
             continue
         if f.endswith('_qfq.csv'):
             code = f[:-8]
@@ -86,8 +89,8 @@ def get_stock_pool(min_price: float = 2.0,
                 continue
         else:
             continue
-        if is_bse_code(code):
-            # 2026-09-03: 北交所股票全部排除 (用户指令)
+        if bse_exclude and is_bse_code(code):
+            # 2026-09-03: 北交所股票全部排除 (用户指令); bse_exclude=False 仅供回测归因实验
             bse_skipped += 1
             continue
         valid_files.append((f, code))
@@ -144,7 +147,8 @@ def get_stock_pool(min_price: float = 2.0,
             continue
 
     selected.add('sh000001')
-    print(f"股票池: {len(valid_files)} 总文件 -> 科创板{len(exclusion_set)} | 异常{data_errors} | 流动性{liquidity_filtered} -> {len(selected)} 只 (含sh000001)")
+    selected.add('sh000852')  # Fix#43: 中证1000(小盘风格输入), 回测端stock_codes已排除
+    print(f"股票池: {len(valid_files)} 总文件 -> 科创板{len(exclusion_set)} | 异常{data_errors} | 流动性{liquidity_filtered} -> {len(selected)} 只 (含sh000001/sh000852)")
     return selected
 
 

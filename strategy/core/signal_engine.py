@@ -2713,7 +2713,7 @@ class SignalEngine:
             entry = self._fund_cache.get(str(current_date)[:10])
             if entry:
                 raw_industry = entry.get('industry')
-                if raw_industry:
+                if raw_industry and isinstance(raw_industry, str):
                     cleaned = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
                     if cleaned in cfg:
                         result = cleaned
@@ -2732,7 +2732,7 @@ class SignalEngine:
             if has_fd:
                 try:
                     raw_industry = self.fundamental_data.get_industry(code, current_date)
-                    if raw_industry:
+                    if raw_industry and isinstance(raw_industry, str):
                         cleaned = raw_industry.replace('Ⅱ', '').replace('Ⅲ', '').replace('Ⅳ', '').strip()
                         if cleaned in cfg:
                             result = cleaned

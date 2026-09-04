@@ -85,6 +85,40 @@ DATA_PATH = config.get('paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data
 FUNDAMENTAL_PATH = config.get('paths.fundamental', os.path.join(_PROJECT_DIR, 'data/stock_data/fundamental_data/'))
 
 
+def _signals_stale(signals_csv):
+    """信号CSV是否比任何数据文件旧 (数据刷新后必须重新生成信号).
+    2026-09-04: 旧行为无条件复用既有CSV, 数据全量刷新后曾混用旧信号
+    (被杀旧代码实验残留CSV + 9/4新数据 → 混搭基线)。同数据态下portfolio类
+    实验仍走复用快路径 (数据未变则信号CSV不旧)."""
+    import time as _t
+    sig_mtime = os.path.getmtime(signals_csv)
+    roots = [DATA_PATH, FUNDAMENTAL_PATH,
+             os.path.join(_PROJECT_DIR, 'data/alternative_data'),
+             os.path.join(_PROJECT_DIR, 'data/concept_hist.pkl'),
+             os.path.join(_PROJECT_DIR, 'data/stock_concept_map.pkl')]
+    newest, newest_what = 0, ''
+    for root in roots:
+        if os.path.isdir(root):
+            for dirpath, _dirs, files in os.walk(root):
+                for fn in files:
+                    p = os.path.join(dirpath, fn)
+                    try:
+                        mt = os.path.getmtime(p)
+                    except OSError:
+                        continue
+                    if mt > newest:
+                        newest, newest_what = mt, p
+        elif os.path.exists(root):
+            mt = os.path.getmtime(root)
+            if mt > newest:
+                newest, newest_what = mt, root
+    if sig_mtime < newest:
+        print(f"信号CSV过期 (构建 {_t.ctime(sig_mtime)} 早于 数据最新 {_t.ctime(newest)}: "
+              f"{os.path.basename(newest_what)}), 重新生成信号")
+        return True
+    return False
+
+
 # 全局变量用于 worker 进程
 _worker_engine = None
 _worker_use_dynamic = False
@@ -337,8 +371,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # === 股票池过滤（先过滤再预计算，避免读不需要的文件） ===
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     if stock_pool_enabled:
-        stock_pool = get_stock_pool(todate=_pool_todate())
-        pool_codes = stock_pool | {'sh000001', '000001'}
+        stock_pool = get_stock_pool(todate=_pool_todate(),
+                                    bse_exclude=config.get('stock_pool.bse_exclude', True))
+        pool_codes = stock_pool | {'sh000001', '000001', 'sh000852', '399006'}
         before_count = len(stock_file_map)
         stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
         after_count = len(stock_file_map)
@@ -411,8 +446,14 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # 加载小盘/成长指数（如果存在）
     small_cap_df = None
     growth_df = None
-    if '000852' in stock_file_map:
+    # Fix#43 (2026-09-04): 小盘风格输入应为中证1000指数(sh000852)。
+    # 原实现误用深市股票 000852(石化机械) — 该文件是股票而非指数, 大小盘判断被单只个股驱动。
+    # 优先用 sh000852(Windows下载器补下后生效), 缺失时回退旧行为(保持与旧基线可比)。
+    if 'sh000852' in stock_file_map:
+        small_cap_df = pd.read_csv(stock_file_map['sh000852'], parse_dates=['datetime'])
+    elif '000852' in stock_file_map:
         small_cap_df = pd.read_csv(stock_file_map['000852'], parse_dates=['datetime'])
+        print('[WARN] 未找到 sh000852(中证1000), 回退用 000852 股票数据当小盘输入 — 请在Windows下载器补下中证1000指数')
     if '399006' in stock_file_map:
         growth_df = pd.read_csv(stock_file_map['399006'], parse_dates=['datetime'])
 
@@ -448,8 +489,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     _need_factor_df = factor_mode != 'fixed' or _ml_enabled
     if _need_factor_df:
         print(f"准备因子数据 (factor_mode={factor_mode})...")
-        # 获取股票代码列表（排除指数）
-        stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
+        # 获取股票代码列表（排除指数: 上证/中证1000/创业板指, Fix#43）
+        stock_codes = [name for name in stock_file_map.keys()
+                       if name not in ('sh000001', 'sh000852', '399006')]
         factor_df, industry_codes, all_dates = prepare_factor_data(
             stock_file_map,
             fundamental_data,
@@ -466,7 +508,9 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         print(f"因子模式: {factor_mode}, {len(industry_codes)} 个行业, {len(concept_codes)} 个概念")
     else:
         print(f"跳过IC计算: factor_mode={factor_mode} (fixed模式)")
-        stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
+        # 排除指数 (Fix#43: sh000852/399006 同 sh000001)
+        stock_codes = [name for name in stock_file_map.keys()
+                       if name not in ('sh000001', 'sh000852', '399006')]
         # 使用关键词构建行业映射（prepare_factor_data 依赖INDUSTRY_KEYWORDS）
         industry_codes = build_fine_industry_map(fundamental_data, stock_codes)
         if industry_codes:
@@ -1729,7 +1773,8 @@ if __name__ == "__main__":
 
     # 股票池过滤
     if stock_pool_enabled:
-        stock_pool = get_stock_pool(todate=_pool_todate())
+        stock_pool = get_stock_pool(todate=_pool_todate(),
+                                    bse_exclude=config.get('stock_pool.bse_exclude', True))
         stock_codes = [c for c in stock_codes if c in stock_pool]
         print(f"基本面数据加载(股票池): {len(stock_codes)} 只")
     else:
@@ -1759,7 +1804,7 @@ if __name__ == "__main__":
     # 复用已有信号CSV(仅portfolio/执行变更时), 否则重新生成
     _signals_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 'rolling_validation_results', 'backtest_signals.csv')
-    if os.path.exists(_signals_csv):
+    if os.path.exists(_signals_csv) and not _signals_stale(_signals_csv):
         print(f"复用已有信号: {_signals_csv}")
         strategy.signal_store.finalize(_signals_csv)
         _idx_path = os.path.join(DATA_PATH, 'sh000001_qfq.csv')

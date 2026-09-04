@@ -82,6 +82,24 @@ def _file_last_bar(fpath):
         return (parts[0].strip()[:10], None, None, None, None)
 
 
+def _file_has_bad_close(fpath):
+    """全历史 close≤0 扫描 (逐行读, 5494只约30-60s; 捕获xtquant加性复权负价复活)"""
+    try:
+        with open(fpath, encoding='utf-8', errors='ignore') as fh:
+            fh.readline()
+            for line in fh:
+                parts = line.rstrip('\n').split(',')
+                if len(parts) > 4 and parts[4]:
+                    try:
+                        if float(parts[4]) <= 0:
+                            return True
+                    except ValueError:
+                        continue
+    except OSError:
+        return False
+    return False
+
+
 def _load_kline_allowlist() -> set:
     if not os.path.exists(KLINE_ALLOWLIST):
         return set()
@@ -95,6 +113,9 @@ def check_kline(exp):
     - 沪深股票 → 硬失败 (退市/停牌白名单豁免)
     - 北交所(43/82/83/87/88/92段) → 仅报告 (已整体排除出股票池, 2026-09-03用户指令)
     - 数值健全性(全量): 最后bar close≤0 / high<low → 硬失败 (负价qfq/脏行类bug)
+    - 全历史负收盘扫描(全量): 任一 close≤0 → 硬失败 (2026-09-04: Windows侧每次重跑
+      --bt-only 都会把 repair_qfq_negatives 的sina修复覆盖回xtquant加性版, 9128行负价
+      原样复活; 门禁必须能抓出来 → 跑 data/repair_qfq_negatives.py)
     """
     from core.stock_pool import is_bse_code
     files = [f for f in os.listdir(BT_DIR) if f.endswith('_qfq.csv')]
@@ -103,12 +124,15 @@ def check_kline(exp):
     allow = _load_kline_allowlist()
     stale_hard = []
     bad_bar = []
+    neg_close = []
     bse_total = bse_stale = 0
     for f in files:
         code = f[:-8]
         d, o, h, l, c = _file_last_bar(os.path.join(BT_DIR, f))
         if c is not None and (c <= 0 or (h is not None and l is not None and h < l)):
             bad_bar.append(f'{code}(c={c})')
+        if _file_has_bad_close(os.path.join(BT_DIR, f)):
+            neg_close.append(code)
         if is_bse_code(code):
             bse_total += 1
             if d < exp.isoformat():
@@ -123,6 +147,10 @@ def check_kline(exp):
     if bad_bar:
         s = ', '.join(bad_bar[:8]) + ('...' if len(bad_bar) > 8 else '')
         return False, f'K线数值异常(硬): {s}'
+    if neg_close:
+        s = ', '.join(neg_close[:8]) + ('...' if len(neg_close) > 8 else '')
+        return False, (f'K线全历史负收盘(硬): {len(neg_close)}只: {s} '
+                       f'(sina修复被覆盖, 跑 data/repair_qfq_negatives.py)')
     return True, (f'K线: {len(files)}只全部新鲜且末bar数值健全'
                   f' (北交所{bse_total}只已排除, 其中滞后{bse_stale}只仅报告)')
 
@@ -146,10 +174,11 @@ def check_fundamental(exp):
     exp_rp = max(candidates).strftime('%Y%m%d') if candidates else 'N/A'
     best = '0'
     latest_rows = nan_cnt = 0
+    ind_nan_cnt = 0
     for f in files:
         try:
             df = pd.read_csv(os.path.join(FUND_DIR, f),
-                             usecols=lambda c: c in ('报告期', '净利润-同比增长'))
+                             usecols=lambda c: c in ('报告期', '净利润-同比增长', '所处行业'))
             if '报告期' not in df.columns:
                 continue
             s = df['报告期'].astype(str).str.extract(r'(\d{8})', expand=False)
@@ -162,18 +191,27 @@ def check_fundamental(exp):
                     latest_rows += 1
                     if pd.isna(latest['净利润-同比增长'].iloc[-1]):
                         nan_cnt += 1
+                    # 2026-09-04: akshare新版yjbb无'所处行业'列 → 全市场最新期NaN,
+                    # signal_engine回退路径崩溃。探针与同比并列, 防漂移再发。
+                    if '所处行业' in df.columns and pd.isna(latest['所处行业'].iloc[-1]):
+                        ind_nan_cnt += 1
         except Exception:
             continue
     date_ok = best >= exp_rp
     nan_frac = nan_cnt / max(latest_rows, 1)
     nan_ok = nan_frac <= 0.02
+    ind_nan_frac = ind_nan_cnt / max(latest_rows, 1)
+    ind_nan_ok = ind_nan_frac <= 0.02
     msg = (f'基本面: {len(files)}只, 最大报告期 {best} (期望≥{exp_rp}), '
-           f'最新期同比NaN {nan_cnt}/{latest_rows} ({nan_frac:.1%})')
+           f'最新期同比NaN {nan_cnt}/{latest_rows} ({nan_frac:.1%}), '
+           f'行业NaN {ind_nan_cnt}/{latest_rows} ({ind_nan_frac:.1%})')
     if not date_ok:
         msg += ' [报告期落后]'
     if not nan_ok:
         msg += ' [同比NaN超标, 疑似列漂移!]'
-    return date_ok and nan_ok, msg
+    if not ind_nan_ok:
+        msg += ' [行业NaN超标, 疑似列漂移!]'
+    return date_ok and nan_ok and ind_nan_ok, msg
 
 
 def check_alt_pkl(name, col, exp, slack_days=0):

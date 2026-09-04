@@ -28,7 +28,14 @@ BT_DATA_DIR = DATA_DIR / 'backtrader_data'
 FAILED_LOG = DATA_DIR / 'failed_stocks.json'
 METADATA_FILE = DATA_DIR / 'metadata.json'
 
-INDEX_CODE = 'sh000001'
+# 指数: 本地文件名(与策略层约定一致) -> xtquant代码
+# QMT行情客户端显示: 上证指数=1A0001, 中证1000=1B0852; xtquant API 用标准后缀
+INDEX_CODES = {
+    'sh000001': '000001.SH',   # 上证指数 (QMT: 1A0001)
+    'sh000852': '000852.SH',   # 中证1000 (QMT: 1B0852) — Fix#43 小盘风格输入
+    '399006': '399006.SZ',     # 创业板指 (QMT: 0A399006) — Fix#42 此前从未下载, 卡5/28
+}
+INDEX_CODE = 'sh000001'  # 向后兼容: 主指数(最新交易日判定用)
 DEFAULT_START = '2015-01-01'
 
 # --- 检查 xtquant 可用性 ---
@@ -174,8 +181,8 @@ class XTQuantDownloader:
         start_str = start_date.replace('-', '') if isinstance(start_date, str) else start_date
         end_str = end_date.replace('-', '') if isinstance(end_date, str) else end_date
 
-        if code == INDEX_CODE:
-            return self._download_index(start_str, end_str)
+        if code in INDEX_CODES:
+            return self._download_index(INDEX_CODES[code], start_str, end_str)
 
         xt_code = self._code_map.get(code, to_xt(code))
 
@@ -338,17 +345,17 @@ class XTQuantDownloader:
             self._float_vol_cache[code] = 0.0
         return self._float_vol_cache[code]
 
-    def _download_index(self, start_str, end_str):
-        """下载上证指数 (000001.SH)"""
+    def _download_index(self, xt_code, start_str, end_str):
+        """下载指数日线 (xt_code 如 '000001.SH'/'000852.SH')"""
         try:
             xtdata.download_history_data(
-                '000001.SH', period='1d',
+                xt_code, period='1d',
                 start_time=start_str, end_time=end_str,
             )
             time.sleep(0.25)
             raw = xtdata.get_market_data(
                 field_list=['open', 'high', 'low', 'close', 'volume', 'amount'],
-                stock_list=['000001.SH'],
+                stock_list=[xt_code],
                 period='1d',
                 start_time=start_str,
                 end_time=end_str,
@@ -387,7 +394,7 @@ class XTQuantDownloader:
         out_dir = self.raw_dir / code
         ensure_dir(out_dir)
 
-        stock_name = '' if code == INDEX_CODE else self.get_stock_name(code)
+        stock_name = '' if code in INDEX_CODES else self.get_stock_name(code)
         saved = []
 
         for adj_type, df in data_dict.items():
@@ -396,7 +403,7 @@ class XTQuantDownloader:
 
             file_path = out_dir / f'{adj_type}.csv'
 
-            if code == INDEX_CODE:
+            if code in INDEX_CODES:
                 df = df.sort_values('date')
                 df.to_csv(file_path, index=False, encoding='utf-8')
                 saved.append(adj_type)
@@ -462,9 +469,17 @@ class XTQuantDownloader:
         bar_width = 40
 
         for i, code in enumerate(codes):
-            code = str(code).zfill(6) if code != INDEX_CODE else INDEX_CODE
+            code = str(code).zfill(6) if code not in INDEX_CODES else code
             raw_path = self.raw_dir / code / 'qfq.csv'
             bt_path = self.bt_dir / f'{code}_qfq.csv'
+
+            # 2026-09-04: sina修复保护 — 带 .preQfqFix 备份的文件说明曾被
+            # data/repair_qfq_negatives.py 用sina乘性复权重建(xtquant加性复权越界→负价)。
+            # 全量重建会把修复覆盖回坏版, 故直接跳过; 其尾部新鲜度由
+            # refresh_all.sh 第5步(sina重拉至最近完整交易日)保证。
+            if (self.bt_dir / f'{code}_qfq.csv.preQfqFix').exists():
+                skipped += 1
+                continue
 
             if not raw_path.exists():
                 continue
@@ -472,7 +487,7 @@ class XTQuantDownloader:
                 continue
 
             # 指数数据: 列名为英文 (date,open,close,high,low,volume,amount)
-            if code == INDEX_CODE:
+            if code in INDEX_CODES:
                 try:
                     idx_df = pd.read_csv(raw_path, parse_dates=['date'], encoding='utf-8')
                     idx_df = idx_df[(idx_df['date'] >= start_date) & (idx_df['date'] <= end_date)]
@@ -576,7 +591,7 @@ class XTQuantDownloader:
         Args:
             overwrite: True = 全量覆盖 (--full), False = 增量合并
         """
-        if code == INDEX_CODE:
+        if code in INDEX_CODES:
             return
 
         code = str(code).zfill(6)
@@ -641,7 +656,7 @@ class XTQuantDownloader:
         if codes is None:
             print("获取沪深A股列表...", end=' ', flush=True)
             self._code_map = self.get_a_shares()
-            codes = [INDEX_CODE] + sorted(self._code_map.keys())
+            codes = list(INDEX_CODES) + sorted(self._code_map.keys())
             print(f"共 {len(codes)} 只 (含指数)")
         elif isinstance(codes, str):
             codes = [codes]
@@ -660,7 +675,7 @@ class XTQuantDownloader:
         t0 = time.time()
 
         for i, code in enumerate(codes):
-            code = str(code).zfill(6) if code != INDEX_CODE else INDEX_CODE
+            code = str(code).zfill(6) if code not in INDEX_CODES else code
 
             # ── 确定起止日期 ──
             if full or start_date:

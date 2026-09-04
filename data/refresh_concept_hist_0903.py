@@ -44,28 +44,35 @@ def get(url, params=None, tries=12, base=5.0, rotate=False):
 
 
 BOARD_CODE = None
+BOARD_PCT = None  # 板块名 -> 当日涨跌幅%(push2delay实时f3, 收盘后=最终值; push2his兜底用)
 
 
 def board_code(name):
     """板块名 -> BKxxxx: 首选 push2delay clist 全量(与map同源), searchapi 备用"""
-    global BOARD_CODE
+    global BOARD_CODE, BOARD_PCT
     if BOARD_CODE is None:
         BOARD_CODE = {}
+        BOARD_PCT = {}
         total = None
         for pn in range(1, 10):
             r = get('https://push2delay.eastmoney.com/api/qt/clist/get', {
                 'pn': str(pn), 'pz': '100', 'po': '1', 'np': '1',
                 'fltt': '2', 'invt': '2', 'fid': 'f12',
-                'fs': 'm:90+t:3+f:!50', 'fields': 'f12,f14',
+                'fs': 'm:90+t:3+f:!50', 'fields': 'f12,f14,f3',
             })
             d = r.json().get('data') or {}
             total = total or int(d.get('total') or 0)
             for it in d.get('diff') or []:
-                BOARD_CODE[str(it['f14'])] = str(it['f12'])
+                nm = str(it['f14'])
+                BOARD_CODE[nm] = str(it['f12'])
+                try:
+                    BOARD_PCT[nm] = float(it['f3']) if it.get('f3') not in (None, '-', '') else None
+                except (TypeError, ValueError):
+                    BOARD_PCT[nm] = None
             if len(BOARD_CODE) >= total:
                 break
             time.sleep(0.2)
-        print(f'[board_code] clist加载 {len(BOARD_CODE)} 个板块名', flush=True)
+        print(f'[board_code] clist加载 {len(BOARD_CODE)} 个板块名, 当日涨跌幅 {sum(1 for v in BOARD_PCT.values() if v is not None)} 个', flush=True)
     if name in BOARD_CODE:
         return BOARD_CODE[name]
     try:
@@ -112,7 +119,9 @@ names = list(hist.keys())
 print(f'旧 pkl: {len(names)} 板块', flush=True)
 
 # 口径验证: 用第一块的重叠行对比 (失败不中断, 默认信任涨跌幅/100)
+# 2026-09-04: 探测同时兼作 push2his 连通性测试 — 失败即全跑 clist 兜底(熔断)
 USE_PCT = False
+HIS_DOWN = False
 try:
     probe = names[0]
     code = board_code(probe)
@@ -129,18 +138,47 @@ try:
     else:
         print('[口径] 无重叠行, 信任 涨跌幅/100', flush=True)
 except Exception as e:
-    print(f'[口径] 探测失败({str(e)[:60]}), 继续主流程', flush=True)
+    HIS_DOWN = True
+    print(f'[口径] 探测失败({str(e)[:60]}) -> push2his不可用, 全量clist兜底', flush=True)
 
 shutil.copy2(HIST, HIST + '.preFill_0903')
 print(f'备份: {HIST}.preFill_0903', flush=True)
 
+# 2026-09-04: 目标日期动态化(原硬编码9/1阈值+9/3抓取终点 → 每日跑永远补不到当天bar)
+today = pd.Timestamp.now().normalize()
+print(f'目标: 补到 {today.date()} (收盘后约1-2h东财发布当日板块bar)', flush=True)
+
+def try_clist_append(name, old_df):
+    """push2his不可用时: 用push2delay实时f3补当日bar (收盘后f3=当日板块涨跌幅终值).
+    返回True=已补行"""
+    pct = BOARD_PCT.get(name) if BOARD_PCT is not None else None
+    if pct is None or (isinstance(pct, float) and pd.isna(pct)):
+        return False
+    hist[name] = pd.concat([old_df, pd.DataFrame({'date': [today], 'return': [pct / 100.0]})],
+                           ignore_index=True)
+    return True
+
+
 ok, skip, fail = 0, 0, 0
+clist_n = 0
+his_fail_streak = 0
 for i, name in enumerate(names):
     old_df = hist[name]
     last_d = old_df['date'].max()
-    if last_d >= pd.Timestamp('2026-09-01'):
+    if last_d >= today:
         print(f'  [{i+1}/{len(names)}] {name}: 已补齐({last_d.date()}), 跳过', flush=True)
         time.sleep(0.5)
+        continue
+    if HIS_DOWN:
+        # push2his熔断: 直接clist兜底
+        if try_clist_append(name, old_df):
+            print(f'  [{i+1}/{len(names)}] {name}: clist兜底 +{BOARD_PCT.get(name)}% (push2his熔断)', flush=True)
+            ok += 1
+            clist_n += 1
+        else:
+            print(f'  [{i+1}/{len(names)}] {name}: clist无当日涨跌幅, 跳过', flush=True)
+            skip += 1
+        time.sleep(0.3)
         continue
     try:
         code = board_code(name)
@@ -149,10 +187,16 @@ for i, name in enumerate(names):
             skip += 1
             time.sleep(1.5)
             continue
-        new_df = fetch_hist(code, '20260528', '20260903')
+        new_df = fetch_hist(code, (last_d - pd.Timedelta(days=3)).strftime('%Y%m%d'),
+                            today.strftime('%Y%m%d'))
         if new_df is None or len(new_df) == 0:
-            print(f'  [{i+1}/{len(names)}] {name}: 无新数据', flush=True)
-            skip += 1
+            if try_clist_append(name, old_df):
+                print(f'  [{i+1}/{len(names)}] {name} ({code}): kline空, clist兜底 +{BOARD_PCT.get(name)}%', flush=True)
+                ok += 1
+                clist_n += 1
+            else:
+                print(f'  [{i+1}/{len(names)}] {name} ({code}): 无新数据', flush=True)
+                skip += 1
             time.sleep(1.5)
             continue
         if USE_PCT:
@@ -162,15 +206,30 @@ for i, name in enumerate(names):
             hist[name] = pd.concat([old_df, tail[['date', 'return']]], ignore_index=True)
             print(f'  [{i+1}/{len(names)}] {name} ({code}): +{len(tail)}行 -> {tail["date"].max().date()}')
             ok += 1
+            his_fail_streak = 0
         else:
-            print(f'  [{i+1}/{len(names)}] {name} ({code}): 无更晚日期 (最新 {new_df["date"].max().date()})')
-            skip += 1
+            if try_clist_append(name, old_df):
+                print(f'  [{i+1}/{len(names)}] {name} ({code}): 无更晚bar, clist兜底 +{BOARD_PCT.get(name)}%', flush=True)
+                ok += 1
+                clist_n += 1
+            else:
+                print(f'  [{i+1}/{len(names)}] {name} ({code}): 无更晚日期 (最新 {new_df["date"].max().date()})')
+                skip += 1
     except Exception as e:
-        print(f'  [{i+1}/{len(names)}] {name}: FAIL {str(e)[:70]}', flush=True)
-        fail += 1
+        his_fail_streak += 1
+        if his_fail_streak >= 2:
+            HIS_DOWN = True
+            print(f'  [{i+1}/{len(names)}] {name}: push2his连续失败, 熔断切clist兜底', flush=True)
+        if try_clist_append(name, old_df):
+            print(f'  [{i+1}/{len(names)}] {name}: push2his失败, clist兜底 +{BOARD_PCT.get(name)}%', flush=True)
+            ok += 1
+            clist_n += 1
+        else:
+            print(f'  [{i+1}/{len(names)}] {name}: FAIL {str(e)[:70]}', flush=True)
+            fail += 1
     time.sleep(2.0)
 
 with open(HIST, 'wb') as f:
     pickle.dump(hist, f)
 dates_all = sorted({d.date() for df in hist.values() for d in df['date']})
-print(f'=== 完成: 更新{ok} 跳过{skip} 失败{fail}; 全局日期 {dates_all[0]} -> {dates_all[-1]} ({len(dates_all)}个交易日) ===', flush=True)
+print(f'=== 完成: 更新{ok} 跳过{skip} 失败{fail} (clist兜底{clist_n}); 全局日期 {dates_all[0]} -> {dates_all[-1]} ({len(dates_all)}个交易日) ===', flush=True)
