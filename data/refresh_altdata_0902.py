@@ -73,46 +73,15 @@ for name, _ in REFRESH_PKLS:
 
 # === 龙虎榜历史明细 dict 重建 (2024-01 ~ 2026-09) ===
 print()
-print('=== 重建 dragon_tiger_history.pkl ===')
+print('=== 重建 dragon_tiger_history.pkl (datacenter-web 直连) ===')
+# 2026-09-04: akshare 路径(ak.stock_lhb_detail_daily_em)当天0/33月失败 → 改直连 datacenter-web.
+# 该接口每页硬封顶500行, 必须按500分页(rebuild_dragon_tiger_history.py 已处理).
+# 失败月份跳过, 全失败不动旧文件(fail-open).
 try:
-    import akshare as ak
-    all_records = []
-    months = []
-    for year in [2024, 2025, 2026]:
-        last_m = 9 if year == 2026 else 12
-        for month in range(1, last_m + 1):
-            months.append(f'{year}-{month:02d}')
-    ok = 0
-    for m in months:
-        try:
-            df = ak.stock_lhb_detail_daily_em(date=m)
-            if df is not None and len(df) > 0:
-                all_records.append(df)
-                ok += 1
-            time.sleep(0.3)
-        except Exception:
-            pass
-    print(f'明细月份: {ok}/{len(months)} 成功, 共 {sum(len(d) for d in all_records)} 行')
-    if all_records:
-        merged = pd.concat(all_records, ignore_index=True)
-        code_col = next((c for c in merged.columns if '代码' in str(c)), None)
-        date_col = next((c for c in merged.columns if '日期' in str(c)), None)
-        if code_col and date_col:
-            merged['code_6'] = merged[code_col].astype(str).str.extract(r'(\d{6})', expand=False)
-            merged['dt'] = pd.to_datetime(merged[date_col]).dt.date
-            hist = {}
-            for code, grp in merged.groupby('code_6'):
-                if code and len(str(code)) == 6:
-                    hist[code] = set(grp['dt'].unique())
-            hp = os.path.join(DATA, 'dragon_tiger_history.pkl')
-            if os.path.exists(hp) and not os.path.exists(hp + '.preRefresh_0902'):
-                shutil.copy2(hp, hp + '.preRefresh_0902')
-            with open(hp, 'wb') as f:
-                pickle.dump(hist, f)
-            all_dates = sorted({d for v in hist.values() for d in v})
-            print(f'历史明细: {len(hist)} 只, 日期 {all_dates[0]} -> {all_dates[-1]} 共{len(all_dates)}个上榜日')
-        else:
-            print('[WARN] 明细列缺失, 未重建')
+    sys.path.insert(0, '/mnt/d/quant/data')
+    from rebuild_dragon_tiger_history import rebuild, write_hist
+    hist, ok = rebuild(verbose=True)
+    write_hist(hist, ok, min_ok=3)
 except Exception as e:
     print(f'[FAIL] history重建: {str(e)[:200]}')
 
