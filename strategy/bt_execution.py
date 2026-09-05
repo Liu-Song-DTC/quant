@@ -19,7 +19,7 @@ import ctypes
 from core.strategy import Strategy
 from core.fundamental import FundamentalData
 from core.signal_engine import SignalEngine
-from core.factor_preparer import prepare_factor_data, _signal_code_fingerprint
+from core.factor_preparer import prepare_factor_data, _FACTOR_CODE_FILES
 from core.signal_store import SignalStore
 from core.config_loader import load_config
 from core.monitor import monitor, get_logger
@@ -89,6 +89,67 @@ _STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_STRATEGY_DIR)
 DATA_PATH = config.get('paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data/backtrader_data/'))
 FUNDAMENTAL_PATH = config.get('paths.fundamental', os.path.join(_PROJECT_DIR, 'data/stock_data/fundamental_data/'))
+
+
+def _signal_code_fingerprint() -> str:
+    """信号代码指纹(细化版, 2026-09-06): 决定信号CSV内容的代码/配置指纹。
+
+    锚点危机后第一版(factor_preparer._SIGNAL_CODE_FILES + 整个factor_config.yaml)
+    的细化, 解决两个问题:
+    ① yaml只哈希非portfolio节 — portfolio节=组合层(portfolio.py消费,
+       signal_engine/ml_predictor/factor_preparer均不读), 计入指纹使portfolio
+       参数实验(如E-H5)每次改yaml都触发78min信号重生成, 纯浪费;
+    ② 纳入config/quarterly_factors/*.yaml — E-D2教训: 季度标定权重强绑定
+       信号内容(信号=按季度权重给因子加权), 旧门禁对它不可见, 改权重必须
+       手动删CSV。现在自动失效。
+    本函数只在信号复用门禁使用, 不影响因子缓存键(缓存键用factor_preparer
+    自己的_code代码指纹 — 两者覆盖不同, 因子缓存不关心信号引擎)。
+    """
+    import hashlib
+    import re
+    h = hashlib.md5()
+    base = os.path.dirname(os.path.abspath(__file__))
+    # 代码文件: 因子9文件(yaml单独处理) + 信号引擎 + ML + 本入口
+    for rel in [f for f in _FACTOR_CODE_FILES if f != 'config/factor_config.yaml'] + [
+            'core/signal_engine.py',
+            'core/ml_predictor.py',
+            'bt_execution.py',
+    ]:
+        p = os.path.join(base, rel)
+        try:
+            st = os.stat(p)
+            h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
+        except OSError:
+            h.update(f"{rel}|MISSING;".encode('utf-8'))
+    # factor_config.yaml: 剥掉顶层portfolio节后哈希 (portfolio参数不参与信号生成)
+    _yaml_p = os.path.join(base, 'config', 'factor_config.yaml')
+    try:
+        with open(_yaml_p, encoding='utf-8') as _yf:
+            _kept, _skip = [], False
+            for _ln in _yf:
+                if re.match(r'^portfolio:', _ln):
+                    _skip = True
+                    continue
+                if _skip:
+                    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*:', _ln):
+                        _skip = False
+                    else:
+                        continue
+                _kept.append(_ln)
+        _yaml_digest = hashlib.md5(''.join(_kept).encode('utf-8')).hexdigest()[:8]
+        h.update(f"config/factor_config.yaml|{_yaml_digest};".encode('utf-8'))
+    except OSError:
+        h.update('config/factor_config.yaml|MISSING;'.encode('utf-8'))
+    # 季度标定权重: 信号权重强绑定 (E-D2教训), 全部23个季度文件计入
+    _qdir = os.path.join(base, 'config', 'quarterly_factors')
+    try:
+        for _qn in sorted(os.listdir(_qdir)):
+            _qp = os.path.join(_qdir, _qn)
+            _st = os.stat(_qp)
+            h.update(f"config/quarterly_factors/{_qn}|{_st.st_mtime_ns}|{_st.st_size};".encode('utf-8'))
+    except OSError:
+        h.update('config/quarterly_factors|MISSING;'.encode('utf-8'))
+    return h.hexdigest()[:8]
 
 
 def _signals_stale(signals_csv):
