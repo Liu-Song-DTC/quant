@@ -69,6 +69,12 @@ def _malloc_trim(pad=0):
 FROMDATE = config.get('backtest.fromdate', None)
 TODATE = config.get('backtest.todate', None)
 
+# E-B1实验(2026-09-05, 已回退不采纳): 曾在此加SIGNAL_WARMUP_DAYS=120暖机窗口,
+# 让2021Q1有真因子(默认数据从FROMDATE起喂, 前60bar=信号引擎V41兜底→Q1零买入)。
+# 实测: Q1如预期恢复买入(1/14起selected=6), 但2021年22.83%→19.73%(3月白马崩盘),
+# 且路径依赖级联拖累全程 → 726,364/190.55%/1.1239 vs 基线818,884/227.55%/1.2546,
+# 四项全输。结论: Q1空仓是意外保护, 保持原样。若再试需配Q1特有风险控制。
+
 # 实验钩子: 股票池截止日覆盖 (仅实验用, 默认None=跟随TODATE)
 # 用途: 隔离"池子变化 vs 数据追加"对回测的影响, 例 POOL_TODATE=2026-08-28
 _POOL_TODATE_OVERRIDE = os.environ.get('POOL_TODATE') or None
