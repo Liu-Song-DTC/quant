@@ -19,7 +19,7 @@ import ctypes
 from core.strategy import Strategy
 from core.fundamental import FundamentalData
 from core.signal_engine import SignalEngine
-from core.factor_preparer import prepare_factor_data, _FACTOR_CODE_FILES
+from core.factor_preparer import prepare_factor_data, _FACTOR_CODE_FILES, _yaml_stripped_digest
 from core.signal_store import SignalStore
 from core.config_loader import load_config
 from core.monitor import monitor, get_logger
@@ -121,25 +121,10 @@ def _signal_code_fingerprint() -> str:
             h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
         except OSError:
             h.update(f"{rel}|MISSING;".encode('utf-8'))
-    # factor_config.yaml: 剥掉顶层portfolio节后哈希 (portfolio参数不参与信号生成)
-    _yaml_p = os.path.join(base, 'config', 'factor_config.yaml')
-    try:
-        with open(_yaml_p, encoding='utf-8') as _yf:
-            _kept, _skip = [], False
-            for _ln in _yf:
-                if re.match(r'^portfolio:', _ln):
-                    _skip = True
-                    continue
-                if _skip:
-                    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*:', _ln):
-                        _skip = False
-                    else:
-                        continue
-                _kept.append(_ln)
-        _yaml_digest = hashlib.md5(''.join(_kept).encode('utf-8')).hexdigest()[:8]
-        h.update(f"config/factor_config.yaml|{_yaml_digest};".encode('utf-8'))
-    except OSError:
-        h.update('config/factor_config.yaml|MISSING;'.encode('utf-8'))
+    # factor_config.yaml: 剥掉组合/执行层节后哈希 (共用factor_preparer的
+    # _yaml_stripped_digest — 豁免节清单单一来源, 避免两处漂移)。
+    _yaml_digest = _yaml_stripped_digest(os.path.join(base, 'config', 'factor_config.yaml'))
+    h.update(f"config/factor_config.yaml|{_yaml_digest};".encode('utf-8'))
     # 季度标定权重: 信号权重强绑定 (E-D2教训), 全部23个季度文件计入
     _qdir = os.path.join(base, 'config', 'quarterly_factors')
     try:
@@ -898,10 +883,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     ]
 
     # 增量写入信号CSV（而非内存中累积 ~1.3GB 的 all_signals 列表）
+    # 原子写: 先写.tmp再os.replace — 中途被杀不损坏既有CSV
+    # (2026-09-06教训: H5-a运行在信号生成中被杀, 旧CSV随os.remove+open('w')丢失,
+    #  被迫78min重生成。原子写后旧CSV保留到新CSV完整落盘为止)
     strategy_dir = os.path.dirname(os.path.abspath(__file__))
     signals_output_path = os.path.join(strategy_dir, 'rolling_validation_results', 'backtest_signals.csv')
     os.makedirs(os.path.dirname(signals_output_path), exist_ok=True)
-    signal_csv = open(signals_output_path, 'w', encoding='utf-8')
+    signal_csv = open(signals_output_path + '.tmp', 'w', encoding='utf-8')
     signal_csv.write('code,date,buy,sell,score,pre_discount_score,factor_value,factor_name,industry,factor_quality,'
                      'chan_divergence_type,chan_divergence_strength,chan_structure_score,'
                      'chan_buy_point,chan_sell_point,signal_level,trend_type,'
@@ -1053,6 +1041,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         strategy.signal_engine._dyn_fail[k] = v
 
     signal_csv.close()
+    os.replace(signals_output_path + '.tmp', signals_output_path)
     print(f"信号数据已保存: {signal_count[0]} 条 -> {signals_output_path}")
 
     # === 信号质量诊断 ===
@@ -1945,9 +1934,8 @@ if __name__ == "__main__":
             strategy.generate_market_regime(_idx_df)
             del _idx_df
     else:
-        import glob as _glob
-        _existing = _glob.glob(_signals_csv)
-        if _existing: os.remove(_existing[0])
+        # 不再预删既有CSV: add_data_and_signal原子写(os.replace)自然覆盖,
+        # 中途被杀时旧CSV保留可复用 (2026-09-06)
         add_data_and_signal(cerebro, strategy, fundamental_data)
         # 记录生成此CSV的信号代码指纹 → 下次复用门禁比对
         _sidecar = os.path.join(os.path.dirname(os.path.abspath(_signals_csv)),

@@ -308,17 +308,58 @@ _FACTOR_CODE_FILES = [
 ]
 
 
+# 组合/执行层yaml节: 不参与因子计算也不参与信号生成, 因子缓存键与信号指纹均豁免
+# (2026-09-06逐节验证: 9个因子文件+signal_engine+ml_predictor+bt_execution的信号
+#  路径均不读这些节; portfolio.py/回测引擎消费它们)。
+# backtest节必须保留(todate流入get_stock_pool → 股票池 → 因子/信号内容)。
+_PORTFOLIO_LAYER_YAML_SECTIONS = {
+    'portfolio', 'base_exposure', 'portfolio_stop_loss', 'stock_stop_loss',
+    'hard_drawdown_stop', 'consecutive_loss_breaker', 'volatility_control',
+    'risk_parity', 'dynamic_rebalance', 'enhanced_stop_loss',
+    'mean_reversion_exit', 'cost_model', 'live_monitoring',
+}
+
+
+def _yaml_stripped_digest(yaml_path: str) -> str:
+    """factor_config.yaml剥掉组合/执行层节后的内容md5[:8]。
+
+    因子缓存键与信号代码指纹共用: portfolio层实验(如H5)只改这些节时,
+    因子缓存/信号CSV均不失效 — 13min迭代的关键。信号层节(signal/ml/
+    dynamic_factor/backtest等)仍全量计入。
+    """
+    import hashlib
+    import re
+    h = hashlib.md5()
+    try:
+        with open(yaml_path, encoding='utf-8') as _yf:
+            _skip = ''
+            for _ln in _yf:
+                _m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*):', _ln)
+                if _m:
+                    _skip = _m.group(1) if _m.group(1) in _PORTFOLIO_LAYER_YAML_SECTIONS else ''
+                if not _skip:
+                    h.update(_ln.encode('utf-8'))
+    except OSError:
+        h.update(b'MISSING')
+    return h.hexdigest()[:8]
+
+
 def _code_fingerprint() -> str:
     """代码指纹: 因子计算逻辑/配置的 (mtime_ns+size)。
 
     数据指纹只覆盖输入文件; 代码改动(如 concept_heat EMA污染修复)后缓存键
     若不变, 旧因子值会被静默复用 — 与344陷阱同款。代码指纹杜绝此类复用。
+    yaml按剥组合/执行层节后的内容哈希(_yaml_stripped_digest) — 组合层参数
+    不参与因子计算, 不应使因子缓存失效。
     """
     import hashlib
     h = hashlib.md5()
     base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     for rel in _FACTOR_CODE_FILES:
         p = os.path.join(base, rel)
+        if rel == 'config/factor_config.yaml':
+            h.update(f"{rel}|{_yaml_stripped_digest(p)};".encode('utf-8'))
+            continue
         try:
             st = os.stat(p)
             h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
@@ -351,6 +392,9 @@ def _signal_code_fingerprint() -> str:
     base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     for rel in _SIGNAL_CODE_FILES:
         p = os.path.join(base, rel)
+        if rel == 'config/factor_config.yaml':
+            h.update(f"{rel}|{_yaml_stripped_digest(p)};".encode('utf-8'))
+            continue
         try:
             st = os.stat(p)
             h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
