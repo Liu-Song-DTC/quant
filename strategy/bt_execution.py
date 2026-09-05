@@ -19,7 +19,7 @@ import ctypes
 from core.strategy import Strategy
 from core.fundamental import FundamentalData
 from core.signal_engine import SignalEngine
-from core.factor_preparer import prepare_factor_data
+from core.factor_preparer import prepare_factor_data, _signal_code_fingerprint
 from core.signal_store import SignalStore
 from core.config_loader import load_config
 from core.monitor import monitor, get_logger
@@ -95,9 +95,31 @@ def _signals_stale(signals_csv):
     """信号CSV是否比任何数据文件旧 (数据刷新后必须重新生成信号).
     2026-09-04: 旧行为无条件复用既有CSV, 数据全量刷新后曾混用旧信号
     (被杀旧代码实验残留CSV + 9/4新数据 → 混搭基线)。同数据态下portfolio类
-    实验仍走复用快路径 (数据未变则信号CSV不旧)."""
+    实验仍走复用快路径 (数据未变则信号CSV不旧).
+    2026-09-06: 增加信号代码指纹门禁 — 797,071锚点危机(执行层代码漂移
+    指纹不可见)教训: 生成信号的代码变了但CSV复用 → 混搭代码态不可复现.
+    """
     import time as _t
     sig_mtime = os.path.getmtime(signals_csv)
+    # 信号代码指纹门禁: 生成CSV时代码指纹存于sidecar, 当前代码指纹不一致
+    # (含bt_execution/signal_engine/ml_predictor, 见factor_preparer._SIGNAL_CODE_FILES)
+    # → 强制重生成。sidecar缺失(旧时代CSV/首次运行)同样强制。
+    _sidecar = os.path.join(os.path.dirname(os.path.abspath(signals_csv)),
+                            '.signal_code_fp')
+    try:
+        with open(_sidecar, 'r') as _f:
+            _fp_saved = _f.read().strip()
+    except OSError:
+        _fp_saved = ''
+    _fp_now = _signal_code_fingerprint()
+    if _fp_saved != _fp_now:
+        print(f"信号CSV代码态过期 (生成时={_fp_saved or '无记录'} 当前={_fp_now}), 重新生成信号")
+        return True
+    # 执行层产物排除(2026-09-06): reduction_plans.pkl由portfolio在回测期间按4h策略
+    # 自刷新重写(load_reduction_plans), 信号层(signal_engine)不消费它
+    # (signal_engine只用northbound/margin/dragon_tiger), 其mtime永远比信号CSV新
+    # → 每跑必触发78min信号重生成。数据真正刷新(全量)时qfq/fundamental仍会触发。
+    _EXEC_LAYER_ARTIFACTS = {'reduction_plans.pkl'}
     roots = [DATA_PATH, FUNDAMENTAL_PATH,
              os.path.join(_PROJECT_DIR, 'data/alternative_data'),
              os.path.join(_PROJECT_DIR, 'data/concept_hist.pkl'),
@@ -107,6 +129,8 @@ def _signals_stale(signals_csv):
         if os.path.isdir(root):
             for dirpath, _dirs, files in os.walk(root):
                 for fn in files:
+                    if fn in _EXEC_LAYER_ARTIFACTS:
+                        continue
                     p = os.path.join(dirpath, fn)
                     try:
                         mt = os.path.getmtime(p)
@@ -614,6 +638,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
                     # Purged walk-forward: 标签=forward_period日前瞻收益,
                     # 训练窗必须止于first_pred_date前forward_period个交易日,
                     # 否则靠近训练期末的标签窗口越过预测日(回测前视, 实盘拿不到)
+                    # all_dates在此是密集交易日历(本函数开头由sh000001日历+早段
+                    # 补齐日期构建, prepare_factor_data原样返回), 故_fp_days=10
+                    # 个条目=10个交易日purge, 与E-D1采纳基线(830,353×2逐位一致,
+                    # chunk0训练样本203,902)及9/5全天各run行为一致。
+                    # 2026-09-06 797,071锚点危机定案: 根因是19:42 run的执行层代码
+                    # 漂移(E2D2残留ml_predictor/signal_engine态, IC不可复现)+该run
+                    # 信号生成期间另类数据三件套下载竞态; purge行本身无罪, 勿再动。
                     _fp_days = int(config.get('dynamic_factor.forward_period', 10))
                     _d0_ts = pd.Timestamp(first_pred_date)
                     _d0_pos = int(np.searchsorted(np.asarray(all_dates), _d0_ts))
@@ -1741,6 +1772,35 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     except Exception as e:
         import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
 
+    # V-验证体系: 落盘净值曲线(date/nav/daily_ret), 供sharpe_validation.py做
+    # 年化分解/滚动夏普/MC置信区间/回撤画像, 无需重跑即可分析
+    # 注意: 不得在此处import pandas (会遮蔽模块级pd, 引发UnboundLocalError)
+    try:
+        _eq_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'rolling_validation_results', 'equity_curve.csv')
+        pd.DataFrame({
+            'date': [pd.Timestamp(d).strftime('%Y-%m-%d') for d in calendar],
+            'nav': nav,
+            'daily_ret': np.concatenate([[np.nan], daily_ret]),
+        }).to_csv(_eq_path, index=False)
+        print(f"净值曲线已保存: {_eq_path}")
+        # H4证据(2026-09-06): 逐日状态落盘(regime/n_pos/exposure),
+        # 供分析FAST预警期的暴露行为与回撤关系(positions_dist每日1次调用, 顺序=calendar)
+        _rs = getattr(getattr(strategy, 'portfolio', None), '_dbg', {}).get('positions_dist', [])
+        if _rs:
+            _rs = _rs[:len(calendar)]
+            _rs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'rolling_validation_results', 'regime_state.csv')
+            pd.DataFrame({
+                'date': [pd.Timestamp(d).strftime('%Y-%m-%d') for d in calendar[:len(_rs)]],
+                'regime': [r[0] for r in _rs],
+                'n_pos': [r[1] for r in _rs],
+                'exposure': [r[2] for r in _rs],
+            }).to_csv(_rs_path, index=False)
+            print(f"逐日状态已保存: {_rs_path}")
+    except Exception as e:
+        import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
+
     return {'nav': nav, 'daily_returns': daily_ret_clean, 'sharpe': sharpe,
             'max_drawdown': max_dd, 'annual_returns': annual_rets,
             'annual_max_drawdown': annual_mdd,
@@ -1828,6 +1888,14 @@ if __name__ == "__main__":
         _existing = _glob.glob(_signals_csv)
         if _existing: os.remove(_existing[0])
         add_data_and_signal(cerebro, strategy, fundamental_data)
+        # 记录生成此CSV的信号代码指纹 → 下次复用门禁比对
+        _sidecar = os.path.join(os.path.dirname(os.path.abspath(_signals_csv)),
+                                '.signal_code_fp')
+        try:
+            with open(_sidecar, 'w') as _f:
+                _f.write(_signal_code_fingerprint())
+        except OSError as _e:
+            print(f"[WARN] 信号代码指纹sidecar写入失败: {_e}")
 
     # ======  向量化回测引擎 (替代 backtrader 逐 bar 循环) ======
     del cerebro

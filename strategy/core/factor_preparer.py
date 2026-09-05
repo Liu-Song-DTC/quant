@@ -327,6 +327,38 @@ def _code_fingerprint() -> str:
     return h.hexdigest()[:8]
 
 
+# 信号生成所消费的代码 (因子文件 + 信号引擎 + ML + 执行入口)。
+# 2026-09-06 797,071锚点危机教训: bt_execution.py/signal_engine.py/ml_predictor.py
+# 不在旧10文件指纹内 — 9/5夜间bt_execution的ML purge与提交版不一致却指纹相同,
+# 导致"恢复run"797,071与当天任何可复现代码态都对不上(因子parquet逐列相同、
+# 同数据同参数进程内训练确定性验证、唯一解释=执行层代码漂移)。
+# 此指纹用于信号复用门禁: 代码变则强制重生成信号, 杜绝混搭代码态。
+_SIGNAL_CODE_FILES = _FACTOR_CODE_FILES + [
+    'core/signal_engine.py',
+    'core/ml_predictor.py',
+    'bt_execution.py',
+]
+
+
+def _signal_code_fingerprint() -> str:
+    """信号代码指纹: 信号生成路径 (因子+信号引擎+ML+执行入口) 的 (mtime_ns+size)。
+
+    与因子缓存键用的 _code_fingerprint 不同: 覆盖执行层三文件 (不在因子缓存键内,
+    改它们不应使因子缓存失效, 但必须使信号CSV失效 — 信号复用门禁据此判断)。
+    """
+    import hashlib
+    h = hashlib.md5()
+    base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    for rel in _SIGNAL_CODE_FILES:
+        p = os.path.join(base, rel)
+        try:
+            st = os.stat(p)
+            h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
+        except OSError:
+            h.update(f"{rel}|MISSING;".encode('utf-8'))
+    return h.hexdigest()[:8]
+
+
 def prepare_factor_data(stock_file_map: dict, fd,
                        detailed_industries: dict,
                        all_dates: list,
@@ -403,7 +435,8 @@ def prepare_factor_data(stock_file_map: dict, fd,
                      str(factor_dates[0]) + str(factor_dates[-1]) + str(date_step) + str(lookback) + \
                      '_fp' + _data_fp + '_cfp' + _code_fp
     _cache_hash = hashlib.md5(_cache_key_str.encode()).hexdigest()[:8]
-    print(f"数据指纹: {_data_fp} (K线{len(stock_file_map)}文件 + 基本面 + 题材输入); 代码指纹: {_code_fp}")
+    print(f"数据指纹: {_data_fp} (K线{len(stock_file_map)}文件 + 基本面 + 题材输入); 代码指纹: {_code_fp}; "
+          f"信号代码指纹: {_signal_code_fingerprint()}")
     _cached = load_factor_cache(_n_stocks, _n_dates, _cache_hash)
     if _cached is not None and len(_cached) > 0:
         print(f"使用因子缓存，跳过因子计算")

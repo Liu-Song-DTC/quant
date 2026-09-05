@@ -237,6 +237,12 @@ class PortfolioConstructor:
         # === 组合可调参数（从YAML加载，替代硬编码魔数） ===
         pp = portfolio_config.get('params', {})
         self.max_positions = pp.get('max_positions', 8)
+        # E-G1: bp2专用通道(2026-09-05). 数据: bp2 10日+2.92% vs bp0 +0.85%, 6/6年为正
+        # (2022/2023熊市年唯一正买点类), score对bp2五档平坦→综合分排序无信息却压制其入选
+        self.bp2_channel_enabled = pp.get('bp2_channel_enabled', False)
+        self.bp2_channel_slots = int(pp.get('bp2_channel_slots', 1))
+        # H4: FAST预警期敞口上限(0=关闭)
+        self.fast_exposure_cap = float(pp.get('fast_exposure_cap', 0.0))
         self.rp_min_weight_ratio = pp.get('risk_parity_min_weight_ratio', 0.5)
         self.rank_decay = pp.get('rank_decay', 0.3)
         self.chan_bonus_sl2 = pp.get('chan_bonus_sl2', 0.04)
@@ -799,6 +805,20 @@ class PortfolioConstructor:
             plog.log_selection_context(date, 0, len(universe), 0, 0)
             return {}
 
+        # === E-G1: bp2专用通道候选池 (2026-09-05实验) ===
+        # 在产业链裁剪之前抽取: bp2 edge与行业无关(10日收益六档行业内均>bp0),
+        # 产业链聚焦(为fund综合分候选设计)会把非主导链的bp2整片切掉
+        # v1保守: 仅NORM启用(bear_risk_fast时n_positions小, 专用槽会过度集中)
+        _bp2_pool = []
+        if self.bp2_channel_enabled and not bear_risk_fast:
+            _bp2_pool = [c for c in candidates if c.get('chan_buy_point', 0) == 2]
+        _bp2_codes = {c['code'] for c in _bp2_pool}
+        _bp2_reserved = []
+        if _bp2_pool:
+            self._dbg.setdefault('bp2_channel', {'days': 0, 'pool': 0, 'reserved': 0, 'selected': 0})
+            self._dbg['bp2_channel']['days'] += 1
+            self._dbg['bp2_channel']['pool'] += len(_bp2_pool)
+
         # === 产业链聚焦: 找到主导行业, 限定在产业链内选股 ===
         _chain_concepts = None
         _dom_industry = None
@@ -1031,6 +1051,8 @@ class PortfolioConstructor:
                 if gate_q < GATE_FLOOR_HOLD:
                     continue
             else:
+                # E-G1v3: bp2豁免GATE_FLOOR_NEW — 已回退(2026-09-06凌晨): 隔离实验发现
+                # 该豁免是主路径唯一改动, 与通道无关; 需先验证其单独效应再定去留
                 if gate_q < GATE_FLOOR_NEW:
                     continue
 
@@ -1042,6 +1064,10 @@ class PortfolioConstructor:
 
             # P0: gate对收益预测力IC≈0, 不再参与评分, 仅做二元安全网(通过硬门槛即可)
             gate_filtered.append(c)
+            # E-G1: 过gate且无卖点的bp2进入专用通道候选 (免score/rank门槛内卷)
+            # v2修正: 有chan_sell_point的持仓必须正常出场, 保底槽不得强制保留
+            if c['code'] in _bp2_codes and c.get('chan_sell_point', 0) == 0:
+                _bp2_reserved.append(c)
 
         if len(gate_filtered) == 0:
             plog.alert(f"portfolio: {len(qualified)} candidates all failed Gate floor at {date}")
@@ -1218,12 +1244,38 @@ class PortfolioConstructor:
         qualified.sort(key=lambda x: (-x['_locked'], -x['effective_score']))
 
         # === 纯score排序选股 ===
-        selected = []
+        # E-G1: bp2专用通道保底槽 — 先于常规排序占位。score对bp2无区分度,
+        # 内部按score排≈随机但稳定; 槽数受bp2_channel_slots与n_positions双限
+        # v2修正: 低敞口日(target_exposure<0.5, 集中火力截断区)不占位 —
+        # 否则截断取前2名时bp2被迫占50%仓位, 偏离1/N设计意图
+        _bp2_reserved.sort(key=lambda x: -x['score'])
+        _bp2_slot_n = min(len(_bp2_reserved), self.bp2_channel_slots, n_positions)
+        if target_exposure < 0.50:
+            _bp2_slot_n = 0
+        selected = list(_bp2_reserved[:_bp2_slot_n])
+        _bp2_selected_codes = {c['code'] for c in selected}
+        if _bp2_slot_n > 0:
+            self._dbg.setdefault('bp2_channel', {'days': 0, 'pool': 0, 'reserved': 0, 'selected': 0})
+            self._dbg['bp2_channel']['reserved'] += _bp2_slot_n
+            print(f" [E-G1] {date.date() if hasattr(date, 'date') else date} "
+                  f"bp2专用槽占位 {_bp2_slot_n}只 "
+                  f"(池{len(_bp2_pool)}/过gate{len(_bp2_reserved)}, exp={target_exposure:.2f})")
         _ind_count = {}  # 同行业只数上限(max_per_industry, 0=不限制)
+        for c in _bp2_reserved[:_bp2_slot_n]:
+            _ind = c.get('industry', '') or 'default'
+            _ind_count[_ind] = _ind_count.get(_ind, 0) + 1
+        # E-G1: 保底槽计入买入结构与通道选中统计
+        for c in selected:
+            key = f'buy_point_{_regime}_{c.get("chan_buy_point", 0)}'
+            self._dbg[key] = self._dbg.get(key, 0) + 1
+        if _bp2_slot_n > 0:
+            self._dbg['bp2_channel']['selected'] += _bp2_slot_n
         for c in qualified:
             if len(selected) >= n_positions:
                 break
             if c in selected:
+                continue
+            if c['code'] in _bp2_selected_codes:
                 continue
             _ind = c.get('industry', '') or 'default'
             if self.max_per_industry and _ind_count.get(_ind, 0) >= self.max_per_industry:
@@ -2153,6 +2205,28 @@ class PortfolioConstructor:
             if target_val > 0 and code not in self._entry_dates:
                 self._entry_dates[code] = date
                 self._peak_prices[code] = prices.get(code, 0)
+
+        # === H4(2026-09-06): FAST预警期敞口上限 — 崩盘月实证FAST持0.84-0.95敞口 ===
+        # (2026-06/07全程FAST持9-18只, 07-24才转BEAR已吃-23%; 2023 FAST均敞口0.842)
+        # 机制: 敞口超cap时按质量从弱到强卖出(score低/有卖点优先), 非按比例
+        # 证据: 反事实筛选(proportional下界) cap0.65≈总收益不变/Sharpe+0.10/MDD-4.2pp
+        if bear_risk_fast and self.fast_exposure_cap > 0:
+            _expo = sum(adjusted.values()) / max(total_equity, 1)
+            if _expo > self.fast_exposure_cap:
+                _budget = self.fast_exposure_cap * total_equity
+                _held = [(c, v) for c, v in adjusted.items() if v > 0]
+                def _h4_weakness(item):
+                    code, _v = item
+                    _s = signal_store.get(code, date)
+                    _sellpt = int(getattr(_s, 'chan_sell_point', 0) or 0)
+                    _score = float(getattr(_s, 'score', 0) or 0)
+                    return (-_sellpt, _score)  # 卖点>0先卖, 再按score从低到高
+                _held.sort(key=_h4_weakness)
+                for code, val in _held:
+                    if sum(adjusted.values()) <= _budget:
+                        break
+                    # 该持仓全部卖出(最弱优先), 止损覆盖的已置0不会出现在此
+                    adjusted[code] = 0.0
 
         # DEBUG: 记录每期持仓分布
         regime = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
