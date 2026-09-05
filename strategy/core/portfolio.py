@@ -634,7 +634,10 @@ class PortfolioConstructor:
         _regime = 'FAST' if bear_risk_fast else 'NORM'
 
         if bear_risk_fast:
-            n_positions = max(1, n_positions // 5)
+            # E-A1(2026-09-05采纳): FAST快速预警期仓位上限 1→2
+            # 三版实测: cap1 726,762/Sharpe1.1453 → cap3 769,524/1.2031(2022 -11.14%)
+            #          → cap2 818,884/1.2546/回撤20.58% 全面最优, 采纳为新基线
+            n_positions = max(2, n_positions // 3)
             _eff_min_rank = max(self.min_rank_pct, 0.80)
             _eff_min_score = max(self.min_absolute_score, 0.30)
         else:
@@ -1064,6 +1067,9 @@ class PortfolioConstructor:
         score_rank = pd.Series(scores).rank(pct=True).values
         pool_median_score = float(np.median(scores)) if len(scores) > 0 else 0.3
 
+        # E-A2实验: 新候选(非持仓)中的最强score — 明显强于持仓时取消换手保护/解锁, 允许顶替
+        _fresh_best = max((cc.get('score', 0.0) for cc in qualified if cc['code'] not in current_codes), default=0.0)
+
         for i, c in enumerate(qualified):
             c['is_held'] = c['code'] in current_codes
 
@@ -1144,7 +1150,10 @@ class PortfolioConstructor:
             turnover = 0.0
             if c['is_held'] and c['rank_pct'] > hold_threshold:
                 held_score = c.get('score', 0.0)
-                if held_score > pool_median_score * 1.2:
+                # E-A2: 存在明显更强的新候选(fresh_best > held×1.15) → 取消保护, 让位顶替
+                if _fresh_best > held_score * 1.15:
+                    turnover = 0.0
+                elif held_score > pool_median_score * 1.2:
                     turnover = self.turnover_bonus              # 明显强于中位数 → 保留
                 elif held_score > pool_median_score:
                     turnover = self.turnover_bonus * 0.5        # 略强 → 减半保护
@@ -1197,7 +1206,11 @@ class PortfolioConstructor:
                     held_score = c.get('score', 0.0)
                     if held_score < pool_median_score * 0.7:
                         lock_bypass = True   # 远弱于中位数 → 解锁
-                c['_locked'] = (held_days < self.min_hold_days) and not lock_bypass
+                    elif _fresh_best > held_score * 1.15:
+                        lock_bypass = True   # E-A2: 新候选明显更强 → 解锁顶替
+                # 有卖点信号的持仓不锁(让位)
+                c['_locked'] = (held_days < self.min_hold_days) and not lock_bypass \
+                    and c.get('chan_sell_point', 0) == 0
             else:
                 c['_locked'] = False
 
