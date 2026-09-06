@@ -7392,6 +7392,13 @@ portfolio:
     bp2_score_boost: 0.45
     # E-K2(2026-09-06): FAST下抑制bp2加成(n=2时排挤代价最高, E-G1曾因此限定NORM)
     bp2_boost_norm_only: false
+    # E-L1(2026-09-06): bp2入场仓信号衰减止损 — 已否决(E-L1b: 37次截断, NAV -33,596,
+    # 四指标全劣, 2022目标年-7.29% vs 基线-6.69%反而更差)。根因: 采纳态bp2长持是
+    # V型反弹赢家(61d+桶+0.63), 2022真正拖累是H2短持churn(6-20d桶sum -0.99), 机制碰不到。
+    # 2022三笔56天亏损是0.20时代产物, 0.45下已被601101/601168/000737完全抵消。默认关
+    bp2_fade_stop_enabled: false
+    bp2_fade_stop_days: 15
+    bp2_fade_stop_dd: 0.08
     risk_parity_min_weight_ratio: 0.4
     rank_decay: 0.15
     chan_bonus_sl2: 0.04

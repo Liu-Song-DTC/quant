@@ -243,6 +243,9 @@ class PortfolioConstructor:
         self.bp2_channel_slots = int(pp.get('bp2_channel_slots', 1))
         self.bp2_score_boost = float(pp.get('bp2_score_boost', 0.0))
         self.bp2_boost_norm_only = bool(pp.get('bp2_boost_norm_only', False))
+        self.bp2_fade_stop_enabled = bool(pp.get('bp2_fade_stop_enabled', False))
+        self.bp2_fade_stop_days = int(pp.get('bp2_fade_stop_days', 15))
+        self.bp2_fade_stop_dd = float(pp.get('bp2_fade_stop_dd', 0.08))
         # H4: FAST预警期敞口上限(0=关闭)
         self.fast_exposure_cap = float(pp.get('fast_exposure_cap', 0.0))
         self.rp_min_weight_ratio = pp.get('risk_parity_min_weight_ratio', 0.5)
@@ -281,6 +284,9 @@ class PortfolioConstructor:
         self._entry_dates: dict = {}  # {code: date}
         self._peak_prices: dict = {}  # {code: peak_price_since_entry}
         self._entry_reasons: dict = {}  # {code: {buy_point, signal_level, trend_type}}
+        # E-L1: bp2入场仓标记 {code: entry_date} — 独立于_entry_reasons(后者从未被写入, 勿动)
+        self._bp2_entry: dict = {}
+        self._bp2_today: dict = {}  # 当日选股落点的bp2标记(仅重平衡日填充, 入场追踪循环消费)
         self._mr_exit_cooldown: dict = {}  # {code: exit_date} 均值回归退出冷却期(Fix#7)
         self._entry_reason_lost_count: dict = {}  # Fix#10: 买入理由消失确认期计数
         self._post_sell_tracking: dict = {}  # {code: {'trigger_price': float, 'reason': str}}
@@ -446,6 +452,8 @@ class PortfolioConstructor:
             "entry_dates": {k: v.isoformat() if hasattr(v, 'isoformat') else str(v)
                           for k, v in self._entry_dates.items()},
             "peak_prices": self._peak_prices,
+            "bp2_entry": {k: v.isoformat() if hasattr(v, 'isoformat') else str(v)
+                          for k, v in self._bp2_entry.items()},
             "entry_reasons": self._entry_reasons,
             "mr_exit_cooldown": {k: v.isoformat() if hasattr(v, 'isoformat') else str(v)
                                for k, v in self._mr_exit_cooldown.items()},
@@ -491,6 +499,12 @@ class PortfolioConstructor:
             except (ValueError, TypeError):
                 pass
         self._peak_prices = state.get("peak_prices", {})
+        self._bp2_entry = {}
+        for code, ds in state.get("bp2_entry", {}).items():
+            try:
+                self._bp2_entry[code] = _date.fromisoformat(ds)
+            except (ValueError, TypeError):
+                pass
         self._entry_reasons = state.get("entry_reasons", {})
         for code, ds in state.get("mr_exit_cooldown", {}).items():
             try:
@@ -630,6 +644,7 @@ class PortfolioConstructor:
     ):
         """构建目标持仓 - 等权top N选股"""
         import pandas as pd
+        self._bp2_today = {}  # E-L1: 每次完整选股重置当日bp2标记(早退=无新入选)
 
         total_equity = cash + sum(current_positions.values())
         n_positions = self._calc_max_position(total_equity, prices)
@@ -1469,6 +1484,9 @@ class PortfolioConstructor:
             if code not in current_positions:
                 self._position_entry_dates[code] = date
 
+        # E-L1: 当日选股落点的bp2标记(供build()入场追踪循环消费)
+        self._bp2_today = {c.get('code', ''): True for c in selected if c.get('chan_buy_point', 0) == 2}
+
         # 记录选股结果（含缠论+因子详情，用于生成选股理由）
         self.last_selection = [
             {
@@ -1599,6 +1617,7 @@ class PortfolioConstructor:
             self._entry_dates.clear()
             self._entry_reasons.clear()
             self._peak_prices.clear()
+            self._bp2_entry.clear()
             self._entry_reason_lost_count.clear()
             self._post_sell_tracking.clear()
             self._dbg['positions_dist'].append(('BEAR', 0, 0.0))
@@ -2111,6 +2130,22 @@ class PortfolioConstructor:
                     else:
                         self._entry_reason_lost_count.pop(code, None)
 
+            # E-L1(2026-09-06): bp2入场仓信号衰减止损 — 已否决(默认关)
+            # E-L1b实测: 37次截断 → 1,026,493/310.60%/1.4471/19.93%, 四指标全劣
+            # 且目标年2022更差(-7.29% vs -6.69%)。根因: 采纳态bp2长持是V型反弹
+            # 赢家, fade截断=割在洗盘坑里; 2022真正拖累是H2短持churn, 机制碰不到。
+            # _bp2_entry记录bp2入场日期, 与_entry_dates匹配防止re-entry误伤。
+            if self.bp2_fade_stop_enabled and not stopped:
+                _bp2_ed = self._bp2_entry.get(code)
+                if _bp2_ed is not None and self._entry_dates.get(code) == _bp2_ed:
+                    _days_held = (date - _bp2_ed).days if isinstance(date, date_type) else 0
+                    _peak = self._peak_prices.get(code, 0.0)
+                    if _days_held > self.bp2_fade_stop_days and _peak > 0 \
+                            and (current_price - _peak) / _peak <= -self.bp2_fade_stop_dd:
+                        stopped = True
+                        stop_reason = "bp2_fade"
+                        _exit_tags[code] = 'bp2_fade'
+
             if stopped:
                 stop_loss_sells[code] = 0.0
                 # 清理追踪状态
@@ -2216,6 +2251,11 @@ class PortfolioConstructor:
             if target_val > 0 and code not in self._entry_dates:
                 self._entry_dates[code] = date
                 self._peak_prices[code] = prices.get(code, 0)
+                # E-L1: 新入场落章bp2标记(与_entry_dates同日期, 防re-entry误伤)
+                if self._bp2_today.get(code):
+                    self._bp2_entry[code] = date
+                else:
+                    self._bp2_entry.pop(code, None)
 
         # === H4(2026-09-06): FAST预警期敞口上限 — 崩盘月实证FAST持0.84-0.95敞口 ===
         # (2026-06/07全程FAST持9-18只, 07-24才转BEAR已吃-23%; 2023 FAST均敞口0.842)
