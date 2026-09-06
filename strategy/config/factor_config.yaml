@@ -7385,6 +7385,13 @@ portfolio:
     # 代码保留dormant(bp2_channel_enabled=false即全跳过), 待G2方案(类级score加成)再议
     bp2_channel_enabled: false
     bp2_channel_slots: 1
+    # E-K1(2026-09-06): bp2类级加成 — bp2类内score无区分度(五档flat, 极差0.4pp),
+    # 但类精度远超池均值(hit1 81.8% vs 48.4%, mean5 +3.02% vs +0.83%, 6/6年稳定)
+    # → 评分系统对bp2类的标定系统性偏低, 均匀additive加成让其凭实力竞争
+    # 基线bp2选中率: NORM 2% FAST 3% (13/652笔); 0=关闭(anchor态)
+    bp2_score_boost: 0.45
+    # E-K2(2026-09-06): FAST下抑制bp2加成(n=2时排挤代价最高, E-G1曾因此限定NORM)
+    bp2_boost_norm_only: false
     risk_parity_min_weight_ratio: 0.4
     rank_decay: 0.15
     chan_bonus_sl2: 0.04
@@ -7409,6 +7416,9 @@ base_exposure: 1.0
 portfolio_stop_loss:
   # 组合回撤熔断(2026-08-20实验C2): 回撤>10%时敞口压到0.65并10日渐进恢复
   # 诚实成本下 270.6%->305.8%, Sharpe 1.213->1.263, MDD持平 -> 保留开启
+  # H5-a(2026-09-06): 0.65→0.40 已否决(934,151/273.66%/1.3298/22.86% vs 锚953,695全劣)
+  # H6-a(2026-09-06): 熔断实际去风险机制已否决(941,820/276.73%/1.3434/23.03% vs 锚全劣;
+  #   6次触发中2023/2025卖在底部, 2026谷底07-20触发后仅省07-21~23三天, 净亏1.2%净值)
   enabled: true
   trigger_drawdown: 0.10
   emergency_exposure: 0.65

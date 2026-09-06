@@ -241,6 +241,8 @@ class PortfolioConstructor:
         # (2022/2023熊市年唯一正买点类), score对bp2五档平坦→综合分排序无信息却压制其入选
         self.bp2_channel_enabled = pp.get('bp2_channel_enabled', False)
         self.bp2_channel_slots = int(pp.get('bp2_channel_slots', 1))
+        self.bp2_score_boost = float(pp.get('bp2_score_boost', 0.0))
+        self.bp2_boost_norm_only = bool(pp.get('bp2_boost_norm_only', False))
         # H4: FAST预警期敞口上限(0=关闭)
         self.fast_exposure_cap = float(pp.get('fast_exposure_cap', 0.0))
         self.rp_min_weight_ratio = pp.get('risk_parity_min_weight_ratio', 0.5)
@@ -1198,6 +1200,15 @@ class PortfolioConstructor:
                 additive += 0.08
             elif bp == 2 and sl >= 2:
                 additive += 0.03  # B2强确认小幅加分
+
+            # E-K1(2026-09-06): bp2类级加成 — 替代E-G1专用槽的软性方案
+            # bp2证据: 12,436笔 hit1 81.8%/mean5 +3.02%(全池48.4%/+0.83%),
+            # 6/6年稳定, 但score五档flat且10个候选特征均无区分度 → 类整体被低估
+            # 与E-G1的区别: 无保留槽, 凭加成参与常规排序, 排挤限于边际候选
+            # E-K2: FAST下可选抑制(n_positions=2, 排挤代价最高的情景)
+            if self.bp2_score_boost > 0 and bp == 2 and c.get('chan_sell_point', 0) == 0 \
+                    and not (self.bp2_boost_norm_only and bear_risk_fast):
+                additive += self.bp2_score_boost
 
             # BOM质量加分: 高壁垒+高利润个股优先
             bom_score = self._nan_safe(getattr(sig_ref, 'bom_quality_score', 0.3))
