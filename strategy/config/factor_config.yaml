@@ -7378,6 +7378,24 @@ portfolio:
     # 设计期-7.3pp。与8/23 mp5<mp6一致: 6槽是双侧证实最优点(5<6<8)。
     # 教训: 边际股mean5≈0≠全程≈0, 槽位价值在牛市装货能力
     max_positions: 6
+    # E-O2(2026-09-06): FAST预警期绝对score门槛, 0.30=基线(与E-A1采纳前硬编码一致)
+    fast_min_score: 0.30
+    # E-A4(2026-09-06): V反快速恢复 — effective-BEAR期V反特征(mom20>2%且距20日
+    # 低点>3%且买入信号密度>=0.30)→提前解除空仓降级FAST轻仓再入场.
+    # 证据: 触发日12天, 密度>=0.30的7天历史完成窗口fwd20全正(+6.4%), 假触发4天全负.
+    # 段内粘性: 连续N个非BEAR日(检测器视角)才解除. enabled=false=基线
+    v_recovery_enabled: false
+    v_recovery_mom20: 0.02
+    v_recovery_dist20: 0.03
+    v_recovery_density_min: 0.30
+    v_recovery_clear_days: 5
+    # E-B1v2(2026-09-07, 已否决不采纳): 暖机季Q1风险权重减半 — 配合bt_execution
+    # B1V2_WARMUP_DAYS暖机窗口让2021Q1有真因子买入(E-B1v1: Q1恢复买入但无控制,
+    # 2021 -3.1pp+级联拖累全程726,364否决)。v2实测: 9/4态906,528四指标全胜,
+    # 9/2态MDD 14.60→16.70恶化 → 铁律(双态四指标均提升)不通过, 留档默认关。
+    # false=基线。portfolio节豁免指纹→开关切换不触发信号重生成
+    b1v2_q1_half: false
+    b1v2_q1_end: '2021-04-01'
     # H4(2026-09-06): FAST预警期敞口上限(最弱先卖) — 实验否决: 702,314/1.1565/20.95%
     # 全指标回退(2024 -26pp: FAST月2024/2025是盈利月, 标签不可作降险信号; churn+踏空)
     # 证据保留: 2026-06/07崩盘月FAST持
@@ -7403,6 +7421,11 @@ portfolio:
     bp2_fade_stop_enabled: false
     bp2_fade_stop_days: 15
     bp2_fade_stop_dd: 0.08
+    # E-N5(2026-09-08): 入场结构闸 — bp0占入场57%/hit1 49%, 短持桶52%/2022年65%;
+    # score五档对5日收益无区分 → 无结构新入场控制. off=基线软罚 / hard=直接拒绝
+    # bearhard=仅FAST期(熊后风险期)硬闸, NORM期基线软罚
+    entry_chan_gate: bearhard
+    no_chan_penalty: -0.20
     risk_parity_min_weight_ratio: 0.4
     rank_decay: 0.15
     chan_bonus_sl2: 0.04
@@ -7715,7 +7738,7 @@ backtest:
   rebalance_days: 10
   num_workers: 8
   fromdate: '2021-01-01'
-  todate: '2026-09-02'
+  todate: '2026-09-07'
 cost_model:
   t_plus_1_enabled: true
   impact_cost_enabled: false

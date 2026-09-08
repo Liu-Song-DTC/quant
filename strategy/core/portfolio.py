@@ -10,6 +10,7 @@
 5. 再平衡日: 执行完整选股+所有止损机制(含组合止损)
 """
 import numpy as np
+import pandas as pd
 from collections import deque
 from copy import deepcopy
 from datetime import date as date_type
@@ -240,11 +241,35 @@ class PortfolioConstructor:
         # E-G1: bp2专用通道(2026-09-05). 数据: bp2 10日+2.92% vs bp0 +0.85%, 6/6年为正
         # (2022/2023熊市年唯一正买点类), score对bp2五档平坦→综合分排序无信息却压制其入选
         self.bp2_channel_enabled = pp.get('bp2_channel_enabled', False)
+        # E-O2(2026-09-06): FAST预警期绝对score门槛 (0.30=基线; 证据: FAST入场
+        # 2023/2024/2026全负 -0.27/-0.71/-0.44, 门槛过低放行输家)
+        self.fast_min_score = float(pp.get('fast_min_score', 0.30))
+        # E-A4(2026-09-06): V反快速恢复 — effective-BEAR期V反特征(mom20>2%且距20日
+        # 低点>3%且买入信号密度>=0.30)→提前解除空仓降级FAST轻仓再入场
+        self.v_recovery_enabled = bool(pp.get('v_recovery_enabled', False))
+        self.v_recovery_mom20 = float(pp.get('v_recovery_mom20', 0.02))
+        self.v_recovery_dist20 = float(pp.get('v_recovery_dist20', 0.03))
+        self.v_recovery_density_min = float(pp.get('v_recovery_density_min', 0.30))
+        self.v_recovery_clear_days = int(pp.get('v_recovery_clear_days', 5))
+        self._v_recovery_active = False
+        self._v_nonbear_streak = 0
+        self._v_recovery_dates = set()  # 供执行层E-O1豁免: 这些日的挂单是V反再入场单
+        # E-B1v2(2026-09-07, 已否决不采纳): 暖机季Q1风险权重减半 — 无IC验证期
+        # 信号风险折半, 资金留现金(E-B1v1无控制已否决)。9/4态四指标全胜
+        # (906,528)但9/2态MDD 14.60→16.70恶化 → 铁律不通过, 留档默认关。
+        # false=基线。portfolio节豁免指纹。
+        self.b1v2_q1_half = bool(pp.get('b1v2_q1_half', False))
+        self._b1v2_q1_end = pd.Timestamp(pp.get('b1v2_q1_end', '2021-04-01'))
         self.bp2_channel_slots = int(pp.get('bp2_channel_slots', 1))
         self.bp2_score_boost = float(pp.get('bp2_score_boost', 0.0))
         self.bp2_boost_norm_only = bool(pp.get('bp2_boost_norm_only', False))
         self.bp2_fade_stop_enabled = bool(pp.get('bp2_fade_stop_enabled', False))
         self.bp2_fade_stop_days = int(pp.get('bp2_fade_stop_days', 15))
+        # E-N5(2026-09-08): 入场结构闸 — 短期准确率证据(bp0占入场57%/hit1 49%,
+        # 短持桶52%/2022年65%; score五档对5日收益无区分度) → 无结构新入场控制
+        # off=基线软罚(no_chan_penalty) / hard=直接拒绝。portfolio节豁免指纹。
+        self.entry_chan_gate = str(pp.get('entry_chan_gate', 'off'))
+        self.no_chan_penalty = float(pp.get('no_chan_penalty', -0.20))
         self.bp2_fade_stop_dd = float(pp.get('bp2_fade_stop_dd', 0.08))
         # H4: FAST预警期敞口上限(0=关闭)
         self.fast_exposure_cap = float(pp.get('fast_exposure_cap', 0.0))
@@ -312,6 +337,7 @@ class PortfolioConstructor:
             'bear_risk_fast_days': 0,
             'normal_days': 0,
             'empty_return_days': 0,
+            'v_recovery_days': 0,
             'positions_dist': [],  # (regime, n_positions, exposure)
             'exit_reasons': {},     # reason -> count
             'peak_trail_hits': 0,
@@ -662,7 +688,7 @@ class PortfolioConstructor:
             #          → cap2 818,884/1.2546/回撤20.58% 全面最优, 采纳为新基线
             n_positions = max(2, n_positions // 3)
             _eff_min_rank = max(self.min_rank_pct, 0.80)
-            _eff_min_score = max(self.min_absolute_score, 0.30)
+            _eff_min_score = max(self.min_absolute_score, self.fast_min_score)
         else:
             _eff_min_rank = self.min_rank_pct
             _eff_min_score = self.min_absolute_score
@@ -678,7 +704,7 @@ class PortfolioConstructor:
         # 过滤拒绝原因统计
         _rej = {'no_sig': 0, 'not_buy': 0, 'cooldown': 0, 'bad_factor': 0,
                 'no_price': 0, 'too_expensive': 0, 'reducing': 0, 'unlocking': 0,
-                'plan_reducing': 0, 'fund_flaw': 0, 'accepted': 0}
+                'plan_reducing': 0, 'fund_flaw': 0, 'no_chan': 0, 'accepted': 0}
         _reducing_codes = self._reduction_codes(date)
         _plan_codes = self._reduction_plan_codes(date)
         _unlocking_codes = self._unlock_codes(date)
@@ -767,7 +793,13 @@ class PortfolioConstructor:
                     (div_type in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2') and div_strength > 0.2)
                 )
                 if not has_chan:
-                    no_chan_penalty = -0.20
+                    # E-N5: 结构闸 — hard=无结构新入场直接拒绝(旧持仓不受影响)
+                    # bearhard=仅FAST期(熊后风险期)硬闸, NORM期保持基线软罚
+                    if (self.entry_chan_gate == 'hard'
+                            or (self.entry_chan_gate == 'bearhard' and _regime == 'FAST')):
+                        _rej['no_chan'] += 1
+                        continue
+                    no_chan_penalty = self.no_chan_penalty
                 # P3修复: 动量不再硬惩罚, 仅极端超买(>60%)提示风险
                 mom_60d = self._nan_safe(getattr(sig, 'mom_60d', 0.0))
                 dist_ma60 = self._nan_safe(getattr(sig, 'dist_ma60', 0.0))
@@ -803,7 +835,7 @@ class PortfolioConstructor:
                 self._dbg[f'ml_score_{_regime}'].append(ml_s)
 
         # DEBUG: 跟踪拒绝原因 per regime
-        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking', 'plan_reducing', 'fund_flaw']:
+        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking', 'plan_reducing', 'fund_flaw', 'no_chan']:
             if _rej.get(rk, 0) > 0:
                 self._dbg.setdefault(f'reject_{_regime}', {})
                 self._dbg[f'reject_{_regime}'][rk] = self._dbg[f'reject_{_regime}'].get(rk, 0) + _rej[rk]
@@ -1478,6 +1510,13 @@ class PortfolioConstructor:
         # 用 valid_selected 替换 selected (用于日志记录)
         selected = valid_selected
 
+        # E-B1v2: 暖机季(2021Q1)风险权重减半 — 在全部归一化/上限执行后应用,
+        # 释放资金保留为现金(不重新分配)。含1手持仓减半后不足1手→执行层自然跳过
+        if self.b1v2_q1_half and date is not None and pd.Timestamp(date) < self._b1v2_q1_end:
+            for c in selected:
+                c['weight'] = c.get('weight', 0.0) * 0.5
+                desired_value[c['code']] = c['weight'] * total_equity
+
         # 记录入场日期(用于最小持仓天数约束)
         for c in selected:
             code = c.get('code', '')
@@ -1565,6 +1604,8 @@ class PortfolioConstructor:
         index_volume_ratio=1.0,
         style_score=0.0,
         regime_volatility=0.0,
+        v_recovery_mom=0.0,
+        v_recovery_dist=0.0,
         cost=None,
     ):
         """构建目标持仓（外部接口）
@@ -1606,6 +1647,33 @@ class PortfolioConstructor:
         if bear_risk and self._bear_streak > 60:
             bear_risk = False
             bear_risk_fast = True
+
+        # === E-A4(2026-09-06): V反快速恢复 (默认关, 0=基线) ===
+        # 证据(analysis/ea4_vrecovery_evidence.py): effective-BEAR期内 mom20>2%
+        # 且dist20>3%的触发日12天, 其中买入信号密度>=0.30的7天(2022-05-26~06-06
+        # 6天 + 2026-08-14)历史完成窗口fwd20全正(均值+6.4%), 密度<0.26的4天假
+        # 触发全部fwd20为负 — 密度门精准区隔. streak>60降级等太久(E-A3: 2022-04
+        # 踏空31天/+13.9%), 且2026检测器BEAR 1-6天闪烁streak永远到不了60.
+        # 动作: 提前解除空仓降级FAST轻仓(2槽+高门槛); 段内粘性: 保持到连续
+        # N个非BEAR日(检测器视角)才解除, 防闪烁翻转churn.
+        if self.v_recovery_enabled:
+            if bear_risk:
+                if (not self._v_recovery_active
+                        and v_recovery_mom > self.v_recovery_mom20
+                        and v_recovery_dist > self.v_recovery_dist20
+                        and self._sector_rotation is not None
+                        and self._sector_rotation.market_signal_density >= self.v_recovery_density_min):
+                    self._v_recovery_active = True
+                    self._v_nonbear_streak = 0
+                    self._dbg['v_recovery_days'] += 1
+                if self._v_recovery_active:
+                    bear_risk = False
+                    bear_risk_fast = True
+                    self._v_recovery_dates.add(date)
+            else:
+                self._v_nonbear_streak += 1
+                if self._v_nonbear_streak >= self.v_recovery_clear_days:
+                    self._v_recovery_active = False
 
         # === 趋势+熊市双确认强制清仓: 单独trend<0可能是牛市回调===
         # 2024实证: trend<0的51天fwd20=+10.8%(反弹), 需bear_risk过滤
