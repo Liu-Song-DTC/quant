@@ -48,7 +48,10 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 INDEX_DATA_PATH = os.path.join(DATA_PATH, 'sh000001_qfq.csv')
 
 # ── 默认参数 ─────────────────────────────────────────────────────
-DEFAULT_CASH = 300000.0
+# 2026-09-09: 对齐真实账户总资金(~50万, 用户确认). 旧值30万导致9/8起
+# 持仓市值46.9万>1.5×30万=45万, 每日触发脏数据重置, 系统丢失真实持仓.
+# 真实入金/出金后需同步此值. 仅影响实盘出单排仓, 不影响回测(yaml backtest.cash).
+DEFAULT_CASH = 500000.0
 
 
 def build_stock_file_map() -> Dict[str, str]:

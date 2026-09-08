@@ -17,7 +17,7 @@ else
 fi
 nice -n "$NICE" .venv/bin/python strategy/run_live.py \
     --date "$(date +%Y-%m-%d)" \
-    --cash 300000 \
+    --cash 500000 \
     --skip-data
 
 echo "========================================"

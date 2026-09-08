@@ -308,8 +308,8 @@ def main():
     parser = argparse.ArgumentParser(description='实盘选股一键执行')
     parser.add_argument('--date', type=str, default=None,
                         help='目标日期 (默认: 今天)')
-    parser.add_argument('--cash', type=float, default=300000.0,
-                        help='总资金 (默认: 300000)')
+    parser.add_argument('--cash', type=float, default=500000.0,
+                        help='总资金 (默认: 500000; 2026-09-09对齐真实账户~50万, 入金/出金后同步)')
     parser.add_argument('--skip-data', action='store_true',
                         help='跳过K线数据更新(用xtquant已下载的数据), 宏观/另类照常更新')
     parser.add_argument('--skip-signals', action='store_true',
