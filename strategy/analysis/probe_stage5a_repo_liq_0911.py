@@ -16,7 +16,8 @@ SIG = '/mnt/d/quant/strategy/rolling_validation_results/backtest_signals.csv'
 
 
 def load_buys():
-    sig = pd.read_csv(SIG, usecols=['code', 'date', 'buy'], dtype={'code': str})
+    sig = pd.read_csv(SIG, usecols=['code', 'date', 'buy', 'chan_buy_point'],
+                      dtype={'code': str})
     sig = sig[sig['buy'] == True].copy()
     sig['code'] = sig['code'].str.zfill(6)
     sig['date'] = pd.to_datetime(sig['date'])
@@ -61,11 +62,11 @@ def fwd_returns(sig):
                 v20 = (s.iloc[max(0, idx - 20):idx] * v.iloc[max(0, idx - 20):idx] * 100.0).mean()
             else:
                 v20 = np.nan
-            rows.append((code, d, v20,
+            rows.append((code, d, v20, r.get('chan_buy_point', np.nan),
                          s.iloc[idx + 5] / c0 - 1,
                          s.iloc[idx + 10] / c0 - 1,
                          s.iloc[idx + 20] / c0 - 1))
-    df = pd.DataFrame(rows, columns=['code', 'date', 'avg_val20', 'f5', 'f10', 'f20'])
+    df = pd.DataFrame(rows, columns=['code', 'date', 'avg_val20', 'bp', 'f5', 'f10', 'f20'])
     print(f'叠加配对: {len(df)} 条', flush=True)
     for c in ('f5', 'f10', 'f20'):
         df[c + 'a'] = df[c] - df.groupby('date')[c].transform('median')
@@ -73,7 +74,7 @@ def fwd_returns(sig):
 
 
 def repo_flag(df):
-    """A. 回购公告(≤30d)分桶。"""
+    """A. 回购公告(≤30d)分桶。事件研究最强桶=<1亿(6/6年正), 此处为主子桶。"""
     plans = pd.read_pickle(PKL_REPO)
     plans = plans[plans['NOTICEDATE'] >= '2021-01-01'].copy()
     plans['code'] = plans['code'].astype(str).str.zfill(6)
@@ -87,12 +88,24 @@ def repo_flag(df):
                       right_on='ev_date', by='code', direction='backward',
                       tolerance=pd.Timedelta('30d'))
     m['has_repo'] = m['ev_date'].notna()
-    m['big_repo'] = m['has_repo'] & ((m['JESX'] > 5e8) | (m['ZSZSX'] > 2.0))
+    m['days_since'] = (m['date'] - m['ev_date']).dt.days
+    m['small_repo'] = m['has_repo'] & (m['JESX'] < 1e8)  # 事件研究最强桶
+    m['big_repo'] = m['has_repo'] & (m['JESX'] >= 1e8)
 
     print('\n[A] 回购公告(≤30d)叠加:')
     report_bucket(m, 'has_repo', '无回购', '有回购(≤30d)')
-    print('\n[A2] 大额回购(≤30d, 金额>5亿 或 占比>2%):')
-    report_bucket(m, 'big_repo', '非大额/无', '大额回购')
+    print('\n[A1] 小回购(<1亿, 事件研究最强桶):')
+    report_bucket(m, 'small_repo', '非小回购/无', '小回购<1亿')
+    print('\n[A2] 大回购(>=1亿):')
+    report_bucket(m, 'big_repo', '非大回购/无', '大回购>=1亿')
+    # 公告日龄分桶(0=当日公告, 1+=公告后起)
+    m2 = m[m.has_repo]
+    if len(m2) > 100:
+        print('\n[A3] 有回购桶 按公告日龄分桶:')
+        for lo, hi, tag in [(0, 0, '当日公告'), (1, 7, '1-7d'), (8, 30, '8-30d')]:
+            s = m2[(m2.days_since >= lo) & (m2.days_since <= hi)]
+            print(f'  {tag:>6s}: n={len(s):5d} fwd20a={s.f20a.mean()*100:+.2f}% '
+                  f'胜率={100*(s.f20 > 0).mean():.0f}%')
     # 逐年稳定性(有回购桶 vs 无回购桶 差)
     if m['has_repo'].sum() > 1000:
         print('\n[A] 有回购桶 fwd20a 逐年(桶内均值, 差=有-无):')
@@ -101,6 +114,14 @@ def repo_flag(df):
             a = sub[sub.has_repo].f20a.mean()
             b = sub[~sub.has_repo].f20a.mean()
             print(f'  {y}: 有回购n={sub.has_repo.sum():5d} {a*100:+.2f}%  无 {b*100:+.2f}%  差 {(a-b)*100:+.2f}pp')
+        print('\n[A1] 小回购<1亿桶 fwd20a 逐年:')
+        for y in sorted(m.date.dt.year.unique()):
+            sub = m[m.date.dt.year == y]
+            s = sub[sub.small_repo]
+            if len(s) == 0:
+                continue
+            print(f'  {y}: n={len(s):5d} fwd20a={s.f20a.mean()*100:+.2f}% '
+                  f'胜率={100*(s.f20 > 0).mean():.0f}%')
 
 
 def liq_buckets(df):
@@ -135,11 +156,26 @@ def report_bucket(m, flag, name0, name1):
     print(f'  差({name1} - {name0}): {(a.mean()-b.mean())*100:+.2f}pp')
 
 
+def bp2_cross(df):
+    """C. bp2类(chan_buy_point==2) × 回购flag 正交性:
+    bp2类=评分系统标定偏低的类(E-K1加成0.45)。回购flag若全在bp2人群内则边际价值=0。"""
+    m = df.dropna(subset=['bp']).copy()
+    m['is_bp2'] = (m['bp'] == 2)
+    print(f'\n[C] bp2×回购 交叉 (bp2 n={m.is_bp2.sum()}):')
+    for tag, s in [('bp2且小回购<1亿', m[m.is_bp2 & m.small_repo]),
+                   ('bp2且无回购', m[m.is_bp2 & ~m.has_repo]),
+                   ('非bp2且小回购<1亿', m[~m.is_bp2 & m.small_repo]),
+                   ('非bp2且无回购', m[~m.is_bp2 & ~m.has_repo])]:
+        print(f'  {tag:>14s}: n={len(s):5d} fwd20a={s.f20a.mean()*100:+.2f}% '
+              f'胜率={100*(s.f20 > 0).mean():.0f}%')
+
+
 def main():
     sig = load_buys()
     df = fwd_returns(sig)
     repo_flag(df)
     liq_buckets(df)
+    bp2_cross(df)
 
 
 if __name__ == '__main__':
