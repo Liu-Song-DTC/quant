@@ -177,6 +177,10 @@ class PortfolioConstructor:
         self.max_single_weight_from_cfg = sel_config.get('rank_weight_cap',
                                               sel_config.get('max_single_weight', 0.18))
         self._orig_max_single_weight = self.max_single_weight_from_cfg  # CLB恢复时还原
+        # A1(2026-09-10): 赢家浮动权重 — 盈利持仓不被排名目标削减(让利润奔跑),
+        # 上限winner_float_cap兜集中度风险。默认关=基线。review A类首项。
+        self.winner_float_enabled = sel_config.get('winner_float_enabled', False)
+        self.winner_float_cap = sel_config.get('winner_float_cap', 0.24)
 
         # === fv_exposure 可配置参数 ===
         fv_params = portfolio_config.get('fv_exposure_params', {})
@@ -271,6 +275,13 @@ class PortfolioConstructor:
         self.entry_chan_gate = str(pp.get('entry_chan_gate', 'off'))
         self.no_chan_penalty = float(pp.get('no_chan_penalty', -0.20))
         self.bp2_fade_stop_dd = float(pp.get('bp2_fade_stop_dd', 0.08))
+        # E-K2.5(2026-09-11): 回购类级加成 — 评分系统低估第2例(E-K1模式)。
+        # 证据: 事件研究小回购<1亿桶6/6年正(fwd20a +3.22%); 信号日叠加
+        # +1.17pp(5/6年, 2023 -1.51pp); near-miss +1.76pp且>buy人群全体;
+        # realized +9.97%/80%胜率(n=10), 与bp2类完全正交(双向增量)。
+        # 0=关闭(anchor态)。portfolio节豁免指纹(信号复用, 实验仅跑回测段)。
+        self.repo_score_boost = float(pp.get('repo_score_boost', 0.0))
+        self._repo_dates = None  # 惰性: {code: np.array(datetime64 asc)} 小回购
         # H4: FAST预警期敞口上限(0=关闭)
         self.fast_exposure_cap = float(pp.get('fast_exposure_cap', 0.0))
         self.rp_min_weight_ratio = pp.get('risk_parity_min_weight_ratio', 0.5)
@@ -343,6 +354,9 @@ class PortfolioConstructor:
             'peak_trail_hits': 0,
             'peak_trail_regime': {'BEAR': 0, 'FAST': 0, 'NORM': 0},
             'peak_trail_trail_values': [],  # (regime, trail, dd, pnl)
+            # A1(2026-09-10): 赢家修剪探测 — 盈利持仓被排名目标削减的次数/市值
+            'winner_trim_events': 0,
+            'winner_trim_value': 0.0,
         }
         from .multi_strategy import MultiStrategyWeights
         self._multi_strategy = MultiStrategyWeights()
@@ -649,6 +663,34 @@ class PortfolioConstructor:
                 break
 
         return weights.tolist()
+
+    def _repo_flag(self, code, date):
+        """E-K2.5: 回购公告flag — 小回购(金额<1亿, 事件研究6/6年正的最强桶),
+        公告日<=date且距今<=30d。PIT: 公告盘后发布+信号盘后生成, 同日均可见。
+        惰性加载repurchase_plans.pkl → {code: datetime64[ns] asc array}。"""
+        if self.repo_score_boost <= 0:
+            return False
+        if self._repo_dates is None:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            pkl = os.path.join(os.path.dirname(base_dir), 'data', 'alternative_data',
+                               'repurchase_plans.pkl')
+            plans = pd.read_pickle(pkl)
+            plans = plans[plans['NOTICEDATE'] >= '2020-12-01'].copy()
+            plans['code'] = plans['code'].astype(str).str.zfill(6)
+            plans = plans[~plans['code'].str.startswith(('4', '8', '92'))]  # 北交所排除
+            jesx = pd.to_numeric(plans['JESX'], errors='coerce')
+            plans = plans[jesx < 1e8].sort_values('NOTICEDATE')
+            self._repo_dates = {
+                c: pd.to_datetime(g['NOTICEDATE']).values.astype('datetime64[ns]')
+                for c, g in plans.groupby('code')}
+        arr = self._repo_dates.get(code)
+        if arr is None:
+            return False
+        d = np.datetime64(pd.Timestamp(date))
+        i = np.searchsorted(arr, d, side='right')  # 公告日<=信号日
+        if i == 0:
+            return False
+        return (d - arr[i - 1]) <= np.timedelta64(30, 'D')
 
     def _build_desired_value(
         self,
@@ -1257,6 +1299,10 @@ class PortfolioConstructor:
                     and not (self.bp2_boost_norm_only and bear_risk_fast):
                 additive += self.bp2_score_boost
 
+            # E-K2.5(2026-09-11): 回购类级加成(小回购<1亿, 公告<=30d) — E-K1模式第2例
+            if self.repo_score_boost > 0 and self._repo_flag(code, date):
+                additive += self.repo_score_boost
+
             # BOM质量加分: 高壁垒+高利润个股优先
             bom_score = self._nan_safe(getattr(sig_ref, 'bom_quality_score', 0.3))
             if bom_score > 0.70:
@@ -1439,6 +1485,31 @@ class PortfolioConstructor:
         # === 单票权重上限 — 归一化后执行 ===
         for i in range(len(weights)):
             weights[i] = min(weights[i], max_single)
+
+        # === A1(2026-09-10): 赢家修剪探测(常开计数) + 浮动(flag开时生效) ===
+        # 盈利持仓(is_held且现价>执行层成本价)的排名目标低于当前市值权重 →
+        # 基线会被削减; flag开时目标=max(排名目标, 当前市值权重)且≤winner_float_cap
+        _wtrim_n = 0
+        _wtrim_val = 0.0
+        for i, c in enumerate(selected):
+            code = c.get('code', '')
+            cv = current_positions.get(code, 0.0)
+            if not (c.get('is_held') and cv > 0):
+                continue
+            _rc = getattr(self, '_a1_raw_cost', {}).get(code)
+            if not (_rc and len(_rc) >= 2 and _rc[0] > 0):
+                continue
+            px = prices.get(code, 0.0)
+            if px <= _rc[1] * 1.001:
+                continue  # 未盈利: 不浮动, 维持排名目标
+            cur_w = cv / total_equity
+            if cur_w > weights[i] + 1e-6:
+                _wtrim_n += 1
+                _wtrim_val += (cur_w - weights[i]) * total_equity
+            if self.winner_float_enabled:
+                weights[i] = min(max(weights[i], cur_w), self.winner_float_cap)
+        self._dbg['winner_trim_events'] += _wtrim_n
+        self._dbg['winner_trim_value'] += _wtrim_val
 
         # === 力竭/行业上限 — 归一化后执行 ===
         exhaustion_tags = set()
@@ -1693,6 +1764,10 @@ class PortfolioConstructor:
             return desired_value
 
         # === 基线390%靠持仓熬回调, 个股止损=千刀万剐 — 设为空屏蔽全部 ===
+        # A1(2026-09-10): 赢家浮动需执行层成本算盈亏符号, 基线屏蔽前抓取
+        # (仅探测/浮动用, 不改变任何成本类退出行为)
+        _raw_cost = cost if cost else {}
+        self._a1_raw_cost = _raw_cost  # A1: _build_desired_value在build外看不到本局部, 经self传递
         cost = {} if not self.stock_cost_stop_enabled else cost  # A/B开关: 关闭=空cost屏蔽全部成本类退出(基线), 开启=用执行层cost_tracker
         _eff_stop_loss = self.position_stop_loss
         for code, current_value in current_positions.items():
@@ -2380,6 +2455,8 @@ class PortfolioConstructor:
                 print(f"  [{regime}] 平均持仓={n_pos_avg:.1f}只, 平均敞口={expo_avg:.2f}, 样本={len(items)}")
         if d['exit_reasons']:
             print(f"  退出原因分布: {dict(sorted(d['exit_reasons'].items(), key=lambda x:-x[1]))}")
+        if d.get('winner_trim_events', 0) > 0:
+            print(f"  A1赢家修剪: {d['winner_trim_events']}次, 累计被砍市值={d.get('winner_trim_value', 0.0)/1e4:.0f}万 (float={'ON' if self.winner_float_enabled else 'OFF'})")
         if d['peak_trail_hits'] > 0:
             print(f"  peak_trail触发: {d['peak_trail_hits']}次, 分regime={d['peak_trail_regime']}")
             samples = d['peak_trail_trail_values'][:10]

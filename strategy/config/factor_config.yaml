@@ -7338,6 +7338,11 @@ portfolio:
     industry_max_weight: 0.4
     max_per_industry: 0
     rank_weight_cap: 0.25
+    # A1(2026-09-10): 赢家浮动权重 — 盈利持仓不被排名目标削减(让利润奔跑),
+    # 上限winner_float_cap兜集中度风险。默认关=基线。执行层实验(portfolio节
+    # 指纹豁免, 暖跑复用信号CSV, 无0c发现的ML重训噪声)。
+    winner_float_enabled: false
+    winner_float_cap: 0.24
     speculative_max_weight: 0.4
     # 因子短线准确率加减分 (buy_accuracy.py 实证: 中线第5日P与短线第3日一致, 非噪声)
     # 因子短线准确率加减分(已停用) — 系统诊断结论:
@@ -7421,6 +7426,10 @@ portfolio:
     bp2_fade_stop_enabled: false
     bp2_fade_stop_days: 15
     bp2_fade_stop_dd: 0.08
+    # E-K2.5(2026-09-11): 回购类级加成(小回购<1亿, 公告<=30d) — 评分系统低估第2例(E-K1模式)
+    # 证据: 事件研究6/6年正, 信号日叠加+1.17pp, near-miss+1.76pp, realized+9.97%/80%(n=10)
+    # 0=关闭(anchor态); 实验臂0.20
+    repo_score_boost: 0.0
     # E-N5(2026-09-08): 入场结构闸 — bp0占入场57%/hit1 49%, 短持桶52%/2022年65%;
     # score五档对5日收益无区分 → 无结构新入场控制. off=基线软罚 / hard=直接拒绝
     # bearhard=仅FAST期(熊后风险期)硬闸, NORM期基线软罚
@@ -7446,7 +7455,7 @@ portfolio:
     min_hold_days: 5
     sector_momentum_weight: 0.4
     sector_signal_density_weight: 0.6
-base_exposure: 1.0
+base_exposure: 0.85  # 2026-09-09实测: 1.0三胜一败(MDD 13.64%>12.63%)铁律否决; 0.85=已验证基线值
 portfolio_stop_loss:
   # 组合回撤熔断(2026-08-20实验C2): 回撤>10%时敞口压到0.65并10日渐进恢复
   # 诚实成本下 270.6%->305.8%, Sharpe 1.213->1.263, MDD持平 -> 保留开启
@@ -7738,13 +7747,16 @@ backtest:
   rebalance_days: 10
   num_workers: 8
   fromdate: '2021-01-01'
-  todate: '2026-09-07'
+  todate: '2026-09-10'
 cost_model:
   t_plus_1_enabled: true
   impact_cost_enabled: false
   # 诚实成本模型(2026-08-20): 滑点落地 + 涨跌停不成交拦截, 消除回测乐观偏差
   slippage_enabled: true
   limit_fill_block_enabled: true
+  # 0b(2026-09-09): 跳空>9.5%再折让开关 — true=现行×1.03/×0.97(会产生超涨跌停价
+  # 的不可能成交价), false=仅开盘±滑点(总是可成交价)。A/B臂经此切换(豁免节)。
+  gap_fill_penalty_enabled: true
 live_monitoring:
   enabled: true
   reference_path: strategy/rolling_validation_results/backtest_reference.csv
