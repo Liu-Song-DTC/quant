@@ -135,24 +135,28 @@ def measure(sig_path=SIG):
         sig['lookahead1'] = sig['first'].notna() & (sig['date'] < sig['first'])
         print(f'\n[法1] 概念指数最早日覆盖 {sig.industry.isin(first_d).mean()*100:.1f}% 行业行', flush=True)
 
-    # 法2: 硬编码2023+概念 (2021-2022年A股客观不存在)
-    FUTURE = ['ChatGPT概念', 'CPO概念', 'AIGC概念', 'AI智能体', 'AI手机', 'AI眼镜',
-              'AI制药（医疗）', 'AI医疗', '低空经济', '人形机器人', '数据要素',
-              '液冷服务器', '液冷概念', '华为昇腾', '英伟达概念', 'Sora概念',
-              '合成生物', '车路云', '量子科技', '卫星互联网', '商业航天',
-              '可控核聚变', '深海科技', '固态电池', '钙钛矿电池', 'HBM概念',
-              '玻璃基板', 'AI语料', 'AI应用', 'Kimi概念', '文生视频', '多模态AI']
-    sig['fut'] = sig['industry'].isin(FUTURE)
-    print(f'\n[法2] 硬编码2023+概念 前视行占比 按年:')
+    # 法2: 硬编码2023+概念, 按概念近似出现年精确比较 (信号年 < 概念年 = 前视)
+    FUTURE = {'ChatGPT概念': 2023, 'CPO概念': 2023, 'AIGC概念': 2023, 'AI智能体': 2024,
+              'AI手机': 2024, 'AI眼镜': 2024, 'AI制药（医疗）': 2024, 'AI医疗': 2024,
+              '低空经济': 2024, '人形机器人': 2024, '数据要素': 2023,
+              '液冷服务器': 2023, '液冷概念': 2023, '华为昇腾': 2023, '英伟达概念': 2023,
+              'Sora概念': 2024, '合成生物': 2024, '车路云': 2024, '量子科技': 2024,
+              '卫星互联网': 2023, '商业航天': 2024, '可控核聚变': 2024, '深海科技': 2025,
+              '固态电池': 2023, '钙钛矿电池': 2023, 'HBM概念': 2023, '玻璃基板': 2024,
+              'AI语料': 2024, 'AI应用': 2023, 'Kimi概念': 2024, '文生视频': 2024,
+              '多模态AI': 2023}
+    sig['conc_yr'] = sig['industry'].map(FUTURE)
+    sig['lookahead2'] = sig['conc_yr'].notna() & (sig.date.dt.year < sig['conc_yr'])
+    print(f'\n[法2] 硬编码2023+概念 前视行占比(信号年<概念出现年) 按年:')
     for y in sorted(sig.date.dt.year.unique()):
         s = sig[sig.date.dt.year == y]
         if len(s) == 0:
             continue
-        print(f'  {y}: n={len(s):6d} 前视 {s.fut.mean()*100:5.2f}% '
-              f'({s.fut.sum()}行)')
-    print(f'  设计期2021-2024: {sig[sig.date.dt.year<=2024].fut.mean()*100:.2f}%')
-    print(f'  持有期2025+:     {sig[sig.date.dt.year>=2025].fut.mean()*100:.2f}%')
-    fu = sig[sig.fut]
+        print(f'  {y}: n={len(s):6d} 前视 {s.lookahead2.mean()*100:5.2f}% '
+              f'({s.lookahead2.sum()}行)')
+    print(f'  设计期2021-2024: {sig[sig.date.dt.year<=2024].lookahead2.mean()*100:.2f}%')
+    print(f'  持有期2025+:     {sig[sig.date.dt.year>=2025].lookahead2.mean()*100:.2f}%')
+    fu = sig[sig.lookahead2]
     if len(fu):
         print('\n[法2] 前视行涉及概念:')
         print(fu.industry.value_counts().to_string())

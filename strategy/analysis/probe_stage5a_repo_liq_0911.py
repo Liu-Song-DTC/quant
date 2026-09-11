@@ -122,6 +122,7 @@ def repo_flag(df):
                 continue
             print(f'  {y}: n={len(s):5d} fwd20a={s.f20a.mean()*100:+.2f}% '
                   f'胜率={100*(s.f20 > 0).mean():.0f}%')
+    return m
 
 
 def liq_buckets(df):
@@ -173,9 +174,9 @@ def bp2_cross(df):
 def main():
     sig = load_buys()
     df = fwd_returns(sig)
-    repo_flag(df)
+    m = repo_flag(df)
     liq_buckets(df)
-    bp2_cross(df)
+    bp2_cross(m)
 
 
 if __name__ == '__main__':
