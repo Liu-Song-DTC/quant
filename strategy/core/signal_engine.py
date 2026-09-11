@@ -92,8 +92,22 @@ def _load_concept_map():
     return result
 
 
+def _load_concept_inception():
+    """加载概念成立日表 (PIT gate: 概念成立前不可用于行业归属)。
+    缺失=全窗口有效(老概念)。与标定对齐: gate同样使季度配置中该概念键惰性。"""
+    import pickle
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    p = os.path.join(project_root, 'data', 'concept_inception.pkl')
+    if not os.path.exists(p):
+        return {}
+    with open(p, 'rb') as f:
+        raw = pickle.load(f)
+    return {k: pd.Timestamp(v) for k, v in raw.items()}
+
+
 INDUSTRY_FACTOR_CONFIG = _load_industry_factors()
 STOCK_CONCEPT_MAP = _load_concept_map()  # 概念板块→因子配置查找（与标定对齐）
+CONCEPT_INCEPTION = _load_concept_inception()  # 概念成立日PIT gate（阶段6c）
 
 # 季度因子配置缓存
 _QUARTER_INDEX = None        # {quarter_id: {start, end, file}}
@@ -144,7 +158,7 @@ def _load_quarter_config(quarter_id):
 
 # 季度配置匹配诊断计数器
 _QUARTER_DIAG = {'quarter_hits': 0, 'global_fallbacks': 0, 'concept_matches': 0,
-                 'keyword_fallbacks': 0, 'no_match': 0, 'printed': False}
+                 'concept_gated': 0, 'keyword_fallbacks': 0, 'no_match': 0, 'printed': False}
 _QUARTER_DIAG_LOCK = False  # 避免并发打印混乱
 
 def _resolve_factor_config(date=None):
@@ -168,7 +182,8 @@ def _print_quarter_diag():
         return
     print(f"[季度配置诊断] 行业名查找: 概念匹配={d['concept_matches']}({100*d['concept_matches']/total:.1f}%) "
           f"关键词回退={d['keyword_fallbacks']}({100*d['keyword_fallbacks']/total:.1f}%) "
-          f"无匹配={d['no_match']}({100*d['no_match']/total:.1f}%)")
+          f"无匹配={d['no_match']}({100*d['no_match']/total:.1f}%) "
+          f"PIT gate跳过={d['concept_gated']}")
     print(f"[季度配置诊断] 配置解析: 季度命中={d['quarter_hits']} 全局回退={d['global_fallbacks']}")
 
 def _safe_get_arr(ind: dict, key: str, n: int, default):
@@ -364,6 +379,8 @@ class SignalEngine:
         # BP8质量门控
         self.bp8_gate_enabled = bp8_cfg.get('enabled', True)
         self.chan_bp8_min_signal_level = bp8_cfg.get('min_signal_level', 2)
+        # E-E2(2026-09-09): REV60覆盖开关 — 消融实验臂置false, 默认true=现行为
+        self.bp8_rev60_override = bp8_cfg.get('rev60_override', True)
         # BP7质量门控 (质量最高买点但SL=0占17%未过滤)
         self.bp7_gate_enabled = bp7_cfg.get('enabled', True)
         self.chan_bp7_min_signal_level = bp7_cfg.get('min_signal_level', 2)
@@ -1305,10 +1322,11 @@ class SignalEngine:
             fname[idx][bull] = 'MOM'
             fname[idx][bear] = 'REV'
             fname[idx][neutral] = 'REV'
-            # BP8: 横盘突破, 保持专用因子名
+            # BP8: 横盘突破, 保持专用因子名 (E-E2消融: rev60_override=false时不覆盖)
             bp_raw2 = _safe_get_arr(ind, 'buy_point', n, 0).astype(int)
             bp8 = (bp_raw2[idx] == 8)
-            fname[idx][bp8] = 'REV60'
+            if self.bp8_rev60_override:
+                fname[idx][bp8] = 'REV60'
 
             # 最新 bar：完整链覆盖
             last = n - 1
@@ -1332,8 +1350,8 @@ class SignalEngine:
                 mkt_style_conf[last] = market_info.get('style_confidence', 0.0)
                 mkt_conf[last] = market_info.get('confidence', 0.0)
                 ind_cat[last] = industry_category
-                # BP8: 横盘突破用 REV60 (均值回归方向)
-                if bp_raw2[last] == 8:
+                # BP8: 横盘突破用 REV60 (均值回归方向, E-E2消融可关)
+                if bp_raw2[last] == 8 and self.bp8_rev60_override:
                     fname[last] = 'REV60'
                     _mom60 = _safe_get_arr(ind, 'mom_60d', n, 0.0)[last]
                     fval[last] = np.tanh(-_mom60 * 2)
@@ -1399,8 +1417,8 @@ class SignalEngine:
                 mkt_style_conf[i] = _mkt_style_conf_arr[i]
                 mkt_conf[i] = _mkt_conf_arr[i]
                 ind_cat[i] = _ind_cat
-                # BP8: 60日动量反相关(IC=-0.092), 高动量突破=力竭
-                if _bp_arr[i] == 8:
+                # BP8: 60日动量反相关(IC=-0.092), 高动量突破=力竭 (E-E2消融可关)
+                if _bp_arr[i] == 8 and self.bp8_rev60_override:
                     fname[i] = 'REV60'
                     fval[i] = np.tanh(-_mom60_arr[i] * 2)
                 else:
@@ -2687,9 +2705,15 @@ class SignalEngine:
 
         result = None
         # P0: 优先从概念板块映射查找（与季度标定对齐，季度配置用概念名）
+        # PIT gate（阶段6c）: 概念成立日前跳过 — 前视概念不参与行业归属
         cfg = _resolve_factor_config(current_date)
+        _cur_ts = pd.Timestamp(current_date)
         if code in STOCK_CONCEPT_MAP:
             for concept in STOCK_CONCEPT_MAP[code]:
+                _incep = CONCEPT_INCEPTION.get(concept)
+                if _incep is not None and _cur_ts < _incep:
+                    _QUARTER_DIAG['concept_gated'] += 1
+                    continue
                 if concept in cfg:
                     _QUARTER_DIAG['concept_matches'] += 1
                     result = concept

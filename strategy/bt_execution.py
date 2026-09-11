@@ -79,6 +79,18 @@ TODATE = config.get('backtest.todate', None)
 # 用途: 隔离"池子变化 vs 数据追加"对回测的影响, 例 POOL_TODATE=2026-08-28
 _POOL_TODATE_OVERRIDE = os.environ.get('POOL_TODATE') or None
 
+# E-B1v2实验钩子(2026-09-07, 已否决不采纳): 信号生成暖机数据窗口(天), 默认0=关。
+# 给worker喂FROMDATE-N天数据, 使2021Q1指标暖机(默认前60bar=V41兜底→Q1零买入)。
+# E-B1v1(120天, 无风险控制)已否决: Q1恢复买入但2021 -3.1pp+级联拖累全程。
+# v2(120天+portfolio层b1v2_q1_half半仓)实测:
+#   9/4态 906,528/262.61%/1.3160/15.89% vs 基线743,186 四指标全胜(+163,342)
+#   9/2态 1,148,060/359.22%/1.5877/16.70% vs 基线1,131,929 三胜一负
+#          (MDD 14.60→16.70恶化+2.10pp, 2022回撤15.9%为恶化来源)
+#   铁律(双态四指标均提升)不通过 → 否决留档默认关。若再试: Q1权重bracket
+#   (0.6~0.75)或2022路径风控。此env影响信号内容→sidecar指纹协议须含此值
+#   (见_signals_stale与L1945附近sidecar写入处, 协议已保留)。
+_B1V2_WARMUP_DAYS = int(os.environ.get('B1V2_WARMUP_DAYS', '0') or 0)
+
 
 def _pool_todate():
     """股票池截止日: 实验覆盖优先, 否则跟随回测TODATE"""
@@ -157,9 +169,16 @@ def _signals_stale(signals_csv):
             _fp_saved = _f.read().strip()
     except OSError:
         _fp_saved = ''
+    # E-B1v2: 暖机env影响信号内容, 代码指纹(mtime+size)不可见 → sidecar记录
+    # "fp|warmup_days", 任一不一致→重生成。旧格式sidecar(无'|')视为warmup未知→重生成
+    _fp_saved_warmup = ''
+    if '|' in _fp_saved:
+        _fp_saved, _fp_saved_warmup = _fp_saved.split('|', 1)
     _fp_now = _signal_code_fingerprint()
-    if _fp_saved != _fp_now:
-        print(f"信号CSV代码态过期 (生成时={_fp_saved or '无记录'} 当前={_fp_now}), 重新生成信号")
+    _warmup_now = str(_B1V2_WARMUP_DAYS)
+    if _fp_saved != _fp_now or _fp_saved_warmup != _warmup_now:
+        print(f"信号CSV代码态过期 (生成时={_fp_saved or '无记录'}/warmup={_fp_saved_warmup or '?'} "
+              f"当前={_fp_now}/warmup={_warmup_now}), 重新生成信号")
         return True
     # 执行层产物排除(2026-09-06): reduction_plans.pkl由portfolio在回测期间按4h策略
     # 自刷新重写(load_reduction_plans), 信号层(signal_engine)不消费它
@@ -169,7 +188,8 @@ def _signals_stale(signals_csv):
     roots = [DATA_PATH, FUNDAMENTAL_PATH,
              os.path.join(_PROJECT_DIR, 'data/alternative_data'),
              os.path.join(_PROJECT_DIR, 'data/concept_hist.pkl'),
-             os.path.join(_PROJECT_DIR, 'data/stock_concept_map.pkl')]
+             os.path.join(_PROJECT_DIR, 'data/stock_concept_map.pkl'),
+             os.path.join(_PROJECT_DIR, 'data/concept_inception.pkl')]
     newest, newest_what = 0, ''
     for root in roots:
         if os.path.isdir(root):
@@ -346,8 +366,13 @@ def _generate_stock_signal_worker(args):
         store = SignalStore()
         data = pd.read_csv(filepath, parse_dates=['datetime'])
         # 日期范围过滤（与主进程一致的加速优化）
+        # E-B1v2: 暖机窗口=多喂FROMDATE前N天数据供指标暖机(信号仍含暖机行,
+        # 回测从FROMDATE起消费, 多余行闲置无害)
         if FROMDATE:
-            data = data[data['datetime'] >= FROMDATE]
+            _from_dt = pd.Timestamp(FROMDATE)
+            if _B1V2_WARMUP_DAYS > 0:
+                _from_dt = _from_dt - pd.Timedelta(days=_B1V2_WARMUP_DAYS)
+            data = data[data['datetime'] >= _from_dt]
         if TODATE:
             data = data[data['datetime'] <= TODATE]
         if len(data) < 60:
@@ -1476,6 +1501,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     slip_enabled = cm_config.get('slippage_enabled', True)
     slip_rate = float(config.get('backtest.slippage', 0.001))
     limit_block_enabled = cm_config.get('limit_fill_block_enabled', True)
+    # 0b(2026-09-09): 跳空>9.5%再折让 — 原×1.03/×0.97产生超涨跌停价的"不可能
+    # 成交价"(主板跳空+9.8%时买价=昨收×1.132>涨停×1.10; 卖侧对称低于跌停)
+    gap_penalty_enabled = cm_config.get('gap_fill_penalty_enabled', True)
 
     def _impact(adv, size, price):
         if not impact_enabled or adv <= 0:
@@ -1551,7 +1579,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     _fill_stats = {'buy_attempted': 0, 'buy_filled': 0, 'buy_partial': 0,
                    'sell_attempted': 0, 'sell_filled': 0, 'sell_partial': 0,
                    'buy_limit_up_skip': 0, 'sell_limit_down_skip': 0,
-                   'sell_tplus1_blocked': 0, 'buy_cash_insufficient': 0}
+                   'sell_tplus1_blocked': 0, 'buy_cash_insufficient': 0,
+                   'gap_buy_penalized': 0, 'gap_sell_penalized': 0}
 
     # T+1 结算：当日买入的股票不可卖出
     tplus1_enabled = config.get('cost_model', {}).get('t_plus_1_enabled', True)
@@ -1598,8 +1627,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 sell_px = float(open_today[j])
                 if slip_enabled:
                     sell_px *= (1.0 - slip_rate)
-                if not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -0.095:
+                if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -0.095:
                     sell_px = sell_px * 0.97  # 跳空低开>9.5%: 成交价再折让
+                    _fill_stats['gap_sell_penalized'] += 1
                 impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
                 cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
                 _log_realized(code, date, sell_px)
@@ -1629,8 +1659,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     sell_px = openx
                     if slip_enabled:
                         sell_px *= (1.0 - slip_rate)
-                    if not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -0.095:
+                    if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -0.095:
                         sell_px = sell_px * 0.97
+                        _fill_stats['gap_sell_penalized'] += 1
                     impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
                     cash += abs(diff) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
                     positions[j] = target_shares
@@ -1657,8 +1688,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 buy_px = float(open_today[j])
                 if slip_enabled:
                     buy_px *= (1.0 + slip_rate)
-                if not np.isnan(prev_close[j]) and prev_close[j] > 0 and (buy_px / prev_close[j] - 1) > 0.095:
+                if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (buy_px / prev_close[j] - 1) > 0.095:
                     buy_px = buy_px * 1.03  # 跳空高开>9.5%: 成交价再折让
+                    _fill_stats['gap_buy_penalized'] += 1
                 target_shares = int(tv / buy_px / 100) * 100
                 curr_shares = int(positions[j])
                 diff = target_shares - curr_shares
@@ -1814,7 +1846,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     sa = max(_fill_stats['sell_attempted'], 1)
     print(f"成交率: 买入{_fill_stats['buy_filled']}/{_fill_stats['buy_attempted']}={_fill_stats['buy_filled']/ba*100:.1f}%"
           f" 卖出{_fill_stats['sell_filled']}/{_fill_stats['sell_attempted']}={_fill_stats['sell_filled']/sa*100:.1f}%"
-          f" 资金不足={_fill_stats['buy_cash_insufficient']}")
+          f" 资金不足={_fill_stats['buy_cash_insufficient']}"
+          f" 跳空罚={_fill_stats['gap_buy_penalized']}买/{_fill_stats['gap_sell_penalized']}卖")
     # 记录到诊断模块
     try:
         from analysis.backtest_diagnostics import get_diagnostics
@@ -1942,7 +1975,8 @@ if __name__ == "__main__":
                                 '.signal_code_fp')
         try:
             with open(_sidecar, 'w') as _f:
-                _f.write(_signal_code_fingerprint())
+                # E-B1v2: sidecar协议=fp|warmup_days (warmup影响信号内容, 指纹不可见)
+                _f.write(f"{_signal_code_fingerprint()}|{_B1V2_WARMUP_DAYS}")
         except OSError as _e:
             print(f"[WARN] 信号代码指纹sidecar写入失败: {_e}")
 
