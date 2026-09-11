@@ -9,7 +9,7 @@ import pandas as pd
 
 PKL_REPO = '/mnt/d/quant/data/alternative_data/repurchase_plans.pkl'
 TR = '/mnt/d/quant/strategy/rolling_validation_results/trade_realized.csv'
-FDF = '/mnt/d/quant/strategy/cache/factor_df_2718s_809d_8c19c0a8.parquet'
+SIG = '/mnt/d/quant/strategy/rolling_validation_results/backtest_signals.csv'
 
 
 def main():
@@ -43,26 +43,25 @@ def main():
     print(f'  差(有flag-无flag): {(m[m.flag].ret.mean()-m[~m.flag].ret.mean())*100:+.2f}pp')
     print(f'  差(小回购-无flag): {(m[m.flag_small].ret.mean()-m[~m.flag].ret.mean())*100:+.2f}pp')
 
-    # bp2交叉: factor_df bp2相关列
-    fd_cols = pd.read_parquet(FDF).columns.tolist()
-    bp_cols = [c for c in fd_cols if 'bp' in c.lower()]
-    print(f'\nfactor_df bp相关列: {bp_cols}')
-    if bp_cols:
-        fd = pd.read_parquet(FDF, columns=['code', 'date'] + bp_cols[:2])
-        fd['date'] = pd.to_datetime(fd['date'])
-        fd = fd.sort_values('date')
-        mm = pd.merge_asof(m.sort_values('entry_date'), fd, left_on='entry_date',
-                           right_on='date', by='code', direction='backward',
-                           tolerance=pd.Timedelta('4d'))
-        for c in bp_cols[:2]:
-            mm[c] = pd.to_numeric(mm[c], errors='coerce')
-            q = mm[c].quantile(0.5)
-            hi = mm[mm[c] > q]
-            print(f'\n[{c}] 中位分界={q:.3f}: 回购flag×bp2高 交叉:')
-            for fn, s in [('flag且bp2高', hi[hi.flag]), ('无flag且bp2高', hi[~hi.flag]),
-                          ('flag且bp2低', mm[(mm[c] <= q) & mm.flag]),
-                          ('无flag且bp2低', mm[(mm[c] <= q) & ~mm.flag])]:
-                print(f'    {fn}: n={len(s):4d} ret={s.ret.mean()*100:+.2f}% 胜率={100*(s.ret > 0).mean():.0f}%')
+    # bp2交叉: 从signals CSV配对chan_buy_point (bp2类=2, E-K1加成对象)
+    # 注意: 需基线信号配对(W1态信号行集合漂移→配对率仅327/506; 新基线后应~100%)
+    sig = pd.read_csv(SIG, usecols=['code', 'date', 'buy', 'chan_buy_point'],
+                      dtype={'code': str})
+    sig = sig[sig.buy == True].copy()
+    sig['code'] = sig['code'].str.zfill(6)
+    sig['date'] = pd.to_datetime(sig['date'])
+    mm = m.merge(sig, left_on=['code', 'entry_date'], right_on=['code', 'date'],
+                 how='left')
+    print(f'\nbp2交叉 (信号配对 {mm.chan_buy_point.notna().sum()}/{len(mm)}):')
+    mm['is_bp2'] = (mm['chan_buy_point'] == 2)
+    for fn, s in [('flag且bp2', mm[mm.flag & mm.is_bp2]),
+                  ('flag且非bp2', mm[mm.flag & ~mm.is_bp2]),
+                  ('无flag且bp2', mm[~mm.flag & mm.is_bp2]),
+                  ('无flag且非bp2', mm[~mm.flag & ~mm.is_bp2])]:
+        print(f'  {fn:>12s}: n={len(s):4d} ret={s.ret.mean()*100:+.2f}% '
+              f'胜率={100*(s.ret > 0).mean():.0f}%')
+    print(f'  全人群bp2占比: {mm.is_bp2.sum()}/{len(mm)} = {mm.is_bp2.mean()*100:.1f}%'
+          f' (基线652笔bp2=13≈2%, 配对缺失影响见上)')
 
 
 if __name__ == '__main__':
