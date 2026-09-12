@@ -44,14 +44,16 @@ def main():
     print(f'  差(小回购-无flag): {(m[m.flag_small].ret.mean()-m[~m.flag].ret.mean())*100:+.2f}pp')
 
     # bp2交叉: 从signals CSV配对chan_buy_point (bp2类=2, E-K1加成对象)
-    # 注意: 需基线信号配对(W1态信号行集合漂移→配对率仅327/506; 新基线后应~100%)
+    # 配对: 信号日→次日开盘买入, 入场日=信号日+1, 用backward 3d容差
     sig = pd.read_csv(SIG, usecols=['code', 'date', 'buy', 'chan_buy_point'],
                       dtype={'code': str})
     sig = sig[sig.buy == True].copy()
     sig['code'] = sig['code'].str.zfill(6)
     sig['date'] = pd.to_datetime(sig['date'])
-    mm = m.merge(sig, left_on=['code', 'entry_date'], right_on=['code', 'date'],
-                 how='left')
+    sig = sig.sort_values('date')
+    mm = pd.merge_asof(m.sort_values('entry_date'), sig[['code', 'date', 'chan_buy_point']],
+                       left_on='entry_date', right_on='date', by='code',
+                       direction='backward', tolerance=pd.Timedelta('3d'))
     print(f'\nbp2交叉 (信号配对 {mm.chan_buy_point.notna().sum()}/{len(mm)}):')
     mm['is_bp2'] = (mm['chan_buy_point'] == 2)
     for fn, s in [('flag且bp2', mm[mm.flag & mm.is_bp2]),
@@ -61,7 +63,7 @@ def main():
         print(f'  {fn:>12s}: n={len(s):4d} ret={s.ret.mean()*100:+.2f}% '
               f'胜率={100*(s.ret > 0).mean():.0f}%')
     print(f'  全人群bp2占比: {mm.is_bp2.sum()}/{len(mm)} = {mm.is_bp2.mean()*100:.1f}%'
-          f' (基线652笔bp2=13≈2%, 配对缺失影响见上)')
+          f' (基线652笔bp2=13≈2%)')
 
 
 if __name__ == '__main__':
