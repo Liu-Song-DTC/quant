@@ -1910,6 +1910,15 @@ if __name__ == "__main__":
     _log_f = open(_log_path, 'w', encoding='utf-8')
     _sys.stdout = _Tee(_sys.stdout, _log_f)
     print(f"回测日志: {_log_path}")
+    # === 环境指纹 (2026-09-12): 三指纹只覆盖文件, 解释器/库版本曾是A/B分歧根因 ===
+    try:
+        import platform as _platform
+        import numpy as _np, pandas as _pd, xgboost as _xgb
+        print(f"环境指纹: python={_sys.executable} "
+              f"numpy={_np.__version__} pandas={_pd.__version__} "
+              f"xgboost={_xgb.__version__} platform={_platform.platform()[:60]}")
+    except Exception as _e:
+        print(f"环境指纹: 获取失败 {_e}")
 
     # 加载基本面数据 (支持 _qfq.csv 和 _hfq.csv)
     stock_pool_enabled = config.get('stock_pool.enabled', True)
