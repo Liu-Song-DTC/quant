@@ -93,6 +93,11 @@ class ConfigLoader:
             'turnover_bonus': self.get('portfolio.turnover_bonus', 0.05),
             # C实验(2026-08-29): 换仓缓冲 — 注意此白名单逐键映射, 新键必须显式加入否则永不生效
             'replacement_buffer': self.get('portfolio.replacement_buffer', 0.0),
+            # 2026-09-09 review修复: 三个死旋钮入白名单(此前yaml值永不生效:
+            # be10实验是no-op — patch打yaml但白名单不转发, 代码恒取默认0.85)
+            'base_exposure': self.get('base_exposure', self.get('portfolio.base_exposure', 0.85)),
+            'exit_mode': self.get('portfolio.exit_mode', 'simple'),
+            'max_turnover_ratio': self.get('portfolio.max_turnover_ratio', 0.60),
             'min_hold_days': self.get('portfolio.params.min_hold_days', 5),
             'selection': self.get('portfolio.selection', {
                 'min_rank_pct': 0.50, 'min_absolute_score': 0.0, 'min_confidence': 0.80,
