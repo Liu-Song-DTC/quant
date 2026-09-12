@@ -180,13 +180,17 @@ def _signals_stale(signals_csv):
         print(f"信号CSV代码态过期 (生成时={_fp_saved or '无记录'}/warmup={_fp_saved_warmup or '?'} "
               f"当前={_fp_now}/warmup={_warmup_now}), 重新生成信号")
         return True
-    # 执行层产物排除(2026-09-06): reduction_plans.pkl由portfolio在回测期间按4h策略
-    # 自刷新重写(load_reduction_plans), 信号层(signal_engine)不消费它
-    # (signal_engine只用northbound/margin/dragon_tiger), 其mtime永远比信号CSV新
-    # → 每跑必触发78min信号重生成。数据真正刷新(全量)时qfq/fundamental仍会触发。
-    _EXEC_LAYER_ARTIFACTS = {'reduction_plans.pkl'}
+    # 2026-09-12 收窄(#54): 信号层仅消费4个另类文件 — 经消费路径核验, signal_engine
+    # 只调get_northbound_signal(northbound_daily)/get_margin_signal(margin_daily)/
+    # get_dragon_tiger_signal(dragon_tiger_history+dragon_tiger); 其余(yjyg/unlock/
+    # reduction_records/reduction_plans/holdernum/增持/回购/研报/大宗/margin_detail)
+    # 均为组合层输入, 组合层每次运行实时读取, 不改变信号内容 → 不触发信号重生成。
+    # 旧整目录根: 任一另类文件mtime更新(如yjyg每日下载)即78min信号重生成churn。
+    _SIGNAL_ALT_FILES = ['northbound_daily.pkl', 'margin_daily.pkl',
+                         'dragon_tiger_history.pkl', 'dragon_tiger.pkl']
     roots = [DATA_PATH, FUNDAMENTAL_PATH,
-             os.path.join(_PROJECT_DIR, 'data/alternative_data'),
+             *[os.path.join(_PROJECT_DIR, 'data/alternative_data', fn)
+               for fn in _SIGNAL_ALT_FILES],
              os.path.join(_PROJECT_DIR, 'data/concept_hist.pkl'),
              os.path.join(_PROJECT_DIR, 'data/stock_concept_map.pkl'),
              os.path.join(_PROJECT_DIR, 'data/concept_inception.pkl')]
@@ -195,8 +199,6 @@ def _signals_stale(signals_csv):
         if os.path.isdir(root):
             for dirpath, _dirs, files in os.walk(root):
                 for fn in files:
-                    if fn in _EXEC_LAYER_ARTIFACTS:
-                        continue
                     p = os.path.join(dirpath, fn)
                     try:
                         mt = os.path.getmtime(p)
