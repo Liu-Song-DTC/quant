@@ -7,7 +7,7 @@
                                   指数(sh000001/399006, 市场状态输入)同样硬检查;
                                   退市/停牌股用 kline_stale_allowlist.txt 豁免;
                                   北交所(43/82/83/87/88/92段)仅报告(已排除出股票池)
-    融资融券 margin_daily:        最大日期 ≥ 预期交易日 - 1 (T+1晨发布)
+    融资融券 margin_daily:        最大日期 ≥ 上一交易日 (T+1晨发布, 周一晚最新=上周五)
     北向 northbound_daily:        同上
     概念历史 concept_hist:        各板块最大日期 ≥ 预期交易日 (白名单: 东财下架板块)
     基本面 fundamental_data:      最大报告期 ≥ 应披露的最新报告期
@@ -56,6 +56,15 @@ def expected_trading_day() -> date_type:
     d = date_type.today()
     if now.hour * 60 + now.minute >= 17 * 60 + 30 and d.weekday() < 5:
         return d
+    d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def prev_trading_day(d: date_type) -> date_type:
+    """上一交易日 (跳过周末). margin T+1晨发布 → 周一晚最新=上周五;
+    日历日-1 会落在周末造成误报。节假日用 --expected 配合。"""
     d -= timedelta(days=1)
     while d.weekday() >= 5:
         d -= timedelta(days=1)
@@ -323,7 +332,7 @@ def main():
 
     hard = [
         check_kline(exp),
-        check_alt_pkl('margin_daily.pkl', 'date', exp, slack_days=1),
+        check_alt_pkl('margin_daily.pkl', 'date', prev_trading_day(exp)),
         check_alt_pkl('northbound_daily.pkl', 'date', exp, slack_days=1),
         check_concept_hist(exp),
         check_fundamental(exp),
