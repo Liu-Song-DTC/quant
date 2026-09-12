@@ -421,13 +421,14 @@ def main():
     pos_b = (valid.ic10_b > 0).mean()
     pos_c = (valid.ic10_c.dropna() > 0).mean() if valid.ic10_c.notna().any() else 0.0
     pos_best = max(pos_b, pos_c)
-    print(f'\n[判定] 基线池IC_f10={base10:+.4f} ({best_name}最佳={best10:+.4f}, Δ={best10-base10:+.4f})')
-    print(f'  池IC_f20: 基线={base20:+.4f} 最佳={best20:+.4f}')
+    print(f'\n[判定] 基线池IC_f20={base20:+.4f} ({best_name}最佳={best20:+.4f}, '
+          f'Δ={best20-base20:+.4f}; f10口径: 基线{base10:+.4f}/最佳{best10:+.4f})')
     print(f'  gap4曲线投影 top-N fwd20: 基线≈{proj_base:+.2f}% → 最佳≈{proj_best:+.2f}% '
           f'(Δ={proj_best-proj_base:+.2f}pp)')
-    go = (best10 >= 0.10) and (pos_best >= 0.70) and (proj_best - proj_base >= 1.0)
-    soft = (best10 >= 0.08) and not go
-    print(f'  GO条件: 池IC_f10≥0.10({best10:+.3f}{"✓" if best10>=0.10 else "✗"}) '
+    # GO线用f20口径(敏感性曲线校准口径); f10仅作目标对齐参考
+    go = (best20 >= 0.10) and (pos_best >= 0.70) and (proj_best - proj_base >= 1.0)
+    soft = (best20 >= 0.08) and not go
+    print(f'  GO条件: 池IC_f20≥0.10({best20:+.3f}{"✓" if best20>=0.10 else "✗"}) '
           f'正比例≥70%({pos_best*100:.0f}%{"✓" if pos_best>=0.70 else "✗"}) '
           f'投影增益≥+1pp({proj_best-proj_base:+.2f}pp{"✓" if proj_best-proj_base>=1.0 else "✗"})')
     print(f'  => 判定: {"GO 接线" if go else ("SOFT 加样本/调参再看" if soft else "NO 否决")}')
