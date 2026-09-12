@@ -31,6 +31,10 @@ class SectorRotation:
         self._top_sectors_history: list = []  # [(date_str, [top3_industries]), ...]
         self._rotation_speed: float = 0.0     # 0=稳定, 1=极快切换
         self._last_compute_date: str = ""
+        # E-A4(2026-09-06): 全市场买入信号密度 (当日buy信号数/全池股票数),
+        # 供V反快速恢复的密度门使用 — 高密度=市场共识确认, 2022-05 V反日0.31-0.40
+        # vs 假触发日0.18-0.26, 0.30门槛精准区隔
+        self.market_signal_density: float = 0.0
 
     # ── 公共接口 ──
 
@@ -154,6 +158,8 @@ class SectorRotation:
             buy_signals: [(code, industry), ...] 当天触发买入的股票列表
             industry_stock_counts: {industry: count} 各行业股票池总数
         """
+        # E-A4密度门: 先清零再计算, 无信号日密度=0 (不是昨日陈旧值)
+        self.market_signal_density = 0.0
         if not buy_signals or not industry_stock_counts:
             self._signal_density = {}
             self._signal_density_rank = {}
@@ -165,10 +171,16 @@ class SectorRotation:
                 buy_counts[ind] = buy_counts.get(ind, 0) + 1
 
         self._signal_density = {}
+        _pool_total = 0
         for ind, total in industry_stock_counts.items():
             buys = buy_counts.get(ind, 0)
+            _pool_total += int(total)
             if total > 0:
                 self._signal_density[ind] = buys / total
+        # 全市场密度 = buy信号数/全池股票数 (分母=industry_stock_counts总和,
+        # 与信号CSV证据统计口径一致)
+        if _pool_total > 0:
+            self.market_signal_density = float(len(buy_signals)) / _pool_total
 
         if not self._signal_density:
             self._signal_density_rank = {}

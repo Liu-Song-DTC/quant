@@ -139,6 +139,11 @@ class MarketRegimeDetector:
         br_series = self.index_data['bear_risk'].astype(float)
         br_density = br_series.rolling(60, min_periods=30).mean()
         self.index_data['severe_bear'] = br_density > 0.70
+        # E-A4(2026-09-06): V反恢复原始特征 — 20日动量+距20日低点距离
+        # (阈值在portfolio参数, 检测器只提供原始值, 与momentum_score的clip版互补)
+        _close = self.index_data['close']
+        self.index_data['mom20'] = (_close / _close.shift(20) - 1).values
+        self.index_data['dist20_low'] = (_close / _close.rolling(20, min_periods=5).min() - 1).values
         # 状态切换率（后处理：基于已生成的regime序列计算20日切换频率）
         regime_vals = self.index_data['regime'].values
         regime_vol_list = []

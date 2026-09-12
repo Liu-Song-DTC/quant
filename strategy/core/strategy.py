@@ -95,6 +95,9 @@ class Strategy:
         bear_risk = False
         bear_risk_fast = False
         severe_bear = False
+        # E-A4(2026-09-06): V反恢复原始特征, 仅v_recovery_enabled时读取
+        _v_mom = 0.0
+        _v_dist = 0.0
         if self.index_data is not None:
             row = self.index_data[self.index_data["datetime"].dt.date == date]
             if not row.empty:
@@ -107,6 +110,9 @@ class Strategy:
                 bear_risk = bool(row["bear_risk"].values[0]) if "bear_risk" in row.columns else False
                 bear_risk_fast = bool(row["bear_risk_fast"].values[0]) if "bear_risk_fast" in row.columns else False
                 severe_bear = bool(row["severe_bear"].values[0]) if "severe_bear" in row.columns else False
+                if getattr(self.portfolio, 'v_recovery_enabled', False):
+                    _v_mom = float(row["mom20"].values[0]) if "mom20" in row.columns else 0.0
+                    _v_dist = float(row["dist20_low"].values[0]) if "dist20_low" in row.columns else 0.0
 
         # 每日更新情绪权重
         self.set_sentiment_multipliers(date, 0)
@@ -142,5 +148,7 @@ class Strategy:
             index_volume_ratio=index_volume_ratio,
             style_score=style_score_val,
             regime_volatility=regime_vol_val,
+            v_recovery_mom=_v_mom,
+            v_recovery_dist=_v_dist,
             cost=cost,
         )

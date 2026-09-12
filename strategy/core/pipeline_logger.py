@@ -213,7 +213,7 @@ class PipelineLogger:
                       buy_attempted: int = 0, sell_attempted: int = 0,
                       buy_limit_skip: int = 0, sell_limit_skip: int = 0,
                       cash_insufficient: int = 0, tplus1_blocked: int = 0,
-                      impact_cost: float = 0.0):
+                      buy_bear_blocked: int = 0, impact_cost: float = 0.0):
         """记录执行成交"""
         s = self.stage('execution')
         s.add('buy_filled', buy_filled)
@@ -224,6 +224,7 @@ class PipelineLogger:
         s.add('sell_limit_skip', sell_limit_skip)
         s.add('cash_insufficient', cash_insufficient)
         s.add('tplus1_blocked', tplus1_blocked)
+        s.add('buy_bear_blocked', buy_bear_blocked)
         s.add('impact_cost_total', impact_cost)
 
     def log_backtest_daily(self, date, nav: float, drawdown: float,
