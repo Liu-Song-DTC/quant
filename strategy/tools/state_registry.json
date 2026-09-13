@@ -1,0 +1,63 @@
+{
+ "entries": [
+  {
+   "id": "20260913-093741-803",
+   "label": "基线0913_PIT_1,143,938",
+   "deep": false,
+   "code": {
+    "git_head": "b9b74211148d7b59e80095ef5c95a794b2581edf",
+    "porcelain_hash": "c6ee3331eb843755613c60adb919bc09c71887726534411db942d7ea30878fc5",
+    "yaml_hash": "1a0bcd6ff4186f8a88ea85fb6e252f945d129b23f30a25ed07fdd6c7a8b9e2da"
+   },
+   "env": {
+    "executable": "/mnt/d/quant/.venv/bin/python",
+    "python": "3.14.4",
+    "numpy": "2.4.6",
+    "pandas": "3.0.3",
+    "xgboost": "3.3.0",
+    "scipy": "1.17.1",
+    "backtrader": "1.9.78.123"
+   },
+   "aggregates": {
+    "bt": {
+     "files": 5236,
+     "bytes": 1154405778
+    },
+    "fund": {
+     "files": 5585,
+     "bytes": 180621337
+    },
+    "alt": {
+     "files": 30,
+     "bytes": 694735781
+    },
+    "raw": {
+     "files": 20875,
+     "bytes": 4330972681
+    },
+    "concept": {
+     "files": 1,
+     "bytes": 654306
+    },
+    "concept_map": {
+     "files": 1,
+     "bytes": 303713
+    },
+    "yaml": {
+     "files": 1,
+     "bytes": 145741
+    }
+   },
+   "manifest_hash": "5d7b4290702cf43ac2157aed033d9ac901263d9fd6037c958f4ff1ed99f949be",
+   "outputs": {
+    "strategy/rolling_validation_results/backtest_signals.csv": "858f60c0681919b4ffe2514b16ca5b72364eee4cc0955ab4e446b53805e59a26",
+    "strategy/rolling_validation_results/equity_curve.csv": "fdbda797d6cb5e807e053f8507f4be079d4f95e3fec431f6fe2bf1aed21cb0e6",
+    "strategy/rolling_validation_results/portfolio_selections.csv": "47195a22911b520c5c7c03172274fabbd964989881ddf4bfe71d196e37d25963",
+    "strategy/rolling_validation_results/trade_realized.csv": "57572b2e5bc588b62dcbd1328fa69759e8e08db952ffe3797de4e7cc29daedeb",
+    "strategy/rolling_validation_results/backtest_diagnostics.json": "dad41b534de03c6a9d23ae92a22bd116b320b216a10201e30a0ea7f36c837aa8"
+   },
+   "n_files": 31729,
+   "total_bytes": 6361839337
+  }
+ ]
+}

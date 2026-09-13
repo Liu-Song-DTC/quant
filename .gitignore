@@ -263,3 +263,4 @@ strategy/rolling_validation_results/
 *.official_*
 current_positions.*.json
 fundamental_*_pre_fix_*.pkl
+strategy/tools/state_manifest_latest.json
