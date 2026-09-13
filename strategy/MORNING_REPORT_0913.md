@@ -48,7 +48,15 @@ J4联合capstone=+0.30pp/正30%仍否。**actual_w +4.20%/调仓日全胜所有�
 ## 剩余日程 (均日历门控, 今晚不可做)
 - **9/30后**: #56 V2 2026Q3 OOS标定测试(v2_oos_runbook_0930.py已入库) + Q4滚动权重标定 + 差距5 CSCV
 - **用户裁定**: MDD容差meta口径(不阻塞)
-- **周一9/14实盘流**: 下载周五数据 → refresh_all.sh → 新鲜度门禁 → 出单(全部钉.venv)
+- **周一9/14实盘流**: 下载周五数据 → refresh_all.sh → **state_guard verify** → 新鲜度门禁 → 出单(全部钉.venv); 出单成功后 **state_guard register 新锚**
+
+## 架构升级程序 (9/13用户裁定"依次开始")
+校准: 信号层IC已在qlib Alpha158公开基准同带, 枚举式优化到头; 差距在系统形态。
+五缺口顺序: **缺口5工程硬化(已启动)** → 缺口1 alpha工厂(CSCV当刀) → 缺口2风险模型 →
+缺口3 meta-labeling → 缺口4 GNN。
+缺口5第一步已入库: state_guard(3c19773) — 三层指纹(code/env/data 31,729文件+outputs),
+生产锚点基线0913_PIT_1,143,938已注册, scratch全场景验证过(同size同mtime内容漂移
+quick漏deep抓)。冷跑/出单前verify分层定位漂移, 事后register。
 
 ## 夜班记账
 - 3个探针入库(tail/tail2/regime), 6个早前脚本补入库, 全部推送(HEAD 742b901)
