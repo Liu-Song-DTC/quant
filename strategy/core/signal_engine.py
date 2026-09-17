@@ -265,6 +265,10 @@ class SignalEngine:
         """从配置文件加载参数"""
         config_loader = load_config()
 
+        # 另类数据开关 (2026-09-17 0g裁决: dragon_tiger前视artifact关闭)
+        alt_cfg = config_loader.get('alternative_data', {})
+        self.dragon_tiger_enabled = alt_cfg.get('dragon_tiger_enabled', True)
+
         # 信号阈值（从配置文件加载）
         signal_config = config_loader.get('signal', {})
         self.buy_threshold = signal_config.get('buy_threshold', 0.12)
@@ -1581,8 +1585,9 @@ class SignalEngine:
                     self._diag.record_alt_data(northbound=(nb != 0), margin=(mg != 0))
 
                 # 个股级: 龙虎榜独立买点信号 — 机构大买不经过因子筛选, 直接强化
+                # (2026-09-17 0g裁决关闭: 贡献100%集中在2026前视区, 见alternative_data.dragon_tiger_enabled)
                 dt_signal = np.zeros(n)
-                if code:
+                if code and self.dragon_tiger_enabled:
                     for i in range(60, n):
                         dt_sig = self._alt_data.get_dragon_tiger_signal(code, (pd.to_datetime(dates[i]) - pd.Timedelta(days=1)).date())
                         if abs(dt_sig) > 0.01:

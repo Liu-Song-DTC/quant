@@ -7739,6 +7739,10 @@ multi_timeframe:
 # 双态A/B验证中(8/26数据态配对 vs 实盘ctrl 279.48), 两态同向前不开启.
 margin_features:
   enabled: false
+# 另类数据开关 (2026-09-17 0g裁决): dragon_tiger贡献100%集中在2026前视区(-4.89pp),
+# 诚实残余≤0.7% → 关闭。PIT重建上界≤0.7%且事件级金额数据缺失, 不排期。
+alternative_data:
+  dragon_tiger_enabled: false
 backtest:
   cash: 250000.0
   commission: 0.0005
@@ -7747,7 +7751,7 @@ backtest:
   rebalance_days: 10
   num_workers: 4
   fromdate: '2021-01-01'
-  todate: '2026-09-15'
+  todate: '2026-09-17'
 cost_model:
   t_plus_1_enabled: true
   impact_cost_enabled: false

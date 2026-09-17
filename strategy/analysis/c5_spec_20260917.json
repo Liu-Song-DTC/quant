@@ -1,0 +1,8 @@
+[
+  {"name": "A_repro_0915state"},
+  {"name": "C5_ref_005"},
+  {"name": "C5b_dd05", "patch": "C5b", "dd": 0.05},
+  {"name": "C5b_dd08", "patch": "C5b", "dd": 0.08},
+  {"name": "C5d_fastoff", "patch": "C5d"},
+  {"name": "C5c_profitonly", "patch": "C5c"}
+]
