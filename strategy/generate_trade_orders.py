@@ -521,6 +521,13 @@ def main():
     if stale_codes:
         print(f"  [WARN] {len(stale_codes)} 只基本面数据陈旧>120天, ST判定可能失效")
 
+    # 实盘账户约束(2026-09-14用户确认): 无科创板交易权限, 候选universe剔除688/689.
+    # 仅出单层过滤, 回测池不动.
+    _no_star_codes = [c for c in universe if c.startswith(('688', '689'))]
+    if _no_star_codes:
+        universe = [c for c in universe if c not in _no_star_codes]
+        print(f"  [实盘约束] 剔除科创板候选 {len(_no_star_codes)} 只 (无交易权限)")
+
     print(f"可交易股票: {len(universe)} 只 (过滤后)")
 
     # ── 4. 获取市场状态 ──────────────────────────────────────
@@ -535,6 +542,15 @@ def main():
 
     # 读取当前持仓
     prev_positions = load_current_positions()
+
+    # 实盘账户约束(2026-09-14用户确认): 无科创板交易权限, 688/689前缀不可买卖.
+    # 持仓文件里此类代码=历史幻影单(从未成交), 剔除并释放资金重新部署.
+    _no_star_pos = [c for c in prev_positions if c.startswith(('688', '689'))]
+    if _no_star_pos:
+        print(f"  [实盘约束] 剔除无权限持仓 {len(_no_star_pos)} 只 (科创板, 假定从未成交): "
+              f"{sorted(_no_star_pos)}")
+        for c in _no_star_pos:
+            prev_positions.pop(c)
 
     # 账户资金=总可部署资金; 持仓市值含浮盈可合理略超名义资金,
     # 只有显著超出(>1.5倍)才判脏数据重置 — 修复(2026-08-30 review P0):
