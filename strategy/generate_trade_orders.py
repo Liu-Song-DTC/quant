@@ -441,6 +441,8 @@ def main():
                         help='仅打印结果, 不写入文件')
     parser.add_argument('--skip-freshness', action='store_true',
                         help='跳过数据新鲜度门禁 (仅调试用, 实盘勿用)')
+    parser.add_argument('--force-reset', action='store_true',
+                        help='确认持仓全清重选 (仅当核对后确认账户无真实持仓时使用)')
     args = parser.parse_args()
 
     # ── 数据新鲜度门禁 (fail-closed) ──────────────────────────
@@ -558,8 +560,18 @@ def main():
     account_capital = args.cash
     _pos_sum = sum(info['amount'] for info in prev_positions.values())
     if _pos_sum > account_capital * 1.5:
+        # 0h (2026-09-17): 自动全清重选是危险动作 — 持仓文件与真实账户漂移时,
+        # "全清"不发卖出(文件内持仓被清空)却按满仓重买 → 与真实持仓叠加重复买入。
+        # 实锤: 晨流自动写入6只新开仓 → 文件21只/993,544越过阈值, 若照旧自动重置,
+        # 今晚出单=按50万重买25只。改为显式确认。
+        if not args.force_reset:
+            print(f"\n[拒绝出单] 持仓成本合计{_pos_sum:,.0f} > 1.5×账户资金{account_capital:,.0f},"
+                  f" 持仓文件与真实账户可能已漂移, 自动全清重选会与真实持仓叠加重复买入。")
+            print(f"  请核对真实持仓后二选一: 手动修正 {POSITIONS_FILE}; "
+                  f"或确认账户无真实持仓后加 --force-reset 全清重选。")
+            sys.exit(1)
         print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 1.5×账户资金{account_capital:,.0f}, "
-              f"判定为脏数据, 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
+              f"--force-reset 已确认: 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
         prev_positions = {}
         _pos_sum = 0.0
     current_positions = {
@@ -605,6 +617,65 @@ def main():
         str(target_date), adjusted, prices, prev_positions, total_equity,
         signal_store, stock_file_map,
     )
+
+    # ── 0h 现金闸 (2026-09-17): 买单总额 ≤ 可用现金 + 同日卖出回款 ──
+    # 实锤: 9/17晨 pos_sum=673,705>50万时 cash=0 仍出320k买单 — build()内部
+    # total_equity=cash+pos_sum 随shadow book漂移放大(槽位=equity/20000), 排仓
+    # 尺度失真 → 6只新开仓无融资写入持仓文件 → 膨胀至993,544。此闸只限实盘
+    # 出单路径, 回测(yaml backtest.cash)不动。
+    _sell_proceeds = 0.0
+    _buy_total = 0.0
+    for o in orders:
+        _code = o['stock_code'].split('.')[0].zfill(6)
+        _prev_amt = prev_positions.get(_code, {}).get('amount', 0)
+        if o['action'] == 'close':
+            _sell_proceeds += _prev_amt
+        elif o['action'] == 'open':
+            _buy_total += o['amount']
+        elif o['action'] == 'adjust':
+            _delta = o['amount'] - _prev_amt
+            if _delta > 0:
+                _buy_total += _delta
+            else:
+                _sell_proceeds += -_delta
+    _avail = max(account_capital - _pos_sum, 0.0) + _sell_proceeds
+    if _buy_total > _avail + 1:
+        _scale = (_avail / _buy_total) if _buy_total > 0 else 0.0
+        print(f"\n[现金闸] 买单总额{_buy_total:,.0f} > 可用资金{_avail:,.0f} "
+              f"(现金{max(account_capital - _pos_sum, 0):,.0f} + 卖出回款{_sell_proceeds:,.0f})")
+        _drop = []
+        for o in orders:
+            if o['action'] not in ('open', 'adjust'):
+                continue
+            _code = o['stock_code'].split('.')[0].zfill(6)
+            _prev_amt = prev_positions.get(_code, {}).get('amount', 0)
+            if o['action'] == 'adjust' and o['amount'] <= _prev_amt:
+                continue  # 净卖出单不受现金闸约束
+            _price = prices.get(_code, 0)
+            if _price <= 0:
+                continue
+            _orig = o['amount']
+            if o['action'] == 'open':
+                _new_amt = o['amount'] * _scale
+                _prev_amt = 0
+            else:
+                _new_amt = _prev_amt + (o['amount'] - _prev_amt) * _scale
+            _shares = int(_new_amt / _price / 100) * 100
+            if _shares < 100 or _new_amt <= _prev_amt:
+                print(f"  [现金闸] {o['stock_code']} 缩减后不足1手/无净买入, 取消该单")
+                _drop.append(o)
+                if o['action'] == 'open':
+                    new_positions.pop(_code, None)
+                else:
+                    new_positions[_code] = prev_positions[_code]
+                continue
+            _amt = int(_shares * _price)
+            o['amount'] = _amt
+            new_positions[_code]['amount'] = _amt
+            new_positions[_code]['shares'] = _shares
+            print(f"  [现金闸] {o['stock_code']} {_amt:>8,} ({_shares}股×{_price:.2f}, 原{_orig:,})")
+        for o in _drop:
+            orders.remove(o)
 
     output = {
         'date': str(target_date),
