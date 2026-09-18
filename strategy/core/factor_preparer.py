@@ -304,6 +304,7 @@ _FACTOR_CODE_FILES = [
     'core/market_regime_detector.py',
     'core/bom_chain.py',
     'core/gate_scorer.py',
+    'core/stock_pool.py',  # 0f: 日历池membership逻辑影响因子掩码内容 (2026-09-17)
     'config/factor_config.yaml',
 ]
 
@@ -403,10 +404,132 @@ def _signal_code_fingerprint() -> str:
     return h.hexdigest()[:8]
 
 
+def _compute_factor_data_raw(stock_file_map: dict, factor_dates: list,
+                             lookback: int, forward_period: int,
+                             num_workers: int, fd) -> pd.DataFrame:
+    """并行计算原始因子数据 → 临时CSV流式合并 → 返回未掩码DataFrame.
+
+    0f-v3重构 (2026-09-18): 计算块从prepare_factor_data抽出 —
+    缓存只存raw(掩码/中性化/rank前), 池掩码按每次运行的membership_map应用,
+    避免"daily运行静默复用quarterly掩码缓存"的跨模式污染bug。
+    """
+    # 并行计算因子 - worker从文件读取数据，避免主进程加载全量stock_data_dict
+    # fork + COW: 每个 worker 通过 _worker_fd 访问父进程已加载的基本面数据，无需重新从磁盘读取
+    args_list = [
+        (code, stock_file_map[code], factor_dates, lookback, forward_period)
+        for code in stock_file_map.keys()
+    ]
+
+    # 分批构建 DataFrame：避免 list-of-dicts（~2GB 峰值内存）与 DataFrame 同时存在导致 OOM
+    # chunksize=50 减少 IPC RPC 次数（4000只 / 50 = 80次，vs 10=400次）
+    BATCH_SIZE = 20000  # 降低batch size以减少内存峰值
+    batch_data = []
+    total_results = 0
+
+    # 使用临时CSV文件流式写入，避免df_chunks在内存中累积导致OOM
+    tmp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp_factor')
+    # tmp_factor是->/tmp/quant_tmp_factor的symlink (WSL2 IO加速): /tmp重启即清空,
+    # 悬空symlink时makedirs(exist_ok=True)抛FileExistsError — 重建目标目录恢复 (2026-09-18)
+    if os.path.islink(tmp_dir):
+        os.makedirs(os.path.realpath(tmp_dir), exist_ok=True)
+    elif os.path.exists(tmp_dir) and not os.path.isdir(tmp_dir):
+        os.unlink(tmp_dir)
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_csv_path = os.path.join(tmp_dir, 'factor_data_tmp.csv')
+    tmp_csv_file = open(tmp_csv_path, 'w', encoding='utf-8')
+    header_written = False
+    column_order = None
+
+    # 加载题材热度计算器（fork前, COW共享）
+    concept_calc = None
+    try:
+        from .concept_heat import ConceptHeatCalculator
+        concept_calc = ConceptHeatCalculator()
+        concept_calc.load()
+        print(f"题材热度计算器已加载: {len(concept_calc._concept_hist)} 概念板块历史")
+    except Exception as e:
+        print(f"题材热度计算器加载失败(fallback): {e}")
+
+    def _flush_batch(batch):
+        """将一批数据写入临时CSV，避免在内存中累积DataFrame"""
+        nonlocal header_written, total_results, column_order
+        if not batch:
+            return
+        df = pd.DataFrame(batch)
+        # 关键: 不同batch的DataFrame列序可能不同(有/无基本面数据的行键集不同),
+        # 直接to_csv会导致后续batch按各自列序写入 -> 读回时值错位。
+        # 必须按首个batch固定的列序对齐后再写。
+        if column_order is None:
+            column_order = list(df.columns)
+        else:
+            df = df.reindex(columns=column_order)
+        total_results += len(df)
+        df.to_csv(tmp_csv_file, header=not header_written, index=False)
+        header_written = True
+        del df
+        batch.clear()
+
+    import platform
+    if platform.system() == 'Windows':
+        print("Windows: single-process factor computation (spawn overhead too high)")
+        _init_factor_worker(fd, concept_calc)
+        for args in tqdm(args_list, desc="计算因子"):
+            res = _compute_stock_factors_worker(args)
+            batch_data.extend(res)
+            if len(batch_data) >= BATCH_SIZE:
+                _flush_batch(batch_data)
+    else:
+        ctx = multiprocessing.get_context('fork')
+        with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fd, concept_calc)) as pool:
+            for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=50),
+                           total=len(args_list), desc="计算因子"):
+                batch_data.extend(res)
+                if len(batch_data) >= BATCH_SIZE:
+                    _flush_batch(batch_data)
+
+    # 最后一批
+    _flush_batch(batch_data)
+    tmp_csv_file.close()
+
+    del args_list, batch_data  # 释放参数列表和临时数据
+
+    # 从临时CSV读取合并后的因子数据（一次性加载，内存可控）
+    print(f"从临时CSV加载因子数据: {tmp_csv_path}")
+    factor_data = pd.read_csv(tmp_csv_path, parse_dates=['date'], dtype={'code': str, 'industry': str}) if os.path.getsize(tmp_csv_path) > 0 else pd.DataFrame()
+    # 确保code保持为字符串（CSV读写可能转为int64导致与concept_map的isin不匹配）
+    if len(factor_data) > 0 and factor_data['code'].dtype != object:
+        factor_data['code'] = factor_data['code'].astype(str).str.zfill(6)
+    # 清理临时文件 (tmp_dir若是symlink不删目录 — 保留给下次运行复用)
+    try:
+        os.remove(tmp_csv_path)
+    except Exception:
+        pass
+    print(f"因子数据: {total_results} 条原始记录 → {len(factor_data)} 行")
+
+    # === 内存优化：float64 → float32 (精度足够，内存减半) ===
+    if len(factor_data) > 0:
+        for col in factor_data.columns:
+            if col in ('code', 'date', 'industry'):
+                continue
+            if factor_data[col].dtype == 'float64':
+                factor_data[col] = pd.to_numeric(factor_data[col], downcast='float')
+            elif factor_data[col].dtype == 'int64':
+                factor_data[col] = pd.to_numeric(factor_data[col], downcast='integer')
+    import gc
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(ctypes.c_int(0))
+    except Exception:
+        pass
+
+    return factor_data
+
+
 def prepare_factor_data(stock_file_map: dict, fd,
                        detailed_industries: dict,
                        all_dates: list,
-                       num_workers: int = 8) -> Tuple[pd.DataFrame, dict, list]:
+                       num_workers: int = 8,
+                       membership_map: dict = None) -> Tuple[pd.DataFrame, dict, list]:
     """预计算所有股票的因子数据（用于动态因子选择）
 
     Args:
@@ -415,6 +538,9 @@ def prepare_factor_data(stock_file_map: dict, fd,
         detailed_industries: 行业分类配置
         all_dates: 全市场交易日列表（可从sh000001获取，避免遍历所有股票）
         num_workers: 并行进程数
+        membership_map: 0f季度日历池成员映射 {boundary_ts: set(codes)} —
+            组装后按(date,boundary)掩码非成员码的因子值(NaN), 中性化/rank/ML自动继承。
+            None=不掩码(off模式, 现状)
 
     Returns:
         tuple: (factor_data, industry_codes, all_dates)
@@ -482,116 +608,23 @@ def prepare_factor_data(stock_file_map: dict, fd,
     print(f"数据指纹: {_data_fp} (K线{len(stock_file_map)}文件 + 基本面 + 题材输入); 代码指纹: {_code_fp}; "
           f"信号代码指纹: {_signal_code_fingerprint()}")
     _cached = load_factor_cache(_n_stocks, _n_dates, _cache_hash)
-    if _cached is not None and len(_cached) > 0:
+    _fresh = _cached is None or len(_cached) == 0
+    if not _fresh:
         print(f"使用因子缓存，跳过因子计算")
         if _cached['code'].dtype != object:
             _cached['code'] = _cached['code'].astype(str).str.zfill(6)
-        return _cached, industry_codes, all_dates
-
-    # 并行计算因子 - worker从文件读取数据，避免主进程加载全量stock_data_dict
-    # fork + COW: 每个 worker 通过 _worker_fd 访问父进程已加载的基本面数据，无需重新从磁盘读取
-    args_list = [
-        (code, stock_file_map[code], factor_dates, lookback, forward_period)
-        for code in stock_file_map.keys()
-    ]
-
-    # 分批构建 DataFrame：避免 list-of-dicts（~2GB 峰值内存）与 DataFrame 同时存在导致 OOM
-    # chunksize=50 减少 IPC RPC 次数（4000只 / 50 = 80次，vs 10=400次）
-    BATCH_SIZE = 20000  # 降低batch size以减少内存峰值
-    batch_data = []
-    total_results = 0
-
-    # 使用临时CSV文件流式写入，避免df_chunks在内存中累积导致OOM
-    import tempfile
-    tmp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp_factor')
-    os.makedirs(tmp_dir, exist_ok=True)
-    tmp_csv_path = os.path.join(tmp_dir, 'factor_data_tmp.csv')
-    tmp_csv_file = open(tmp_csv_path, 'w', encoding='utf-8')
-    header_written = False
-    column_order = None
-
-    # 加载题材热度计算器（fork前, COW共享）
-    concept_calc = None
-    try:
-        from .concept_heat import ConceptHeatCalculator
-        concept_calc = ConceptHeatCalculator()
-        concept_calc.load()
-        print(f"题材热度计算器已加载: {len(concept_calc._concept_hist)} 概念板块历史")
-    except Exception as e:
-        print(f"题材热度计算器加载失败(fallback): {e}")
-
-    def _flush_batch(batch):
-        """将一批数据写入临时CSV，避免在内存中累积DataFrame"""
-        nonlocal header_written, total_results, column_order
-        if not batch:
-            return
-        df = pd.DataFrame(batch)
-        # 关键: 不同batch的DataFrame列序可能不同(有/无基本面数据的行键集不同),
-        # 直接to_csv会导致后续batch按各自列序写入 -> 读回时值错位。
-        # 必须按首个batch固定的列序对齐后再写。
-        if column_order is None:
-            column_order = list(df.columns)
-        else:
-            df = df.reindex(columns=column_order)
-        total_results += len(df)
-        df.to_csv(tmp_csv_file, header=not header_written, index=False)
-        header_written = True
-        del df
-        batch.clear()
-
-    import platform
-    if platform.system() == 'Windows':
-        print("Windows: single-process factor computation (spawn overhead too high)")
-        _init_factor_worker(fd, concept_calc)
-        for args in tqdm(args_list, desc="计算因子"):
-            res = _compute_stock_factors_worker(args)
-            batch_data.extend(res)
-            if len(batch_data) >= BATCH_SIZE:
-                _flush_batch(batch_data)
+        factor_data = _cached
     else:
-        ctx = multiprocessing.get_context('fork')
-        with ctx.Pool(num_workers, initializer=_init_factor_worker, initargs=(fd, concept_calc)) as pool:
-            for res in tqdm(pool.imap(_compute_stock_factors_worker, args_list, chunksize=50),
-                           total=len(args_list), desc="计算因子"):
-                batch_data.extend(res)
-                if len(batch_data) >= BATCH_SIZE:
-                    _flush_batch(batch_data)
+        factor_data = _compute_factor_data_raw(stock_file_map, factor_dates,
+                                               lookback, forward_period,
+                                               num_workers, fd)
 
-    # 最后一批
-    _flush_batch(batch_data)
-    tmp_csv_file.close()
-
-    del args_list, batch_data  # 释放参数列表和临时数据
-
-    # 从临时CSV读取合并后的因子数据（一次性加载，内存可控）
-    print(f"从临时CSV加载因子数据: {tmp_csv_path}")
-    factor_data = pd.read_csv(tmp_csv_path, parse_dates=['date'], dtype={'code': str, 'industry': str}) if os.path.getsize(tmp_csv_path) > 0 else pd.DataFrame()
-    # 确保code保持为字符串（CSV读写可能转为int64导致与concept_map的isin不匹配）
-    if len(factor_data) > 0 and factor_data['code'].dtype != object:
-        factor_data['code'] = factor_data['code'].astype(str).str.zfill(6)
-    # 清理临时文件
-    try:
-        os.remove(tmp_csv_path)
-        os.rmdir(tmp_dir)
-    except Exception:
-        pass
-    print(f"因子数据: {total_results} 条原始记录 → {len(factor_data)} 行")
-
-    # === 内存优化：float64 → float32 (精度足够，内存减半) ===
-    if len(factor_data) > 0:
-        for col in factor_data.columns:
-            if col in ('code', 'date', 'industry'):
-                continue
-            if factor_data[col].dtype == 'float64':
-                factor_data[col] = pd.to_numeric(factor_data[col], downcast='float')
-            elif factor_data[col].dtype == 'int64':
-                factor_data[col] = pd.to_numeric(factor_data[col], downcast='integer')
-    import gc
-    gc.collect()
-    try:
-        ctypes.CDLL("libc.so.6").malloc_trim(ctypes.c_int(0))
-    except Exception:
-        pass
+    # =========================================================================
+    # 掩码/中性化/rank 每次运行应用 (0f-v3 2026-09-18):
+    # 缓存只存raw因子值 — 池掩码与模式(quarterly/daily/off)相关, 掩码后数据
+    # 入缓存会导致跨模式静默复用 (daily运行命中quarterly掩码缓存的bug);
+    # 中性化/rank截面依赖掩码结果, 必须同路径每次重算。
+    # =========================================================================
 
     # 数据清洗：过滤极端未来收益 (NaN=尾部无标签日期, 保留)
     if 'future_ret' in factor_data.columns:
@@ -602,6 +635,46 @@ def prepare_factor_data(stock_file_map: dict, fd,
             factor_data['future_ret'].isna()
         ]
         print(f"因子数据: {original_len} 条 -> {len(factor_data)} 条 (过滤极端值 {original_len - len(factor_data)} 条)")
+
+    # 保存raw缓存 (掩码/中性化/rank前) — 仅fresh计算时; 写入失败不影响主流程
+    if _fresh:
+        try:
+            save_factor_cache(factor_data, _n_stocks, _n_dates, _cache_hash)
+        except Exception:
+            pass
+
+    # 0f日历池掩码 (2026-09-17; v3 2026-09-18: 每次运行按membership_map应用,
+    # 缓存不存掩码后数据): 非成员日期的因子值置NaN —
+    # 消除"晚入池码向历史截面注入因子值"的非PIT成分; 中性化/rank/ML经notna自动继承。
+    # 指数(sh000001/sh000852/000001/399006)恒成员, 不掩码 (与bt_execution池口径一致)。
+    if membership_map is not None and len(factor_data) > 0:
+        _IDX_CODES = {'sh000001', 'sh000852', '000001', '399006'}
+        _boundaries = sorted(pd.Timestamp(b) for b in membership_map.keys())
+        _b_arr = pd.DatetimeIndex(_boundaries)
+        _dates = pd.to_datetime(factor_data['date'])
+        _b_idx = np.searchsorted(_b_arr.values, _dates.values, side='right') - 1
+        _mask_cols = [c for c in factor_data.columns
+                      if c not in ('code', 'date', 'industry', 'future_ret')]
+        _masked_cells = 0
+        for _bi, _b in enumerate(_boundaries):
+            _rows = _b_idx == _bi
+            if not _rows.any():
+                continue
+            _codes = factor_data['code'].values[_rows]
+            _non_member = (~np.isin(_codes, list(membership_map[_b]))
+                           & ~np.isin(_codes, list(_IDX_CODES)))
+            if _non_member.any():
+                _masked_cells += int(_non_member.sum())
+                _mask_rows = _rows.copy()
+                _mask_rows[_rows] = _non_member
+                factor_data.loc[_mask_rows, _mask_cols] = np.nan
+        _pre_rows = _b_idx < 0
+        if _pre_rows.any():
+            _pre_non_idx = _pre_rows & ~factor_data['code'].isin(_IDX_CODES).values
+            _masked_cells += int(_pre_non_idx.sum())
+            factor_data.loc[_pre_non_idx, _mask_cols] = np.nan
+        print(f"因子数据日历池掩码: 边界{len(_boundaries)}个, "
+              f"掩码{_masked_cells}行非成员因子值 (指数豁免)")
 
     # 因子中性化（行业+市值剥离）
     # 缠论/结构字段具有绝对含义（非截面相对值），不参与中性化
@@ -699,11 +772,5 @@ def prepare_factor_data(stock_file_map: dict, fd,
                 factor_data.loc[grp.index[valid_mask], f'{fc}_rank'] = np.clip(normal_rank, -3.0, 3.0)
         if _rank_cols:
             print(f"截面排名标准化: {len(_RANK_FACTORS)} 个因子 → {len(_rank_cols)} 个 _rank 列 ([-3,3])")
-
-    # 保存到磁盘缓存（首次 ~5s parquet 写入，后续回测跳过 ~3h 计算）
-    try:
-        save_factor_cache(factor_data, _n_stocks, _n_dates, _cache_hash)
-    except Exception:
-        pass  # 缓存写入失败不影响主流程
 
     return factor_data, industry_codes, all_dates

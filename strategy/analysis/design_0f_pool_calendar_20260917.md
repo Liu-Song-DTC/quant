@@ -79,3 +79,90 @@ bt_execution/factor_preparer→信号全重生成(一次性, ~1.2h)。总计一�
 
 0g(dragon_tiger OFF, 进行中) → C5六臂 → C1三臂 → **0f实现(明天上午)** → 批次2。
 0f在Lane 0优先级最高, 且影响所有后续校准实验的基线(先定池再调参)。
+
+## 0f-v2 daily粒度 (2026-09-18补充, 探针驱动)
+
+**季度0f冷跑结果 (9/17数据态)**: NAV 439,541 / +75.82% / Sharpe 0.6726 / MDD 23.13%,
+买入624, 选股539. membership闸丢弃3,442,089行(55%). 确定性验证✓ (复用路径逐位一致).
+年度 vs OFF低分支(981,379): 2021 −14.55pp / 2022 −1.63pp / 2023 −5.15pp /
+2024 −33.05pp / 2025 −38.11pp / 2026 −12.71pp — 损伤集中在2024-25.
+
+**粒度探针 (probe_0f_granularity_20260918.py)**:
+- A. 死股续命: 26.3%的0f买单在买日∉daily池 — 但前瞻收益普遍优于daily合法买单
+  (2022 fwd20 +4.34 vs −1.86; 2023 +9.15 vs +2.71; 2024 +4.83 vs +3.60;
+   2025 +8.10 vs +5.69) — 季度退出滞后并非拖累, 反而是波动热门股的续命增益。
+- B. 锁定热度: 2025有175只码daily先入池、季度池等待, 中位锁窗42天、
+  锁窗涨幅mean +16.9% (56只≥20%); 2026有62只 (+8.0%). 季度池错过确定性行情。
+- 净方向不确定(A减分/B加分) → 需要cold run bracket裁决, 故实现daily模式。
+
+**实现 (已入库)**: stock_pool._daily_boundaries (pd.date_range, 2816边界 2019-01-02..
+2026-09-17); bt_execution._load_pool_membership支持quarterly|daily (缓存键含mode);
+generate_trade_orders daily=target_date当日as-of (与get_stock_pool(todate=target_date)
+逐位等价 — 烟测验证: 2026-09-17双方2623只零对称差); yaml pool_calendar: daily。
+掩码/闸/union/指纹链全部boundary-count无关, 无需改动。
+
+**成本**: 单遍扫描~4min(缓存后秒级, 5.2M成员记录, parquet ~60MB); 掩码循环2816×np.where
+~2-3min; 闸~3-4min; union 5095只(含单日闪现码). 信号重生成~3h(一次性)。
+
+**裁决口径**: daily vs quarterly 四指标+年度分解 bracket; 稳定性=同数据态determinism
+重跑逐位一致(机制已证); 采纳方=诚实基线, 与OFF锚点(981k/1.67M)对比仅用于年度对账。
+
+## 0f-v3 跨模式缓存污染bug + raw缓存重构 (2026-09-18 下午, daily重跑前)
+
+**bug**: daily首次cold run (0918b) 产出 353,124/41.25%/0.4642/36.62%, 但结果**无效**。
+因子缓存键(_cache_key_str)只含股票列表+日期+参数+数据/代码指纹, **不含池模式** —
+掩码只在计算路径、中性化之前应用并随缓存保存 → quarterly run(01:57)建的缓存被daily
+run静默复用: 因子层=quarterly掩码, 只有SignalStore闸是daily。hybrid="worst of both":
+锁定热度码(B)在因子层被杀 + 死股续命码(A)在闸层被杀, 2021 −20.24%即两效应叠加签名。
+log铁证: 0918b无"因子数据日历池掩码"print(缓存命中早return), quarterly log有
+(掩码1,847,786行)。
+
+**修复 (factor_preparer.py v3)**: 缓存只存raw(掩码/中性化/rank前) — 计算块抽为
+`_compute_factor_data_raw` helper; 掩码+中性化+rank移到缓存命中路径之后, 每次运行按
+membership_map应用。收益: 池模式/边界变化只需重算掩码+中性化(~分钟级), 无需重算因子
+(~3h); 跨模式污染结构上不可能。附带修复: tmp_factor symlink悬空(WSL重启清/tmp)恢复
+(重建目标目录), 清理不再rmdir。
+验证信标: **每次运行(含缓存命中)必须出现"因子数据日历池掩码: 边界N个"print**。
+IC缓存(ic_cache_*, 键仅config hash)生产路径从不调用(零文件零print), 留档不修。
+
+**daily重跑 (0918d, fresh raw计算~3h)**: 完成后按v2裁决口径执行daily vs quarterly
+bracket。参考: quarterly 439,541 (年度 −8.10/−7.48/+8.63/+6.43/+43.01/+25.79);
+hybrid 353,124 仅作bug取证, 不入裁决。
+
+## 0f-v3.5 bug裁决更正: 0918b实为纯daily, 353,124诚实基线认证 (2026-09-18 晚)
+
+上文"0918b=hybrid无效"判定**证伪**。0918d完成后取证链闭环:
+1. **缓存键含yaml**: `_code_fingerprint`覆盖`config/factor_config.yaml`, quarter→daily
+   切yaml即换键 → daily运行结构上不可能命中quarterly缓存。
+2. **0918b命中的缓存ef39daf2(01:57)是首次daily尝试(02:11 log)建的**: 该log有daily
+   掩码print(边界2816个, 掩码1,937,851行 — 与0918d同数), 保存终态缓存后被WSL重启
+   杀死; 0918b随后命中该**daily掩码**缓存 → 0918b=纯daily, 非hybrid。
+3. **跨实现逐位一致=确定性认证**: 0918b(旧缓存命中路径) ≡ 0918d(v3全冷重算路径):
+   四指标+六年度+avg_IC 0.1041+preds 3,093,843+闸计数(丢弃3,647,530/保留2,919,323)
+   +选股529次全同 — 比det重跑更强的复现证据(两套代码路径收敛)。
+4. 教训: "命中者无掩码print"只证明走缓存分支, 不证明缓存内容 — 判缓存看**建造者
+   log**。v3重构保留: 键缺池模式是真实隐患(yaml是唯一分隔, 若池模式改运行时参数
+   则复发), 信标print成为每次运行强制验证项。
+
+**0f诚实基线定案 (9/17数据态)**:
+| 配置 | NAV | 收益 | Sharpe | MDD |
+|------|-----|------|--------|-----|
+| OFF锚点 | 981,379 | 292.55% | 1.4864 | 18.77% |
+| quarterly诚实 | 439,541 | 75.82% | 0.6726 | 23.13% |
+| **daily诚实(认证)** | **353,124** | **41.25%** | **0.4642** | **36.62%** |
+
+年分解 (quarterly vs daily): 2021 −8.10/−20.24, 2022 −7.48/−10.06, 2023 +8.63/−5.24,
+2024 +6.43/+25.04, 2025 +43.01/+52.26, 2026 +25.79/+9.39。
+探针A/B在真实回测中均兑现: daily早准入热门码(锁窗+16.9%)在2024/2025全胜;
+quarterly粘性(死股续命)在2021-23/2026占优, 四指标合计quarterly 4-0全胜daily。
+granularity bracket待monthly(0f-v3 arm A)补齐第三点后按spec取四指标最优者为
+floor-relax臂底座; daily的活faithfulness(零入场滞后)作为次级判据记录。
+
+## 0f-v3后续方向: 池层流动性地板松弛 (探针驱动, 待0f基线定案后设计)
+
+OFF−honest ≈ 540-630k NAV = 系统最大单一alpha源(刷新彩票)。彩票两成分:
+(a) pre-admission动量微盘 — 地板卡住的热门码(探针B: 2025锁定175码锁窗+16.9%);
+(b) 幸存者选择(不可诚实回收)。方向: as-of daily池 + 动量感知地板松弛
+(20d amount ≥ floor/2 且动量条件, 全as-of无前视, 实盘可实现) + 入场粘性
+(N天再评估, 诚实化复现死股续命alpha)。bracket候选: floor/2, floor/4,
+floor/2+stickiness30d, floor/2+stickiness60d。每臂一冷跑~4h严格串行。

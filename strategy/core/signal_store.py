@@ -31,11 +31,15 @@ class SignalStore:
             return self._get_from_df(code, date)
         return self._store.get((code, date))
 
-    def finalize(self, csv_path):
+    def finalize(self, csv_path, membership_map=None):
         """从CSV加载信号到DataFrame，释放dict内存。
 
         调用后 SignalStore 进入只读模式，_store dict 被释放。
         内存节省: ~800MB → ~200MB (对于 ~700K 条信号)。
+
+        membership_map: 0f季度日历池成员映射 {boundary_ts: set(codes)} —
+            非成员日期的信号行丢弃(universe选择与实盘同构: 实盘=target_date
+            日历池+安全滤镜)。None=不闸(off模式)。指数码恒保留。
         """
         from .signal import Signal
 
@@ -70,6 +74,31 @@ class SignalStore:
         # 用字符串索引避免 datetime.date vs pd.Timestamp 类型不匹配
         self._df.set_index(['code', 'date'], inplace=True)
         self._df.sort_index(inplace=True)
+
+        # 0f日历池membership闸 (2026-09-17): 非成员日期信号行丢弃。
+        # 磁盘CSV保持未过滤全量(闸在消费时每次重施), 故闸代码变更无需信号重生成。
+        if membership_map is not None and len(self._df) > 0:
+            _IDX_CODES = {'sh000001', 'sh000852', '000001', '399006'}
+            _boundaries = sorted(pd.Timestamp(b) for b in membership_map.keys())
+            _dates = pd.to_datetime(self._df.index.get_level_values('date'))
+            _b_idx = np.searchsorted(_boundaries, _dates.values, side='right') - 1
+            _keep = np.zeros(len(self._df), dtype=bool)
+            _codes_all = self._df.index.get_level_values('code').values
+            for _bi, _b in enumerate(_boundaries):
+                _rows = np.where(_b_idx == _bi)[0]
+                if len(_rows) == 0:
+                    continue
+                _codes = _codes_all[_rows]
+                _keep[_rows] = (np.isin(_codes, list(membership_map[_b]))
+                                | np.isin(_codes, list(_IDX_CODES)))
+            # 首边界之前的日期: 指数保留, 其余丢弃 (正常构造下应为空)
+            _pre = _b_idx < 0
+            _keep[_pre] = np.isin(_codes_all[_pre], list(_IDX_CODES))
+            _dropped = int((~_keep).sum())
+            self._df = self._df.iloc[np.where(_keep)[0]]
+            if _dropped:
+                print(f"SignalStore membership闸: 丢弃 {_dropped:,} 行非成员信号 "
+                      f"({len(self._df):,} 行保留)")
 
         # 释放 dict 内存
         self._store.clear()

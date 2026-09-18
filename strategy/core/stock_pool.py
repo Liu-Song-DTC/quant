@@ -22,6 +22,175 @@ def _get_data_dir():
     return str(base / 'data' / 'stock_data' / 'backtrader_data')
 
 
+def _quarter_boundary_prev(t: pd.Timestamp) -> pd.Timestamp:
+    """t之前(含)最近的季度末 (3/31, 6/30, 9/30, 12/31)."""
+    q = (t.month - 1) // 3  # 0..3
+    q_end_month = q * 3 + 3  # 3, 6, 9, 12 (恒有效)
+    end = pd.Timestamp(t.year, q_end_month, 1) + pd.offsets.MonthEnd(0)
+    if end > t:
+        if q == 0:
+            end = pd.Timestamp(t.year - 1, 12, 31)
+        else:
+            end = pd.Timestamp(t.year, q * 3, 1) + pd.offsets.MonthEnd(0)
+    return end
+
+
+def _quarter_boundaries(earliest_date, todate):
+    """季度边界列表(升序): 从prev(earliest_date)到prev(todate)的全部季度末.
+
+    单调性保证: 任何date ∈ [earliest_date, todate], 其最近季度末边界b≤date
+    必在列表中 (b≥prev(earliest_date)=首边界)。首个边界可能早于earliest_date —
+    那些更早的因子日期也归入首边界, 无空洞。
+    """
+    first = _quarter_boundary_prev(earliest_date)
+    last = _quarter_boundary_prev(todate)
+    bounds = []
+    b = first
+    while b <= last:
+        bounds.append(b)
+        # 季度末+3月=下一季度末; DateOffset(months=3)保留日号(9/30→12/30),
+        # 故追加MonthEnd(0)锚回月末 (12/30→12/31, 已是月末则不变)
+        b = pd.Timestamp(b) + pd.DateOffset(months=3) + pd.offsets.MonthEnd(0)
+    return bounds
+
+
+def _daily_boundaries(earliest_date, todate):
+    """每日边界列表(升序): [earliest_date .. todate]的全部日历日.
+
+    daily模式(0f-v2, 2026-09-18): 实盘同构 — 每晚用当日可得数据重算池,
+    池成员资格as-of边界日(含当日K线), 入池零滞后。周末/节假日无K线行,
+    cut=searchsorted仍落在最近交易日, 与get_stock_pool(todate=b)语义一致。
+    """
+    return list(pd.date_range(pd.Timestamp(earliest_date), pd.Timestamp(todate), freq='D'))
+
+
+def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
+                            bse_exclude: bool = True, cache_key: str = None) -> dict:
+    """季度日历池成员映射: {boundary_timestamp: set(codes)} — as-of每个边界的池成员.
+
+    0f池口径修复(2026-09-17): 与get_stock_pool同准则(60bar最小长度+价格阈值+
+    近20日成交额流动性+北交所排除), 但按季度边界求as-of成员资格 — 单遍扫描
+    (每文件读datetime/close/amount/volume一次, 逐边界向量化评估), 避免
+    len(boundaries)×全文件扫读。缓存: strategy/cache/pool_membership_{cache_key}.parquet
+    (cache_key=数据指纹+参数+本文件hash, 调用方计算)。
+
+    Args:
+        boundaries: 升序的季度末Timestamp列表
+        cache_key: 缓存键后缀 (None=不缓存)
+
+    Returns:
+        {boundary_str: set(codes)}, 指数(sh000001/sh000852/000001/399006)恒成员
+    """
+    if data_dir is None:
+        data_dir = _get_data_dir()
+    if not os.path.exists(data_dir) or not boundaries:
+        return {}
+
+    _IDX = {'sh000001', 'sh000852', '000001', '399006'}
+    boundaries = sorted(pd.Timestamp(b) for b in boundaries)
+
+    # ── 缓存 ──
+    cache_path = None
+    if cache_key:
+        cache_dir = str(Path(__file__).parent.parent / 'cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, f'pool_membership_{cache_key}.parquet')
+        if os.path.exists(cache_path):
+            try:
+                df = pd.read_parquet(cache_path, columns=['boundary', 'code'])
+                df['boundary'] = pd.to_datetime(df['boundary'])
+                m = {b: set() for b in boundaries}
+                for b, codes in df.groupby('boundary')['code']:
+                    if b in m:
+                        m[b] = set(codes)
+                for b in boundaries:
+                    m[b] |= _IDX
+                print(f"股票池成员映射: 缓存命中 ({len(boundaries)} 边界, {len(df)} 条)")
+                return m
+            except Exception as e:
+                print(f"[WARN] 股票池成员映射缓存读取失败, 重算: {e}")
+
+    # ── 单遍扫描 ──
+    exclusion_set = get_exclusion_set()
+    rows = []
+    valid_files = []
+    for f in os.listdir(data_dir):
+        if f.startswith('._') or f.startswith(('sh000001', 'sh000852')):
+            continue
+        if f.endswith('_qfq.csv'):
+            code = f[:-8]
+        elif f.endswith('_hfq.csv'):
+            code = f[:-8]
+            if os.path.exists(os.path.join(data_dir, f'{code}_qfq.csv')):
+                continue
+        else:
+            continue
+        if bse_exclude and is_bse_code(code):
+            continue
+        valid_files.append((f, code))
+
+    for f, code in valid_files:
+        if code in exclusion_set:
+            continue
+        filepath = os.path.join(data_dir, f)
+        try:
+            df = pd.read_csv(filepath, usecols=['datetime', 'close', 'amount', 'volume'])
+            has_amount = True
+        except ValueError:
+            # 无amount列 → volume回退 (与get_stock_pool的elif分支一致)
+            try:
+                df = pd.read_csv(filepath, usecols=['datetime', 'close', 'volume'])
+                has_amount = False
+            except Exception:
+                continue
+        except Exception:
+            continue
+        dt = pd.to_datetime(df['datetime'])
+        if code.startswith('688'):
+            min_amount = 40_000_000
+            min_vol = 300_000
+        elif code.startswith('300'):
+            min_amount = 80_000_000
+            min_vol = 1_000_000
+        else:
+            min_amount = 160_000_000
+            min_vol = 1_000_000
+        # 逐边界as-of评估: 截断长度≥60 / 最新收盘价≥min_price / 近20日流动性
+        for b in boundaries:
+            # searchsorted定位截断点 (dt升序)
+            cut = int(np.searchsorted(dt.values, np.datetime64(b), side='right'))
+            if cut < 60:
+                continue
+            last_close = df['close'].iloc[cut - 1]
+            if pd.isna(last_close) or last_close < min_price:
+                continue
+            if has_amount:
+                seg = df['amount'].iloc[max(0, cut - 20):cut]
+                if seg.mean() < min_amount:
+                    continue
+            else:
+                seg_vol = df['volume'].iloc[max(0, cut - 20):cut]
+                if seg_vol.mean() < min_vol:
+                    continue
+            rows.append((b, code))
+        del df
+    m = {b: set(_IDX) for b in boundaries}
+    for b, code in rows:
+        m[b].add(code)
+
+    if cache_path:
+        try:
+            pd.DataFrame([(b, c) for b in boundaries for c in m[b]],
+                         columns=['boundary', 'code']).to_parquet(cache_path, index=False)
+        except Exception as e:
+            print(f"[WARN] 股票池成员映射缓存写入失败: {e}")
+
+    counts = {str(b.date()): len(m[b]) for b in boundaries}
+    print(f"股票池成员映射: {len(valid_files)} 文件单遍扫描, {len(rows)} 条成员记录 "
+          f"({len(boundaries)} 边界: {counts})")
+    return m
+
+
 # 北交所代码段 (2026-09-03 用户指令: 北交所股票全部不要).
 # 与沪深主/创/科(000/001/002/003/300/301/302/600/601/603/605/688/689)无交集, 无碰撞风险.
 _BSE_PREFIXES = ('43', '82', '83', '87', '88', '92')

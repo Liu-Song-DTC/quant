@@ -499,9 +499,28 @@ def main():
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     allowed_codes = None
     if stock_pool_enabled:
-        from core.stock_pool import get_stock_pool
-        allowed_codes = get_stock_pool()
-        print(f"股票池: {len(allowed_codes)} 只 (含指数)")
+        from core.stock_pool import get_stock_pool, _quarter_boundary_prev, get_pool_membership_map
+        pool_calendar = config.get('stock_pool.pool_calendar', 'off')
+        if pool_calendar in ('quarterly', 'daily'):
+            # 0f日历池: quarterly=target_date最近季度末 / daily=target_date当日
+            # 的as-of成员 ∩ 最新流动性池(实盘安全滤镜)。与回测信号membership闸同构。
+            if pool_calendar == 'daily':
+                _b = pd.Timestamp(target_date)
+            else:
+                _b = _quarter_boundary_prev(pd.Timestamp(target_date))
+            _m = get_pool_membership_map([_b])
+            _cal = _m[_b]
+            _today = get_stock_pool()
+            _dropped = _cal - _today
+            allowed_codes = _cal & _today
+            if _dropped:
+                print(f"  [安全滤镜] {len(_dropped)} 只日历成员近期失流动性, "
+                      f"排除买单: {sorted(_dropped)[:15]}")
+            print(f"股票池(日历{_b.date()}+安全滤镜): {len(_cal)} ∩ {len(_today)} "
+                  f"= {len(allowed_codes)} 只")
+        else:
+            allowed_codes = get_stock_pool()
+            print(f"股票池: {len(allowed_codes)} 只 (含指数)")
 
     universe = []
     for code in stock_file_map:

@@ -96,6 +96,44 @@ def _pool_todate():
     """股票池截止日: 实验覆盖优先, 否则跟随回测TODATE"""
     return _POOL_TODATE_OVERRIDE if _POOL_TODATE_OVERRIDE else TODATE
 
+
+def _load_pool_membership():
+    """0f日历池成员映射 (pool_calendar=quarterly|daily时): {boundary_ts: set(codes)}.
+
+    off模式返回None (现状as-of todate池行为)。边界覆盖FROMDATE-730d(早盘因子
+    训练日期)到TODATE — quarterly=全部季度末, daily=全部日历日(实盘同构:
+    每日用当日可得数据重算池, 零入池滞后)。缓存键=K线数据指纹+stock_pool.py
+    代码态+模式+边界列表+参数 — 任何变化→重算(~分钟级)。同数据态下缓存命中→秒级。
+    """
+    _mode = config.get('stock_pool.pool_calendar', 'off')
+    if _mode not in ('quarterly', 'daily'):
+        return None
+    import hashlib
+    from core.stock_pool import (_quarter_boundaries, _daily_boundaries,
+                                 get_pool_membership_map)
+    from core.factor_preparer import _data_fingerprint
+    earliest = pd.Timestamp(FROMDATE) - pd.Timedelta(days=730)
+    if _mode == 'daily':
+        boundaries = _daily_boundaries(earliest, pd.Timestamp(TODATE))
+    else:
+        boundaries = _quarter_boundaries(earliest, pd.Timestamp(TODATE))
+    _all_map = {}
+    for _item in os.listdir(DATA_PATH):
+        if _item.endswith('_qfq.csv'):
+            _all_map[_item[:-8]] = DATA_PATH + _item
+        elif _item.endswith('_hfq.csv'):
+            _all_map[_item[:-8]] = DATA_PATH + _item
+    _fp = _data_fingerprint(_all_map, None, [])
+    _sp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'core', 'stock_pool.py')
+    _st = os.stat(_sp)
+    _key = hashlib.md5(
+        f"{_fp}|{_st.st_mtime_ns}|{_st.st_size}|{_mode}|"
+        f"{[str(_b.date()) for _b in boundaries]}|"
+        f"{config.get('stock_pool.bse_exclude', True)}".encode('utf-8')).hexdigest()[:12]
+    print(f"日历池membership({_mode}): 边界{len(boundaries)}个 "
+          f"({boundaries[0].date()}..{boundaries[-1].date()}), 缓存键={_key}")
+    return get_pool_membership_map(boundaries, cache_key=_key)
+
 # 数据路径 - 从配置文件读取，默认相对于策略目录（而非 CWD）
 _STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_STRATEGY_DIR)
@@ -443,10 +481,14 @@ def _generate_stock_signal_worker(args):
         return (code, {}, {}, {}, {})
 
 
-def add_data_and_signal(cerebro, strategy, fundamental_data=None):
+def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map=None):
     """加载数据、生成信号、添加到cerebro。
     同时预计算涨跌停数据和ST股票集合。
+
+    membership_map: 0f日历池成员映射(见_load_pool_membership) — 非None时
+    stock_file_map过滤用union池(任何边界曾入池的码保留全史), 信号消费端按日闸。
     """
+
     global _LIMIT_DATA, _ml_total_preds, _ml_val_ic
     all_items = os.listdir(DATA_PATH)
     stock_codes = []
@@ -474,13 +516,25 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
     # === 股票池过滤（先过滤再预计算，避免读不需要的文件） ===
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     if stock_pool_enabled:
-        stock_pool = get_stock_pool(todate=_pool_todate(),
-                                    bse_exclude=config.get('stock_pool.bse_exclude', True))
-        pool_codes = stock_pool | {'sh000001', '000001', 'sh000852', '399006'}
-        before_count = len(stock_file_map)
-        stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
-        after_count = len(stock_file_map)
-        print(f"股票池过滤: {before_count} -> {after_count} 只 (全部通过质量筛选)")
+        if membership_map is not None:
+            # 0f日历池: union池过滤 — 任何边界曾入池的码都保留全史(掩码/闸在消费端)
+            _union = set()
+            for _codes in membership_map.values():
+                _union |= _codes
+            pool_codes = _union | {'sh000001', '000001', 'sh000852', '399006'}
+            before_count = len(stock_file_map)
+            stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
+            after_count = len(stock_file_map)
+            print(f"股票池过滤(日历union): {before_count} -> {after_count} 只 "
+                  f"(任何日历边界曾入池)")
+        else:
+            stock_pool = get_stock_pool(todate=_pool_todate(),
+                                        bse_exclude=config.get('stock_pool.bse_exclude', True))
+            pool_codes = stock_pool | {'sh000001', '000001', 'sh000852', '399006'}
+            before_count = len(stock_file_map)
+            stock_file_map = {k: v for k, v in stock_file_map.items() if k in pool_codes}
+            after_count = len(stock_file_map)
+            print(f"股票池过滤: {before_count} -> {after_count} 只 (全部通过质量筛选)")
     else:
         print(f"股票池过滤: 已关闭，使用全市场 {len(stock_file_map)} 只股票")
 
@@ -600,7 +654,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
             fundamental_data,
             INDUSTRY_KEYWORDS,
             all_dates,
-            NUM_WORKERS
+            NUM_WORKERS,
+            membership_map=membership_map
         )
         strategy.set_factor_data(factor_df, industry_codes)
         strategy.set_sector_data({}, industry_codes)
@@ -1095,7 +1150,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None):
         pass
 
     # === 从CSV加载信号到 DataFrame-backed SignalStore（节省 ~800MB 内存） ===
-    strategy.signal_store.finalize(signals_output_path)
+    strategy.signal_store.finalize(signals_output_path, membership_map=membership_map)
 
     # 释放不再需要的大对象
     del stock_items
@@ -1932,11 +1987,19 @@ if __name__ == "__main__":
             stock_codes.append(f.replace('_hfq.csv', ''))
 
     # 股票池过滤
+    membership_map = _load_pool_membership()
     if stock_pool_enabled:
-        stock_pool = get_stock_pool(todate=_pool_todate(),
-                                    bse_exclude=config.get('stock_pool.bse_exclude', True))
-        stock_codes = [c for c in stock_codes if c in stock_pool]
-        print(f"基本面数据加载(股票池): {len(stock_codes)} 只")
+        if membership_map is not None:
+            _union = set()
+            for _codes in membership_map.values():
+                _union |= _codes
+            stock_codes = [c for c in stock_codes if c in _union]
+            print(f"基本面数据加载(日历union池): {len(stock_codes)} 只")
+        else:
+            stock_pool = get_stock_pool(todate=_pool_todate(),
+                                        bse_exclude=config.get('stock_pool.bse_exclude', True))
+            stock_codes = [c for c in stock_codes if c in stock_pool]
+            print(f"基本面数据加载(股票池): {len(stock_codes)} 只")
     else:
         print(f"基本面数据加载(全市场): {len(stock_codes)} 只")
 
@@ -1966,7 +2029,7 @@ if __name__ == "__main__":
                                 'rolling_validation_results', 'backtest_signals.csv')
     if os.path.exists(_signals_csv) and not _signals_stale(_signals_csv):
         print(f"复用已有信号: {_signals_csv}")
-        strategy.signal_store.finalize(_signals_csv)
+        strategy.signal_store.finalize(_signals_csv, membership_map=membership_map)
         _idx_path = os.path.join(DATA_PATH, 'sh000001_qfq.csv')
         if not os.path.exists(_idx_path):
             _idx_path = os.path.join(DATA_PATH, '000001_qfq.csv')
@@ -1980,7 +2043,8 @@ if __name__ == "__main__":
     else:
         # 不再预删既有CSV: add_data_and_signal原子写(os.replace)自然覆盖,
         # 中途被杀时旧CSV保留可复用 (2026-09-06)
-        add_data_and_signal(cerebro, strategy, fundamental_data)
+        add_data_and_signal(cerebro, strategy, fundamental_data,
+                            membership_map=membership_map)
         # 记录生成此CSV的信号代码指纹 → 下次复用门禁比对
         _sidecar = os.path.join(os.path.dirname(os.path.abspath(_signals_csv)),
                                 '.signal_code_fp')

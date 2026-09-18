@@ -7626,6 +7626,10 @@ stock_pool:
   size: 0
   source: 全市场(除科创板688xxx, 价格>2元, 数据>60日)
   bse_exclude: true  # 2026-09-04: 北交所排除开关(实盘恒true). 回测归因实验可置false
+  # 2026-09-17 0f池口径修复: quarterly=季度日历池 / daily=每日日历池(实盘同构,
+  # 零入池滞后, 2026-09-18粒度bracket臂) / off=现状(as-of todate池, 刷新彩票).
+  # 实盘与回测同日历.
+  pool_calendar: daily
 ml:
   enabled: true
   model_dir: strategy/models
