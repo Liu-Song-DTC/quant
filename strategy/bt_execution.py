@@ -129,13 +129,18 @@ def _load_pool_membership():
     _fp = _data_fingerprint(_all_map, None, [])
     _sp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'core', 'stock_pool.py')
     _st = os.stat(_sp)
+    # 0f-v3松弛参数 (arm B/C): 缓存键含relax参数, 任一变化→重算membership
+    _rf = config.get('stock_pool.pool_relax_floor', 1.0)
+    _rm = config.get('stock_pool.pool_relax_momentum', None)
     _key = hashlib.md5(
         f"{_fp}|{_st.st_mtime_ns}|{_st.st_size}|{_mode}|"
         f"{[str(_b.date()) for _b in boundaries]}|"
-        f"{config.get('stock_pool.bse_exclude', True)}".encode('utf-8')).hexdigest()[:12]
+        f"{config.get('stock_pool.bse_exclude', True)}|{_rf}|{_rm}".encode('utf-8')).hexdigest()[:12]
     print(f"日历池membership({_mode}): 边界{len(boundaries)}个 "
-          f"({boundaries[0].date()}..{boundaries[-1].date()}), 缓存键={_key}")
-    return get_pool_membership_map(boundaries, cache_key=_key)
+          f"({boundaries[0].date()}..{boundaries[-1].date()}), "
+          f"relax={_rf}/{_rm}, 缓存键={_key}")
+    return get_pool_membership_map(boundaries, cache_key=_key,
+                                   relax_floor=_rf, relax_momentum=_rm)
 
 # 数据路径 - 从配置文件读取，默认相对于策略目录（而非 CWD）
 _STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))

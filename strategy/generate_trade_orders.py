@@ -511,9 +511,12 @@ def main():
                 _b = _month_boundary_prev(pd.Timestamp(target_date))
             else:
                 _b = _quarter_boundary_prev(pd.Timestamp(target_date))
-            _m = get_pool_membership_map([_b])
+            # 0f-v3松弛参数: 日历membership与安全滤镜用同一relax规则 (回测同构)
+            _rf = config.get('stock_pool.pool_relax_floor', 1.0)
+            _rm = config.get('stock_pool.pool_relax_momentum', None)
+            _m = get_pool_membership_map([_b], relax_floor=_rf, relax_momentum=_rm)
             _cal = _m[_b]
-            _today = get_stock_pool()
+            _today = get_stock_pool(relax_floor=_rf, relax_momentum=_rm)
             _dropped = _cal - _today
             allowed_codes = _cal & _today
             if _dropped:

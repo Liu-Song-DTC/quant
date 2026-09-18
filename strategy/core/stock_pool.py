@@ -90,18 +90,43 @@ def _monthly_boundaries(earliest_date, todate):
     return bounds
 
 
+def _relax_momentum_ok(closes, cut: int, relax_momentum) -> bool:
+    """松弛准入动量门槛 (0f-v3): 20日close收益 ≥ relax_momentum.
+
+    closes: 全序列close列 (cut=边界截断点, 调用方保证cut≥60→cut-21≥39索引安全).
+    relax_momentum=None=无门槛(纯地板松弛); NaN/非正价格→False(不放行).
+    """
+    if relax_momentum is None:
+        return True
+    try:
+        c0, c1 = closes.iloc[cut - 21], closes.iloc[cut - 1]
+        if pd.isna(c0) or pd.isna(c1) or c0 <= 0:
+            return False
+        return bool(c1 / c0 - 1.0 >= relax_momentum)  # bool()避免np.bool_身份陷阱
+    except Exception:
+        return False
+
+
 def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
-                            bse_exclude: bool = True, cache_key: str = None) -> dict:
-    """季度日历池成员映射: {boundary_timestamp: set(codes)} — as-of每个边界的池成员.
+                            bse_exclude: bool = True, cache_key: str = None,
+                            relax_floor: float = 1.0,
+                            relax_momentum: float = None) -> dict:
+    """日历池成员映射: {boundary_timestamp: set(codes)} — as-of每个边界的池成员.
 
     0f池口径修复(2026-09-17): 与get_stock_pool同准则(60bar最小长度+价格阈值+
-    近20日成交额流动性+北交所排除), 但按季度边界求as-of成员资格 — 单遍扫描
+    近20日成交额流动性+北交所排除), 但按边界求as-of成员资格 — 单遍扫描
     (每文件读datetime/close/amount/volume一次, 逐边界向量化评估), 避免
     len(boundaries)×全文件扫读。缓存: strategy/cache/pool_membership_{cache_key}.parquet
     (cache_key=数据指纹+参数+本文件hash, 调用方计算)。
 
+    0f-v3流动性地板松弛(2026-09-18): 流动性不达标的码, 若20日均额 ≥
+    relax_floor×标准地板 且 20日close收益 ≥ relax_momentum(None=无门槛) 则
+    松弛准入 — 全部as-of评估无前视, 实盘get_stock_pool同规则可实现。
+
     Args:
-        boundaries: 升序的季度末Timestamp列表
+        boundaries: 升序的边界Timestamp列表(quarterly/monthly/daily由调用方定)
+        relax_floor: 流动性地板倍率 (0.5=地板减半; ≥1.0=松弛关闭)
+        relax_momentum: 松弛准入动量门槛 (20日close收益≥此值; None=纯地板松弛)
         cache_key: 缓存键后缀 (None=不缓存)
 
     Returns:
@@ -182,6 +207,8 @@ def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
             min_amount = 160_000_000
             min_vol = 1_000_000
         # 逐边界as-of评估: 截断长度≥60 / 最新收盘价≥min_price / 近20日流动性
+        # (0f-v3: 流动性不达标时按relax_floor/relax_momentum松弛准入)
+        _relax_on = relax_floor < 1.0
         for b in boundaries:
             # searchsorted定位截断点 (dt升序)
             cut = int(np.searchsorted(dt.values, np.datetime64(b), side='right'))
@@ -192,11 +219,19 @@ def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
                 continue
             if has_amount:
                 seg = df['amount'].iloc[max(0, cut - 20):cut]
-                if seg.mean() < min_amount:
+                amt_ok = seg.mean() >= min_amount
+                if not amt_ok and _relax_on:
+                    amt_ok = seg.mean() >= min_amount * relax_floor and \
+                        _relax_momentum_ok(df['close'], cut, relax_momentum)
+                if not amt_ok:
                     continue
             else:
                 seg_vol = df['volume'].iloc[max(0, cut - 20):cut]
-                if seg_vol.mean() < min_vol:
+                vol_ok = seg_vol.mean() >= min_vol
+                if not vol_ok and _relax_on:
+                    vol_ok = seg_vol.mean() >= min_vol * relax_floor and \
+                        _relax_momentum_ok(df['close'], cut, relax_momentum)
+                if not vol_ok:
                     continue
             rows.append((b, code))
         del df
@@ -248,7 +283,9 @@ def _load_market_cap_whitelist():
 def get_stock_pool(min_price: float = 2.0,
                    data_dir: str = None,
                    todate: str = None,
-                   bse_exclude: bool = True) -> set:
+                   bse_exclude: bool = True,
+                   relax_floor: float = 1.0,
+                   relax_momentum: float = None) -> set:
     """获取股票池 — 全市场除科创板外全部纳入
 
     Args:
@@ -256,6 +293,9 @@ def get_stock_pool(min_price: float = 2.0,
         data_dir: 数据目录路径
         todate: 截止日期(YYYY-MM-DD), 流动性只看此日之前数据
         bse_exclude: 排除北交所 (2026-09-04 实验开关; 实盘路径默认True=用户指令恒排除)
+        relax_floor: 0f-v3流动性地板倍率 (0.5=减半, ≥1.0=松弛关闭; 与
+            get_pool_membership_map同规则, 实盘与回测池同构)
+        relax_momentum: 0f-v3松弛准入动量门槛 (20日close收益≥此值; None=纯地板松弛)
 
     Returns:
         set of stock codes
@@ -317,6 +357,7 @@ def get_stock_pool(min_price: float = 2.0,
 
             # 流动性过滤: 近20日日均成交额
             # 主板: 1.6亿 | 创业板(300): 8000万 | 科创板(688): 4000万
+            # (0f-v3: 不达标时按relax_floor/relax_momentum松弛准入)
             if code.startswith('688'):
                 min_amount = 40_000_000
             elif code.startswith('300'):
@@ -324,15 +365,24 @@ def get_stock_pool(min_price: float = 2.0,
             else:
                 min_amount = 160_000_000
             min_vol = 300_000 if code.startswith('688') else 1_000_000
+            _relax_on = relax_floor < 1.0
             if 'amount' in df.columns and len(df) >= 20:
                 avg_amount = df['amount'].iloc[-20:].mean()
-                if avg_amount < min_amount:
+                amt_ok = avg_amount >= min_amount
+                if not amt_ok and _relax_on:
+                    amt_ok = avg_amount >= min_amount * relax_floor and \
+                        _relax_momentum_ok(df['close'], len(df), relax_momentum)
+                if not amt_ok:
                     liquidity_filtered += 1
                     continue
             # 流动性补充: 无amount列时, 近20日日均成交量
             elif 'volume' in df.columns and len(df) >= 20:
                 avg_vol = df['volume'].iloc[-20:].mean()
-                if avg_vol < min_vol:
+                vol_ok = avg_vol >= min_vol
+                if not vol_ok and _relax_on:
+                    vol_ok = avg_vol >= min_vol * relax_floor and \
+                        _relax_momentum_ok(df['close'], len(df), relax_momentum)
+                if not vol_ok:
                     liquidity_filtered += 1
                     continue
 

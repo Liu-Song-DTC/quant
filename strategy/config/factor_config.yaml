@@ -7631,6 +7631,11 @@ stock_pool:
   # 实盘与回测同日历. 2026-09-18 granularity bracket臂序列: daily(353,124已认证)
   # vs monthly(本臂) vs quarterly(439,541), 四指标最优者为floor-relax臂底座.
   pool_calendar: monthly
+  # 2026-09-18 0f-v3流动性地板松弛: 流动性不达标的码, 若20日均额 ≥
+  # relax_floor×标准地板 且 20日close收益 ≥ relax_momentum(None=无门槛) 则准入.
+  # 臂B monthly+0.5/0.10(动量门, 本臂) / 臂C monthly+0.5/None(纯地板) / 基线=1.0/None.
+  pool_relax_floor: 0.5
+  pool_relax_momentum: 0.10
 ml:
   enabled: true
   model_dir: strategy/models
