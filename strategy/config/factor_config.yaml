@@ -7633,9 +7633,10 @@ stock_pool:
   pool_calendar: monthly
   # 2026-09-18 0f-v3流动性地板松弛: 流动性不达标的码, 若20日均额 ≥
   # relax_floor×标准地板 且 20日close收益 ≥ relax_momentum(None=无门槛) 则准入.
-  # 臂B monthly+0.5/0.10(动量门, 本臂) / 臂C monthly+0.5/None(纯地板) / 基线=1.0/None.
-  pool_relax_floor: 0.5
-  pool_relax_momentum: 0.10
+  # 臂B monthly+0.5/0.10(动量门, 3-1否决) / 臂C monthly+0.5/None(4-0胜, 588,767) /
+  # 臂D monthly+0.25/None(本臂, halving方向探针: 判断地板最优在0.5还是更低) / 基线=1.0/None(529,676).
+  pool_relax_floor: 0.25
+  pool_relax_momentum: null
 ml:
   enabled: true
   model_dir: strategy/models
