@@ -499,13 +499,16 @@ def main():
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     allowed_codes = None
     if stock_pool_enabled:
-        from core.stock_pool import get_stock_pool, _quarter_boundary_prev, get_pool_membership_map
+        from core.stock_pool import get_stock_pool, _quarter_boundary_prev, _month_boundary_prev, get_pool_membership_map
         pool_calendar = config.get('stock_pool.pool_calendar', 'off')
-        if pool_calendar in ('quarterly', 'daily'):
-            # 0f日历池: quarterly=target_date最近季度末 / daily=target_date当日
-            # 的as-of成员 ∩ 最新流动性池(实盘安全滤镜)。与回测信号membership闸同构。
+        if pool_calendar in ('quarterly', 'monthly', 'daily'):
+            # 0f日历池: quarterly=target_date最近季度末 / monthly=最近月末 /
+            # daily=target_date当日 的as-of成员 ∩ 最新流动性池(实盘安全滤镜)。
+            # 与回测信号membership闸同构。
             if pool_calendar == 'daily':
                 _b = pd.Timestamp(target_date)
+            elif pool_calendar == 'monthly':
+                _b = _month_boundary_prev(pd.Timestamp(target_date))
             else:
                 _b = _quarter_boundary_prev(pd.Timestamp(target_date))
             _m = get_pool_membership_map([_b])

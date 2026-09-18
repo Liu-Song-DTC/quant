@@ -304,9 +304,15 @@ _FACTOR_CODE_FILES = [
     'core/market_regime_detector.py',
     'core/bom_chain.py',
     'core/gate_scorer.py',
-    'core/stock_pool.py',  # 0f: 日历池membership逻辑影响因子掩码内容 (2026-09-17)
+    'core/stock_pool.py',  # 0f: 日历池membership逻辑影响因子掩码/闸内容 (2026-09-17)
     'config/factor_config.yaml',
 ]
+
+# 0f-v3 (2026-09-18): 因子缓存只存raw(掩码/中性化/rank前) — 池成员资格不影响
+# raw计算(掩码按每次运行的membership_map应用), 故raw因子缓存键豁免stock_pool.py
+# 与yaml的stock_pool节: granularity/floor-relax臂切换只换掩码不重算raw(~3h→秒级)。
+# 信号代码指纹(_SIGNAL_CODE_FILES)不含豁免 — 池模式变化必须重生成信号。
+_RAW_FACTOR_CODE_FILES = [f for f in _FACTOR_CODE_FILES if f != 'core/stock_pool.py']
 
 
 # 组合/执行层yaml节: 不参与因子计算也不参与信号生成, 因子缓存键与信号指纹均豁免
@@ -319,6 +325,9 @@ _PORTFOLIO_LAYER_YAML_SECTIONS = {
     'risk_parity', 'dynamic_rebalance', 'enhanced_stop_loss',
     'mean_reversion_exit', 'cost_model', 'live_monitoring',
 }
+
+# raw因子缓存键专用豁免节 (0f-v3): 组合/执行层 + stock_pool (池节不参与raw计算)
+_RAW_YAML_SKIP_SECTIONS = _PORTFOLIO_LAYER_YAML_SECTIONS | {'stock_pool'}
 
 
 def _yaml_stripped_digest(yaml_path: str) -> str:
@@ -345,6 +354,30 @@ def _yaml_stripped_digest(yaml_path: str) -> str:
     return h.hexdigest()[:8]
 
 
+def _yaml_raw_digest(yaml_path: str) -> str:
+    """raw因子缓存键专用yaml摘要: 在_stripped基础上再豁免stock_pool节。
+
+    0f-v3: raw缓存=掩码前数据, 池节(pool_calendar/relax参数)不参与raw计算,
+    granularity/relax臂切换不应重算raw。信号指纹继续用_yaml_stripped_digest
+    (stock_pool节计入) — 池模式变化必须重生成信号。
+    """
+    import hashlib
+    import re
+    h = hashlib.md5()
+    try:
+        with open(yaml_path, encoding='utf-8') as _yf:
+            _skip = ''
+            for _ln in _yf:
+                _m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*):', _ln)
+                if _m:
+                    _skip = _m.group(1) if _m.group(1) in _RAW_YAML_SKIP_SECTIONS else ''
+                if not _skip:
+                    h.update(_ln.encode('utf-8'))
+    except OSError:
+        h.update(b'MISSING')
+    return h.hexdigest()[:8]
+
+
 def _code_fingerprint() -> str:
     """代码指纹: 因子计算逻辑/配置的 (mtime_ns+size)。
 
@@ -360,6 +393,29 @@ def _code_fingerprint() -> str:
         p = os.path.join(base, rel)
         if rel == 'config/factor_config.yaml':
             h.update(f"{rel}|{_yaml_stripped_digest(p)};".encode('utf-8'))
+            continue
+        try:
+            st = os.stat(p)
+            h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
+        except OSError:
+            h.update(f"{rel}|MISSING;".encode('utf-8'))
+    return h.hexdigest()[:8]
+
+
+def _raw_code_fingerprint() -> str:
+    """raw因子缓存键专用代码指纹 (0f-v3): 豁免stock_pool.py与yaml池节。
+
+    raw缓存=掩码前数据 — 池成员资格(quarterly/monthly/daily/relax)在掩码阶段
+    按membership_map每次运行应用, 不参与raw计算。granularity/relax臂切换只换
+    掩码与闸, raw缓存应命中(~3h省为秒级)。信号指纹不走此豁免。
+    """
+    import hashlib
+    h = hashlib.md5()
+    base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    for rel in _RAW_FACTOR_CODE_FILES:
+        p = os.path.join(base, rel)
+        if rel == 'config/factor_config.yaml':
+            h.update(f"{rel}|{_yaml_raw_digest(p)};".encode('utf-8'))
             continue
         try:
             st = os.stat(p)
@@ -600,13 +656,15 @@ def prepare_factor_data(stock_file_map: dict, fd,
         os.path.join(_data_root, 'concept_hist.pkl'),
         os.path.join(_data_root, 'concept_daily.csv'),
     ])
-    _code_fp = _code_fingerprint()
+    # raw缓存键用_raw_code_fingerprint (0f-v3: 豁免stock_pool.py与yaml池节 —
+    # 掩码/闸变化不重算raw); 打印两者便于取证
+    _code_fp = _raw_code_fingerprint()
     _cache_key_str = ','.join(sorted(stock_file_map.keys())[:100]) + str(_n_stocks) + \
                      str(factor_dates[0]) + str(factor_dates[-1]) + str(date_step) + str(lookback) + \
                      '_fp' + _data_fp + '_cfp' + _code_fp
     _cache_hash = hashlib.md5(_cache_key_str.encode()).hexdigest()[:8]
-    print(f"数据指纹: {_data_fp} (K线{len(stock_file_map)}文件 + 基本面 + 题材输入); 代码指纹: {_code_fp}; "
-          f"信号代码指纹: {_signal_code_fingerprint()}")
+    print(f"数据指纹: {_data_fp} (K线{len(stock_file_map)}文件 + 基本面 + 题材输入); "
+          f"代码指纹(raw): {_code_fp}; 信号代码指纹: {_signal_code_fingerprint()}")
     _cached = load_factor_cache(_n_stocks, _n_dates, _cache_hash)
     _fresh = _cached is None or len(_cached) == 0
     if not _fresh:

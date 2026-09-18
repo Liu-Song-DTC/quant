@@ -158,6 +158,34 @@ quarterly粘性(死股续命)在2021-23/2026占优, 四指标合计quarterly 4-0
 granularity bracket待monthly(0f-v3 arm A)补齐第三点后按spec取四指标最优者为
 floor-relax臂底座; daily的活faithfulness(零入场滞后)作为次级判据记录。
 
+## 0f-v3.6 臂序列工程化: raw缓存键池节豁免 + monthly上线 (2026-09-18 晚)
+
+**raw缓存键豁免池配置**: v3缓存只存raw(掩码前) — 池成员资格不参与raw计算,
+但代码指纹含stock_pool.py与yaml全文 → 每次granularity/relax臂切换(改yaml
+pool_calendar或pool_relax_*)都会作废raw缓存→重算raw(~15-30min)。修复:
+新增`_raw_code_fingerprint()`(raw缓存键专用) — 豁免stock_pool.py文件与
+yaml的stock_pool节(`_RAW_YAML_SKIP_SECTIONS = 组合/执行层节 ∪ {stock_pool}`,
+`_yaml_raw_digest`); 信号代码指纹**不含豁免**(池模式变化必须重生成信号 —
+池节仍计入_yaml_stripped_digest)。烟测: 仅池节内容不同时raw yaml摘要逐位
+不变(8caa457c)。收益: B/C/D臂及一切granularity重跑 raw缓存秒级命中。
+
+**DrvFs元数据staleness观察**: monthly冷跑启动时stale检查算得信号fp 1c96da24,
+2分钟后prepare_factor_data算得0a2b35ba(与启动前独立进程一致) — WSL2 DrvFs
+元数据缓存短暂陈旧导致同进程两次调用fp不同。判定实际运行代码态看log证据
+("代码指纹(raw)"新print=当前代码, monthly边界=新代码)而非单次fp值;
+设计天然fail-safe(fp不一致→强制重生成, 两个值均≠sidecar故重生成决策不变)。
+副作用: sidecar记录finalize时刻fp, 若finalize时遇陈旧视图则下次运行多花
+一次重生成(安全损失~3h, 非正确性)。
+
+**monthly臂上线 (0918a)**: `_month_boundary_prev`/`_monthly_boundaries`
+(93边界, 2018-12-31..2026-08-31) + bt_execution/generate_trade_orders
+monthly分支 + yaml pool_calendar: monthly。烟测全过: 边界函数6断言+
+93边界全月末单调+真实membership构建171,567条(缓存键94635f773433,
+quarter-end边界成员数与quarterly跑逐位一致=交叉验证)。union池5051只
+(< daily 5095 ✓ 月边界⊂日边界)。冷跑日志
+logs/bt_execution_0f_monthly_0918a.log (raw缓存因数据指纹66a2a376不同而
+fresh计算, 预期~15min; 此后掩码beacon应为"边界93个")。
+
 ## 0f-v3后续方向: 池层流动性地板松弛 (探针驱动, 待0f基线定案后设计)
 
 OFF−honest ≈ 540-630k NAV = 系统最大单一alpha源(刷新彩票)。彩票两成分:
@@ -166,3 +194,29 @@ OFF−honest ≈ 540-630k NAV = 系统最大单一alpha源(刷新彩票)。彩�
 (20d amount ≥ floor/2 且动量条件, 全as-of无前视, 实盘可实现) + 入场粘性
 (N天再评估, 诚实化复现死股续命alpha)。bracket候选: floor/2, floor/4,
 floor/2+stickiness30d, floor/2+stickiness60d。每臂一冷跑~4h严格串行。
+
+## 0f-v3.7 granularity bracket定案: monthly 3-1胜出, 定为后续臂底座 (2026-09-18 深夜)
+
+monthly冷跑 (0918a, 93边界) 完成: **529,676 / +111.87% / 0.8767 / 30.91%**,
+买入639, 选股540. membership闸丢弃3,623,190行(55.6%, 介于daily 3,647,530与
+quarterly 3,442,089之间=边界数单调✓)。全链beacon齐: raw缓存05d0e100 fresh算
+(数据fp 66a2a376), 掩码93边界1,927,448行, avg_IC 0.0881, preds 3,074,556。
+
+| 配置 | NAV | 收益 | Sharpe | MDD | 收益/MDD |
+|------|-----|------|--------|-----|----------|
+| daily诚实 | 353,124 | 41.25% | 0.4642 | 36.62% | 1.13 |
+| **monthly** | **529,676** | **111.87%** | **0.8767** | **30.91%** | **3.62** |
+| quarterly | 439,541 | 75.82% | 0.6726 | 23.13% | 3.28 |
+
+- vs daily: 4-0全占优 (monthly严格支配 — 月末粘性优于逐日churn).
+- vs quarterly: 3-1 (NAV +90,135/+36.05pp/+0.2041; MDD −7.78pp).
+- 年分解 (monthly vs quarterly): 2021 −16.26/−8.10, 2022 −9.59/−7.48,
+  2023 +10.52/+8.63, 2024 +8.95/+6.43, **2025 +81.23/+43.01**, 2026 +25.04/+25.79。
+  monthly 2025年近乎翻倍quarterly且超daily(+52.26) — 月末粘性(锁窗中位42天≈2个
+  月边界)同时获得探针A续命与探针B锁热度的双重增益; 2026与quarterly持平;
+  代价=2021-22少防守(MDD 30.91 vs 23.13, 全曲线最深在2021-22腿)。
+- **裁决 (spec_0f_v3_floor_relax条款)**: granularity轴四指标最优=monthly
+  (排序和5 < quarterly 7 < daily 12), **monthly=臂B/C/D底座**。MDD差距移交
+  C5缓冲臂队列后期攻击。
+
+臂B (monthly+floor/2+momentum 0.10) 即刻上线; 臂C (monthly+floor/2无门) 其后。

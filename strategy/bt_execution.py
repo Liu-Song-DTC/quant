@@ -98,23 +98,26 @@ def _pool_todate():
 
 
 def _load_pool_membership():
-    """0f日历池成员映射 (pool_calendar=quarterly|daily时): {boundary_ts: set(codes)}.
+    """0f日历池成员映射 (pool_calendar=quarterly|monthly|daily时): {boundary_ts: set(codes)}.
 
     off模式返回None (现状as-of todate池行为)。边界覆盖FROMDATE-730d(早盘因子
-    训练日期)到TODATE — quarterly=全部季度末, daily=全部日历日(实盘同构:
-    每日用当日可得数据重算池, 零入池滞后)。缓存键=K线数据指纹+stock_pool.py
-    代码态+模式+边界列表+参数 — 任何变化→重算(~分钟级)。同数据态下缓存命中→秒级。
+    训练日期)到TODATE — quarterly=全部季度末, monthly=全部月末(0f-v3 arm A),
+    daily=全部日历日(实盘同构: 每日用当日可得数据重算池, 零入池滞后)。
+    缓存键=K线数据指纹+stock_pool.py代码态+模式+边界列表+参数 —
+    任何变化→重算(~分钟级)。同数据态下缓存命中→秒级。
     """
     _mode = config.get('stock_pool.pool_calendar', 'off')
-    if _mode not in ('quarterly', 'daily'):
+    if _mode not in ('quarterly', 'monthly', 'daily'):
         return None
     import hashlib
-    from core.stock_pool import (_quarter_boundaries, _daily_boundaries,
-                                 get_pool_membership_map)
+    from core.stock_pool import (_quarter_boundaries, _monthly_boundaries,
+                                 _daily_boundaries, get_pool_membership_map)
     from core.factor_preparer import _data_fingerprint
     earliest = pd.Timestamp(FROMDATE) - pd.Timedelta(days=730)
     if _mode == 'daily':
         boundaries = _daily_boundaries(earliest, pd.Timestamp(TODATE))
+    elif _mode == 'monthly':
+        boundaries = _monthly_boundaries(earliest, pd.Timestamp(TODATE))
     else:
         boundaries = _quarter_boundaries(earliest, pd.Timestamp(TODATE))
     _all_map = {}

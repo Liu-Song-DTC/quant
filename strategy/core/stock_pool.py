@@ -64,6 +64,32 @@ def _daily_boundaries(earliest_date, todate):
     return list(pd.date_range(pd.Timestamp(earliest_date), pd.Timestamp(todate), freq='D'))
 
 
+def _month_boundary_prev(t: pd.Timestamp) -> pd.Timestamp:
+    """t之前(含)最近的月末 (0f-v3 arm A monthly, 2026-09-18)."""
+    end = pd.Timestamp(t.year, t.month, 1) + pd.offsets.MonthEnd(0)
+    if end > t:
+        end = pd.Timestamp(t.year, t.month, 1) - pd.Timedelta(days=1)
+    return end
+
+
+def _monthly_boundaries(earliest_date, todate):
+    """月度边界列表(升序): 从prev(earliest_date)到prev(todate)的全部月末.
+
+    monthly模式(0f-v3 arm A, 2026-09-18): granularity阶梯第三点
+    (daily 2816边界 vs monthly ~93 vs quarterly 31), 粘性月级 — 月末as-of
+    评估后整月持有成员资格。语义与_quarter_boundaries同型。
+    """
+    first = _month_boundary_prev(earliest_date)
+    last = _month_boundary_prev(todate)
+    bounds = []
+    b = first
+    while b <= last:
+        bounds.append(b)
+        # 月末+1月: DateOffset保留日号(1/31→2/28钳位), MonthEnd(0)锚回月末
+        b = pd.Timestamp(b) + pd.DateOffset(months=1) + pd.offsets.MonthEnd(0)
+    return bounds
+
+
 def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
                             bse_exclude: bool = True, cache_key: str = None) -> dict:
     """季度日历池成员映射: {boundary_timestamp: set(codes)} — as-of每个边界的池成员.
