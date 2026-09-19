@@ -152,11 +152,15 @@ C5b_dd05=701,463(0-4否) / C5b_dd08=710,218(0-3-1否) / C5d=703,501(0-4否) →
 
 ## C1 ML blend权重臂 (9/19, 进行中)
 
-v2注入(edit_signals_mlblend_v2_20260919.py): A项(alt_market, date纯函数)逐日重算
-并精确剥离 → 纯ML权重变更, v1的A×(1-w1)/(1-w0)重缩放confound已消除。
-identity烟测(w1=0.4): max|diff|=3.3e-16 < 1e-12 ✅。A覆盖100%日期, |A|max=0.10。
-臂: w=30/50/55 (mask行82%), 裁决基线=新锚点732,689(w0=0.4)。
-老标定8/24峰在0.4; 9/17探针IC 0.25→0.55单调升 → 若w>0.4臂胜则重标定。
+**架构真相(9/19晚探明)**: 回测消费的是CSV的 `score` 列, 不是 adjusted_score 列 —
+生成时 score=gate_score=adjusted_score (signal_engine.py:701-702), 逐行验证
+max|score-adj|=0.0 (6,658,619行)。portfolio.py:1181 `scores=[c['score']...]` 排名。
+**v2注入只改adjusted_score列 → 注入惰性**: 臂1(w=30)四指标逐位=基线732,689 —
+buy标志为w0生成时冻结+排名用未动列。已修复为v3(run_c1_mlblend_driver_20260919.py):
+两列同写+单进程驱动(bash跑者静默死亡问题一并解决)。
+**v3的诚实局限**: 只测排名层(w1在w0买入集内重排), 门槛重门控需ml节regen
+(~2.5-3h/臂, 非豁免)。方向性4-0胜才值得付regen做忠实臂。
+v2的A剥离/identity烟测(3.3e-16)在v3保留。
 
 ## 批次2旋钮probe (9/19, C1跑期间完成) — 死旋钮剔除+臂修剪
 
