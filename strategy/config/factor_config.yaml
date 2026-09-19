@@ -7635,9 +7635,11 @@ stock_pool:
   # relax_floor×标准地板 且 20日close收益 ≥ relax_momentum(None=无门槛) 则准入.
   # 臂B monthly+0.5/0.10(动量门, 3-1否决) / 臂C monthly+0.5/None(4-0胜) /
   # 臂D monthly+0.25/None(4-0再胜) / 臂E monthly+0.10/None(3-1, 690,463/1.1359/22.24) /
-  # 臂F monthly+0.0/None(681,707/1.1059/17.87=诚实史最浅MDD) / 臂G monthly+0.05/None
-  # (本臂, flat-top中心: E与F rank-sum并列7, 中心=0.05=主板8M/创业4M/科创2M) /
-  # 基线=1.0/None. G后收口: spec裁决+rank-sum+flat-top纪律定胜者.
+  # 臂F monthly+0.0/None(681,707/1.1059/17.87=诚实史最浅MDD) / 基线=1.0/None.
+  # 2026-09-19 bracket终局(0919d): 臂G monthly+0.05/None 4-0胜E + 3-1胜F
+  # (MDD +0.13pp噪声级), rank-sum G=5<E=10=F=10 — 中心臂碾压双端点,
+  # NAV/Sharpe曲面在0.05有真实内部峰, **bracket收口, G=生产配置**.
+  # 臂G四指标: 705,640/182.26%/1.1656/18.00%, vs daily纯基线4-0.
   pool_relax_floor: 0.05
   pool_relax_momentum: null
 ml:
