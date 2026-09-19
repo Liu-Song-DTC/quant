@@ -428,6 +428,14 @@ batch2臂1预检误判stale → 全链重生成(日志出现"ML滚动训练") �
 → 运行期间零自动刷新 → 数据态冻结。**教训**: 信号复用臂必须预检alt文件mtime+age,
 age>24h的文件在batch前先touch(内容append-only确认后)或冻结 — 见memory。
 
+**根治 (9/20午后, kill-switch入代码)**: alternative_data.py 新增
+`QUANT_ALT_NO_AUTOREFRESH=1` env开关 — 8处age闸(dragon_tiger/northbound/margin/
+reduction/unlock/yjyg/reduction_plans)在开关ON时把任何已有缓存视为新鲜
+(不重拉/不写pkl/不碰网络); 默认OFF逐位还原9/19前行为。烟测通过(7 loader全读
+零写, pkl md5逐位不变)。该文件在信号指纹集内 → fp必变(00b4bdd7→6f1cb6b1),
+已按规程冷跑重锚(env ON, toDate 9/17, workers 4, 预期732,689四指标逐位复现)。
+V2 runbook Phase 5全链与Q4标定后全链均须带此env — 数据态确定性入规程。
+
 **Z-bracket裁决 (9/20 01:21-01:30, 复用路径)**: unlock换Z(git-9/5)重跑 →
 **732,689 / 193.08% / 1.1961 / 17.92% 与基线逐位全等**(四指标+逐年+最终NAV到分)。
 解锁表15日漂移对回测的NAV影响=0(漂移码从未落入选股交集) → X→Y(3日)漂移影响
@@ -545,7 +553,7 @@ flat-top纪律否决, 无一次让渡。
 1. **V2 OOS**(9/30+): runbook已备(v2_oos_runbook_0930.py, Phase 0-5);
    唯一先决 = 用户9/30收盘下载+refresh_all。全链~90min串行, 跑前出池翻转报告,
    结果按年度分解对账(9/15危机教训)。
-2. **2026Q4滚动标定**(镜像calib_2026Q3_tail.py, 窗口2021Q4~2026Q3):
-   Q4权重写盘后必须再跑全链裁决。
+2. **2026Q4滚动标定**(analysis/calib_2026Q4_tail.py 已备, 窗口2021Q4~2026Q3):
+   Q4权重写盘后必须再跑全链裁决(quarterly_factors在信号指纹内)。
 3. **每晚实盘流恢复时**: 锚点对账+memory更新(铁律)。
 4. 程序运行纪律(串行/探针先行/双态/铁律/flat-top)归档为永久约束, 见memory。

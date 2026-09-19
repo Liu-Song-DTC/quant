@@ -16,6 +16,13 @@ import os
 from datetime import date as date_type
 from pathlib import Path
 
+# 只读审计开关 (2026-09-20): QUANT_ALT_NO_AUTOREFRESH=1 时, 任何已存在的缓存
+# 一律视为新鲜(不重拉/不写pkl/不碰网络), 直接从缓存读取。
+# 用途: V2 OOS审计(runbook承诺只读)、取证、信号复用批次 — 防9/19危机重演
+# (自动刷新静默改写pkl内容+mtime → 复用臂误判stale全链重生成 + 冻结数据态污染)。
+# 默认关: 行为与9/19前逐位一致(信号指纹豁免验证见9/20冷跑重锚)。
+_AUTOREFRESH_OFF = os.environ.get('QUANT_ALT_NO_AUTOREFRESH', '') in ('1', 'true', 'yes', 'on')
+
 
 class AlternativeDataProvider:
     """另类数据统一接口 — 从本地缓存提供因子级信号"""
@@ -77,7 +84,7 @@ class AlternativeDataProvider:
         cache_path = self.data_dir / 'dragon_tiger.pkl'
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_hours < 24:
+            if _age_hours < 24 or _AUTOREFRESH_OFF:
                 self._dragon_tiger = pd.read_pickle(cache_path)
                 return self._dragon_tiger
 
@@ -275,7 +282,7 @@ class AlternativeDataProvider:
         cache_path = self.data_dir / 'northbound_daily.pkl'
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_hours < 24:
+            if _age_hours < 24 or _AUTOREFRESH_OFF:
                 self._northbound = pd.read_pickle(cache_path)
                 return self._northbound
 
@@ -397,7 +404,7 @@ class AlternativeDataProvider:
         cache_path = self.data_dir / 'margin_daily.pkl'
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_hours < 24:
+            if _age_hours < 24 or _AUTOREFRESH_OFF:
                 self._margin = pd.read_pickle(cache_path)
                 return self._margin
 
@@ -530,7 +537,7 @@ class AlternativeDataProvider:
                 return self._reduction
             old = pd.read_pickle(cache_path)
             _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_h < 24:
+            if _age_h < 24 or _AUTOREFRESH_OFF:
                 self._reduction = old
                 return old
         try:
@@ -607,7 +614,7 @@ class AlternativeDataProvider:
             return self._unlock
         if cache_path.exists():
             _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_h < 24:
+            if _age_h < 24 or _AUTOREFRESH_OFF:
                 self._unlock = pd.read_pickle(cache_path)
                 return self._unlock
         try:
@@ -692,7 +699,7 @@ class AlternativeDataProvider:
                 return self._yjyg
             old = pd.read_pickle(cache_path)
             _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_h < 24:
+            if _age_h < 24 or _AUTOREFRESH_OFF:
                 self._yjyg = old
                 return old
         try:
@@ -848,7 +855,7 @@ class AlternativeDataProvider:
         today = str(pd.Timestamp.now().date())
         last = df['ann_date'].max() if len(df) else None
         pkl_age_h = (pd.Timestamp.now().timestamp() - pkl.stat().st_mtime) / 3600 if pkl.exists() else 99
-        if last is None or last < today or pkl_age_h > 4:
+        if not _AUTOREFRESH_OFF and (last is None or last < today or pkl_age_h > 4):
             try:
                 fresh = self._fetch_reduction_plans_recent()
                 if len(fresh):

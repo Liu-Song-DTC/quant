@@ -15,7 +15,14 @@ Q3是该套权重第一个实际执行季度 → Q3实现 = 标定程序的首�
   Phase 5  决策点: 打印全链清单 (不自动跑! 全链一次~90min, 需用户批准)
 
 只读审计: 本脚本**不写任何文件** (不写quarterly_factors/, 不刷新净值曲线)。
-2026Q4滚动权重标定是独立任务, 另行镜像 calib_2026Q3_tail.py 执行。
+2026Q4滚动权重标定是独立任务, 镜像已备: analysis/calib_2026Q4_tail.py
+(窗口2021Q4~2026Q3, 写盘后必须再跑一次全链裁决 — 见Phase 5)。
+
+只读保证强化 (2026-09-20): alternative_data.py 新增 QUANT_ALT_NO_AUTOREFRESH=1
+开关(8处age闸) — 本脚本Phase 1-3本就零alt-data import, 但Phase 5全链前若
+alt pkl age>24h, 全链运行会静默重拉改写pkl。9/30全链用:
+  QUANT_ALT_NO_AUTOREFRESH=1 python bt_execution.py
+(数据由用户下载器+refresh_all受控更新, 运行中零自动刷新, 数据态确定)。
 
 执行: cd strategy && python analysis/v2_oos_runbook_0930.py
 """
@@ -265,7 +272,8 @@ def phase5():
     print("=" * 70)
     print("""
   若Phase 2/3判定通过, 且用户批准, 才执行:
-    1. cd strategy && python bt_execution.py          # 全链~90min, 串行
+    1. cd strategy && QUANT_ALT_NO_AUTOREFRESH=1 python bt_execution.py
+       # 全链~90min, 串行; env开关保证运行中零自动刷新(数据态确定)
        → 产出至9/30的四指标 + backtest_signals.csv + equity_curve.csv
     2. 四指标 vs 当前基线 732,689/193.08%/1.1961/17.92% (C5c态, 8a1d650)
        → 增量=9/16~9/30数据刷新+15交易日延伸; 刷新效应与延伸效应不可混读:
@@ -275,9 +283,9 @@ def phase5():
     3. Phase 4 重跑 → 出Q3季度收益分解 (OOS持有期结论)
     4. 首份V2验证报告: Phase 2 IC表 + Phase 3重核结论 + Phase 4 Q3实现
        → 写入 strategy/docs/ 或 rolling_validation_results/
-  注意: 全链前不要动 quarterly_factors/ 任何文件; 2026Q4标定是独立任务(镜像
-        calib_2026Q3_tail.py, 窗口2021Q4~2026Q3), Q4权重写盘后必须再跑一次
-        全链裁决(quarterly_factors不在_signals_stale根集内, 不会自动触发信号重生成)。
+  注意: 全链前不要动 quarterly_factors/ 任何文件; 2026Q4标定是独立任务
+        (analysis/calib_2026Q4_tail.py 已备, 窗口2021Q4~2026Q3), Q4权重写盘后
+        必须再跑一次全链裁决(quarterly_factors/*.yaml在信号指纹内, 信号必重生成)。
   """)
 
 
