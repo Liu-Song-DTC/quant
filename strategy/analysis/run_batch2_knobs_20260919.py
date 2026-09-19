@@ -30,6 +30,10 @@ PROD_FILES = ['portfolio_selections.csv', 'trade_realized.csv', 'equity_curve.cs
 CODE_FILES = [YAML]
 
 ARMS = {
+    'C2_035':   ('bp2_score_boost: 0.45', 'bp2_score_boost: 0.35'),
+    'C2_055':   ('bp2_score_boost: 0.45', 'bp2_score_boost: 0.55'),
+    'C8_005':   ('turnover_bonus: 0.1', 'turnover_bonus: 0.05'),
+    'C8_015':   ('turnover_bonus: 0.1', 'turnover_bonus: 0.15'),
     'C3_off':   ('entry_chan_gate: bearhard', 'entry_chan_gate: off'),
     'C4_025':   ('fast_min_score: 0.30', 'fast_min_score: 0.25'),
     'C6_010':   ('rank_decay: 0.15', 'rank_decay: 0.10'),

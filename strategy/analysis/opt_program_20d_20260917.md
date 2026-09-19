@@ -175,9 +175,11 @@ identity烟测(w1=0.4): max|diff|=3.3e-16 < 1e-12 ✅。A覆盖100%日期, |A|ma
 - C11 volatility_control: lookback 20→60连续机制(realized_vol>28%→clip(0.28/vol,0.75,1.0)
   乘敞口, portfolio.py:1034) → lookback臂live。
 
-**批次2终版队列(7臂, 全fp豁免, 每臂~20min, C1后串行)**:
-C3_off → C4_025 → C6_010 → C6_020 → C9_015 → C9_025 → C11_lb60
-驱动=run_batch2_knobs_20260919.py(不touch信号, 逐臂断言fp不变)。
+**批次2终版队列(11臂, 全fp豁免, 每臂~20min, C1后串行)**:
+C2_035 → C2_055 → C8_005 → C8_015 → C3_off → C4_025 → C6_010 → C6_020 →
+C9_015 → C9_025 → C11_lb60
+C2 bp2_score_boost 0.45(E-K1单点无bracket, alpha核心) / C8 turnover_bonus 0.1
+(无bracket) 补入。驱动=run_batch2_knobs_20260919.py(不touch信号, 逐臂断言fp不变)。
 
 ## 2×锚点危机取证 (9/17晨, 进行中)
 
