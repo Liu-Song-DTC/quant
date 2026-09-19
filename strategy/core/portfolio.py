@@ -1317,7 +1317,13 @@ class PortfolioConstructor:
                 mom_adj = (mom_60d - 0.0) * 0.18
 
             # C实验: 换仓缓冲 — 已持仓δ保护(有卖点不保护), 0=关闭
+            # C5c(2026-09-19采纳): 仅盈利持仓受保护, 亏损名让位 — 六臂bracket胜者
+            # (732,689/193.08%/1.1961/17.92%, 4-0 vs ref=718,158, 4-0 vs G基线=705,640;
+            #  年分解2023/24/26+0.44/+0.48/+1.67pp, 2025 -0.21pp, 2021/22持平)
             repl_buffer = self.replacement_buffer if (c['is_held'] and c.get('chan_sell_point', 0) == 0) else 0.0
+            _rc = getattr(self, '_a1_raw_cost', {}).get(code)
+            if not (_rc and len(_rc) >= 2 and _rc[0] > 0 and prices.get(code, 0) > _rc[1]):
+                repl_buffer = 0.0  # C5c: 仅盈利持仓受保护(亏损名让位)
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
             c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0)
