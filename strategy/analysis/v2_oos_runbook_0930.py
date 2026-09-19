@@ -114,11 +114,11 @@ def phase0():
     else:
         print("  ✗ equity_curve.csv缺失")
         ok = False
-    # 5) sidecar指纹 (9/20生产态应为 00b4bdd7|0)
-    fp_path = os.path.join(BASE_DIR, '.signal_code_fp')
+    # 5) sidecar指纹 (9/20重锚后生产态应为 6f1cb6b1|0; sidecar在signals.csv同目录)
+    fp_path = os.path.join(RVR, '.signal_code_fp')
     if os.path.exists(fp_path):
         with open(fp_path) as f:
-            print(f"  sidecar指纹: {f.read().strip()} (C5c态预期 00b4bdd7|0)")
+            print(f"  sidecar指纹: {f.read().strip()} (C5c态预期 6f1cb6b1|0)")
     # 6) 生产配置快检 (0f池+C5c+0g关闭 三键)
     with open(os.path.join(BASE_DIR, 'config', 'factor_config.yaml'), 'r', encoding='utf-8') as f:
         ytxt = f.read()
