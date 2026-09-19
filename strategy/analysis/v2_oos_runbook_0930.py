@@ -103,15 +103,26 @@ def phase0():
     eq_path = os.path.join(RVR, 'equity_curve.csv')
     if os.path.exists(eq_path):
         eq = pd.read_csv(eq_path, parse_dates=['date'])['date'].max()
-        print(f"  equity_curve.csv最后日期: {eq.date()} (预期9/30前为9/10态)")
+        print(f"  equity_curve.csv最后日期: {eq.date()} (预期9/30前为9/15态)")
     else:
         print("  ✗ equity_curve.csv缺失")
         ok = False
-    # 5) sidecar指纹 (gate+#54态应为 ae67c9ee|0)
+    # 5) sidecar指纹 (9/20生产态应为 00b4bdd7|0)
     fp_path = os.path.join(BASE_DIR, '.signal_code_fp')
     if os.path.exists(fp_path):
         with open(fp_path) as f:
-            print(f"  sidecar指纹: {f.read().strip()} (gate+#54态预期 ae67c9ee|0)")
+            print(f"  sidecar指纹: {f.read().strip()} (C5c态预期 00b4bdd7|0)")
+    # 6) 生产配置快检 (0f池+C5c+0g关闭 三键)
+    with open(os.path.join(BASE_DIR, 'config', 'factor_config.yaml'), 'r', encoding='utf-8') as f:
+        ytxt = f.read()
+    checks = {
+        'bp2_score_boost=0.45': 'bp2_score_boost: 0.45' in ytxt,
+        'replacement_buffer=0.05': 'replacement_buffer: 0.05' in ytxt,
+        'dragon_tiger关闭': 'dragon_tiger_enabled: false' in ytxt or 'dragon_tiger_enabled: False' in ytxt,
+    }
+    for k, v in checks.items():
+        print(f"  yaml {k}: {'✓' if v else '✗ 异常 — 生产配置已漂移, 先对账'}")
+        ok = ok and v
     print("  Phase 0 结论:", "通过" if ok else "阻塞 — 先补数据再跑")
     return ok
 
@@ -243,7 +254,8 @@ def phase4():
     print(f"  2026Q3季度收益: {q3_ret:+.2f}% (6/30 {start_v:,.0f} → 9/30 {q3.iloc[-1]:,.0f})")
     print(f"  2026Q3内最大回撤: {q3_dd:.2f}%")
     print(f"  2026YTD收益: {ytd_ret:+.2f}%")
-    print(f"  9/10锚点参考: 1,143,938 (gate态) — 9/30全链后与四指标基线比对")
+    print(f"  C5c态参考: 732,689/193.08%/1.1961/17.92% (commit 8a1d650) — "
+          f"9/30全链后与四指标基线比对, 按年度分解(2026年内增量单独看)")
 
 
 # ================= Phase 5 =================
@@ -255,8 +267,11 @@ def phase5():
   若Phase 2/3判定通过, 且用户批准, 才执行:
     1. cd strategy && python bt_execution.py          # 全链~90min, 串行
        → 产出至9/30的四指标 + backtest_signals.csv + equity_curve.csv
-    2. 四指标 vs 当前基线 1,143,938/357.58%/1.5555/27.41% (9/10锚)
-       → 增量部分仅是Q3尾部20个交易日的延伸, 期待数字温和外推, 不期待大幅变动
+    2. 四指标 vs 当前基线 732,689/193.08%/1.1961/17.92% (C5c态, 8a1d650)
+       → 增量=9/16~9/30数据刷新+15交易日延伸; 刷新效应与延伸效应不可混读:
+         先跑 pool_flip_report.py 出池翻转清单(0f后按日历批量生效+翻转报告),
+         再按年度分解对账(2021-2025应逐位一致, 分歧=数据态漂移; 2026内
+         增量=Q3尾部延伸) — 9/15危机教训: 刷新锚点必须机制归因后采信。
     3. Phase 4 重跑 → 出Q3季度收益分解 (OOS持有期结论)
     4. 首份V2验证报告: Phase 2 IC表 + Phase 3重核结论 + Phase 4 Q3实现
        → 写入 strategy/docs/ 或 rolling_validation_results/
