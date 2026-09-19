@@ -7634,10 +7634,11 @@ stock_pool:
   # 2026-09-18 0f-v3流动性地板松弛: 流动性不达标的码, 若20日均额 ≥
   # relax_floor×标准地板 且 20日close收益 ≥ relax_momentum(None=无门槛) 则准入.
   # 臂B monthly+0.5/0.10(动量门, 3-1否决) / 臂C monthly+0.5/None(4-0胜) /
-  # 臂D monthly+0.25/None(4-0再胜, 634,165/1.0710) / 臂E monthly+0.10/None
-  # (3-1 vs D: NAV+56k/Sharpe+0.065但MDD+1.67pp, 690,463/1.1359/22.24) /
-  # 臂F monthly+0.0/None(本臂, 轴端点: 无地板纯准入, 完成轴画像) / 基线=1.0/None.
-  pool_relax_floor: 0.0
+  # 臂D monthly+0.25/None(4-0再胜) / 臂E monthly+0.10/None(3-1, 690,463/1.1359/22.24) /
+  # 臂F monthly+0.0/None(681,707/1.1059/17.87=诚实史最浅MDD) / 臂G monthly+0.05/None
+  # (本臂, flat-top中心: E与F rank-sum并列7, 中心=0.05=主板8M/创业4M/科创2M) /
+  # 基线=1.0/None. G后收口: spec裁决+rank-sum+flat-top纪律定胜者.
+  pool_relax_floor: 0.05
   pool_relax_momentum: null
 ml:
   enabled: true
