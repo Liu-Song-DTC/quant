@@ -125,7 +125,7 @@ def restore(tag_dir):
 
 
 def main():
-    pcts = [int(x) for x in sys.argv[1:]] if len(sys.argv) > 1 else [30, 50, 55]
+    pcts = [float(x) for x in sys.argv[1:]] if len(sys.argv) > 1 else [30, 50, 55]
     os.makedirs(ARMS_DIR, exist_ok=True)
     # 生产信号原件: 一次性归档到sig_base, 每臂后从这里复原(免每臂3GB备份)
     sig_base = os.path.join(ARMS_DIR, '_baseline_sig')
@@ -147,7 +147,7 @@ def main():
     summary = []
     for i, pct in enumerate(pcts, 1):
         w1 = pct / 100.0
-        tag = os.path.join(ARMS_DIR, f'C1_mlblend_{pct:03d}')
+        tag = os.path.join(ARMS_DIR, f'C1_mlblend_{str(pct).replace(".","_")}')
         print(f"===== [{i}/{len(pcts)}] C1 w={pct}% =====", flush=True)
         snapshot(tag)
         try:
@@ -168,7 +168,7 @@ def main():
                 p = os.path.join(RVD, f)
                 if os.path.exists(p):
                     shutil.copy2(p, os.path.join(tag, 'post_' + f))
-            line = (f"C1_{pct:03d}: rc={rc} NAV={m['nav']} ret={m['ret']}% "
+            line = (f"C1_{str(pct).replace(".","_")}: rc={rc} NAV={m['nav']} ret={m['ret']}% "
                     f"Sharpe={m['sharpe']} MDD={m['mdd']}%")
             print(line, flush=True)
             summary.append(line)
