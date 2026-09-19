@@ -140,6 +140,45 @@ incumbent自采纳E-K1/E-N5/PIT后已漂移, 老标定点(8/22-8/24)可能已过
   (opt_c5_driver_20260917.py + c5_spec_20260917.json, ~6臂×17min≈1.7h)
 - C1 mlblend(30/50/55) 修复后同态排队
 
+## C5 bracket终局 (9/19, 已采纳 commit 8a1d650)
+
+六臂全跑完(9/17态信号复用): A_repro=705,640(G逐位复现✓) → C5_ref=718,158(4-0) →
+C5b_dd05=701,463(0-4否) / C5b_dd08=710,218(0-3-1否) / C5d=703,501(0-4否) →
+**C5c=732,689/193.08%/1.1961/17.92% (4-0 vs ref, 4-0 vs G)** — 胜者。
+机制="仅盈利持仓受保护(亏损名让位)": 反方向臂(C5b/C5d危机期解除)全灭证明
+保护在回撤/FAST期最值钱。年分解2023/24/26 +0.44/+0.48/+1.67pp, 2025 −0.21pp,
+2021/22持平。生产写入(portfolio.py patch+yaml 0.05)+复现跑逐位一致→commit。
+**新生产锚点 = 732,689/193.08%/1.1961/17.92%** (G池+C5c), 后续臂均以此为新基线。
+
+## C1 ML blend权重臂 (9/19, 进行中)
+
+v2注入(edit_signals_mlblend_v2_20260919.py): A项(alt_market, date纯函数)逐日重算
+并精确剥离 → 纯ML权重变更, v1的A×(1-w1)/(1-w0)重缩放confound已消除。
+identity烟测(w1=0.4): max|diff|=3.3e-16 < 1e-12 ✅。A覆盖100%日期, |A|max=0.10。
+臂: w=30/50/55 (mask行82%), 裁决基线=新锚点732,689(w0=0.4)。
+老标定8/24峰在0.4; 9/17探针IC 0.25→0.55单调升 → 若w>0.4臂胜则重标定。
+
+## 批次2旋钮probe (9/19, C1跑期间完成) — 死旋钮剔除+臂修剪
+
+**死旋钮(跑之前先证伪, 省~20min/臂)**:
+- **C13 dynamic_rebalance = 完全死旋钮**: yaml有(enabled/bull_period 30等)但全库零生产reader
+  (仅factor_preparer豁免列表提到) → 臂废弃。rebalance_days=10在backtest节是唯一生效换仓周期。
+- **C11 blend_weight/long_lookback = 死**: config_loader只映射volatility_control.enabled+
+  lookback_period到portfolio_config, blend_weight 0.6/long 60无任何消费方 → C11缩为lookback臂。
+- **C3 'hard'臂不跑**: E-N5已证bearhard胜hard(生产= bearhard)。
+- **C4 0.35/0.40臂不跑**: E-O2已否决。C4缩为0.25单臂(反方向)。
+- C6 rank_decay 0.15=旧网格峰值(0.05/0.15/0.30/0.45), 0.10/0.20=峰周细化。
+- C9 hold_threshold 0.2(P2已0.3→0.2), 0.15/0.25双向。
+- C10 clb: **实操零触发(154/154选股行clb=0)** — loss_floor -1.5%日损失
+  P≈5%(组合日std1.1%)→4连≈0.01事件/全史, 且E-H6熔断已覆盖回撤降仓语义 →
+  threshold臂=no-op废弃(不是死代码, 是死参数化)。
+- C11 volatility_control: lookback 20→60连续机制(realized_vol>28%→clip(0.28/vol,0.75,1.0)
+  乘敞口, portfolio.py:1034) → lookback臂live。
+
+**批次2终版队列(7臂, 全fp豁免, 每臂~20min, C1后串行)**:
+C3_off → C4_025 → C6_010 → C6_020 → C9_015 → C9_025 → C11_lb60
+驱动=run_batch2_knobs_20260919.py(不touch信号, 逐臂断言fp不变)。
+
 ## 2×锚点危机取证 (9/17晨, 进行中)
 
 晨跑(toDate 9/15, workers 4): **1,728,548 / 591.42% / 1.8402 / 19.98%** vs run-1
