@@ -1,0 +1,9 @@
+[
+  {"name": "0d_impact_on", "edits": [["impact_cost_enabled: false", "impact_cost_enabled: true"]]},
+  {"name": "C2_boost_035", "edits": [["bp2_score_boost: 0.45", "bp2_score_boost: 0.35"]]},
+  {"name": "C2_boost_055", "edits": [["bp2_score_boost: 0.45", "bp2_score_boost: 0.55"]]},
+  {"name": "C5_buffer_005", "edits": [["replacement_buffer: 0.0", "replacement_buffer: 0.05"]]},
+  {"name": "C5_buffer_010", "edits": [["replacement_buffer: 0.0", "replacement_buffer: 0.10"]]},
+  {"name": "C8_tbonus_005", "edits": [["turnover_bonus: 0.1", "turnover_bonus: 0.05"]]},
+  {"name": "C8_tbonus_015", "edits": [["turnover_bonus: 0.1", "turnover_bonus: 0.15"]]}
+]
