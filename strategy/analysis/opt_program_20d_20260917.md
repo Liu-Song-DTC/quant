@@ -211,6 +211,78 @@ C9_015 → C9_025 → C11_lb60
 C2 bp2_score_boost 0.45(E-K1单点无bracket, alpha核心) / C8 turnover_bonus 0.1
 (无bracket) 补入。驱动=run_batch2_knobs_20260919.py(不touch信号, 逐臂断言fp不变)。
 
+## M3止损机制代码审计 (9/20凌晨, 批次2跑期间) — 死旋钮发现
+
+**生产止损真实拓扑**(逐路径审计 portfolio.py, yaml 7469-7520):
+- `stock_stop_loss.enabled=false` → `cost={}` → avg_cost_check恒0 → **整个成本类机械惰性**:
+  cost_stop/分级峰值回撤/`enhanced_stop_loss.tiered_trailing_stop`(yaml!)/死钱退出 全部永不触发。
+- `profit_from_peak` 恒取0.10 fallback → "盈利>15%收紧止损"硬编码行(portfolio.py:2126)永不触发。
+- **生产活跃止损** = sig_sell / time_stop_by_bp(15d/-3%) /
+  `trailing_stop_by_buy_point`(1:0.15 2:0.12 3:0.10 default:0.08, 无盈利分级) /
+  chan结构退出 / entry_reason_lost / S2恶化跟踪。
+- 结论: **M3原设计的"yaml tiered_trailing_stop收紧"是死旋钮**; 真正可拧的 =
+  trailing_stop_by_buy_point分层 与 盈利分级收紧(需先让profit计算可用 — 本身是要付出
+  成本追踪代价的, 与E-L1/E-N12/实验C同族)。
+- 探针probe_m3_exit_replay_20260920.py: 基线trade_realized逐笔×日K重放生产trailing,
+  对照V-A(盈利分级收紧激活)/V-B(bp分层全-0.03), +fwd20(止损帮了还是坑了)。
+- N1周内效应探针probe_n1_weekday_20260920.py: buy信号fwd5/10按星期几分桶+置换检验。
+
+**N1探针裁决 (9/20凌晨) — 关闭**: 1.24M buy信号行周日分布均匀(各~20%),
+fwd10周日差幅≤0.12pp(周五最差−0.12, 周三+0.09), 周五效应逐年不稳
+(2022反而+0.41 vs 其余+0.09, 2023/24/26为负, 2021/25持平) → 无稳定周内alpha;
+且入场受调仓日约束, 信号周日≠入场周日, 机制化成本>收益。方向关闭。
+
+**N3探针裁决 (9/20凌晨) — 关闭**: vol_control机制近乎惰性 — 1384日中仅74日
+(5.3%)超阈值, 全部集中在2024-25(2021-23零触发), 全期敞口-年损失仅0.05;
+EWMA λ=0.94 / hl=20 反事实ΔNAV −0.73/−0.76pp(均劣), 线性加权−18.12pp灾难。
+估计器变体无收益面; 预期C11_lb60臂≈噪声(先验)。方向关闭。
+
+**M3探针裁决 (9/20凌晨, 558笔全重放) — 方向关闭(死旋钮+收紧全劣)**:
+- 出场构成: 止损类231笔(时间止损114笔 avg −9.81% / trailing 218笔 avg −1.19%),
+  非止损327笔。止损类合计sum −319.5%。
+- V-A盈利分级收紧: sum −595.2% = **−335.5pp恶化**(仅2022 +43pp, 2025单年−229.9pp);
+  新触发仅7笔但砍的全是利润奔跑期 → 与E-L1/E-N12/F-2同签名: 碰右尾赢家=灾难。
+- V-B分层全−0.03: sum差+2.9pp中性, 新触发100笔均负 → 无益。
+- **fwd20=+2.29%(止损类)/+2.07%(时间止损)/+2.34%(trailing)**: 强制出场后个股普遍
+  反弹 → 现有止损已在割洗盘坑里, 收紧只会割得更深。
+- 裁决: M3关闭。止损收紧族全线否决证据再+1(实验C/E-L1/E-N12/bp2_fade/M3)。
+  tiered_trailing_stop死旋钮保持现状(惰性), 不动代码。
+
+**M2探针裁决 (9/20凌晨) — 关闭**: 570仓位-日, 市值/当日成交额比 p50 0.026% /
+p90 0.130% / p99 0.420% / **max 0.749%**, 超1%仓位-日=0(全史), 超0.5%仅4日
+(本应裁剪合计5万)。50万账户p50持仓3.6万 vs 成交额p5=0.22亿 → 流动性冲击/
+滑点失真可忽略, ADV感知仓位上限无收益面。方向关闭(与0d冲击成本审计结论一致)。
+
+## 另类数据自动刷新取证 (9/20凌晨, 批次2臂1全链重生成危机后)
+
+**根因**: alternative_data.py 的 load_*() 惰性加载含**自动刷新** —
+load_unlock缓存>24h即**全范围(2021→now+4mo)重拉并整文件覆盖**pkl;
+load_reduction/reduction_plans增量合并(cache+since追加, drop_duplicates);
+load_margin/load_northbound追加。→ 任何bt运行(含信号复用路径)都可能静默改写
+pkl内容与mtime, 触发_signals_stale误判(信号mtime<数据mtime→强制全链重生成)。
+
+**本次实锤链**: 9/19我的C1/C2臂运行触发了5文件刷新(margin/northbound 21:50,
+reduction_records 20:49, unlock_schedule 20:50, reduction_plans 00:30) →
+batch2臂1预检误判stale → 全链重生成(日志出现"ML滚动训练") → 击杀批次2。
+
+**逐文件取证结论** (vs git-9/5态e420178 + 代码路径审计):
+- margin_daily/northbound_daily: **append-only逐位确认**(≤9/5行与git逐位全等) ✓
+- reduction_records/reduction_plans: 代码层merge-append确认, PIT门控
+  (eitime/ann_date≤date) → ≤9/17内容与基线态一致 ✓
+- unlock_schedule: **唯一真污染** — 9/17态X被9/19整文件覆盖, git仅有9/5态Z。
+  Z vs Y(当前) sort-aligned逐行diff: 13868共同键, 476值差异行**全在未来区(>9/5)**
+  且基本全是market_value(市值随价浮动, 非消费列); **ratio跨0.05阈值=0行**;
+  键级漂移=仅Z 36行(9/7-9/18日期)+仅Y 84行(9/10-1/19)。
+  消费者get_unlock_codes(date,30,0.05)集合漂移: **29/1385回测日, ±3-8码**
+  (集合~50-65码), 全部集中在末月(回测日8/10-9/17)。
+- 判定: X(9/17)不可恢复; X→Y(3日)漂移⊂Z→Y(15日)漂移。用**Z-bracket臂量化**
+  (unlock换Z重跑, 与732,689差=解锁表15日漂移的NAV敏感性上界), 见批次2序。
+
+**落地防复发**(批次2重启前): margin/northbound mtime回拨9/19 15:30(内容append-only
+确认, 回拨诚实); unlock先跑Z-bracket再还原Y; batch窗口内所有alt缓存age<24h
+→ 运行期间零自动刷新 → 数据态冻结。**教训**: 信号复用臂必须预检alt文件mtime+age,
+age>24h的文件在batch前先touch(内容append-only确认后)或冻结 — 见memory。
+
 ## 2×锚点危机取证 (9/17晨, 进行中)
 
 晨跑(toDate 9/15, workers 4): **1,728,548 / 591.42% / 1.8402 / 19.98%** vs run-1
