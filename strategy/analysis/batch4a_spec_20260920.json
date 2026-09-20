@@ -1,0 +1,53 @@
+[
+  {"name": "C16_bonus0", "file": "core/portfolio.py",
+   "edits": [
+     ["if bp == 1 and sl >= 1:\n                additive += 0.08",
+      "if bp == 1 and sl >= 1:\n                additive += 0.0"],
+     ["elif bp == 2 and sl >= 2:\n                additive += 0.03",
+      "elif bp == 2 and sl >= 2:\n                additive += 0.0"],
+     ["if bom_score > 0.70:\n                additive += 0.06",
+      "if bom_score > 0.70:\n                additive += 0.0"],
+     ["elif bom_score > 0.55:\n                additive += 0.03",
+      "elif bom_score > 0.55:\n                additive += 0.0"]
+   ]},
+  {"name": "C17_ladderhi0", "file": "core/portfolio.py",
+   "edits": [
+     ["if profit_d_pen:\n                additive -= 0.10",
+      "if profit_d_pen:\n                additive -= 0.0"],
+     ["if bp == 1 and 'bottom' not in div_type_pen.lower():\n                additive -= 0.06",
+      "if bp == 1 and 'bottom' not in div_type_pen.lower():\n                additive -= 0.0"],
+     ["if trend_type_pen == -2 and stroke_phase_pen > 0.2 and not (bp == 3 and sl >= 2):\n                additive -= 0.05",
+      "if trend_type_pen == -2 and stroke_phase_pen > 0.2 and not (bp == 3 and sl >= 2):\n                additive -= 0.0"],
+     ["if trend_type_pen != 2 and stroke_phase_pen > 0.2 and daily_ret_pen < 0:\n                additive -= 0.04",
+      "if trend_type_pen != 2 and stroke_phase_pen > 0.2 and daily_ret_pen < 0:\n                additive -= 0.0"]
+   ]},
+  {"name": "C18_ladderlo0", "file": "core/portfolio.py",
+   "edits": [
+     ["if 'top' in div_type_pen.lower():\n                additive -= 0.08",
+      "if 'top' in div_type_pen.lower():\n                additive -= 0.0"],
+     ["if daily_ret_pen < -0.015 and vol_ratio_pen > 0.5:\n                additive -= 0.06",
+      "if daily_ret_pen < -0.015 and vol_ratio_pen > 0.5:\n                additive -= 0.0"],
+     ["if daily_ret_pen > 0.09:\n                additive -= 0.05",
+      "if daily_ret_pen > 0.09:\n                additive -= 0.0"],
+     ["if exhaustion_pen > 0.5:\n                additive -= 0.10",
+      "if exhaustion_pen > 0.5:\n                additive -= 0.0"],
+     ["if mom_60d > 0.50 and bp == 0:\n                additive -= 0.06",
+      "if mom_60d > 0.50 and bp == 0:\n                additive -= 0.0"],
+     ["if dist_ma60 > 0.45 and bp == 0:\n                additive -= 0.06",
+      "if dist_ma60 > 0.45 and bp == 0:\n                additive -= 0.0"]
+   ]},
+  {"name": "C19_mult0", "file": "core/portfolio.py",
+   "edits": [
+     ["if mom_60d > 0.60:\n                multiplier *= 0.85",
+      "if mom_60d > 0.60:\n                multiplier *= 1.0"],
+     ["elif mom_60d > 0.45:\n                multiplier *= 0.92",
+      "elif mom_60d > 0.45:\n                multiplier *= 1.0"]
+   ]},
+  {"name": "C20_momadj0", "file": "core/portfolio.py",
+   "edits": [
+     ["mom_adj = -abs(mom_60d) * 0.10  # FAST: 偏好低波动稳定股",
+      "mom_adj = 0.0  # FAST: 偏好低波动稳定股"],
+     ["mom_adj = (mom_60d - 0.0) * 0.18",
+      "mom_adj = 0.0"]
+   ]}
+]

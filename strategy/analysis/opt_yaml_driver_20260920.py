@@ -1,26 +1,30 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""yaml-only旋钮臂驱动 (2026-09-20): 免指纹节旋钮bracket, 信号复用~17min/臂。
-协议同opt_c5_driver(快照→yaml编辑→跑→抓四指标→复原→归档), 但仅改yaml值不动代码;
-生产C5c块已在portfolio.py内, 本驱动只调replacement_buffer/portfolio_stop_loss值。
+"""yaml/代码旋钮臂驱动 v2 (2026-09-20晚): 免指纹节旋钮bracket, 信号复用~17min/臂。
+v1只支持yaml单替换; v2支持任意file的多对(旧,新)字符串替换 — portfolio.py硬编码系数臂
+(fp仅覆盖signal_engine/ml_predictor/bt_execution/因子文件/季度权重, portfolio.py不在内,
+ 见bt_execution.py:152 _signal_code_fingerprint → 代码臂同17min/臂)。
+协议: 快照→替换→跑→抓四指标→复原→断言。每对(旧,新)须唯一匹配(count==1)且旧=生产现值。
 用法: python analysis/opt_yaml_driver_20260920.py <spec.json>
-spec: [{"name":"C5cw_003","edit":["replacement_buffer: 0.05","replacement_buffer: 0.03"]},
-       {"name":"C12_trg008","edit":["  trigger_drawdown: 0.10","  trigger_drawdown: 0.08"]}, ...]
-每臂edit=(old,new)必须唯一匹配(count==1)且old=生产现值(arm间相对独立, 逐臂快照复原)。
+spec: [{"name":"C15_mh3", "edits":[["    min_hold_days: 5","    min_hold_days: 3"]]},
+       {"name":"C16_bonus0", "file":"core/portfolio.py",
+        "edits":[["if bp == 1 and sl >= 1:\n                additive += 0.08",
+                  "if bp == 1 and sl >= 1:\n                additive += 0.0"], ...]}, ...]
+file缺省=config/factor_config.yaml。
 """
 import os, sys, json, shutil, subprocess, re
 from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RVD = os.path.join(BASE, 'rolling_validation_results')
-YAML = os.path.join(BASE, 'config', 'factor_config.yaml')
+YAML = 'config/factor_config.yaml'
 ARMS_DIR = os.path.join(BASE, 'arms_20260920')
 PY = '/mnt/d/quant/.venv/bin/python'
 ENV = dict(os.environ, QUANT_ALT_NO_AUTOREFRESH='1')  # 数据态冻结(臂运行零alt写入)
 
 PROD_FILES = ['portfolio_selections.csv', 'trade_realized.csv', 'equity_curve.csv',
               'regime_state.csv', 'yaogu_watchlist.csv', 'backtest_signals.csv', '.signal_code_fp']
-CODE_FILES = [YAML]
+CODE_FILES = ['config/factor_config.yaml', 'core/portfolio.py']
 
 METRIC_RE = {
     'nav': re.compile(r'最终净值:\s*([\d,]+)\s*\(总收益\s*([\d.]+)%'),
@@ -46,7 +50,8 @@ def snapshot(tag_dir):
         p = os.path.join(RVD, f)
         if os.path.exists(p):
             shutil.copy2(p, os.path.join(tag_dir, 'pre_' + f))
-    for p in CODE_FILES:
+    for rel in CODE_FILES:
+        p = os.path.join(BASE, rel)
         shutil.copy2(p, os.path.join(tag_dir, 'pre_' + os.path.basename(p)))
 
 
@@ -56,7 +61,8 @@ def restore(tag_dir):
         pre = os.path.join(tag_dir, 'pre_' + f)
         if os.path.exists(pre):
             shutil.copy2(pre, p)
-    for p in CODE_FILES:
+    for rel in CODE_FILES:
+        p = os.path.join(BASE, rel)
         shutil.copy2(os.path.join(tag_dir, 'pre_' + os.path.basename(p)), p)
 
 
@@ -95,19 +101,22 @@ def main():
     os.makedirs(sig_base, exist_ok=True)
     for i, arm in enumerate(arms, 1):
         name = arm['name']
-        old, new = arm['edit']
+        tgt = os.path.join(BASE, arm.get('file', YAML))
+        pairs = arm.get('edits') or [arm['edit']]
         tag = os.path.join(ARMS_DIR, name)
         os.makedirs(tag, exist_ok=True)
-        print(f"\n===== [{i}/{len(arms)}] {name} ({old!r}→{new!r}) =====", flush=True)
+        print(f"\n===== [{i}/{len(arms)}] {name} ({arm.get('file', YAML)}, {len(pairs)}对替换) =====", flush=True)
         for f in ['backtest_signals.csv', '.signal_code_fp']:
             src = os.path.join(sig_base, f)
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(RVD, f))
         snapshot(tag)
         try:
-            txt = read(YAML)
-            assert txt.count(old) == 1, f"{old!r} 匹配数异常: {txt.count(old)}"
-            write(YAML, txt.replace(old, new))
+            txt = read(tgt)
+            for old, new in pairs:
+                assert txt.count(old) == 1, f"{name}: {old[:60]!r} 匹配数异常: {txt.count(old)}"
+                txt = txt.replace(old, new)
+            write(tgt, txt)
             log = os.path.join(tag, f'run_{ts}.log')
             rc = run_backtest(log)
             m = parse_metrics(log)
@@ -132,7 +141,9 @@ def main():
             summary.append(line)
         finally:
             restore(tag)
-            assert read(YAML).count(old) == 1, f"yaml复原失败! {old!r} count={read(YAML).count(old)}"
+            rtxt = read(tgt)
+            for old, new in pairs:
+                assert rtxt.count(old) == 1, f"{name}: 复原失败! {old[:60]!r} count={rtxt.count(old)}"
         for f in ['pre_backtest_signals.csv', 'post_backtest_signals.csv']:
             p = os.path.join(tag, f)
             if os.path.exists(p):

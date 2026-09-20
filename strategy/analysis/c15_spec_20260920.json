@@ -1,0 +1,4 @@
+[
+  {"name": "C15_mh3", "edit": ["    min_hold_days: 5", "    min_hold_days: 3"]},
+  {"name": "C15_mh8", "edit": ["    min_hold_days: 5", "    min_hold_days: 8"]}
+]
