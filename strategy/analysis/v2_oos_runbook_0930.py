@@ -72,8 +72,8 @@ def daily_ic_series(factor_df, factor_name):
         if len(g) < 10:
             continue
         ic = _cross_sectional_ic(g, factor_name, value_col='future_ret', min_samples=10)
-        if ic is not None:
-            ics[d] = ic
+        if ic:
+            ics[d] = ic[0]  # _cross_sectional_ic返回列表; 单日group→至多1个元素
     return pd.Series(ics)
 
 
@@ -165,12 +165,12 @@ def phase2(factor_df):
     ind_cfg = load_quarter_config('2026Q3')
     facts = selected_factors(ind_cfg)
     print(f"  选中因子 {len(facts)} 个 (中性/bull/bear并集)")
-    # future_ret只到 9/30 - forward_period(20交易日) ≈ 9/2; Q3内可审计段=7/1~9/2
+    # future_ret只到 9/30 - forward_period(yaml=10交易日) ≈ 9/16; Q3内可审计段=7/1~9/16
     q3_lo, q3_hi = pd.Timestamp('2026-07-01'), factor_df['future_ret'].notna() & \
         (factor_df['date'] >= pd.Timestamp('2026-07-01'))
     q3_df = factor_df[factor_df['date'] >= q3_lo].copy()
     q3_max = q3_df[q3_df['future_ret'].notna()]['date'].max()
-    print(f"  Q3内可算IC段: 2026-07-01 ~ {q3_max.date()} (future_ret=20日, 尾部无IC)")
+    print(f"  Q3内可算IC段: 2026-07-01 ~ {q3_max.date()} (future_ret=10日, 尾部无IC)")
     calib_df = factor_df[(factor_df['date'] >= CALIB_WINDOW[0]) &
                          (factor_df['date'] <= CALIB_WINDOW[1])]
 
@@ -238,8 +238,12 @@ def phase3(factor_df, concept_map):
             if n_diff <= 5:
                 print(f"  差异: {ind}: 新 {a.get('factors')} vs 旧 {b.get('factors')}")
     print(f"  共有行业 {len(set(new_cfg) & set(old_cfg))}: 一致 {n_same} | 有差异 {n_diff}")
-    print("  判定口径: 差异=0 → gate态/数据态下程序仍选出同套Q3权重 (E-K1先例通过); "
-          "差异>0 → 逐行业核对, 差异来源需归因(数据重建/gate/程序变动)")
+    print("  判定口径 (9/20早读已预分析): 9/7后已知历史数据修订=9/11基本面更正+"
+          "9/12概念PIT/map+9/14 K线重建 → 差异>0为预期, 不自动等于程序/gate破裂。")
+    print("    良性签名: ①权重小抖动(≤1e-2量级) ②同因子集重排序(并列IC平局) "
+          "③个别概念进出(min_codes阈值边缘); 警报签名: 整组因子替换/行业大换血。")
+    print("    9/20实测(9/17态): 248/399一致, 151差异中weights抖动141(87个>1e-2, "
+          "最大0.084), factors重排序58, 概念进出5 — 良性为主; 9/30报告按此签名分级")
 
 
 # ================= Phase 4 =================

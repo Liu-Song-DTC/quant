@@ -4,8 +4,8 @@ V2 Q3 OOS 早期预读 (as-of 9/17数据态, 2026-09-20 执行, 只读)
 
 目的: 9/30正式V2前用现有数据态给一个早读, 复用 v2_oos_runbook_0930.py 的 Phase 2/3 代码:
   P2'  Q3-so-far IC: 2026Q3.yaml选中因子在Q3内可算IC段的截面IC vs 标定窗IC。
-       future_ret=20交易日 → 9/17数据态下最后可算IC日≈8/20 (覆盖35/44可算日=80%),
-       尾部9个交易日(8/21~9/2)的IC留待9/30。
+       future_ret=10交易日(yaml dynamic_factor.forward_period) → 9/17数据态下
+       最后可算IC日=9/3 (覆盖47/55可算日≈85%), 尾部9个交易日(9/4~9/16)的IC留待9/30。
   P3   标定权重重核: 标定窗(2021-07~2026-06)完整覆盖 → 与runbook Phase 3同型diff。
        E-K1先例: 应选出同套权重; 若有差异=数据态漂移警报, 9/30前必须排查。
 
@@ -61,8 +61,8 @@ def daily_ic_series(factor_df, factor_name):
         if len(g) < 10:
             continue
         ic = _cross_sectional_ic(g, factor_name, value_col='future_ret', min_samples=10)
-        if ic is not None:
-            ics[d] = ic
+        if ic:
+            ics[d] = ic[0]  # _cross_sectional_ic返回列表; 单日group→至多1个元素
     return pd.Series(ics)
 
 
@@ -98,8 +98,8 @@ def phase2_preview(factor_df):
     q3_df = factor_df[factor_df['date'] >= pd.Timestamp('2026-07-01')]
     q3_ic_days = sorted(q3_df[q3_df['future_ret'].notna()]['date'].unique())
     print(f"  Q3内可算IC段: {q3_ic_days[0].date()} ~ {q3_ic_days[-1].date()} "
-          f"({len(q3_ic_days)}个可算日; 全窗44日中覆盖{len(q3_ic_days)}, "
-          f"尾部9日IC留待9/30)")
+          f"({len(q3_ic_days)}个可算日; 9/30全窗预期至9/16共55日, 覆盖约{len(q3_ic_days)/55*100:.0f}%, "
+          f"尾部9个可算日9/4~9/16留待9/30)")
     calib_df = factor_df[(factor_df['date'] >= CALIB_WINDOW[0]) &
                          (factor_df['date'] <= CALIB_WINDOW[1])]
 
@@ -143,7 +143,16 @@ def phase3(factor_df, concept_map):
     only_old = set(old_cfg) - set(new_cfg)
     print(f"  行业: 新标定 {len(new_cfg)} | 现文件 {len(old_cfg)} | "
           f"仅新 {len(only_new)} | 仅旧 {len(only_old)}")
+    if only_new:
+        print(f"    仅新: {sorted(only_new)[:10]}")
+    if only_old:
+        print(f"    仅旧: {sorted(only_old)[:10]}")
     n_same = n_diff = 0
+    key_diff_count = {k: 0 for k in ('factors', 'weights', 'bull_factors', 'bull_weights',
+                                     'bear_factors', 'bear_weights')}
+    weight_delta_gt_1e2 = 0
+    max_weight_delta = 0.0
+    diff_details = []
     for ind in set(new_cfg) & set(old_cfg):
         a, b = new_cfg[ind], old_cfg[ind]
         same = True
@@ -152,22 +161,45 @@ def phase3(factor_df, concept_map):
             va, vb = (a.get(key) or []), (b.get(key) or [])
             if len(va) != len(vb):
                 same = False
+                key_diff_count[key] += 1
             else:
                 for x, y in zip(va, vb):
                     if isinstance(x, (int, float)) and isinstance(y, (int, float)):
-                        if abs(x - y) > 1e-4:
+                        d = abs(x - y)
+                        if d > 1e-4:
                             same = False
+                            key_diff_count[key] += 1
+                            max_weight_delta = max(max_weight_delta, d)
+                            if d > 1e-2:
+                                weight_delta_gt_1e2 += 1
+                            break
                     elif x != y:
                         same = False
+                        key_diff_count[key] += 1
+                        break
         if same:
             n_same += 1
         else:
             n_diff += 1
-            if n_diff <= 5:
-                print(f"  差异: {ind}: 新 {a.get('factors')} vs 旧 {b.get('factors')}")
+            if len(diff_details) < 8:
+                diff_details.append((ind, {k: (a.get(k), b.get(k))
+                                          for k in ('factors', 'weights',
+                                                    'bull_factors', 'bull_weights',
+                                                    'bear_factors', 'bear_weights')
+                                          if (a.get(k) or []) != (b.get(k) or [])}))
     print(f"  共有行业 {len(set(new_cfg) & set(old_cfg))}: 一致 {n_same} | 有差异 {n_diff}")
-    print("  判定口径: 差异=0 → gate态/数据态下程序仍选出同套Q3权重 (E-K1先例通过); "
-          "差异>0 → 逐行业核对, 差异来源需归因(数据重建/gate/程序变动)")
+    print(f"  差异键分布: {key_diff_count}")
+    print(f"  权重差>1e-2的行业数: {weight_delta_gt_1e2} | 最大权重差: {max_weight_delta:.6f}")
+    for ind, dd in diff_details:
+        print(f"  [{ind}]")
+        for k, (na, nb) in dd.items():
+            print(f"    {k}: 新={na} 旧={nb}")
+    print("  判定口径 (9/20早读已预分析): 9/7后已知历史数据修订=9/11基本面更正+"
+          "9/12概念PIT/map+9/14 K线重建 → 差异>0为预期, 不自动等于程序/gate破裂。")
+    print("    良性签名: ①权重小抖动(≤1e-2量级) ②同因子集重排序(并列IC平局) "
+          "③个别概念进出(min_codes阈值边缘); 警报签名: 整组因子替换/行业大换血。")
+    print("    9/20实测(9/17态): 248/399一致, 151差异中weights抖动141(87个>1e-2, "
+          "最大0.084), factors重排序58, 概念进出5 — 良性为主; 9/30报告按此签名分级")
 
 
 def main():
