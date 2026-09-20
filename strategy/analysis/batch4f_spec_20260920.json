@@ -1,0 +1,10 @@
+[
+  {"name": "C36_emerg05", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  emergency_exposure: 0.65", "  emergency_exposure: 0.5"]
+   ]},
+  {"name": "C37_emerg08", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  emergency_exposure: 0.65", "  emergency_exposure: 0.8"]
+   ]}
+]

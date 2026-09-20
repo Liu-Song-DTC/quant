@@ -1,0 +1,12 @@
+[
+  {"name": "C25_momchase0", "file": "core/portfolio.py",
+   "edits": [
+     ["if mom_60d > 0.50 and bp == 0:\n                additive -= 0.06",
+      "if mom_60d > 0.50 and bp == 0:\n                additive -= 0.0"]
+   ]},
+  {"name": "C26_deviat0", "file": "core/portfolio.py",
+   "edits": [
+     ["if dist_ma60 > 0.45 and bp == 0:\n                additive -= 0.06",
+      "if dist_ma60 > 0.45 and bp == 0:\n                additive -= 0.0"]
+   ]}
+]

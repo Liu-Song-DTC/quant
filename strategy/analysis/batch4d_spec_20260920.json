@@ -1,0 +1,16 @@
+[
+  {"name": "C30_damp_soft50", "file": "core/portfolio.py",
+   "edits": [
+     ["if mom_60d > 0.60:\n                multiplier *= 0.85",
+      "if mom_60d > 0.60:\n                multiplier *= 0.925"],
+     ["elif mom_60d > 0.45:\n                multiplier *= 0.92",
+      "elif mom_60d > 0.45:\n                multiplier *= 0.96"]
+   ]},
+  {"name": "C31_momadj_soft50", "file": "core/portfolio.py",
+   "edits": [
+     ["mom_adj = -abs(mom_60d) * 0.10  # FAST: 偏好低波动稳定股",
+      "mom_adj = -abs(mom_60d) * 0.05  # FAST: 偏好低波动稳定股"],
+     ["mom_adj = (mom_60d - 0.0) * 0.18",
+      "mom_adj = (mom_60d - 0.0) * 0.09"]
+   ]}
+]

@@ -1,0 +1,29 @@
+[
+  {"name": "C27_reward_half", "file": "core/portfolio.py",
+   "edits": [
+     ["if bp == 1 and sl >= 1:\n                additive += 0.08",
+      "if bp == 1 and sl >= 1:\n                additive += 0.04"],
+     ["if bom_score > 0.70:\n                additive += 0.06",
+      "if bom_score > 0.70:\n                additive += 0.03"],
+     ["elif bom_score > 0.55:\n                additive += 0.03",
+      "elif bom_score > 0.55:\n                additive += 0.015"]
+   ]},
+  {"name": "C28_reward_x15", "file": "core/portfolio.py",
+   "edits": [
+     ["if bp == 1 and sl >= 1:\n                additive += 0.08",
+      "if bp == 1 and sl >= 1:\n                additive += 0.12"],
+     ["if bom_score > 0.70:\n                additive += 0.06",
+      "if bom_score > 0.70:\n                additive += 0.09"],
+     ["elif bom_score > 0.55:\n                additive += 0.03",
+      "elif bom_score > 0.55:\n                additive += 0.045"]
+   ]},
+  {"name": "C29_reward_x2", "file": "core/portfolio.py",
+   "edits": [
+     ["if bp == 1 and sl >= 1:\n                additive += 0.08",
+      "if bp == 1 and sl >= 1:\n                additive += 0.16"],
+     ["if bom_score > 0.70:\n                additive += 0.06",
+      "if bom_score > 0.70:\n                additive += 0.12"],
+     ["elif bom_score > 0.55:\n                additive += 0.03",
+      "elif bom_score > 0.55:\n                additive += 0.06"]
+   ]}
+]

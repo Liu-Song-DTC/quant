@@ -1,0 +1,20 @@
+[
+  {"name": "C32_speed06", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  entry_speed: 0.8", "  entry_speed: 0.6"],
+     ["  exit_speed: 0.8", "  exit_speed: 0.6"]
+   ]},
+  {"name": "C33_speed10", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  entry_speed: 0.8", "  entry_speed: 1.0"],
+     ["  exit_speed: 0.8", "  exit_speed: 1.0"]
+   ]},
+  {"name": "C34_tvol024", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  target_volatility: 0.28", "  target_volatility: 0.24"]
+   ]},
+  {"name": "C35_tvol032", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  target_volatility: 0.28", "  target_volatility: 0.32"]
+   ]}
+]
