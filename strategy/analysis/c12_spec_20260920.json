@@ -1,0 +1,6 @@
+[
+  {"name": "C12_trg008", "edit": ["  trigger_drawdown: 0.10", "  trigger_drawdown: 0.08"]},
+  {"name": "C12_trg012", "edit": ["  trigger_drawdown: 0.10", "  trigger_drawdown: 0.12"]},
+  {"name": "C12_rec007", "edit": ["  recovery_days: 10", "  recovery_days: 7"]},
+  {"name": "C12_rec014", "edit": ["  recovery_days: 10", "  recovery_days: 14"]}
+]
