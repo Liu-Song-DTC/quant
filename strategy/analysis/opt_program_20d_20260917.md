@@ -747,3 +747,38 @@ stock_stop_loss.enabled=False + stock_cost_stop_enabled→cost={}mask)静默关�
 **42臂全景裁决**: 采纳=0f-G(日历池)+C5c(缓冲0.05)两个, 其余40臂全否决(铁律+4-0≠充分)。
 奖励×2(4-0但孤立尖峰)、0f平滑(4-0但1.9×彩票)等三连诱惑零让渡。**生产732,689/193.08%/
 1.1961/17.92%为组合层全局最优的可辨识点, 旋钮空间耗尽**。
+
+## 贵层census: 信号层/多系统全谱死旋钮+惰性扫描 (9/21, 零臂成本, 代码+CSV铁证)
+
+非豁免节(signal/ml/chan_theory/multi_*/regime_multiplier)在42臂结束后剩余~122个live键
+未分类。按M探针纪律先做零成本扫描, 结果:
+
+**死旋钮 (config装载后零使用, grep全core+bt_execution+generate_trade_orders铁证)**:
+- `regime_multiplier`整节 (bull/neutral/bear): **零reader** — 节名不在任何py文件中出现
+  (早前叶子名扫描误报live: bull/neutral/bear是通用词)
+- `signal.ti_boost_scale/magnitude/ti_adaptive_scale/ti_adaptive_max_adjust`: 4键零使用
+- `signal.trend_sell_threshold_strong/weak/ti_threshold/ti_relax`: 4键零使用
+- `signal.signal_confidence_baseline`: 死 — signal_engine.py:1636 `np.full(n, 0.2)`
+  硬编码baseline, config值从不引用
+- `chan_theory_enhanced`: 8键死 (min_strokes/min_segments/overlap_required/s3_sell_mult/
+  trend_trend_follow/trend_counter_trend/consolidation_discount/pivot_bottom_boost)
+
+**纯装饰 (有计算无消费)**:
+- `signal.resonance` 5键: n_buy/n_sell只用于factor_name加'R2'/'R3'后缀
+  (signal_engine.py:935-936), resonance_systems字段无任何消费者, factor_quality_gate
+  premium列表无R项 → 共振=名字装饰。且sys1_buy_threshold_mult数学惰性
+  (buy_threshold=0.0, 0×mult恒0)。
+
+**live但已探针关闭**:
+- `multi_timeframe`折扣 (counter_trend 0.5/partial 0.72/blend 0.4等): CSV探针
+  (666,778买行×validation merge) — mtf_discount 2.1M distinct值高度绑定, 但fwd梯度
+  **U形** ([0.4,0.6)+1.55% / [0.6,0.75)+0.91% / [0.75,1.0)+0.83% / [1.0,1.2)+1.77%),
+  两端都好中间差, 年分解low_disc 4胜2负(2023+0.83/2024+1.76pp但2021−0.47/2026−0.10) →
+  无单调杠杆, bracket EV低, 关闭
+- `composite_bias`: 2568行加在factor_value上=buy阈值同族平移, 已被阈值探针关闭代理
+  (gate在0.0选择性最大, EV≈0)
+- `chan_theory`核心30键: 承重墙本体(chan_buy_point分类→bp类奖励全链), 扰动=F-2/F-3/
+  E-seq1签名高危, 无bracket
+
+**处置**: 全部保持yaml现状(signal节在指纹内, 删键会引发无意义锚点漂移), 死旋钮清单
+入档供未来维护。贵层census闭合 — 系统内再无未分类旋钮。
