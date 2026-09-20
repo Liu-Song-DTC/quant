@@ -1,0 +1,32 @@
+[
+  {"name": "C21_topdiv0", "file": "core/portfolio.py",
+   "edits": [
+     ["if 'top' in div_type_pen.lower():\n                additive -= 0.08",
+      "if 'top' in div_type_pen.lower():\n                additive -= 0.0"]
+   ]},
+  {"name": "C22_volbreak0", "file": "core/portfolio.py",
+   "edits": [
+     ["if daily_ret_pen < -0.015 and vol_ratio_pen > 0.5:\n                additive -= 0.06",
+      "if daily_ret_pen < -0.015 and vol_ratio_pen > 0.5:\n                additive -= 0.0"]
+   ]},
+  {"name": "C23_limitup0", "file": "core/portfolio.py",
+   "edits": [
+     ["if daily_ret_pen > 0.09:\n                additive -= 0.05",
+      "if daily_ret_pen > 0.09:\n                additive -= 0.0"]
+   ]},
+  {"name": "C24_exhaust0", "file": "core/portfolio.py",
+   "edits": [
+     ["if exhaustion_pen > 0.5:\n                additive -= 0.10",
+      "if exhaustion_pen > 0.5:\n                additive -= 0.0"]
+   ]},
+  {"name": "C25_momchase0", "file": "core/portfolio.py",
+   "edits": [
+     ["if mom_60d > 0.50 and bp == 0:\n                additive -= 0.06",
+      "if mom_60d > 0.50 and bp == 0:\n                additive -= 0.0"]
+   ]},
+  {"name": "C26_deviat0", "file": "core/portfolio.py",
+   "edits": [
+     ["if dist_ma60 > 0.45 and bp == 0:\n                additive -= 0.06",
+      "if dist_ma60 > 0.45 and bp == 0:\n                additive -= 0.0"]
+   ]}
+]
