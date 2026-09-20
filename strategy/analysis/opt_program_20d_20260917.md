@@ -42,13 +42,13 @@ incumbent自采纳E-K1/E-N5/PIT后已漂移, 老标定点(8/22-8/24)可能已过
 | C2 | bp2_score_boost | 0.45 | E-K1单点, 无bracket | bp2选中率/hit1×boost | 0.35/0.55 |
 | C3 | entry_chan_gate | bearhard | E-N5两态验证(off/bearhard/hard未完整bracket) | bp0入场抑制数+fwd | hard/off |
 | C4 | fast_min_score | 0.30 | E-O2(0.30/0.35/0.40旧态) | FAST入场数×门槛 | 0.25/0.35 |
-| C5 | replacement_buffer | 0.0 | C实验未跑全 | 换仓对收益的边际 | 0.05/0.10 |
+| C5 | replacement_buffer | 0.05(C5c盈利闸) | 宽度0.03/0.10/ref0全跑(9/20) | 0.05内点峰 | 闭合 |
 | C6 | rank_decay | 0.15 | 8/21网格(0.05/0.15/0.30/0.45) | 旧态重测 | 0.10/0.20 |
 | C8 | turnover_bonus | 0.1 | 无bracket | — | 0.05/0.15 |
 | C9 | hold_threshold | 0.2 | 8/25参数化 | — | 0.15/0.25 |
 | C10 | consecutive_loss_breaker params | 4/-0.015/0.75 | 未bracket | 触发次数 | 阈值3/5 |
 | C11 | volatility_control blend/lookback | 0.6/20/60 | 未bracket | — | 0.5/0.7 |
-| C12 | portfolio_stop_loss trigger/recovery | 0.10/0.65/10d | C2/H5-a/H6-a部分 | — | 谨慎(已多臂) |
+| C12 | portfolio_stop_loss trigger/recovery | 0.10/0.65/10d | trigger 0.08/0.12 + rec 7/14 (9/20) | rec=死旋钮, 0.08=3-1否决, 0.12=全等 | 闭合 |
 | C13 | dynamic_rebalance periods | 30/20/15 | 未bracket | — | bull25/bear10 |
 | C14 | base_exposure | 0.85 | 1.0否决/0.85基线 | — | 0.8(低EV) |
 
@@ -150,6 +150,22 @@ C5b_dd05=701,463(0-4否) / C5b_dd08=710,218(0-3-1否) / C5d=703,501(0-4否) →
 2021/22持平。生产写入(portfolio.py patch+yaml 0.05)+复现跑逐位一致→commit。
 **新生产锚点 = 732,689/193.08%/1.1961/17.92%** (G池+C5c), 后续臂均以此为新基线。
 
+## C5c宽度bracket + C12硬止损bracket终局 (9/20, 7臂, 双闭合)
+
+**C5c宽度 (yaml-only, kill-switch同环境, opt_yaml_driver_20260920.py)**: 0.03=700,944/180.38/1.1519/18.17 (4-0败),
+0.10=667,770/167.11/1.1022/18.03 (4-0败), ref(0)=705,640/182.26/1.1656/18.00
+(**=0f-G锚点逐位复现✓**) → 同环境全宽曲面{0, 0.03, 0.05, 0.10}: 0.05=732,689尖锐内点峰;
+0.03<0.0为真实机制谷(小缓冲只护微利陈旧名挡换手、护不住大赢家="最坏两全", −4,696);
+0.10崩穿无缓冲线(−64,919 vs ref)。澄清9/19的"4-0 vs ref=718,158": C5_ref_005=无盈利闸
+对称0.05变体非buffer 0.0 → **C5c=盈利闸×0.05宽度完整证据链闭合, 生产0.05不动**。
+
+**C12硬止损 (4臂)**: 消费链先钉死(portfolio.py:141读section trigger_drawdown=yaml 7466,
+顶层标量7305不在路径, 无调用方显式传参)。trg008=734,398/193.76/1.1976/17.95 —
+3胜1负(MDD+0.03pp)→铁律否决, 且降触发反而恶化MDD=机制目的反向失败(浅坑牛市cap绑定:
+2024-07/2026-09-11; NAV+1,709在噪声带内); trg012=逐位全等生产(2022熊市cap从未绑定,
+熊市目标敞口≤0.6<0.65坐实); rec007/rec014=逐位全等 → **recovery_days死旋钮**
+(调仓间隔10交易日≈14自然日>任何recovery值, 恢复斜坡下次检查前必到期)。
+
 ## C1 ML blend权重臂 (9/19, 进行中)
 
 **架构真相(9/19晚探明)**: 回测消费的是CSV的 `score` 列, 不是 adjusted_score 列 —
@@ -195,6 +211,8 @@ NAV +122,194/收益 +48.87pp/Sharpe +0.1519 全大胜, 但重门控后2024 MDD 1
   (仅factor_preparer豁免列表提到) → 臂废弃。rebalance_days=10在backtest节是唯一生效换仓周期。
 - **C11 blend_weight/long_lookback = 死**: config_loader只映射volatility_control.enabled+
   lookback_period到portfolio_config, blend_weight 0.6/long 60无任何消费方 → C11缩为lookback臂。
+- **C12 recovery_days = 死旋钮(9/20实测)**: 7/10/14三值逐位全等(调仓间隔10交易日≈14自然日,
+  恢复斜坡在下次检查前必到期) → 三臂逐位一致坐实。
 - **C3 'hard'臂不跑**: E-N5已证bearhard胜hard(生产= bearhard)。
 - **C4 0.35/0.40臂不跑**: E-O2已否决。C4缩为0.25单臂(反方向)。
 - C6 rank_decay 0.15=旧网格峰值(0.05/0.15/0.30/0.45), 0.10/0.20=峰周细化。
@@ -518,7 +536,7 @@ signal_engine门控, 默认true向后兼容); 阶段2 PIT重建关闭(上界≤0
 | Lane | 范围 | 臂数 | 裁决 |
 |---|---|---|---|
 | Lane 0 | 0d/0e/0f/0g/0h + PIT + 阶段0a/b/c | 6 | 0f日历池采纳 / 0g关闭采纳 / 0h现金闸落地 / 其余关闭或已裁定 |
-| Lane 1 | C1-C14 + C5六臂 + 批次2(11臂) + 批次3(C2/C14/交互) | 27 | **仅C5c采纳**(4-0, MDD−0.08pp, 9/8以来首个纯增强采纳) |
+| Lane 1 | C1-C14 + C5六臂 + 批次2(11臂) + 批次3(C2/C14/交互) + C5cw/C12宽度7臂(9/20) | 34 | **仅C5c采纳**(4-0, MDD−0.08pp, 9/8以来首个纯增强采纳); 9/20宽度双闭合=0.05内点峰证实+recovery死旋钮 |
 | Lane 2 | M2-M5 | 4探针 | 全关闭(死旋钮/排名惰性/EV<<成本) |
 | Lane 3 | N1-N4 | 3探针 | 全关闭(无周内alpha/诚实成本非机会/vol惰性) |
 | 校准扩展 | P0-2 CSCV F5/F6/F7 | 3家族 | F7 PBO≈50%零带内 = 校准期选择=噪声级 |
