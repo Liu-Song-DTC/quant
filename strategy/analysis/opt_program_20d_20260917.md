@@ -824,3 +824,21 @@ C25-C42臂的pre_快照为该污染曲线, 但**全部臂的metrics来自fresh�
 无操作臂(C26/C40-C42)逐位复现生产732,688.93证实裁决链无污染。
 9/21已从C26 post(逐位=生产)复原RVD全量七文件+信号CSV(fp 6f1cb6b1|0, 07:34
 生成), RVD现为精确生产锚点态。
+
+## 9/30链路全量de-risk闭合 (9/21)
+
+Phase 0预飞在9/17冻结态实跑通过: 六项自检全执行、import链干净
+(offline_calibration/config_loader零异常)、阻塞逻辑正确(数据止于9/17→
+正确报"阻塞: 先补9/30数据+refresh_all"后退出, 未误入Phase 1)。sidecar
+fp 6f1cb6b1|0与C5c生产态一致; yaml三键(bp2 0.45/buffer 0.05/0g关闭)全✓。
+
+9/30三件套就绪性核验:
+- v2_oos_runbook_0930.py: py_compile过 + Phase 0实跑过(本次) + Phase 1-3
+  计算路径9/20早读已实测(排雷_cross_sectional_ic列表bug+fwd=10日已修)
+- calib_2026Q4_tail.py: py_compile过 + 9/20干跑跑通(Q4标定自适应正常)
+- pool_flip_report.py: py_compile过 + 消费get_stock_pool(todate=)活实现
+  →自动继承0f日历池语义, 无需改写
+
+9/30执行序即为机械流程: 用户下载→refresh_all→Phase 0绿→Phase 1-4只读
+→Phase 5清单(全链需用户批准)→Q4标定→二次全链裁决。排队项全部
+de-risk完毕, 现态=诚实空队列持有。

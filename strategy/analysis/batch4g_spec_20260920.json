@@ -1,0 +1,23 @@
+[
+  {"name": "C40_mroff", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  mom_60d_force_exit: 0.45", "  mom_60d_force_exit: 0.99"],
+     ["  dist_ma60_force_exit: 0.4", "  dist_ma60_force_exit: 0.99"],
+     ["  mom_60d_reduce: 0.3", "  mom_60d_reduce: 0.99"],
+     ["  dist_ma60_reduce: 0.35", "  dist_ma60_reduce: 0.99"]
+   ]},
+  {"name": "C41_mrsoft", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  mom_60d_force_exit: 0.45", "  mom_60d_force_exit: 0.6"],
+     ["  dist_ma60_force_exit: 0.4", "  dist_ma60_force_exit: 0.52"],
+     ["  mom_60d_reduce: 0.3", "  mom_60d_reduce: 0.4"],
+     ["  dist_ma60_reduce: 0.35", "  dist_ma60_reduce: 0.46"]
+   ]},
+  {"name": "C42_mrhard", "file": "config/factor_config.yaml",
+   "edits": [
+     ["  mom_60d_force_exit: 0.45", "  mom_60d_force_exit: 0.36"],
+     ["  dist_ma60_force_exit: 0.4", "  dist_ma60_force_exit: 0.32"],
+     ["  mom_60d_reduce: 0.3", "  mom_60d_reduce: 0.24"],
+     ["  dist_ma60_reduce: 0.35", "  dist_ma60_reduce: 0.28"]
+   ]}
+]
