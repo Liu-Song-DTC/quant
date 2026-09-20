@@ -1,0 +1,20 @@
+[
+  {"name": "C29b_reward_x25", "file": "core/portfolio.py",
+   "edits": [
+     ["if bp == 1 and sl >= 1:\n                additive += 0.08",
+      "if bp == 1 and sl >= 1:\n                additive += 0.2"],
+     ["if bom_score > 0.70:\n                additive += 0.06",
+      "if bom_score > 0.70:\n                additive += 0.15"],
+     ["elif bom_score > 0.55:\n                additive += 0.03",
+      "elif bom_score > 0.55:\n                additive += 0.075"]
+   ]},
+  {"name": "C29c_reward_x3", "file": "core/portfolio.py",
+   "edits": [
+     ["if bp == 1 and sl >= 1:\n                additive += 0.08",
+      "if bp == 1 and sl >= 1:\n                additive += 0.24"],
+     ["if bom_score > 0.70:\n                additive += 0.06",
+      "if bom_score > 0.70:\n                additive += 0.18"],
+     ["elif bom_score > 0.55:\n                additive += 0.03",
+      "elif bom_score > 0.55:\n                additive += 0.09"]
+   ]}
+]

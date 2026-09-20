@@ -94,6 +94,18 @@ def parse_metrics(log_path):
 def main():
     with open(sys.argv[1], encoding='utf-8') as f:
         arms = json.load(f)
+    # v3预飞(SIGKILL事故教训): 残留patch的真正检测=每臂编辑前count==1断言(已内置),
+    # 此处只做信息性git状态提示 — HEAD硬校验会把yaml既有未提交注释delta误判为残留。
+    _dirty = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'] + CODE_FILES,
+                            cwd=BASE).returncode
+    if _dirty:
+        _dirty_files = [f for f in CODE_FILES
+                        if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', f],
+                                          cwd=BASE).returncode]
+        print(f"[预飞提示] 相对HEAD有未提交差异(可能是记录性注释, 非patch残留): "
+              f"{' '.join(_dirty_files) or '未知'} — 每臂count==1断言将独立把关", flush=True)
+    if os.path.exists(os.path.join(RVD, '.signal_code_fp')):
+        print(f"[预飞] 当前信号指纹: {read(os.path.join(RVD, '.signal_code_fp')).strip()}", flush=True)
     os.makedirs(ARMS_DIR, exist_ok=True)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     summary = []
