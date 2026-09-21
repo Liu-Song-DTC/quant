@@ -1,0 +1,4 @@
+[
+ {"name": "AF1_exhr025", "edits": [["exhaustion_reduce_mult: 0.5", "exhaustion_reduce_mult: 0.25"]]},
+ {"name": "AF2_exhr075", "edits": [["exhaustion_reduce_mult: 0.5", "exhaustion_reduce_mult: 0.75"]]}
+]

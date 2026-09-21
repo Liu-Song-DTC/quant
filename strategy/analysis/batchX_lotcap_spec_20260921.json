@@ -1,0 +1,32 @@
+[
+ {
+  "name": "X1_lot10",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "        self.ideal_position_max_mult = pp.get('ideal_position_max_mult', 2.0)",
+    "        self.ideal_position_max_mult = 1.0  # X1臂: 1手成本<=1×理想仓位"
+   ]
+  ]
+ },
+ {
+  "name": "X2_lot15",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "        self.ideal_position_max_mult = pp.get('ideal_position_max_mult', 2.0)",
+    "        self.ideal_position_max_mult = 1.5  # X2臂: 1.5×"
+   ]
+  ]
+ },
+ {
+  "name": "X3_lot30",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "        self.ideal_position_max_mult = pp.get('ideal_position_max_mult', 2.0)",
+    "        self.ideal_position_max_mult = 3.0  # X3臂: 3×"
+   ]
+  ]
+ }
+]

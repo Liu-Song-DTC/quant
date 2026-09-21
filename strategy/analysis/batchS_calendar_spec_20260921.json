@@ -1,0 +1,32 @@
+[
+ {
+  "name": "S1_cal_AugSep05",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "        # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）\n        self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure",
+    "        # 日历季节性闸(实验臂S1): 8+9月中报重定价季alpha系统性为负 → 目标敞口×0.5\n        if date.month in (8, 9):\n            target_exposure *= 0.5\n\n        # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）\n        self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure"
+   ]
+  ]
+ },
+ {
+  "name": "S2_cal_Sep05",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "        # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）\n        self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure",
+    "        # 日历季节性闸(实验臂S2): 9月alpha最弱(中位-1.20%) → 目标敞口×0.5\n        if date.month == 9:\n            target_exposure *= 0.5\n\n        # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）\n        self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure"
+   ]
+  ]
+ },
+ {
+  "name": "S3_cal_Aug05",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "        # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）\n        self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure",
+    "        # 日历季节性闸(实验臂S3): 8月5/6年负(仅2025正) → 目标敞口×0.5\n        if date.month == 8:\n            target_exposure *= 0.5\n\n        # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）\n        self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure"
+   ]
+  ]
+ }
+]

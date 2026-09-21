@@ -1,0 +1,22 @@
+[
+ {
+  "name": "Y1_exit08",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "                # 止损卖出\n                adjusted[code] = current + diff",
+    "                # 止损卖出\n                adjusted[code] = current + 0.8 * diff"
+   ]
+  ]
+ },
+ {
+  "name": "Y2_exit05",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "                # 止损卖出\n                adjusted[code] = current + diff",
+    "                # 止损卖出\n                adjusted[code] = current + 0.5 * diff"
+   ]
+  ]
+ }
+]

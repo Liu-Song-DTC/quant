@@ -1,0 +1,22 @@
+[
+ {
+  "name": "T4_rb08",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "        rebalance_interval=10,",
+    "        rebalance_interval=8,"
+   ]
+  ]
+ },
+ {
+  "name": "T5_rb09",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "        rebalance_interval=10,",
+    "        rebalance_interval=9,"
+   ]
+  ]
+ }
+]

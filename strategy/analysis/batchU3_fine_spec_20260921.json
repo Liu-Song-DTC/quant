@@ -1,0 +1,32 @@
+[
+ {
+  "name": "U6_tol007",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "            if abs(diff) < total_equity * 0.01:",
+    "            if abs(diff) < total_equity * 0.07:"
+   ]
+  ]
+ },
+ {
+  "name": "U7_tol008",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "            if abs(diff) < total_equity * 0.01:",
+    "            if abs(diff) < total_equity * 0.08:"
+   ]
+  ]
+ },
+ {
+  "name": "U8_tol012",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "            if abs(diff) < total_equity * 0.01:",
+    "            if abs(diff) < total_equity * 0.12:"
+   ]
+  ]
+ }
+]

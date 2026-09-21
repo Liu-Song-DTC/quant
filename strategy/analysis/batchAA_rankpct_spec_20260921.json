@@ -1,0 +1,4 @@
+[
+ {"name": "AA1_rank02", "edits": [["min_rank_pct: 0.3", "min_rank_pct: 0.2"]]},
+ {"name": "AA2_rank05", "edits": [["min_rank_pct: 0.3", "min_rank_pct: 0.5"]]}
+]

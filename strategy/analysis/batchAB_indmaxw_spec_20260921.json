@@ -1,0 +1,6 @@
+[
+ {"name": "AB1_indw02", "edits": [["industry_max_weight: 0.4", "industry_max_weight: 0.2"]]},
+ {"name": "AB2_indw03", "edits": [["industry_max_weight: 0.4", "industry_max_weight: 0.3"]]},
+ {"name": "AB3_indw05", "edits": [["industry_max_weight: 0.4", "industry_max_weight: 0.5"]]},
+ {"name": "AB4_indw06", "edits": [["industry_max_weight: 0.4", "industry_max_weight: 0.6"]]}
+]

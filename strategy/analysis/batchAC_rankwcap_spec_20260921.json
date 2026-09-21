@@ -1,0 +1,4 @@
+[
+ {"name": "AC1_rankw015", "edits": [["rank_weight_cap: 0.25", "rank_weight_cap: 0.15"]]},
+ {"name": "AC2_rankw035", "edits": [["rank_weight_cap: 0.25", "rank_weight_cap: 0.35"]]}
+]

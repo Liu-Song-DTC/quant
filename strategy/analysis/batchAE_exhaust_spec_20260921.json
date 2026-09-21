@@ -1,0 +1,4 @@
+[
+ {"name": "AE1_exh004", "edits": [["exhaustion_max_weight: 0.08", "exhaustion_max_weight: 0.04"]]},
+ {"name": "AE2_exh012", "edits": [["exhaustion_max_weight: 0.08", "exhaustion_max_weight: 0.12"]]}
+]

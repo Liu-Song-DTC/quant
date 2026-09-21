@@ -1,0 +1,4 @@
+[
+ {"name": "AD1_mpi2", "edits": [["max_per_industry: 0", "max_per_industry: 2"]]},
+ {"name": "AD2_mpi4", "edits": [["max_per_industry: 0", "max_per_industry: 4"]]}
+]
