@@ -1,0 +1,22 @@
+[
+ {
+  "name": "AG1_phase03",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "            self._last_rebalance_date = date",
+    "            self._last_rebalance_date = date - pd.Timedelta(days=3)  # AG相位探针"
+   ]
+  ]
+ },
+ {
+  "name": "AG2_phase05",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "            self._last_rebalance_date = date",
+    "            self._last_rebalance_date = date - pd.Timedelta(days=5)  # AG相位探针"
+   ]
+  ]
+ }
+]
