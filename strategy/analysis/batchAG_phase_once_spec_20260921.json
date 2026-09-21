@@ -1,0 +1,22 @@
+[
+ {
+  "name": "AG3_phase_neg3_once",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "            self._last_rebalance_date = date",
+    "            if not hasattr(self, '_ag_phase_applied'):\n                self._ag_phase_applied = True\n                self._last_rebalance_date = date - pd.Timedelta(days=3)  # AG相位探针: 仅首次后移锚点\n            else:\n                self._last_rebalance_date = date"
+   ]
+  ]
+ },
+ {
+  "name": "AG4_phase_neg5_once",
+  "file": "core/portfolio.py",
+  "edits": [
+   [
+    "            self._last_rebalance_date = date",
+    "            if not hasattr(self, '_ag_phase_applied'):\n                self._ag_phase_applied = True\n                self._last_rebalance_date = date - pd.Timedelta(days=5)  # AG相位探针: 仅首次后移锚点\n            else:\n                self._last_rebalance_date = date"
+   ]
+  ]
+ }
+]
