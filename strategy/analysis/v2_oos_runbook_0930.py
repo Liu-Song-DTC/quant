@@ -84,8 +84,11 @@ def phase0():
     print("=" * 70)
     ok = True
 
-    # 1) Q3数据完整: 任一普通股票表有2026-09-30 bar + 指数表
-    for probe in ('sh000001', 'sh600519'):
+    # 1) Q3数据完整: 指数表 + 普通股票表 都须有2026-09-30 bar
+    #    (2026-09-21加固: 原实现只查首个存在的文件即break, 若指数已刷新而个股
+    #    K线未刷新(部分刷新), Phase 0会误放行且Phase 2的Q3 IC窗口被静默截短。
+    #    命名注意: 指数=sh000001_qfq.csv带前缀, 个股=600519_qfq.csv无前缀)
+    for probe in ('sh000001', '600519'):
         p = os.path.join(BASE_DIR, '..', 'data/stock_data/backtrader_data', f'{probe}_qfq.csv')
         if os.path.exists(p):
             df = pd.read_csv(p, parse_dates=['datetime'], usecols=['datetime'])
@@ -94,7 +97,9 @@ def phase0():
             if last < Q3_END:
                 print("  ✗ 数据未到2026-09-30, 先完成周五收盘下载+refresh_all")
                 ok = False
-            break
+        else:
+            print(f"  ✗ {probe} K线文件缺失")
+            ok = False
     # 2) index.yaml含2026Q3
     with open(os.path.join(Q_DIR, 'index.yaml'), 'r', encoding='utf-8') as f:
         index = yaml.safe_load(f)
@@ -166,9 +171,7 @@ def phase2(factor_df):
     facts = selected_factors(ind_cfg)
     print(f"  选中因子 {len(facts)} 个 (中性/bull/bear并集)")
     # future_ret只到 9/30 - forward_period(yaml=10交易日) ≈ 9/16; Q3内可审计段=7/1~9/16
-    q3_lo, q3_hi = pd.Timestamp('2026-07-01'), factor_df['future_ret'].notna() & \
-        (factor_df['date'] >= pd.Timestamp('2026-07-01'))
-    q3_df = factor_df[factor_df['date'] >= q3_lo].copy()
+    q3_df = factor_df[factor_df['date'] >= pd.Timestamp('2026-07-01')].copy()
     q3_max = q3_df[q3_df['future_ret'].notna()]['date'].max()
     print(f"  Q3内可算IC段: 2026-07-01 ~ {q3_max.date()} (future_ret=10日, 尾部无IC)")
     calib_df = factor_df[(factor_df['date'] >= CALIB_WINDOW[0]) &
