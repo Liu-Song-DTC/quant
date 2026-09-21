@@ -195,6 +195,9 @@ def phase2(factor_df):
     print(f"\n  Q3 IC>0: {pos}/{len(r)} ({pos/len(r)*100:.0f}%) | "
           f"标定窗IC>0: {(r['ic_calib_mean']>0).sum()}/{len(r)}")
     print("  判定口径: Q3 IC符号与标定窗一致率≥70% 且 均值不崩塌(<标定窗一半) → 标定程序OOS成立")
+    print("  null校准 (9/21预计算, analysis/v2_null_gate_20260921.py): observed一致率低于")
+    print("  块bootstrap null 2.5%分位→符号衰减证据; observed崩塌率低于null 5%分位→崩塌证据。")
+    print("  9/30只比表无需重跑null (标定窗冻结不变)。")
     return r
 
 
