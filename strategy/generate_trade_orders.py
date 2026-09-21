@@ -34,6 +34,7 @@ from core.config_loader import load_config
 from core.signal_store import SignalStore
 from core.portfolio import PortfolioConstructor
 from core.market_regime_detector import MarketRegimeDetector
+from core.repo_sweep import compute_repo_sweep, sweep_guidance
 
 config = load_config()
 
@@ -702,10 +703,44 @@ def main():
         for o in _drop:
             orders.remove(o)
 
+    # ── 逆回购sweep估算 (2026-09-21, 实盘路径预备, yaml默认关闭) ──
+    # 订单后闲置现金 = 现金 + 卖出回款 − 最终买单总额(现金闸缩放后重算),
+    # 与0h现金闸同口径。纯估算建议块: 以QMT侧执行时实际可用余额为准。
+    _buy_final = 0.0
+    for o in orders:
+        if o['action'] not in ('open', 'adjust'):
+            continue
+        _code = o['stock_code'].split('.')[0].zfill(6)
+        _prev_amt = prev_positions.get(_code, {}).get('amount', 0)
+        if o['action'] == 'open':
+            _buy_final += o['amount']
+        elif o['amount'] > _prev_amt:
+            _buy_final += o['amount'] - _prev_amt
+    _post_order_cash = max(account_capital - _pos_sum, 0.0) + _sell_proceeds - _buy_final
+    _sweep_cfg = config.get('live_monitoring.repo_sweep', {}) or {}
+    _sweep = compute_repo_sweep(_post_order_cash, _sweep_cfg)
+
     output = {
         'date': str(target_date),
         'orders': orders,
     }
+    if _sweep['enabled']:
+        output['repo_sweep'] = {
+            'code': _sweep['code'],
+            'tenor': _sweep['tenor'],
+            'amount': _sweep['amount'],
+            'reserve': _sweep['reserve'],
+            'estimated_annual_yield': _sweep['estimated_annual_yield'],
+            'reason': _sweep['reason'],
+            'notes': sweep_guidance(_sweep),
+        }
+        print(f"\n[逆回购sweep] {_sweep['reason']}")
+        if _sweep['amount'] >= 1000:
+            print(f"  建议单: 卖出 {_sweep['code']} {_sweep['amount']:,}元 "
+                  f"(年化估算≈{_sweep['estimated_annual_yield']:,.0f}元, 股票单成交后最后下)")
+
+
+
 
     print(f"\n{'='*60}")
     print(f"订单生成: {len(orders)} 条")

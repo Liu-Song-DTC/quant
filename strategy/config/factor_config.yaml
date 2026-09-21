@@ -7779,6 +7779,16 @@ live_monitoring:
   enabled: true
   reference_path: strategy/rolling_validation_results/backtest_reference.csv
   divergence_threshold: 0.3
+  # 逆回购闲置现金sweep (2026-09-21, 实盘路径预备): 快照日均闲置现金56.9%
+  # → GC001隔夜年化≈1.5% ≈ 0.91% NAV/年无风险增益。纯实盘执行层,
+  # 回测锚点不动(实盘只会优于回测)。enabled默认false=关闭(实盘暂停期);
+  # 恢复实盘后由用户决策开启。估算写入trade_orders.json的repo_sweep键,
+  # QMT侧以实际可用余额为准最后下单(卖出204001.SH, 1000元整数倍)。
+  repo_sweep:
+    enabled: false
+    tenor: '1d'          # v1仅隔夜: 7d/14d会锁死10d调仓周期资金
+    reserve_ratio: 0.10  # 永留缓冲比例(×订单后剩余现金, 覆盖滑点/手续费)
+    assumed_rate: 0.015  # 仅估算年化收益展示用, 非成交价
 multi_strategy:
   enabled: true
   trend:
