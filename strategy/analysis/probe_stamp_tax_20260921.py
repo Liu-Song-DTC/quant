@@ -150,12 +150,22 @@ if __name__ == '__main__':
         print(f"[identity] ✗ Sharpe偏差 {r1['sharpe'] - PROD['sharpe']:+.5f}"); ok = False
     if abs(abs(r1['max_drawdown']) * 100 - PROD['mdd']) > 0.02:
         print(f"[identity] ✗ MDD偏差"); ok = False
-    for yr, (rr, _m) in sorted(r1['annual_returns'].items()):
+    for yr, rr in sorted(r1['annual_returns'].items()):
         exp = PROD['years'].get(int(yr))
         if exp is not None and abs(rr * 100 - exp) > 0.03:
             print(f"[identity] ✗ {yr} 年收益 {rr*100:.2f}% vs 生产 {exp}%"); ok = False
+    # 净值曲线逐日比对 (比标量更严格的恒等证据): vs RVD现行生产曲线。
+    # 注意: C26臂目录的 pre_equity_curve.csv 是批次中间态旧曲线(终点721,744.68),
+    # 不是生产 — 勿用。生产曲线=RVD当前(已核验与C26 post逐位全等, 终点732,688.93)。
+    _prod_curve = pd.read_csv(os.path.join(_RVR, 'equity_curve.csv'))
+    _pnav = _prod_curve['nav'].values.astype(np.float64)
+    print(f"[identity] 参照: RVD equity_curve.csv 终点 {_pnav[-1]:,.2f} ({len(_pnav)}行)")
+    _maxdiff = float(np.nanmax(np.abs(r1['nav'] - _pnav)))
+    print(f"[identity] 净值曲线逐日最大偏差: {_maxdiff:.6f}")
+    if _maxdiff > 0.01:
+        print("[identity] ✗ 净值曲线不一致"); ok = False
     assert ok, "恒等烟测失败 — exec副本不忠实, 反事实不可信, 中止"
-    print("[identity] ✓ 四指标+年分解逐位复现生产锚点 732,689 — exec副本忠实")
+    print("[identity] ✓ 四指标+年分解+逐日净值曲线复现生产锚点 732,689 — exec副本忠实")
 
     # ---- run2: 时间变化率反事实 (万10 → 2023-08-28 → 万5) ----
     M._STAMP_ARR = np.where(calendar.values < _CUTOFF, 0.001, 0.0005).astype(np.float64)
@@ -176,8 +186,8 @@ if __name__ == '__main__':
     aud['rate_used'] = np.where(aud['pre_cutoff'], 0.001, 0.0005)
     aud['extra_tax'] = aud['proceeds'] * (aud['rate_used'] - 0.0005)  # 相对生产的补收
     aud['year'] = aud['date'].dt.year
-    aud.to_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            'probe_stamp_audit_20260921.csv'), index=False)
+    _orig_to_csv(aud, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   'probe_stamp_audit_20260921.csv'), index=False)
     tot_extra = aud['extra_tax'].sum()
     print(f"\n[审计] 卖出 {len(aud)} 笔 (万10期 {int(aud['pre_cutoff'].sum())} / 万5期 {int((~aud['pre_cutoff']).sum())})")
     print(f"[审计] 补收印花税一阶合计: {tot_extra:,.0f} 元 = 最终净值 {fv1:,.0f} 的 {tot_extra/fv1*100:.2f}%")
@@ -193,10 +203,10 @@ if __name__ == '__main__':
             print(f"  年分解 {yr}: {r1['annual_returns'][yr]*100:+.2f}% → {r2['annual_returns'][yr]*100:+.2f}% (Δ{d*100:+.2f}pp)")
 
     # ---- 净值曲线落盘(/tmp) ----
-    pd.DataFrame({'date': [d.strftime('%Y-%m-%d') for d in calendar], 'nav': r1['nav']}).to_csv(
-        '/tmp/probe_stamp_flat_curve.csv', index=False)
-    pd.DataFrame({'date': [d.strftime('%Y-%m-%d') for d in calendar], 'nav': r2['nav']}).to_csv(
-        '/tmp/probe_stamp_counter_curve.csv', index=False)
+    _orig_to_csv(pd.DataFrame({'date': [d.strftime('%Y-%m-%d') for d in calendar],
+                               'nav': r1['nav']}), '/tmp/probe_stamp_flat_curve.csv', index=False)
+    _orig_to_csv(pd.DataFrame({'date': [d.strftime('%Y-%m-%d') for d in calendar],
+                               'nav': r2['nav']}), '/tmp/probe_stamp_counter_curve.csv', index=False)
 
     # ---- 零写入核验 ----
     _assert_zero_writes(snap0)
