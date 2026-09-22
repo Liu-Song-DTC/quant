@@ -109,9 +109,12 @@ def main():
         calibration_results, window_df, concept_map=concept_map,
         concept_inception=concept_inception)
 
-    # 薄样本回退2026Q3权重 (9/22覆盖预检裁决): gated天数<60的概念重标定
+    # 薄样本回退2026Q3权重 (9/22覆盖预检裁决): gated天数<120的概念重标定
     # 方差高且无OOS余量 — 用Q3权重(经审计§5的23日OOS验证)替代重标定。
-    GATED_DAY_MIN = 60
+    # 阈值=窗口1193日的10%: 中报4概念9/30时gated≈66日, 下一组(光刻机等)700+日,
+    # 任何[100,600]阈值行为相同; 60会因数据态差(9/3截断47日 vs 9/30全量66日)
+    # 在正式运行日静默失效, 120对两态皆稳。
+    GATED_DAY_MIN = 120
     if concept_inception:
         codes_of = defaultdict(list)
         for code, cs in (concept_map or {}).items():
