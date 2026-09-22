@@ -7608,7 +7608,7 @@ chan_theory_enhanced:
     min_confidence: 0.2
   bp7_gate:
     enabled: true
-    min_signal_level: 2
+    min_signal_level: 4  # 9/22-23 bp7 bracket采纳sl4: sl2(732,689)<sl3(767,530)<sl4(853,076)≈sl5(852,976)单调爬升+顶flat-top, 采纳内点非角点(零成本保留sl4行2703笔, 2023分解−0.46pp优于sl5的−1.26pp); 四指标4-0胜锚, 曲线级Δ(sl5-sl4)最大5,737=微观
   bp6_gate:
     enabled: true
     min_signal_level: 2
