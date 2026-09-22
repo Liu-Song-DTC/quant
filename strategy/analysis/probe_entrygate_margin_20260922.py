@@ -46,6 +46,8 @@ def dist_at(code, dt):
     s = close_series(code)
     if s is None:
         return np.nan
+    if not isinstance(dt, pd.Timestamp):
+        dt = pd.Timestamp(dt)  # int64 ns epoch → Timestamp (dt64列)
     pos = s.index.searchsorted(dt)
     if pos >= len(s) or s.index[pos] != dt:
         return np.nan
