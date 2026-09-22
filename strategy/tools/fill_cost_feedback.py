@@ -19,8 +19,9 @@
   1) 逐笔表(code/date/侧/股数/成交价/开盘基准/滑点bp)
   2) 按侧聚合: n/中位/均值/p10/p90 滑点
   3) 四项成本差额合计(元) + 占总成交额bp
-  4) slip_rate校准建议 = max(万3, 真实p90向上取整到万) + 滑点响应面NAV映射
-     (万10→万5 = +6.12pp NAV, 9/22 probe_slippage_bracket已探; 更低为算术区线性外推)
+  4) slip_rate校准建议 = 各侧p90×1.5缓冲(下限万3, 双侧样本≥5时拆分买/卖) +
+     滑点响应面NAV映射 (万10→万5=+6.12pp双边已探; 不对称分解9/22: 双侧弹性对称
+     1.01+线性可加 → 分侧独立校准零交互惩罚, 每侧每降万5≈+3.11pp)
   5) 报告md落盘(--out, 默认 /tmp/fill_cost_report.md)
 
 用法:
@@ -226,25 +227,55 @@ def main():
     if ok.empty:
         print("  无有效滑点样本 — 保持生产万10不动, 待成交积累后重跑本工具")
     else:
-        p90 = max(ok['slip_bp'].quantile(0.90), 0.0)
-        med = ok['slip_bp'].median()
-        # 建议 = 真实p90×1.5缓冲, 下限万3 (yaml接受任意浮点, 无需万取整)
-        rec_bp = max(3.0, np.ceil(p90 * 1.5))
-        rec = rec_bp / 10000.0
-        print(f"  真实滑点: 中位{med:+.1f}bp, p90={p90:+.1f}bp (双边合并{len(ok)}笔)")
-        if rec_bp > 10:
-            print(f"  ⚠ 真实p90高于模型万10 — 建议上调至万{rec_bp:.0f}或优化执行"
-                  f"(限价单开盘内成交), 重锚时一并改")
-        else:
-            print(f"  建议 slip_rate = 万{rec_bp:.0f} (p90×1.5缓冲, 下限万3)")
-            delta_bp = 10 - rec_bp
-            if delta_bp > 0:
-                uplift = SLIP_SURFACE_PP_PER_5BP * delta_bp / 5
-                qual = '外推' if rec_bp < SLIP_SURFACE_PROBED_MIN_BP else '已探区'
-                print(f"  滑点响应面映射: 万10→万{rec_bp:.0f} ≈ +{uplift:.1f}pp NAV "
-                      f"({qual}: 万5臂+6.12pp为已探锚点, 响应面严格单调无膝点)")
+        buy_s = ok[ok['side'] == 'buy']['slip_bp']
+        sell_s = ok[ok['side'] == 'sell']['slip_bp']
+        if min(len(buy_s), len(sell_s)) >= 5:
+            # 分侧建议 (9/22不对称分解探针: 双边弹性对称1.01+线性可加+0.07%
+            # → 分侧校准=纯增益零交互惩罚, 各侧按自己的p90×1.5缓冲)
+            p90b = max(buy_s.quantile(0.90), 0.0)
+            p90s = max(sell_s.quantile(0.90), 0.0)
+            rec_buy = max(3.0, np.ceil(np.round(p90b * 1.5, 6)))
+            rec_sell = max(3.0, np.ceil(np.round(p90s * 1.5, 6)))
+            rec = (rec_buy + rec_sell) / 2 / 10000.0  # 报告档用平均
+            print(f"  真实滑点: 买侧 n={len(buy_s)} 中位{buy_s.median():+.1f} p90={p90b:+.1f}bp | "
+                  f"卖侧 n={len(sell_s)} 中位{sell_s.median():+.1f} p90={p90s:+.1f}bp")
+            print(f"  建议: 买侧万{rec_buy:.0f} / 卖侧万{rec_sell:.0f} (各侧p90×1.5缓冲, 下限万3)")
+            if rec_buy != rec_sell:
+                print("  两侧不等 → yaml需拆 slippage_buy/slippage_sell 双键(代码改动, "
+                      "自然重锚窗口顺带); 不对称探针证实分侧独立校准无交互惩罚")
+            for side, rc, p90x in (('买侧', rec_buy, p90b), ('卖侧', rec_sell, p90s)):
+                if rc > 10:
+                    print(f"  ⚠ {side}真实p90={p90x:.1f}bp高于模型万10 — 上调至万{rc:.0f}或优化执行")
+            d_b = 10 - rec_buy
+            d_s = 10 - rec_sell
+            if d_b + d_s > 0:
+                # 线性平面: 每侧每降万5 ≈ +3.11pp NAV (arm2/arm3: +22,806/+23,066元)
+                uplift = 3.11 * d_b / 5 + 3.11 * d_s / 5
+                print(f"  滑点响应面映射(线性平面): 万10→(万{rec_buy:.0f},万{rec_sell:.0f}) "
+                      f"≈ +{uplift:.1f}pp NAV (分侧臂+3.11pp/万5为已探锚点)")
             else:
                 print("  建议与生产一致 — 无需改")
+        else:
+            p90 = max(ok['slip_bp'].quantile(0.90), 0.0)
+            med = ok['slip_bp'].median()
+            # 建议 = 真实p90×1.5缓冲, 下限万3 (yaml接受任意浮点, 无需万取整)
+            rec_bp = max(3.0, np.ceil(np.round(p90 * 1.5, 6)))
+            rec = rec_bp / 10000.0
+            print(f"  真实滑点: 中位{med:+.1f}bp, p90={p90:+.1f}bp (双边合并{len(ok)}笔, "
+                  f"样本不足不拆分)")
+            if rec_bp > 10:
+                print(f"  ⚠ 真实p90高于模型万10 — 建议上调至万{rec_bp:.0f}或优化执行"
+                      f"(限价单开盘内成交), 重锚时一并改")
+            else:
+                print(f"  建议 slip_rate = 万{rec_bp:.0f} (p90×1.5缓冲, 下限万3)")
+                delta_bp = 10 - rec_bp
+                if delta_bp > 0:
+                    uplift = SLIP_SURFACE_PP_PER_5BP * delta_bp / 5
+                    qual = '外推' if rec_bp < SLIP_SURFACE_PROBED_MIN_BP else '已探区'
+                    print(f"  滑点响应面映射: 万10→万{rec_bp:.0f} ≈ +{uplift:.1f}pp NAV "
+                          f"({qual}: 万5臂+6.12pp为已探锚点, 响应面严格单调无膝点)")
+                else:
+                    print("  建议与生产一致 — 无需改")
     # 佣金/印花是factual项: 模型万5佣金 vs 真实万2 = 确定性多收, 直接报年化意义
     comm_bp = fills['gap_comm'].sum() / tot_turnover * 10000
     print(f"  佣金factual项: 模型每笔多收{comm_bp:+.1f}bp — 重锚时可顺带改yaml commission"
@@ -262,9 +293,14 @@ def main():
               f'滑点 {fills["gap_slip"].sum():+,.2f}元, 过户 {fills["gap_transfer"].sum():+,.2f}元',
               f'合计 {tot:+,.2f}元']
     if rec is not None:
-        _rec_txt = (f'yaml slippage 0.001 → {rec} (p90={p90:.1f}bp×1.5缓冲, 下限万3)'
-                    if rec_bp <= 10 else
-                    f'⚠ 真实p90={p90:.1f}bp高于模型万10 — 建议上调至{rec}或优化执行')
+        _p90x = f'{p90:.1f}' if 'p90' in dir() else '—'
+        if 'rec_buy' in dir():
+            _rec_txt = (f'yaml slippage 0.001 → 买侧{rec_buy/10000:.4f}/卖侧{rec_sell/10000:.4f} '
+                        f'(各侧p90×1.5缓冲; 不对称探针9/22证实分侧独立校准无交互惩罚)')
+        else:
+            _rec_txt = (f'yaml slippage 0.001 → {rec} (p90={_p90x}bp×1.5缓冲, 下限万3)'
+                        if rec_bp <= 10 else
+                        f'⚠ 真实p90={_p90x}bp高于模型万10 — 建议上调至{rec}或优化执行')
         lines += ['\n## 校准建议',
                   f'下次自然重锚: {_rec_txt}, '
                   f'commission 0.0005 → {real_comm} (factual修复, 同一窗口顺带)']
