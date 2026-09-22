@@ -67,6 +67,7 @@ _worker_concept_map = {}  # {code: [concept_names]} — 概念板块标定
 _calib_factor_df = None
 _calib_concept_to_codes = None
 _calib_candidates = None
+_calib_concept_incep = None  # {concept: Timestamp} 可选PIT gate (9/22成本审计后新增)
 
 
 def _log_memory(tag=""):
@@ -647,7 +648,7 @@ def _cross_sectional_ic_batch(regime_df, candidate_factors, value_col='future_re
 
 def _calibrate_concepts_worker(concepts_chunk):
     """Worker: 并行计算一组概念的IC"""
-    global _calib_factor_df, _calib_concept_to_codes, _calib_candidates
+    global _calib_factor_df, _calib_concept_to_codes, _calib_candidates, _calib_concept_incep
     factor_df = _calib_factor_df
     concept_to_codes = _calib_concept_to_codes
     candidate_factors = _calib_candidates
@@ -663,6 +664,11 @@ def _calibrate_concepts_worker(concepts_chunk):
             ind_df = factor_df[factor_df['code'].isin(codes)]
         else:
             ind_df = factor_df[factor_df['industry'] == concept]
+        # PIT gate (9/22): 传入concept_inception时, 样本只含inception之后的行
+        if _calib_concept_incep:
+            _inc = _calib_concept_incep.get(concept)
+            if _inc is not None:
+                ind_df = ind_df[ind_df['date'] >= _inc]
         if len(ind_df) < 100:
             continue
 
@@ -703,7 +709,8 @@ def _calibrate_concepts_worker(concepts_chunk):
     return results
 
 
-def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None):
+def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None,
+                              concept_inception=None):
     """按概念板块×市场状态标定因子（并行：fork pool）
 
     关键：每个概念使用ALL属于它的股票（不限于主概念），
@@ -713,6 +720,10 @@ def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None):
         factor_df: 因子数据DataFrame（含code列）
         candidate_factors: 候选因子列表
         concept_map: {code: [concept_names]} 概念板块映射
+        concept_inception: {concept: Timestamp} 可选PIT gate (9/22新增) —
+            传入时每概念的估计样本只含inception之后的成员行
+            (与生产signal_engine的concept inception gate一致);
+            None=原行为(全窗口, 无gate)。仅影响估计样本, 不影响min_codes判定。
 
     Returns:
         dict: {concept: {regime_name: {factor: ic_metrics}}}
@@ -747,10 +758,11 @@ def calibrate_industry_regime(factor_df, candidate_factors, concept_map=None):
     concept_chunks = [list(c) for c in np.array_split(concepts, n_workers) if len(c) > 0]
 
     # 设置全局变量（fork后子进程继承）
-    global _calib_factor_df, _calib_concept_to_codes, _calib_candidates
+    global _calib_factor_df, _calib_concept_to_codes, _calib_candidates, _calib_concept_incep
     _calib_factor_df = factor_df
     _calib_concept_to_codes = concept_to_codes
     _calib_candidates = candidate_factors
+    _calib_concept_incep = concept_inception or {}
 
     calibration_results = {}
     with multiprocessing.get_context('fork').Pool(n_workers) as pool:
@@ -824,7 +836,7 @@ def _compute_combined_factor_ic(regime_df, factor_names, weights):
 
 def _select_best_factors_worker(concepts_chunk):
     """Worker: 并行贪心前向选择"""
-    global _calib_factor_df, _calib_concept_to_codes
+    global _calib_factor_df, _calib_concept_to_codes, _calib_concept_incep
     factor_df = _calib_factor_df
     concept_to_codes = _calib_concept_to_codes
 
@@ -835,6 +847,11 @@ def _select_best_factors_worker(concepts_chunk):
         config = {}
         if concept_to_codes and concept in concept_to_codes:
             ind_df = factor_df[factor_df['code'].isin(concept_to_codes[concept])]
+            # PIT gate (9/22): 组合IC重算样本同样只含inception之后的行
+            if _calib_concept_incep:
+                _inc = _calib_concept_incep.get(concept)
+                if _inc is not None:
+                    ind_df = ind_df[ind_df['date'] >= _inc]
         elif 'industry' in factor_df.columns:
             ind_df = factor_df[factor_df['industry'] == concept]
         else:
@@ -915,8 +932,14 @@ def _select_best_factors_worker(concepts_chunk):
     return result_config
 
 
-def select_best_factors(calibration_results, factor_df, concept_map=None, max_factors=3, min_combined_ir=0.02):
-    """贪心前向选择最优因子组合（并行：fork pool）"""
+def select_best_factors(calibration_results, factor_df, concept_map=None,
+                        max_factors=3, min_combined_ir=0.02,
+                        concept_inception=None):
+    """贪心前向选择最优因子组合（并行：fork pool）
+
+    concept_inception: {concept: Timestamp} 可选PIT gate (9/22新增, 同
+    calibrate_industry_regime) — 组合IC重算样本同样只含inception之后的行。
+    """
     if concept_map:
         codes_in_df = set(factor_df['code'].unique())
         concept_to_codes = defaultdict(list)
@@ -932,9 +955,10 @@ def select_best_factors(calibration_results, factor_df, concept_map=None, max_fa
     n_workers = min(multiprocessing.cpu_count(), 8)
     chunks = [list(c) for c in np.array_split(items, n_workers) if len(c) > 0]
 
-    global _calib_factor_df, _calib_concept_to_codes
+    global _calib_factor_df, _calib_concept_to_codes, _calib_concept_incep
     _calib_factor_df = factor_df
     _calib_concept_to_codes = concept_to_codes
+    _calib_concept_incep = concept_inception or {}
 
     result_config = {}
     with multiprocessing.get_context('fork').Pool(n_workers) as pool:

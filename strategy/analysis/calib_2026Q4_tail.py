@@ -22,6 +22,8 @@
 import sys
 import os
 import gc
+import pickle
+from collections import defaultdict
 import yaml
 import pandas as pd
 
@@ -83,14 +85,60 @@ def main():
     print(f"  数据: {len(window_df)} 行, {window_df['code'].nunique()} 只股票, "
           f"{window_df['date'].nunique()} 天")
 
+    # PIT gate (9/22覆盖预检落地): 标定估计样本与生产消费对齐 — 生产signal_engine
+    # 只消费概念inception之后的归属行; 标定无gate时新概念权重被前视行稀释
+    # (中报类4概念gate_share仅0.040, 96%样本在概念成立之前)。
+    incep_path = os.path.join(BASE_DIR, '..', 'data', 'concept_inception.pkl')
+    concept_inception = None
+    if os.path.exists(incep_path):
+        with open(incep_path, 'rb') as f:
+            raw_inc = pickle.load(f)
+        concept_inception = {k: pd.Timestamp(v) for k, v in raw_inc.items()}
+        print(f"  PIT gate: concept_inception {len(concept_inception)}概念已加载")
+
     calibration_results = calibrate_industry_regime(
-        window_df, candidate_factors, concept_map=concept_map)
+        window_df, candidate_factors, concept_map=concept_map,
+        concept_inception=concept_inception)
     if len(calibration_results) == 0:
         print("  跳过: 无有效行业标定结果")
         return
 
     industry_config = select_best_factors(
-        calibration_results, window_df, concept_map=concept_map)
+        calibration_results, window_df, concept_map=concept_map,
+        concept_inception=concept_inception)
+
+    # 薄样本回退2026Q3权重 (9/22覆盖预检裁决): gated天数<60的概念重标定
+    # 方差高且无OOS余量 — 用Q3权重(经审计§5的23日OOS验证)替代重标定。
+    GATED_DAY_MIN = 60
+    if concept_inception:
+        codes_of = defaultdict(list)
+        for code, cs in (concept_map or {}).items():
+            for c in cs:
+                codes_of[c].append(code)
+        q3_path = os.path.join(OUTPUT_DIR, '2026Q3.yaml')
+        q3_cfg = yaml.safe_load(open(q3_path, encoding='utf-8'))['industry_factors'] \
+            if os.path.exists(q3_path) else {}
+        copied, no_q3 = [], []
+        for c in list(industry_config):
+            inc = concept_inception.get(c)
+            if inc is None:
+                continue
+            codes = codes_of.get(c)
+            if not codes:
+                continue
+            sub = window_df[window_df['code'].isin(codes)]
+            gd = sub[sub['date'] >= inc]['date'].nunique()
+            if gd < GATED_DAY_MIN:
+                if c in q3_cfg:
+                    industry_config[c] = q3_cfg[c]
+                    copied.append((c, gd))
+                else:
+                    no_q3.append((c, gd))
+        if copied:
+            print(f"  薄样本回退Q3权重 ({GATED_DAY_MIN}天内): "
+                  f"{len(copied)}概念 {copied}")
+        if no_q3:
+            print(f"  薄样本但Q3无配置, 保留gated重标定: {no_q3}")
 
     n_neutral = sum(1 for v in industry_config.values() if 'factors' in v)
     n_bull = sum(1 for v in industry_config.values() if 'bull_factors' in v)
