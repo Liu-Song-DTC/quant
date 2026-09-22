@@ -32,7 +32,9 @@ VAL_CSV = '/mnt/d/quant/strategy/rolling_validation_results/validation_results.c
 SEL_CSV = '/mnt/d/quant/strategy/rolling_validation_results/portfolio_selections.csv'
 
 PCTS = [0.3, 0.4, 0.5, 0.6, 0.7]
-# 生产fqg精确边界乘数: premium=0.80, plain=1.0, _F=1.20, _FBA/_FV=1.25
+# 生产fqg实际边界乘数(yaml覆盖代码默认): restricted_suffixes={}空→plain=1.0;
+# premium七标签(_FLA/_FGR/_FGRV/_FLAV/_FSM/_FD/_LA)=0.80; banned=_SM(无条件切, 非乘数);
+# 1.2/1.25=无生产对应, 纯裕量参考
 BOUNDS = [0.8, 1.0, 1.2, 1.25]
 WINDOW = 400
 MIN_OBS = 100
