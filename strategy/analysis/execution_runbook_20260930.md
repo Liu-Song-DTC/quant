@@ -54,6 +54,13 @@ QUANT_ALT_NO_AUTOREFRESH=1 /mnt/d/quant/.venv/bin/python analysis/calib_2026Q4_t
    ≈0.91% NAV/年; QMT侧以实际可用余额为准, 股票单全部成交后最后下 (卖出204001.SH,
    1000元整数倍)。建议先观察1-2个交易日的出单-成交对账再开启。
 4. 出单后核对: trade_orders.json vs 账户实际成交 (价格滑点/部分成交/涨停买不进)。
+5. **成交成本反馈 (每日, 成本审计裁决落地件)**: QMT成交流水导出CSV后跑
+   ```bash
+   /mnt/d/quant/.venv/bin/python strategy/tools/fill_cost_feedback.py --fills 成交.csv
+   ```
+   逐笔对齐 raw none.csv 开盘基准 → 真实滑点/佣金/印花分档差额 + slip_rate建议
+   (p90×1.5缓冲) + 响应面NAV映射。样本积累后, 在下一次自然重锚窗口按报告建议
+   校准 yaml slippage/commission (与印花税修复同一窗口, 零额外代价)。
 
 ## E. 对账检查点清单
 
@@ -62,6 +69,7 @@ QUANT_ALT_NO_AUTOREFRESH=1 /mnt/d/quant/.venv/bin/python analysis/calib_2026Q4_t
 - [ ] 9/30基线四指标+年份分解入档 (MORNING_REPORT模板)
 - [ ] Q4标定后四指标裁决入档
 - [ ] 持仓文件与真实账户对账闭环 (D.1阻塞解除)
+- [ ] 首周成交反馈回路跑通 (D.5, 每日QMT流水→fill_cost_feedback)
 
 ## 回滚预案
 
