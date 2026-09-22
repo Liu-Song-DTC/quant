@@ -12,7 +12,7 @@
 旋钮: buy_threshold_pct=0.3 (yaml signal节)。提pct → buy_th上移 → fqg切点
 上移 → 更多买入被切。本探针给执行集(portfolio_selections 570行)的敏感性:
   1) 每个执行buy在pct∈{0.3,0.4,0.5,0.6,0.7}下的buy_th(生产口径逐位复刻);
-  2) 边界b∈{0.8(premium),1.0(plain),1.25,1.5(restricted多档)}敏感性表:
+  2) 边界b∈{0.8(premium),1.0(plain),1.2,1.25(纯裕量参考)}敏感性表:
      各(pct,b)组合切掉多少执行buy + 其weight×future_ret合计;
   3) 边界邻近带(ratio<1.3@p30)执行行的fwd画像 vs 远离带;
   4) 全buy行(36k)同口径 ratio分桶fwd — 与末班八项边际+0.44%互检。
@@ -64,16 +64,22 @@ def main():
     print(f'per-code切分: {n_stocks}股')
 
     def buyth_at(code, dt64, pct):
-        """生产口径: 该bar前400根自身score(排除当前bar)的p分位, <100有效→NaN"""
+        """生产口径: 该bar前400根自身score(排除当前bar)的p分位, <100有效→NaN
+
+        注意: pos是slice内位置(searchsorted于cd切片), 后续窗口切片必须
+        平移回全局坐标(s0+...)。9/22首跑发现scores[max(s0,pos-400):pos]
+        混用slice内pos与全局索引 → 几乎全部返回NaN(0/569可复算) — 已修。
+        """
         i = code_pos.get(code)
         if i is None:
             return np.nan
         s0, s1 = starts[i], starts[i + 1]
         cd = dts[s0:s1]
         pos = np.searchsorted(cd, dt64)
-        if pos >= s1 or cd[pos] != dt64:
+        if pos >= s1 - s0 or cd[pos] != dt64:
             return np.nan  # 该bar无记录
-        win = scores[max(s0, pos - WINDOW):pos]
+        lo = max(0, pos - WINDOW)
+        win = scores[s0 + lo:s0 + pos]
         win = win[~np.isnan(win)]
         if len(win) < MIN_OBS:
             return np.nan
@@ -124,19 +130,22 @@ def main():
     for p in PCTS:
         m[f'bt_{p}'] = m.apply(
             lambda r: buyth_at(r['code'], r['buy_dt64'], p), axis=1)
+    # 生产floor: buy_th = max(p30, buy_threshold×0.15=0.0) — 负p30被抬到0
+    for p in PCTS:
+        m[f'btf_{p}'] = m[f'bt_{p}'].clip(lower=0.0)
     n_th = int(m[f'bt_{PCTS[0]}'].notna().sum())
     print(f'\n执行buy行: {len(m)}, buy_th(p30)可复算: {n_th} '
-          f'(不可算={len(m)-n_th}: 早期bar<100观测, 生产用静态floor 0.0)')
+          f'(不可算={len(m)-n_th}: 该股<100根先验观测, 生产buy_th=静态默认0.0)')
 
     # ---- 敏感性表: (pct, bound) → 切掉执行行数 + weight×fwd ----
     print('\n=== 敏感性表 (每格: 切掉执行buy数 | weight×future_ret合计) ===')
     print(f'{"pct":>4} | ' + ' | '.join(f'b={b}' for b in BOUNDS))
     table_rows = []
     for p in PCTS:
-        bt = m[f'bt_{p}']
+        btf = m[f'btf_{p}']
         cells = []
         for b in BOUNDS:
-            cut = m[bt.notna() & (m['score'] < bt * b)]
+            cut = m[btf.notna() & (m['score'] < btf * b)]
             wfr = (cut['weight'] * cut['future_ret']).sum()
             cells.append(f'{len(cut):>2} | {wfr:+.4f}')
             table_rows.append({'pct': p, 'bound': b, 'n_cut': len(cut),
@@ -144,10 +153,10 @@ def main():
         print(f'{p:>4} | ' + ' | '.join(cells))
     print('(p30生产行: b=0.8应=0自检[最松边界]; b≥1.0被切行=premium/plain标签合法过境, 非误差)')
 
-    # ---- ratio分布: 执行buy的 score/buy_th(p30) ----
+    # ---- ratio分布: 执行buy的 score/buy_th(p30, 含floor) ----
     r30 = m[m['bt_0.3'].notna()].copy()
-    r30['ratio'] = r30['score'] / r30['bt_0.3']
-    print('\n=== 执行buy score/buy_th(p30) ratio ===')
+    with np.errstate(divide='ignore'):
+        r30['ratio'] = r30['score'] / r30['btf_0.3']  # btf==0→±inf, 落入边界带
     print(r30['ratio'].describe().round(2).to_string())
     print(f'ratio<1.0: {int((r30["ratio"] < 1.0).sum())} (必为premium标签0.8边界过)')
     print(f'ratio<0.8: {int((r30["ratio"] < 0.8).sum())} (生产口径下不可能被执行, 自检应=0)')
@@ -168,7 +177,8 @@ def main():
             continue
         p = buyth_at(codes[r], dts[r], 0.3)
         if not np.isnan(p):
-            allb.append((scores[r] / p, fwd[r]))
+            with np.errstate(divide='ignore'):
+                allb.append((scores[r] / max(p, 0.0), fwd[r]))  # 生产floor
     ab = pd.DataFrame(allb, columns=['ratio', 'fwd'])
     print(f'可算: {len(ab)}/{len(buy_rows)} buy行')
     for lo, hi in [(0, 1.0), (1.0, 1.3), (1.3, 2.0), (2.0, np.inf)]:
@@ -180,23 +190,23 @@ def main():
     print('\n=== 池收缩表 (全buy行被切%, 间接效应代理) ===')
     allb_t = []
     for r in buy_rows:
-        s0, s1 = starts[code_pos[codes[r]]], starts[code_pos[codes[r]]] + 1
         p30v = buyth_at(codes[r], dts[r], 0.3)
         if not np.isnan(p30v):
             allb_t.append((codes[r], dts[r], scores[r]))
     abt = pd.DataFrame(allb_t, columns=['code', 'dt64', 'score'])
     print(f'{"pct":>4} | ' + ' | '.join(f'b={b}' for b in BOUNDS))
     for p in PCTS[1:]:  # p30行必≈0 (生产边界)
-        bt = abt.apply(lambda r: buyth_at(r['code'], r['dt64'], p), axis=1)
+        bt = abt.apply(lambda r: buyth_at(r['code'], r['dt64'], p), axis=1) \
+            .clip(lower=0.0)  # 生产floor
         cells = []
         for b in BOUNDS:
             cut_pct = 100 * float((abt['score'] < bt * b).mean())
             cells.append(f'{cut_pct:5.1f}%')
         print(f'{p:>4} | ' + ' | '.join(cells))
 
-    # 静态floor检查: 执行buy中 buy_th(p30)==0 (floor绑定) 的数量
-    n_floor = int((r30['bt_0.3'] == 0).sum())
-    print(f'\n静态floor检查: 执行buy中buy_th(p30)==0(floor绑定): {n_floor}行 '
+    # 静态floor检查: 执行buy中 btf(p30含floor)==0 (p30≤0被抬到0) 的数量
+    n_floor = int((r30['btf_0.3'] == 0).sum())
+    print(f'\n静态floor检查: 执行buy中btf(p30含floor)==0(p30≤0被抬到0): {n_floor}行 '
           f'(提静态buy_threshold只影响这些+早期不可算行)')
 
     m.to_csv('/tmp/probe_buyth_pct_20260922.csv', index=False)
