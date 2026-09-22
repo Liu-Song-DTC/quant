@@ -21,6 +21,10 @@ QUANT_ALT_NO_AUTOREFRESH=1 /mnt/d/quant/.venv/bin/python bt_execution.py
 - 若漂移 >±3万: 归因三件套 — ①pool_flip_report (池成员翻转) ②K线重拉检查
   ③另类数据diff — 参照 9/14晚流归因协议 (单日期全截面raw重算+中性化复现)。
 - 产出新sidecar fp; 归档 equity_curve 为9/30基线。
+- **分析件同步重生成 (9/22发现stale隐患)**: validation_results.csv 曾自9/6起
+  stale (9/17/9/20流未重跑signal_validator) — 9/30全链后必须重跑
+  `analysis/signal_validator.py` + `analysis/analysis_framework.py`, 否则分析层
+  读的是旧信号态的概念归属/factor_name。
 
 ## A.5 成本修复 (9/30重锚顺带, 成本审计9/21-22裁决)
 
