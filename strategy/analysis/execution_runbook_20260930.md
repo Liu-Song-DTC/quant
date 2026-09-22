@@ -69,11 +69,41 @@ QUANT_ALT_NO_AUTOREFRESH=1 /mnt/d/quant/.venv/bin/python bt_execution.py
 
 1. **季度诊断可观测性**: `_QUARTER_DIAG`计数在4-worker多进程内累积后随进程消亡,
    bt_execution.py:1170主进程打印恒空 → 生产日志从未出现"行业名查找"行。
-   fix: worker聚合diag传回主进程(共享Queue或每worker落临时文件聚合)。
+   **fix(9/22已验证配方, /tmp副本py_compile过, 锚点: 9/22代码态)**:
+   - a. worker diag_data块 (line 452 `'alt_dt': ...` 之后, `engine._diag.reset()`之后) 插入:
+     ```
+     # A.6-1(2026-09-22): 季度配置诊断计数器是signal_engine模块级dict, spawn
+     # worker内累积后随进程消亡 → 主进程_print_quarter_diag恒空。快照+清零回传。
+     try:
+         from core import signal_engine as _se_mod
+         _qd = {k: int(v) for k, v in _se_mod._QUARTER_DIAG.items() if k != 'printed'}
+         _se_mod._QUARTER_DIAG.update({k: 0 for k in _se_mod._QUARTER_DIAG if k != 'printed'})
+     except Exception:
+         _qd = {}
+     if diag_data:
+         diag_data['quarter_diag'] = _qd
+     ```
+     (注意: diag_data在engine._diag为None时是{} — 已用`if diag_data:`守卫)
+   - b. 主进程聚合 (line 1073 `m['alt_dragon_tiger_hits'] = ...` 之后) 插入:
+     ```
+     if 'quarter_diag' in diag_data:
+         try:
+             from core import signal_engine as _se_mod
+             for _k, _v in diag_data['quarter_diag'].items():
+                 if _k in _se_mod._QUARTER_DIAG:
+                     _se_mod._QUARTER_DIAG[_k] += int(_v)
+         except Exception:
+             pass
+     ```
+   验证: 9/30全链日志出现"[季度配置诊断]"非零行 = 成功判据 (Q4标定后此诊断
+   直接显示新概念覆盖结构, 是Q4裁决的观测窗口)。
 2. **死键注释归档**: 9个死yaml键+6个死旋钮(审计文档§1 A/B组)加注释"已归档9/22",
-   不删yaml键(指纹内节)。
+   不删yaml键(指纹内节)。(纯注释编辑, 每个键行尾或上方加注即可, 无行为影响)
 3. **双源参数合一**: `indicator_params` yaml节 vs `get_default_params()`硬编码
-   二选一(值已逐位一致, 建议删硬编码统一读yaml — 或反之, 只留一处)。
+   二选一(值已逐位一致)。9/22裁决=**零风险变体: 双侧各加一行互指注释**
+   ("此值与factor_config.yaml indicator_params逐位一致, 改一处须同步另一处,
+   9/22审计§A'"), 不删任何一侧 — 删除侧的yaml键在指纹内, 删除会改变fp
+   却零行为收益; 硬编码侧删除有引入导入环/时序风险。互指注释零行为影响。
 4. **日志语义注释**: "固定行业因子49.5%/固定默认因子50.5%"是计数器语义
    (入口计数vs P0命中), 非覆盖度; 真实兜底率0.6%。加注释澄清防误读。
 5. **勿做**: P0中性/牛市切季度权重 — 已探针否决(IC配对差−0.0175, t=−5.4)。
