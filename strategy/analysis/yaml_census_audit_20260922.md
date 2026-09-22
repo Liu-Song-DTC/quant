@@ -217,3 +217,25 @@ vs B=生产消费(inception PIT gate)。
   该信息与E-A4的再入场提速互补, 不构成新臂。
 
 **归档: regime机制三方向(触发时点/层级/回补)全部量化闭合。**
+
+## 11. 敞口阶梯全量化 (9/22, 生产faithful regime_state.csv × 重建trend/ivr)
+
+§10只测了bear rung; 本节目的是把 portfolio.py:996-1031 整条敞口机制逐级量化
+(数据源: regime_state.csv末行NAV=732,688.93逐位=锚点, BEAR 260日与文档全等 —
+确认生产faithful, 非实验臂产物)。base_exposure=0.85。
+
+| 机制 | 值 | 绑定实测 | 裁决 |
+|---|---|---|---|
+| bear rung | 0.0 | 260日 (97.7% BEAR日) | §10: 0.3层级−6.75pp否决, 二进制全清存活 |
+| weak rung (0.5×base) | 0.425 | **0日** — trend_score量化档{−1,−0.5,0,0.5,1}, 0.5入full档, (0,0.5)空集 | **死代码**, 归档 |
+| neutral/dip rungs (0.3×base) | 0.255 | ≈19日贴cap; trend==0仅60日且全在2021Q1零信号期(需求=0) | 需求约束压倒cap, 无可辨识prize |
+| 缩量cap | 0.35/0.50 | **ivr<0.5: 0日(死代码); 0.5-0.7: 8日** (fwd20 +3.07%) | "无量无行情"实际8日, 死旋钮归档 |
+| Chan强买点floor | 0.60/0.45/0.15 | 上界≈53/35/6日 (暴露∈cap±0.025) | 方向=系统自身信号背书(E-A4同向), 达≤94日×0.1级, 免臂 |
+| full rung | 0.85 | 87日 (6.3%) | base_exposure已9/9 bracket(1.0铁律否决) |
+| vol_scale/tvol | 0.28/0.75 | 批4e已bracket | 闭 |
+| emergency/stop-loss | 0.65/0.08 | C12已bracket | 闭 |
+
+结论: **敞口机制八级全部量化闭合** — 四级绑定(0.85/0.0/vol/emergency)全已有
+bracket或否决记录, 四级近死(weak/neutral/缩量/Chan floor仅上界94日)。
+"非BEAR日敞口0.68-0.71"的真相=需求驱动+平滑惯性, 非任何未测阶梯在起作用。
+市场择时类旋钮在该系统的否决纪录再添一笔(与S批次/bear层级/H5/H6/C12同签名)。
