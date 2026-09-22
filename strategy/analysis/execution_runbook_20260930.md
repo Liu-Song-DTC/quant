@@ -26,13 +26,23 @@ QUANT_ALT_NO_AUTOREFRESH=1 /mnt/d/quant/.venv/bin/python bt_execution.py
 
 在A的全链跑之前落码(印花税唯一factual项, 其余待成交反馈):
 
-1. **印花税分档 (马上做)**: bt_execution.py `STAMP_TAX` 常量 → 按成交日分档数组
-   (2023-08-28前万10, 之后万5) — 即 probe_stamp_tax 探针已验证的 `_STAMP_ARR[i]`
-   补丁永久化。预期新锚点 ≈ −4.4%±1% vs 732,689口径 (算术−1.45% + 2022熊窗乘数)。
+1. **印花税分档 (马上做, 逐行补丁配方)** — probe_stamp_tax 探针已验证的 `_STAMP_ARR[i]`
+   补丁永久化 (恒等烟测逐位复现732,689; 反事实700,382跨进程两次逐位一致)。
+   三处编辑 (bt_execution.py, 行号=9/22代码态, 漂移则按内容定位):
+   - **a. 插入分档数组** — line 1526 `n_dates = len(calendar)` 之后插入:
+     `_STAMP_ARR = np.where(calendar.values < np.datetime64('2023-08-28'), 0.001, 0.0005).astype(np.float64)  # 印花税分档: 2023-08-28前万10后万5 (9/22成本审计)`
+     对齐自证: 循环 `for i in tqdm(range(n_dates))` 的 i 与 calendar 同序
+     (line 1656 `date = calendar[i].date()`); np 已导入 (line 1695 在用 np.isnan)。
+   - **b. 替换两处卖单结算** — line 1699 与 1731 的
+     `(1.0 - COMMISSION - STAMP_TAX - impact)` → `(1.0 - COMMISSION - _STAMP_ARR[i] - impact)`
+     (全文件 STAMP_TAX 引用共2处, 均在 _vectorized_backtest 内, 替换后模块级常量闲置)。
+   - **c. 常量注释+删死代码** — line 44 `STAMP_TAX` 注释改为
+     "万5扁平默认 — 9/22成本审计后由 _vectorized_backtest 内 _STAMP_ARR 日期分档取代,
+     仅作yaml兼容读取"; line 45 `EFFECTIVE_COMM = COMMISSION + STAMP_TAX * 0.5` 整行删除
+     (定义后零引用, 注释"买入万1"与万5实测口径矛盾)。
+   预期新锚点 ≈ −4.4%±1% vs 732,689口径 (算术−1.45% + 2022熊窗乘数)。
    **这不是策略劣化而是诚实修正, 不得触发"回滚"裁决**; 归因时把此成分从数据漂移
    中分解出来 (参照成本审计响应面: 扁平万10→万5 = +6.1%的反方向同构)。
-   顺带清理死代码 `EFFECTIVE_COMM` (line 45, 定义后零引用, 注释"买入万1"与
-   税务审计实测的万5口径矛盾) — 同一文件同一fp变更, 零额外代价。
 2. **佣金 (待成交反馈)**: 万5 → 用户实际费率 (fill_cost_feedback报告的佣金gap
    给出实测值; 9/30前无成交流水则按万2中心或暂缓, 不得拍脑袋)。
 3. **滑点 (待成交反馈)**: 保持万10, 待D.5反馈回路积累后在下一次重锚校准
