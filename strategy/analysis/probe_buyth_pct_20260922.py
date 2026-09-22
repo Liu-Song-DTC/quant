@@ -32,7 +32,8 @@ VAL_CSV = '/mnt/d/quant/strategy/rolling_validation_results/validation_results.c
 SEL_CSV = '/mnt/d/quant/strategy/rolling_validation_results/portfolio_selections.csv'
 
 PCTS = [0.3, 0.4, 0.5, 0.6, 0.7]
-BOUNDS = [0.8, 1.0, 1.25, 1.5]
+# 生产fqg精确边界乘数: premium=0.80, plain=1.0, _F=1.20, _FBA/_FV=1.25
+BOUNDS = [0.8, 1.0, 1.2, 1.25]
 WINDOW = 400
 MIN_OBS = 100
 
