@@ -36,7 +36,9 @@ from analysis.offline_calibration import (
 from core.config_loader import load_config
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUTPUT_DIR = os.path.join(BASE_DIR, 'config', 'quarterly_factors')
+# 干跑可用 CALIB_OUTPUT_DIR 重定向输出 (9/22新增, 生产运行不设此env)
+OUTPUT_DIR = os.environ.get(
+    'CALIB_OUTPUT_DIR', os.path.join(BASE_DIR, 'config', 'quarterly_factors'))
 
 
 def main():
