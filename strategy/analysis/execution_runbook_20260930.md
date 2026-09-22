@@ -39,6 +39,23 @@ QUANT_ALT_NO_AUTOREFRESH=1 /mnt/d/quant/.venv/bin/python bt_execution.py
    (不对称分解探针9/22的卖/买侧弹性定校准优先序)。
 4. fp变化→信号重生成与数据刷新共用同一次全链 (零额外代价, 见A)。
 
+## A.6 架构审计落地项 (9/22 yaml×census对账裁决, 可选, 与A.5同窗口)
+
+审计文档 `analysis/yaml_census_audit_20260922.md`。裁决: 架构合理, 无alpha臂;
+以下全部**零行为影响**修复, 与A.5共用同一次fp变更窗口:
+
+1. **季度诊断可观测性**: `_QUARTER_DIAG`计数在4-worker多进程内累积后随进程消亡,
+   bt_execution.py:1170主进程打印恒空 → 生产日志从未出现"行业名查找"行。
+   fix: worker聚合diag传回主进程(共享Queue或每worker落临时文件聚合)。
+2. **死键注释归档**: 9个死yaml键+6个死旋钮(审计文档§1 A/B组)加注释"已归档9/22",
+   不删yaml键(指纹内节)。
+3. **双源参数合一**: `indicator_params` yaml节 vs `get_default_params()`硬编码
+   二选一(值已逐位一致, 建议删硬编码统一读yaml — 或反之, 只留一处)。
+4. **日志语义注释**: "固定行业因子49.5%/固定默认因子50.5%"是计数器语义
+   (入口计数vs P0命中), 非覆盖度; 真实兜底率0.6%。加注释澄清防误读。
+5. **勿做**: P0中性/牛市切季度权重 — 已探针否决(IC配对差−0.0175, t=−5.4)。
+   勿做: IC预计算门控 — 已证伪, 代码早已在`if use_dynamic`内正确门控。
+
 ## B. V2 OOS审计 (只读, 先于Q4标定)
 
 ```bash
@@ -57,6 +74,9 @@ cd /mnt/d/quant/strategy
 QUANT_ALT_NO_AUTOREFRESH=1 /mnt/d/quant/.venv/bin/python analysis/calib_2026Q4_tail.py
 ```
 - 只写 2026Q4.yaml + index.yaml 追加条目, 其余23个季度文件零扰动。
+- **焦点纪律(9/22审计探针裁决)**: 季度标定的真实增益=新概念覆盖(仅季度概念
+  季度权重IC +0.2423 vs 默认+0.0089, t=5.07) + 熊分支 + 概念解析gating;
+  存量交集概念的中性/牛市权重重标定不被消费且IC更差 — 标定时优先新概念。
 - **写盘后必须再跑一次全链裁决** (E-D2纪律: quarterly_factors 在信号指纹内,
   信号必重生成): 四指标 vs 9/30基线对账, 铁律裁决 — 采纳或硬回退全局权重。
 
