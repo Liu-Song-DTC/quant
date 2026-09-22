@@ -294,3 +294,40 @@ fwd+0.03%也为最弱月)但年收益≈−0.36 wfr≈+0.05% NAV<CI, 且S批次�
 中位0.040 p90 0.109 max 0.356 — 温和刷新非重写(典型bear权重0.2-0.5, |Δ|
 ≈10-20%相对)。中性因子集不同294/399但**不被消费**(P0读全局), 无害。
 9/30的Q4赌注风险画像=中低, 四指标裁决兜底不变。
+
+## §15 9/22晚 census完备性代码级复核 + 9/30窗口de-risk (day-8收口)
+
+### 15.1 剩余零覆盖旋钮代码级死链确认 (census"旋钮空间耗尽"主张复核)
+
+对program doc census表之外的零提及yaml键逐一代码追踪 (portfolio.py消费链):
+- **trailing_stop_by_buy_point**: 三消费点全部双闸死 — 1842(成本循环guard `cost[code]`
+  有效 + `exit_mode=='simple'` continue) / 1964(`exit_mode!='simple'`整块gate) /
+  2128(显式`exit_mode!='simple'`)。program doc line 743"全部设计关闭"主张
+  **代码级证实**; M3探针fwd20=+2.34%是反事实模拟非生产事件, 无矛盾。
+- **sector_signal_density_weight 0.6 / sector_momentum_weight 0.4**: 读取后零消费 → 死键。
+- **mom_60d_fomo_threshold/mult + warn_threshold/mult**: 读取后零消费 → 死键
+  (E-N15高位动量入场被否决后回滚, 旋钮留在yaml但无消费链)。
+- **isolated_b3_penalty −0.08**: 读取后零消费 → 死键。
+- **consecutive_loss_breaker (enabled=true)**: C10探针已量化 (154/154选股行clb=0,
+  零触发) — live-armed但经验上惰性, E-H6覆盖语义 ✓。
+- **volatility_control blend/lookback**: C11死旋钮 (config_loader只映射enabled) ✓。
+- **max_adaptive_stop_mult / profit_lock_pct / win_floor**: 均位于exit_mode='simple'
+  或cost={}闸后 → 死链 ✓。
+**结论**: census终局表+本轮代码级复核, 组合层每个key要么已bracket/量化, 要么代码级
+证实死链 — 冻结态旋钮空间确认穷尽。
+
+### 15.2 A.5印花税补丁配方机械验证 (9/30免现场调试)
+
+runbook A.5逐行配方对/tmp副本全量应用: 4断言(锚点唯一性)全过 + py_compile PASS。
+行号锚点(44/45/1526/1656/1695/1699/1731)与当前代码态零漂移; STAMP_TAX全文件引用
+= 定义+EFFECTIVE_COMM+2卖单结算, 与配方"共2处使用"自洽。9/30窗口补丁为纯机械操作。
+
+### 15.3 9/30月度日历池迁移预估计 (probe_pool_transition_0930_20260922.py)
+
+生产口径 (pool_calendar=monthly, relax_floor=0.05, momentum=None) 用数据至9/17
+评估2026-09-30边界成员资格 (代理下界, 实际9/30还见9/18-9/29新数据):
+- 8/31边界(当前生效) 5128 → 9/30代理 5126: 新入4 / 退出6 / 留存5122 (99.9%)。
+- **池迁移成分对9/30锚点漂移的贡献≈0** — 与9/15危机(−690k池滑动)结构性不同
+  (日历池月边界 vs as-of每日重估)。9/30归因分解: 漂移 = 数据刷新delta +
+  A.5印花税(−4.4%±1%), 池成分可忽略。若实际漂移显著偏离此分解 → 立即深查
+  数据刷新层 (9/15危机同款取证路径)。
