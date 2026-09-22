@@ -63,8 +63,9 @@ def main():
     log = open(LOG_P, encoding='utf-8', errors='replace').read()
     m = re.search(r'薄样本回退Q3权重.*?(\[.*?\])', log, re.S)
     if m:
-        print(f'  日志回退行: {m.group(0)[:200]}')
-        copied = set(re.findall(r"'([^']+)', \d+\)", m.group(1)))
+        print(f'  日志回退行: {m.group(0)[:220]}')
+        # 日志元组形如 (np.str_('2026中报扭亏'), 47)
+        copied = set(re.findall(r"np\.str_\('([^']+)'\)", m.group(1)))
         check(copied >= set(ZHONGBAO4), f'日志copied清单⊇中报4 (实际: {sorted(copied)})')
     else:
         check(False, '日志含"薄样本回退Q3权重"打印')
