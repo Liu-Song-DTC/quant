@@ -739,3 +739,23 @@ min_price 2→1.0方向(+1.34%近退市股)方向自明关闭。
 **结论**: 生产 (min_price=2.0, relax_floor=0.05, relax_momentum=None) 为
 事实最优 — 松弛路径是策略alpha的一部分, 收紧=反向切割; 池级flip大≠策略
 级绑定(no_chan同教训第二例)。省3×3.5h全链臂。
+
+### 17.19: 缠论census终局收口 — exit_mode='simple'设计关闭+卖点买侧0.35%绑定 (9/23 11:05)
+
+**代码级**: `exit_mode`在yaml零写入(grep全配置空), config_loader白名单默认
+'simple' → 卖侧缠论退出栈**全dead**: sl≤-2双级别强制退出/一卖二卖三卖
+(sell_point+div>0.3)/chan_structure_score弱化退出/b3_zg_break(chan_pivot_zd)/
+b2趋势失败退出/chan_tp pivot trailing/trailing_stop(#199已证) 全部在
+`exit_mode != 'simple'`分支内。生产实际退出=成本止损+score排序替换。
+**死键补档**: chan_fallback_score 零reader(9/22 A组漏录, 现补入, #208一并关闭);
+chan_gate_enabled/min_count已在A组。**惰性列**: chan_structure_score/
+chan_pivot_zd/mtf_discount_factor/avg_trend_strength = 只写CSV列, 生产消费零
+(唯一读点在dead退出栈或DYN因子排除表)。
+**活缠论家族全部已bracket**: chan_buy_point+signal_level(bp7 sl4采纳)/
+div_type×strength(E-N5 has_chan)/chan_pivot_zg(E-ZG1b软罚−0.20采纳)/
+trend_type(B2 gate+惩罚阶梯, C批覆盖)/mtf_alignment(gate_scorer)。
+**chan_sell_point买侧绑定探针** (probe_chan_sellpoint, 全信号6.73M行流式):
+sell_point>0行仅0.10-0.13%(年增: 483→1,692, 2026最高); 入场576行中
+sp活跃仅2行=**0.35%**; sp活跃buy行fwd10 +0.88% vs 无sp +0.93% (差−0.05pp≈零)
+→ bp2保底槽排除+换手保护取消机制活但**外围**(足迹<<度量层CI), 无bracket理由。
+#201/#208闭合。census=缠论家族全谱量化完成。
