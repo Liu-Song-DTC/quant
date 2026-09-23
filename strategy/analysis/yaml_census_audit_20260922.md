@@ -707,3 +707,17 @@ probe_neutralize_fa (raw缓存5868d425, 806日×~65非噪声因子配对rank-IC)
 vol_price_breakout t=+10.9, illiq_20 t=+5.9)但改善/恶化精确对半抵消 —
 复合评分消费聚合而非单因子 → 中性化机制家族便宜关闭(#212), A1/A2臂零理由。
 (三个死开关: market_cap_col=None/残差rescale仿射不变/噪声删除同块 — 全惰性实锤)
+
+### 17.17: E-RC1 regime条件blend探针 — 无可实施规则关闭 (9/23 10:10)
+
+probe_rc1_blend_regime (执行行571×三regime桶×pre/ml/score三层IC):
+- FAST(bear_risk_fast) n=36: Δ(ml−pre)=+0.116 (blend大助)
+- NORM n=535: Δ=+0.024 (微助)
+- severe_bear(60d密度>70%) n=43: **Δ=−0.126** (pre 0.193→ml 0.067, blend伤)
+- 年度: 2021 +0.106/2022 −0.096/2023 +0.217/2024 −0.006/2025 +0.148/2026 **−0.188**
+
+**裁决**: severe_bear桶确认blend伤害方向但n=43 (7.5%执行行, 5.5年散布,
+按度量层CI必然亚可辨); 2026最大负Δ(−0.188)不在任何regime桶内 →
+无条件规则可实施. 与amplitude_5d同教训: 桶IC≠组合层. λ=0.4保持(C1六臂
+已定最优), E-RC1关闭, 省2×3.5h臂. (注: corr(ml,pre)≈−0.11~−0.18负相关
+=ML残差alpha设计正常)
