@@ -849,6 +849,28 @@ class PortfolioConstructor:
                     no_chan_penalty = min(no_chan_penalty, -0.08)
                 if dist_ma60 > 0.50:
                     no_chan_penalty = min(no_chan_penalty, -0.15)
+                # 中枢追高软罚 (臂E-ZG1b, 2026-09-23采纳): 新入场close≥中枢上沿=追高,
+                # 执行集6/6年负 (close≥zg fwd −2.38% vs <zg +0.49%,
+                # 部分相关−0.162完全正交score)。仅罚新入场, 持仓keep-alive不受影响。
+                # 响应面5点: 0(锚853,076) < 0.08(3-1, MDD 16.25) < 0.15(4-0) ≈
+                # 0.20(4-0, 生产采纳=flat-top中心, 最佳MDD 15.46) ≈ 0.25(4-0);
+                # 硬拒1/深3/sl豁免4/分层5全否决(位移级联或MDD败)。
+                # QUANT_ZG_FILTER: 0=关闭 2=软罚(生产默认, QUANT_ZG_PEN=0.20)
+                _zg = self._nan_safe(getattr(sig, 'chan_pivot_zg', float('nan')))
+                _zgm = os.environ.get('QUANT_ZG_FILTER', '2')
+                chase_pen = 0.0
+                if _zgm != '0' and _zg > 0 and price > _zg:
+                    _dist = (price - _zg) / _zg
+                    if (_zgm == '1' or (_zgm == '3' and _dist > 0.05)
+                            or (_zgm == '4' and sl < 3)):
+                        _rej['pivot_chase'] = _rej.get('pivot_chase', 0) + 1
+                        continue
+                    if _zgm == '2':
+                        chase_pen = -float(os.environ.get('QUANT_ZG_PEN', '0.20'))
+                    elif _zgm == '5':
+                        # 分层软罚: 浅chase(≤5%)轻 −0.08, 深chase(>5%)重 −0.20
+                        # (微支撑: 深chase 5/6年比浅chase更毒, 2024 −4.43 vs −3.19)
+                        chase_pen = -0.08 if _dist <= 0.05 else -0.20
 
             candidates.append({
                 'code': code,
@@ -857,6 +879,7 @@ class PortfolioConstructor:
                 'industry': getattr(sig, 'industry', '') or 'default',
                 'risk_vol': getattr(sig, 'risk_vol', 0.03),
                 'price': price,
+                'chase_penalty': chase_pen,
                 'sig': sig,
                 # Chan 融合字段
                 'signal_level': sl,
@@ -877,7 +900,7 @@ class PortfolioConstructor:
                 self._dbg[f'ml_score_{_regime}'].append(ml_s)
 
         # DEBUG: 跟踪拒绝原因 per regime
-        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking', 'plan_reducing', 'fund_flaw', 'no_chan']:
+        for rk in ['no_sig', 'not_buy', 'cooldown', 'bad_factor', 'no_price', 'too_expensive', 'reducing', 'unlocking', 'plan_reducing', 'fund_flaw', 'no_chan', 'pivot_chase']:
             if _rej.get(rk, 0) > 0:
                 self._dbg.setdefault(f'reject_{_regime}', {})
                 self._dbg[f'reject_{_regime}'][rk] = self._dbg[f'reject_{_regime}'].get(rk, 0) + _rej[rk]
@@ -983,7 +1006,10 @@ class PortfolioConstructor:
                     within_normal[idx] = ind_normal[j]
 
         # 在正态空间混合: 70%全市场 + 30%行业内，再映射回[0,1]
-        blended_normal = 0.7 * cross_normal + 0.3 * within_normal
+        # 臂E-RB1 (9/22): 排名混合权重bracket — 生产0.3, 从未bracket。
+        # QUANT_RANK_WITHIN_W env: 0.0=纯截面 / 0.3=生产 / 0.5=行业内加重
+        _ww = float(os.environ.get('QUANT_RANK_WITHIN_W', '0.3'))
+        blended_normal = (1.0 - _ww) * cross_normal + _ww * within_normal
         blended_rank = _normal_to_rank(blended_normal)
 
         for i, c in enumerate(candidates):
@@ -1326,7 +1352,7 @@ class PortfolioConstructor:
                 repl_buffer = 0.0  # C5c: 仅盈利持仓受保护(亏损名让位)
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
-            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0)
+            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0)
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
