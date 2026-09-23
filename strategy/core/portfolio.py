@@ -981,10 +981,11 @@ class PortfolioConstructor:
                 # sl0/1占73%+评分链中等 → ML把弱结构票救回场. 反事实剔除p85
                 # +0.61pp(交易级). 软罚式(同ZG1b): ml_score>阈值的候选罚分跌出.
                 # QUANT_ML_GATE: 空=关闭; 数值=惩罚幅度; QUANT_ML_GATE_TH=阈值(默认0.084)
+                # (K-10采纳 9/24: 生产默认0.15毯式, 平台{0.10,0.15,0.175,0.20}中心)
                 # QUANT_ML_GATE_TT: 空=全体ml顶桶; '1'=仅trend_type==1(盘整)交集
                 # QUANT_ML_GATE_HARD: '1'=硬拒(−10.0, 有效踢出); 空=软罚
                 # (K-15交互定位: 毒细胞=ml顶桶∩tt1 6/6年弱, ml顶桶∩非tt1 6年无恙)
-                _mlg = os.environ.get('QUANT_ML_GATE', '')
+                _mlg = os.environ.get('QUANT_ML_GATE', '0.15')
                 if _mlg:
                     _mls = self._nan_safe(getattr(sig, 'ml_score', 0.0))
                     _mlt = float(os.environ.get('QUANT_ML_GATE_TH', '0.084'))
