@@ -20,6 +20,86 @@ from scipy.special import erfinv, erf
 import yaml
 import os
 
+# F-G 流动性倾斜定注 (2026-09-23, 实验臂): 探针②给定score分位内amt<0.2仍优
+# (Q1 +8.58% vs +3.51%), ③weight与amt_ratio正交(+0.023) → 定注未利用流动性梯度.
+# env QUANT_LIQ_TILT=0(默认/生产)时零行为. 实现全在portfolio.py内 —
+# bt_execution.py在信号代码指纹覆盖中(改它=全链3.5h重生成), portfolio.py fp豁免.
+# amt_ratio=近20日均额(含当日, 与探针口径一致)/板块门槛, 惰性读qfq逐code缓存.
+_LIQ_TILT = float(os.environ.get('QUANT_LIQ_TILT', '0.0'))
+_LIQ_AMT_CACHE = {}  # code -> (dates np.datetime64[], amt20 float[]) 或 None(无数据)
+_LIQ_DATA_DIR = os.environ.get('QUANT_LIQ_DATA_DIR',
+                               '/mnt/d/quant/data/stock_data/backtrader_data')
+# F-G2 回撤门控 (2026-09-23): bracket证实裸倾斜MDD单调恶化(15.46→15.99),
+# 年分解6/6年正 → 方向真但需风险预算. dd≤LO全倾斜, LO~HI线性衰减, ≥HI零倾斜
+# (回撤期回到锚点行为). env QUANT_LIQ_TILT=0时门控无关=零行为.
+_LIQ_TILT_DD_LO = float(os.environ.get('QUANT_LIQ_TILT_DD_LO', '0.05'))
+_LIQ_TILT_DD_HI = float(os.environ.get('QUANT_LIQ_TILT_DD_HI', '0.10'))
+
+
+def _liq_tilt_eff(drawdown):
+    """回撤门控后的有效倾斜系数."""
+    if drawdown <= _LIQ_TILT_DD_LO:
+        return _LIQ_TILT
+    if drawdown >= _LIQ_TILT_DD_HI:
+        return 0.0
+    return _LIQ_TILT * (_LIQ_TILT_DD_HI - drawdown) / (_LIQ_TILT_DD_HI - _LIQ_TILT_DD_LO)
+
+
+def _liq_floor(code):
+    if code.startswith('688'): return 40_000_000
+    if code.startswith('300'): return 80_000_000
+    return 160_000_000
+
+
+def _liq_amt_ratio(code, date):
+    """入场日amt_ratio; 无数据/停牌/NaN → None."""
+    ent = _LIQ_AMT_CACHE.get(code)
+    if ent is None:
+        fp = os.path.join(_LIQ_DATA_DIR, code + '_qfq.csv')
+        if not os.path.exists(fp):
+            _LIQ_AMT_CACHE[code] = None
+            return None
+        try:
+            d = pd.read_csv(fp, usecols=['datetime', 'amount'], parse_dates=['datetime'])
+        except Exception:
+            _LIQ_AMT_CACHE[code] = None
+            return None
+        d = d.dropna(subset=['datetime'])
+        amt20 = d['amount'].rolling(20, min_periods=5).mean().values
+        ent = (pd.to_datetime(d['datetime']).values, amt20)
+        _LIQ_AMT_CACHE[code] = ent
+    if ent is None:
+        return None
+    dates, amt20 = ent
+    d64 = np.datetime64(pd.Timestamp(date))
+    i = np.searchsorted(dates, d64)
+    if i >= len(dates) or dates[i] != d64:
+        return None
+    a = amt20[i]
+    if a is None or np.isnan(a) or a <= 0:
+        return None
+    return a / _liq_floor(code)
+
+
+# F-H 信号宽度→敞口scaler (2026-09-23, 实验臂): 当日buy信号mean_score相对
+# 近60信号日μ/σ的z乘子×target_exposure, clamp[0.85,1.15]. env QUANT_BREADTH_K=0
+# (默认/生产)时零行为. 证据: F-H1池化corr+0.131 6/6年同号; F-H2控制regime后
+# 残差corr仍+0.131 6/6年全正(0.044~0.202) → regime未吸收; 2026分数分布漂移
+# → rolling 60信号日PIT归一(不含当日). 策略层(strategy.py)逐日喂当日mean_score,
+# set_market_ms负责同日去重append(与build的bear早退路径解耦).
+_MS_K = float(os.environ.get('QUANT_BREADTH_K', '0.0'))
+_F_I_TILT = os.environ.get('QUANT_SECTOR_TILT', '0') == '1'  # F-I: 行业密度倾斜激活臂
+_MS_ASYM = os.environ.get('QUANT_BREADTH_ASYM', '0') == '1'  # F-H3: 仅加仓(z<0不砍)
+_AUG_GATE = os.environ.get('QUANT_AUG_GATE', '0')  # G-2: 8月入场闸(实验臂) '1'=硬闸 'soft'=×0.5
+_DD_BOOST = float(os.environ.get('QUANT_DD_BOOST', '0.0'))  # J-2: 深回撤新仓加注倍率(实验臂)
+_DD_BOOST_ADD = os.environ.get('QUANT_DD_BOOST_ADD', '0')  # J-2b: 加注传输模式 '1'=加性(归一化后现金出资,不稀释持仓)
+_DD_TIER = float(os.environ.get('QUANT_DD_TIER', '0.05'))  # J-2c: 加注DD阈值(0.10=仅最深桶DD≤-10%, J-1: +15.72%/85.7% n=14)
+_MS_MIN_N = 20      # 窗口不足20信号日时不缩放(保生产行为)
+_MS_WIN = 60        # 滚动窗口信号日数
+_MS_BUF = []        # 近60信号日 mean_score (仅信号日append, 含当日为末元素)
+_MS_TODAY = None    # 当日mean_score (strategy.py逐日注入; None=无buy信号日不缩放)
+_MS_LAST_DATE = None
+
 
 def _has_fundamental_flaw(fd, code, date):
     """基本面硬伤 (2026-09-03 实验#27):
@@ -472,6 +552,15 @@ class PortfolioConstructor:
         """注入板块轮动分析器（含动量+信号密度）"""
         self._sector_rotation = sr
 
+    def set_market_ms(self, ms, date=None):
+        """F-H: 当日buy信号mean_score注入(实验臂, QUANT_BREADTH_K=0时零行为).
+        同日去重append; ms=None(无buy信号日)只清_MS_TODAY不追加."""
+        global _MS_TODAY, _MS_LAST_DATE
+        _MS_TODAY = ms
+        if ms is not None and date is not None and _MS_LAST_DATE != date:
+            _MS_BUF.append(float(ms))
+            _MS_LAST_DATE = date
+
     def save_tracking_state(self, filepath: str):
         """持久化持仓跟踪状态到 JSON 文件（实盘跨日状态保持）"""
         import json as _json
@@ -825,7 +914,13 @@ class PortfolioConstructor:
             # 组合层只设 gate_quality 最低线，不逐项判断
 
             # 软惩罚：无结构/追高 → 有效得分扣分（不直接拒绝）
+            # 全部惩罚变量必须在此初始化(Python函数作用域): 持仓代码不走下方if块,
+            # 若不在块外初始化会继承上一迭代的陈旧罚值 → 持仓被误罚(N-10修复, 9/23)
             no_chan_penalty = 0.0
+            chase_pen = 0.0
+            tt1chase_pen = 0.0
+            ml_gate_pen = 0.0
+            divnone_pen = 0.0
             if code not in current_positions:
                 div_type = getattr(sig, 'chan_divergence_type', '')
                 div_strength = getattr(sig, 'chan_divergence_strength', 0.0)
@@ -858,7 +953,6 @@ class PortfolioConstructor:
                 # QUANT_ZG_FILTER: 0=关闭 2=软罚(生产默认, QUANT_ZG_PEN=0.20)
                 _zg = self._nan_safe(getattr(sig, 'chan_pivot_zg', float('nan')))
                 _zgm = os.environ.get('QUANT_ZG_FILTER', '2')
-                chase_pen = 0.0
                 if _zgm != '0' and _zg > 0 and price > _zg:
                     _dist = (price - _zg) / _zg
                     if (_zgm == '1' or (_zgm == '3' and _dist > 0.05)
@@ -872,6 +966,48 @@ class PortfolioConstructor:
                         # (微支撑: 深chase 5/6年比浅chase更毒, 2024 −4.43 vs −3.19)
                         chase_pen = -0.08 if _dist <= 0.05 else -0.20
 
+                # K-18 tt1×chase叠加门控 (2026-09-23实验臂, env默认关闭): 盘整趋势
+                # ∩中枢追高入场集细胞 n=32 ret −6.09% vs 其余+4.12% diff −10.22pp,
+                # 0/6年全弱(细胞矿工扫描). chase单flag已罚−0.20(ZG1b)但细胞仍入场
+                # (高评分覆盖) → 叠加软罚. 仅当chase_pen已激活时叠加(即新入场追高).
+                # QUANT_TT1_CHASE_PEN: 空=关闭; 数值=叠加罚幅度
+                _tcp = os.environ.get('QUANT_TT1_CHASE_PEN', '')
+                if _tcp and chase_pen < 0:
+                    if int(self._nan_safe(getattr(sig, 'trend_type', 0))) == 1:
+                        tt1chase_pen = -float(_tcp)
+
+                # K-10 ML顶桶门控 (2026-09-23实验臂, env默认关闭): 入场集内ML分
+                # 最高桶6/6年全弱(2021-26 −1.2~−4.8pp vs 其余), 构成=bp0占86%+
+                # sl0/1占73%+评分链中等 → ML把弱结构票救回场. 反事实剔除p85
+                # +0.61pp(交易级). 软罚式(同ZG1b): ml_score>阈值的候选罚分跌出.
+                # QUANT_ML_GATE: 空=关闭; 数值=惩罚幅度; QUANT_ML_GATE_TH=阈值(默认0.084)
+                # QUANT_ML_GATE_TT: 空=全体ml顶桶; '1'=仅trend_type==1(盘整)交集
+                # QUANT_ML_GATE_HARD: '1'=硬拒(−10.0, 有效踢出); 空=软罚
+                # (K-15交互定位: 毒细胞=ml顶桶∩tt1 6/6年弱, ml顶桶∩非tt1 6年无恙)
+                _mlg = os.environ.get('QUANT_ML_GATE', '')
+                if _mlg:
+                    _mls = self._nan_safe(getattr(sig, 'ml_score', 0.0))
+                    _mlt = float(os.environ.get('QUANT_ML_GATE_TH', '0.084'))
+                    _mlg_tt = os.environ.get('QUANT_ML_GATE_TT', '')
+                    _is_tt1 = int(self._nan_safe(getattr(sig, 'trend_type', 0))) == 1
+                    if _mls > _mlt and (not _mlg_tt or _is_tt1):
+                        ml_gate_pen = (-10.0 if os.environ.get('QUANT_ML_GATE_HARD', '') == '1'
+                                       else -float(_mlg))
+
+                # K-17 无背驰高结构门控 (2026-09-23实验臂, env默认关闭): 入场集内
+                # div_none∩has_chan(bp>0或sl≥1)细胞 n=58 ret −0.30%/win43.1% vs
+                # 其余+4.66%/58.8%, 10/11 regime-年窗口弱(唯一强=2022-NORM n=13),
+                # FAST期3/3年负(−4.27%). 构成sl4主导49/58, score 0.707高于均值
+                # 0.633 → 评分链奖励但无背驰确认. 软罚式(同ZG1b/K-10).
+                # QUANT_DIVNONE_GATE: 空=关闭; 数值=软罚幅度
+                _dng = os.environ.get('QUANT_DIVNONE_GATE', '')
+                if _dng:
+                    _dt = str(getattr(sig, 'chan_divergence_type', '') or '')
+                    _dbp = int(self._nan_safe(getattr(sig, 'chan_buy_point', 0)))
+                    _dsl = int(self._nan_safe(getattr(sig, 'signal_level', 0)))
+                    if _dt == 'none' and (_dbp > 0 or _dsl >= 1):
+                        divnone_pen = -float(_dng)
+
             candidates.append({
                 'code': code,
                 'factor_value': factor_value,
@@ -880,6 +1016,9 @@ class PortfolioConstructor:
                 'risk_vol': getattr(sig, 'risk_vol', 0.03),
                 'price': price,
                 'chase_penalty': chase_pen,
+                'ml_gate_penalty': ml_gate_pen,
+                'divnone_penalty': divnone_pen,
+                'tt1chase_penalty': tt1chase_pen,
                 'sig': sig,
                 # Chan 融合字段
                 'signal_level': sl,
@@ -1108,6 +1247,22 @@ class PortfolioConstructor:
                     target_exposure *= self.clb_exposure_reduction
                     self.max_single_weight_from_cfg = self._orig_max_single_weight * self.clb_exposure_reduction
             self._prev_equity = total_equity
+
+        # F-H信号宽度scaler (实验臂, _MS_K=0时零行为): z=(当日ms-前60信号日μ)/σ
+        # (PIT: 不含当日), mult=clip(1+k*z, 0.85, 1.15). 无buy日_MS_TODAY=None跳过.
+        # F-H3(2026-09-23): QUANT_BREADTH_ASYM=1 → 仅加仓臂 max(z,0) clamp[1.0,1.15]
+        # (对称臂证据: 2022砍仓腿是NAV负主因, 加仓腿2021/24/25全正).
+        if _MS_K != 0.0 and _MS_TODAY is not None and len(_MS_BUF) >= _MS_MIN_N + 1:
+            _win = _MS_BUF[-_MS_WIN - 1:-1]
+            _mu = float(np.mean(_win))
+            _sd = float(np.std(_win))
+            if _sd > 1e-9:
+                _z = (_MS_TODAY - _mu) / _sd
+                if _MS_ASYM:
+                    _z = max(_z, 0.0)
+                    target_exposure *= float(np.clip(1.0 + _MS_K * _z, 1.0, 1.15))
+                else:
+                    target_exposure *= float(np.clip(1.0 + _MS_K * _z, 0.85, 1.15))
 
         # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）
         self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure
@@ -1352,7 +1507,7 @@ class PortfolioConstructor:
                 repl_buffer = 0.0  # C5c: 仅盈利持仓受保护(亏损名让位)
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
-            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0)
+            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0)
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
@@ -1575,7 +1730,41 @@ class PortfolioConstructor:
         valid_weights = []
         # 止损/HDS触发时真正空仓, 其余情况(低敞口/风险压缩/CLB)仍选最优标的
         _force_empty = self._stop_loss_triggered or self._hds_triggered
+        _dd_boosted_codes = set()
         for c, w in zip(selected, weights):
+            # F-G流动性倾斜(实验臂, _LIQ_TILT=0时零行为): 低流动性(amt_ratio<1)
+            # 加权, mult=1+tilt*(1-min(ar,1)); ar≥1不动. 归一化保留相对再分配.
+            if _LIQ_TILT != 0.0:
+                _ar = _liq_amt_ratio(c['code'], date)
+                if _ar is not None and _ar < 1.0:
+                    w = w * (1.0 + _liq_tilt_eff(drawdown) * (1.0 - _ar))
+            # F-I行业信号密度倾斜(实验臂, QUANT_SECTOR_TILT=1): get_composite_tilt
+            # 设计存在但从未被消费(60%密度+40%动量, 动量腿复用路径=1.0) →
+            # 纯密度腿 composite∈[0.91,1.09]. 轮动速度>0.55时自动中性.
+            if _F_I_TILT and self._sector_rotation is not None:
+                _ct = self._sector_rotation.get_composite_tilt(c.get('industry', ''))
+                w = w * float(_ct)
+            # G-2(2026-09-23, 实验臂, QUANT_AUG_GATE=0零行为): 8月入场闸 —
+            # 全史565笔8月入场mean_ret −1.52%/win 35.2% vs 非8月 +4.06%/58.1%,
+            # 5/6年稳定(2022中性), 唯一全负月份(S批次敞口侧互补: 本闸只动入场侧).
+            # 硬闸: 8月非持仓候选跳过(重归一化流向持仓候选), 持仓保留/卖出照常.
+            # 软闸: 8月新仓权重×0.5(相对权重保留, 归一化重缩放总敞口至target).
+            if _AUG_GATE != '0' and date.month == 8 and current_positions.get(c['code'], 0.0) <= 0:
+                if _AUG_GATE == 'soft':
+                    w = w * 0.5
+                else:
+                    continue
+            # J-2(2026-09-23, 实验臂, QUANT_DD_BOOST=0零行为): 深回撤新仓加注 —
+            # 探针J-1: 入场时组合DD≥5%笔 n=107 mean +5.14%/win58.9% vs 其余+3.24%,
+            # 深度单调(DD≥10%: +15.72%/85.7%), 5/6年胜(仅2026负且12/14笔=8月FAST批
+            # →NORM门+8月闸并存时天然排除). 机制: 自身回撤底部选中标的质量最高.
+            # NORM-only: FAST深DD桶+0.60% vs +2.45%反向. 仅新仓(非持仓).
+            if _DD_BOOST > 0.0 and _regime == 'NORM' and drawdown >= _DD_TIER \
+                    and current_positions.get(c['code'], 0.0) <= 0:
+                if _DD_BOOST_ADD == '1':
+                    _dd_boosted_codes.add(c['code'])  # J-2b加性: 归一化后现金出资追加
+                else:
+                    w = w * _DD_BOOST  # J-2旋转: 归一化稀释(实测传输≈0)
             val = w * total_equity
             min_lot = c['price'] * 100
             if val < min_lot:
@@ -1619,6 +1808,17 @@ class PortfolioConstructor:
             for c in selected:
                 c['weight'] = c.get('weight', 0.0) * 0.5
                 desired_value[c['code']] = c['weight'] * total_equity
+
+        # J-2b(2026-09-23, 实验臂, QUANT_DD_BOOST_ADD='1'零行为): 深回撤加注·加性传输 —
+        # J-2旋转传输实测≈0(a125: −0.06%): 归一化把加注摊成新仓群体vs持仓的旋转,
+        # DD期反弹组合共同, 被稀释侧反弹同样强(臂内加注笔+6.66%/65.4% vs 非加注+3.05%
+        # 但组合净−0.06%). 加性传输: 全部归一化/上限执行后按倍率追加, 资金来自
+        # 结构现金(target_exposure<1), 不稀释任何持仓. 同E-B1v2后置模式(现金侧操作).
+        if _DD_BOOST_ADD == '1' and _dd_boosted_codes:
+            for c in selected:
+                if c.get('code', '') in _dd_boosted_codes:
+                    c['weight'] = c['weight'] * _DD_BOOST
+                    desired_value[c['code']] = c['weight'] * total_equity
 
         # 记录入场日期(用于最小持仓天数约束)
         for c in selected:
