@@ -7226,7 +7226,7 @@ industry_sentiment:
     negativity_bias: 1.2
   backtest:
     precomputed_file: ''
-indicator_params:
+indicator_params:  # 此节与factor_calculator.py get_default_params()逐位一致, 改一处须同步另一处 (9/22审计§A'双源镜像)
   ema_periods:
   - 5
   - 10
@@ -7330,9 +7330,9 @@ portfolio:
     # 排除: 盈利股利润同比<-30%; 亏损股仅当亏损继续扩大(同比恶化)时排除 —
     # 亏损收窄/走平/扭亏的转机股放行. 数据缺失自动放行.
     exclude_fundamental_flaws: false
-    chan_gate_enabled: true
-    chan_gate_min_count: 2
-    chan_fallback_score: 0.4
+    chan_gate_enabled: true  # 已归档9/22审计§1A: 死键(全库零消费者, 仅yaml兼容读取)
+    chan_gate_min_count: 2  # 已归档9/22审计§1A: 死键(同上)
+    chan_fallback_score: 0.4  # 已归档9/22审计§1A补档: 死键(同上)
     exhaustion_max_weight: 0.08
     exhaustion_reduce_mult: 0.5
     industry_max_weight: 0.4
@@ -7554,15 +7554,15 @@ chan_theory:
   signal_boost:
     bottom_divergence_mult: 1.15
     top_divergence_mult: 0.78
-    alignment_boost: 0.06
-    zhongyin_penalty: 0.9
+    alignment_boost: 0.06  # 已归档9/22审计§1A: 死键(全库零消费者)
+    zhongyin_penalty: 0.9  # 已归档9/22审计§1A: 死键(全库零消费者)
     pivot_breakout_buy_mult: 1.08
     pivot_breakout_sell_mult: 0.82
   exit:
-    top_divergence_exit: 0.3
+    top_divergence_exit: 0.3  # 已归档9/22审计§1A: 死键(全库零消费者)
     trend_exhaustion_exit: -0.3
     buy_zone_stop_protection: 1.5
-    volume_divergence_exit: true
+    volume_divergence_exit: true  # 已归档9/22审计§1A: 死键(全库零消费者)
   take_profit:
     enabled: false
     s1_reduce_pct: 0.75
@@ -7580,7 +7580,7 @@ chan_theory_enhanced:
   pivot:
     min_segments: 3
     overlap_required: true
-  buy_sell_points:
+  buy_sell_points:  # 已归档9/22审计§1A: 死键(仅chan_review.py分析工具读取, 生产链零消费者)
     b1_buy_mult: 1.2
     b2_buy_mult: 1.12
     b3_buy_mult: 1.15
@@ -7590,8 +7590,8 @@ chan_theory_enhanced:
   signal:
     trend_trend_follow: 1.06
     trend_counter_trend: 0.94
-    consolidation_discount: 0.8
-    zhongyin_penalty: 0.9
+    consolidation_discount: 0.8  # 已归档9/22审计§1A: 死键(全库零消费者)
+    zhongyin_penalty: 0.9  # 已归档9/22审计§1A: 死键(全库零消费者)
     pivot_bottom_boost: 1.06
   b1_gate:
     min_bottom_div: 0.15
@@ -7765,7 +7765,7 @@ backtest:
   rebalance_days: 10
   num_workers: 4
   fromdate: '2021-01-01'
-  todate: '2026-09-17'
+  todate: '2026-09-30'
 cost_model:
   t_plus_1_enabled: true
   impact_cost_enabled: false
@@ -7778,7 +7778,7 @@ cost_model:
 live_monitoring:
   enabled: true
   reference_path: strategy/rolling_validation_results/backtest_reference.csv
-  divergence_threshold: 0.3
+  divergence_threshold: 0.3  # 已归档9/22审计§1A: 死键(全库零消费者)
   # 逆回购闲置现金sweep (2026-09-21, 实盘路径预备): 快照日均闲置现金56.9%
   # → GC001隔夜年化≈1.5% ≈ 0.91% NAV/年无风险增益。纯实盘执行层,
   # 回测锚点不动(实盘只会优于回测)。enabled默认false=关闭(实盘暂停期);

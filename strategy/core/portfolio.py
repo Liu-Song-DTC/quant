@@ -262,7 +262,7 @@ class PortfolioConstructor:
         self.winner_float_enabled = sel_config.get('winner_float_enabled', False)
         self.winner_float_cap = sel_config.get('winner_float_cap', 0.24)
 
-        # === fv_exposure 可配置参数 ===
+        # === fv_exposure 可配置参数 ===  # 已归档9/22审计§1B: 死旋钮(全库零消费者, 回测恒用默认值)
         fv_params = portfolio_config.get('fv_exposure_params', {})
         self.fv_low = fv_params.get('fv_low', -0.03)
         self.fv_high = fv_params.get('fv_high', 0.05)
@@ -366,8 +366,8 @@ class PortfolioConstructor:
         self.fast_exposure_cap = float(pp.get('fast_exposure_cap', 0.0))
         self.rp_min_weight_ratio = pp.get('risk_parity_min_weight_ratio', 0.5)
         self.rank_decay = pp.get('rank_decay', 0.3)
-        self.chan_bonus_sl2 = pp.get('chan_bonus_sl2', 0.04)
-        self.chan_bonus_buy_point = pp.get('chan_bonus_buy_point', 0.02)
+        self.chan_bonus_sl2 = pp.get('chan_bonus_sl2', 0.04)  # 已归档9/22审计§1B: 死旋钮(全库零消费者)
+        self.chan_bonus_buy_point = pp.get('chan_bonus_buy_point', 0.02)  # 已归档9/22审计§1B: 死旋钮(全库零消费者)
         self.chan_bonus_trend2 = pp.get('chan_bonus_trend2', 0.01)
         self.mom_60d_fomo_threshold = pp.get('mom_60d_fomo_threshold', 0.30)
         self.mom_60d_fomo_mult = pp.get('mom_60d_fomo_mult', 0.50)  # 底线从0.30→0.50
@@ -459,6 +459,14 @@ class PortfolioConstructor:
         self.clb_win_floor = clb_config.get('win_floor', 0.005)
         self.clb_exposure_reduction = clb_config.get('exposure_reduction', 0.50)  # 减半, 不归零(防止无法恢复)
         self.clb_reset_after_win = clb_config.get('reset_after_win', 2)
+        # E-LAD臂覆盖 (2026-09-24, env门控默认生产零行为):
+        # QUANT_CLB_RED 覆写CLB削减乘数 (生产0.50); QUANT_CLB_TH 覆写连亏阈值 (生产3)
+        _CLB_RED = os.environ.get('QUANT_CLB_RED', '')
+        _CLB_TH = os.environ.get('QUANT_CLB_TH', '')
+        if _CLB_RED:
+            self.clb_exposure_reduction = float(_CLB_RED)
+        if _CLB_TH:
+            self.clb_threshold = int(_CLB_TH)
         self._clb_losses = 0
         self._clb_wins = 0
         self._clb_triggered = False
@@ -921,6 +929,7 @@ class PortfolioConstructor:
             tt1chase_pen = 0.0
             ml_gate_pen = 0.0
             divnone_pen = 0.0
+            ah_pen = 0.0
             if code not in current_positions:
                 div_type = getattr(sig, 'chan_divergence_type', '')
                 div_strength = getattr(sig, 'chan_divergence_strength', 0.0)
@@ -975,6 +984,24 @@ class PortfolioConstructor:
                 if _tcp and chase_pen < 0:
                     if int(self._nan_safe(getattr(sig, 'trend_type', 0))) == 1:
                         tt1chase_pen = -float(_tcp)
+                # K-18硬拒上界臂 (2026-09-24): 软罚0.20清除率仅38%且残留毒性浓缩
+                # (−5.63%→−7.75%, 门控审计铁证) → 整细胞硬拒=家族上界测试.
+                # QUANT_TT1_CHASE_HARD: '1'=硬拒(tt1∩追高); 空=关闭
+                if (os.environ.get('QUANT_TT1_CHASE_HARD', '') == '1'
+                        and chase_pen < 0
+                        and int(self._nan_safe(getattr(sig, 'trend_type', 0))) == 1):
+                    _rej['tt1_chase'] = _rej.get('tt1_chase', 0) + 1
+                    continue
+                # K-19 BEAR×追高硬拒臂 (2026-09-24实验臂, env默认关闭): regime探针发现
+                # chase细胞毒性BEAR集中 (BEAR 16笔−7.47%/win12% vs NEUT−0.05%/BULL+0.22%,
+                # 4/4有效年全负; tt1/非tt1子片独立皆毒−7.87/−7.15; 非chase BEAR +3.38%健康)
+                # 且2025年零笔 → 峰值组合零直接扰动 (vs K-18硬拒2025级联28笔).
+                # QUANT_BEAR_CHASE_HARD: '1'=硬拒(追高∩market_regime==-1); 空=关闭
+                if (os.environ.get('QUANT_BEAR_CHASE_HARD', '') == '1'
+                        and chase_pen < 0
+                        and int(market_regime) == -1):
+                    _rej['bear_chase'] = _rej.get('bear_chase', 0) + 1
+                    continue
 
                 # K-10 ML顶桶门控 (2026-09-23实验臂, env默认关闭): 入场集内ML分
                 # 最高桶6/6年全弱(2021-26 −1.2~−4.8pp vs 其余), 构成=bp0占86%+
@@ -1009,6 +1036,14 @@ class PortfolioConstructor:
                     if _dt == 'none' and (_dbp > 0 or _dsl >= 1):
                         divnone_pen = -float(_dng)
 
+                # H-1a AH股软罚 (2026-09-24实验臂, env默认关闭): H-1前置探针
+                # 入场集63/566笔, AH +2.72% vs 非AH +3.65% (win%同56%), 年分解
+                # 2021-22 AH优/2023-26 AH劣 (n=6~17/年). 方向非6/6且样本小 → 软罚
+                # 弱试探 (同ZG1b/K-10软罚式, 仅新入场). QUANT_AH_PEN: 空=关闭.
+                _ahp = os.environ.get('QUANT_AH_PEN', '')
+                if _ahp and str(getattr(sig, 'industry', '') or '') == 'AH股':
+                    ah_pen = -float(_ahp)
+
             candidates.append({
                 'code': code,
                 'factor_value': factor_value,
@@ -1020,6 +1055,7 @@ class PortfolioConstructor:
                 'ml_gate_penalty': ml_gate_pen,
                 'divnone_penalty': divnone_pen,
                 'tt1chase_penalty': tt1chase_pen,
+                'ah_penalty': ah_pen,
                 'sig': sig,
                 # Chan 融合字段
                 'signal_level': sl,
@@ -1188,21 +1224,42 @@ class PortfolioConstructor:
             if c.get('signal_level', 0) >= 2 or c.get('chan_buy_point', 0) == 1
         )
         if chan_strong_buys >= 2 and target_exposure < 0.6:
+            # E-LAD臂覆盖 (2026-09-24, env门控默认生产零行为):
+            # QUANT_CHAN_FLOOR_NORM/FAST/BEAR 覆写三档地板 (生产0.60/0.45/0.15)
+            _CF_NORM = os.environ.get('QUANT_CHAN_FLOOR_NORM', '')
+            _CF_FAST = os.environ.get('QUANT_CHAN_FLOOR_FAST', '')
+            _CF_BEAR = os.environ.get('QUANT_CHAN_FLOOR_BEAR', '')
             if bear_risk:
-                chan_floor = 0.15  # 熊市保守, 不超bear_cap太多
+                chan_floor = float(_CF_BEAR) if _CF_BEAR else 0.15  # 熊市保守, 不超bear_cap太多
             elif bear_risk_fast:
-                chan_floor = 0.45  # 原逻辑
+                chan_floor = float(_CF_FAST) if _CF_FAST else 0.45  # 原逻辑
             else:
-                chan_floor = 0.60  # 正常: 不错过底部
+                chan_floor = float(_CF_NORM) if _CF_NORM else 0.60  # 正常: 不错过底部
             target_exposure = max(target_exposure, chan_floor)
+
+        # E-LAD1遥测 (2026-09-24, QUANT_EXP_TEL='1'时开, 零行为改动): 敞口阶梯
+        # 绑定诊断 — 逐调仓日记录阶梯输入/目标/最终权重和, 输出/tmp/exposure_tel.csv
+        if os.environ.get('QUANT_EXP_TEL', '') == '1':
+            self._exp_tel_row = {'date': str(date), 'trend': round(float(trend_score), 3),
+                                 'bear': int(bear_risk), 'bear_fast': int(bear_risk_fast),
+                                 'ivr': round(float(index_volume_ratio), 3),
+                                 'chan_n': int(chan_strong_buys),
+                                 'pre_vol_target': round(float(target_exposure), 4),
+                                 'vol_scale': '', 'realized_vol': ''}
 
         # === 波动率控制: realized_vol > target → 降仓 ===
         if self.vol_control_enabled and len(self._daily_returns) >= self.vol_lookback:
             recent_rets = list(self._daily_returns)[-self.vol_lookback:]
             realized_vol = float(np.std(recent_rets) * np.sqrt(252))
             if realized_vol > 0.01:
-                vol_scale = float(np.clip(self.target_volatility / realized_vol, 0.75, 1.0))
+                # E-LAD臂覆盖 (2026-09-24, env门控默认生产零行为):
+                # QUANT_VOL_FLOOR 覆写vol_scale下限 (生产0.75)
+                _VF = float(os.environ.get('QUANT_VOL_FLOOR', '') or 0.75)
+                vol_scale = float(np.clip(self.target_volatility / realized_vol, _VF, 1.0))
                 target_exposure *= vol_scale
+                if os.environ.get('QUANT_EXP_TEL', '') == '1' and hasattr(self, '_exp_tel_row'):
+                    self._exp_tel_row['vol_scale'] = round(vol_scale, 4)
+                    self._exp_tel_row['realized_vol'] = round(realized_vol, 4)
 
         # === 硬止损: 回撤超过阈值时强制降仓（含恢复冷却期）===
         if self.stop_loss_enabled and drawdown > self.portfolio_stop_loss:
@@ -1264,6 +1321,14 @@ class PortfolioConstructor:
                     target_exposure *= float(np.clip(1.0 + _MS_K * _z, 1.0, 1.15))
                 else:
                     target_exposure *= float(np.clip(1.0 + _MS_K * _z, 0.85, 1.15))
+
+        # E-LAD1遥测收口: 阶梯全流程后的最终目标敞口
+        if os.environ.get('QUANT_EXP_TEL', '') == '1' and hasattr(self, '_exp_tel_row'):
+            self._exp_tel_row['final_target'] = round(float(target_exposure), 4)
+            self._exp_tel_row['stopped'] = int(self._stop_loss_triggered)
+            self._exp_tel_row['clb'] = int(self._clb_triggered)
+            self._exp_tel_row['hds'] = int(self._hds_triggered)
+            self._exp_tel_row['eq'] = round(float(total_equity), 2)
 
         # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）
         self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure
@@ -1508,7 +1573,7 @@ class PortfolioConstructor:
                 repl_buffer = 0.0  # C5c: 仅盈利持仓受保护(亏损名让位)
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
-            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0)
+            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0) + c.get('ah_penalty', 0.0)
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
@@ -1615,8 +1680,10 @@ class PortfolioConstructor:
             return {}
 
         # 敞口低时集中火力: 减少候选数确保每只股票能买够1手
+        # E-LAD臂覆盖 (2026-09-24, env门控默认生产零行为): QUANT_CONC_MIN 覆写集中下限 (生产2)
         if target_exposure < 0.50:
-            max_conc = max(2, int(target_exposure * 6))
+            _CM = int(os.environ.get('QUANT_CONC_MIN', '') or 2)
+            max_conc = max(_CM, int(target_exposure * 6))
             if len(selected) > max_conc:
                 selected = selected[:max_conc]
 
@@ -1660,11 +1727,15 @@ class PortfolioConstructor:
             weights = [w / total_w * target_exposure for w in raw_weights]
 
         # 单票权重上限: 候选不足时动态放宽以提升资金利用率
+        # E-LAD臂覆盖 (2026-09-24, env门控默认生产零行为):
+        # QUANT_SLACK_MULT 覆写slack乘数 (生产1.5); QUANT_SLACK_CAP 覆写放宽上限 (生产1.5)
+        _SM = float(os.environ.get('QUANT_SLACK_MULT', '') or 1.5)
+        _SC = float(os.environ.get('QUANT_SLACK_CAP', '') or 1.5)
         max_single = self.max_single_weight_from_cfg
         if len(selected) < self.max_positions:
             # 候选不足 → 提高单票上限, 集中资金到优质标的
             slack = (self.max_positions - len(selected)) / self.max_positions
-            max_single = min(max_single * (1.0 + slack * 1.5), max_single * 1.5)
+            max_single = min(max_single * (1.0 + slack * _SM), max_single * _SC)
         # 归一化：仅做比例分配，不做上限（上限在归一化后执行以避免被抵消）
         total_w = sum(weights) + 1e-10
         weights_norm = [w / total_w for w in weights]
@@ -1797,6 +1868,23 @@ class PortfolioConstructor:
             # 最终上限保护: 归一化膨胀后再次裁剪（防止重归一化导致单票超限）
             for c in valid_selected:
                 c['weight'] = min(c['weight'], max_single)
+            # E-LAD1遥测落盘: 记录最终权重和 vs 阶梯目标 (观测only, 零行为改动)
+            if os.environ.get('QUANT_EXP_TEL', '') == '1' and hasattr(self, '_exp_tel_row'):
+                _r = self._exp_tel_row
+                _r['n'] = len(valid_selected)
+                _r['wsum'] = round(float(sum(c['weight'] for c in valid_selected)), 4)
+                _r['max_single'] = round(float(max_single), 4)
+                try:
+                    import csv as _csv
+                    _p = '/tmp/exposure_tel.csv'
+                    _new = not os.path.exists(_p)
+                    with open(_p, 'a', newline='') as _f:
+                        _w = _csv.DictWriter(_f, fieldnames=sorted(_r.keys()))
+                        if _new:
+                            _w.writeheader()
+                        _w.writerow(_r)
+                except Exception:
+                    pass
             for c in valid_selected:
                 desired_value[c['code']] = c['weight'] * total_equity
 

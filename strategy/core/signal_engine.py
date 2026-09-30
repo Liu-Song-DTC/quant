@@ -293,7 +293,7 @@ class SignalEngine:
         self.resonance_sys3_ns_sell_threshold = resonance_cfg.get('sys3_ns_sell_threshold', 0.2)
 
         # === TI增强 & 自适应融合参数 ===
-        self.ti_boost_scale = signal_config.get('ti_boost_scale', 2.0)
+        self.ti_boost_scale = signal_config.get('ti_boost_scale', 2.0)  # 已归档9/22审计§1B: 死旋钮(全库零消费者)
         self.ti_boost_magnitude = signal_config.get('ti_boost_magnitude', 0.12)
         self.ti_adaptive_scale = signal_config.get('ti_adaptive_scale', 0.3)
         self.ti_adaptive_max_adjust = signal_config.get('ti_adaptive_max_adjust', 0.12)
@@ -503,7 +503,9 @@ class SignalEngine:
             self.market_regime_data = regime_df.set_index('datetime')
 
     def print_factor_stats(self):
-        """打印因子选择统计"""
+        """打印因子选择统计. 注(9/22审计): fixed_industry/fixed_default为计数语义
+        artifact — 固定模式下一个信号恰好被一个因子路径计数, 比例≈50/50不表示
+        混合权重, 勿据其解读因子贡献."""
         stats = self._stats
         total = sum(v for k, v in stats.items() if k != 'ic_values')
         if total == 0:

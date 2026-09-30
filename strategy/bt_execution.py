@@ -41,8 +41,7 @@ config = load_config()
 # 回测参数 - 从配置文件读取
 CASH = config.get('backtest.cash', 100000.0)
 COMMISSION = config.get('backtest.commission', 0.0001)  # 万1佣金
-STAMP_TAX = config.get('backtest.stamp_tax', 0.0005)  # A股印花税万5(卖出单边)
-EFFECTIVE_COMM = COMMISSION + STAMP_TAX * 0.5  # 双边均摊: 买入万1, 卖出万6, 均摊万3.5
+STAMP_TAX = config.get('backtest.stamp_tax', 0.0005)  # 万5扁平默认 — 9/22成本审计后由 _vectorized_backtest 内 _STAMP_ARR 日期分档取代, 仅作yaml兼容读取
 PERC = config.get('backtest.slippage', 0.001)
 REBALANCE_DAYS = config.get('backtest.rebalance_days', 20)
 
@@ -451,6 +450,16 @@ def _generate_stock_signal_worker(args):
                 'alt_mg': m.get('alt_margin_hits', 0),
                 'alt_dt': m.get('alt_dragon_tiger_hits', 0),
             }
+            # A.6-1(2026-09-22): 季度配置诊断计数器是signal_engine模块级dict, spawn
+            # worker内累积后随进程消亡 → 主进程_print_quarter_diag恒空。快照+清零回传。
+            try:
+                from core import signal_engine as _se_mod
+                _qd = {k: int(v) for k, v in _se_mod._QUARTER_DIAG.items() if k != 'printed'}
+                _se_mod._QUARTER_DIAG.update({k: 0 for k in _se_mod._QUARTER_DIAG if k != 'printed'})
+            except Exception:
+                _qd = {}
+            if diag_data:
+                diag_data['quarter_diag'] = _qd
             engine._diag.reset()
 
         # 收集 worker 的因子选择统计
@@ -1071,6 +1080,15 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                 m['alt_northbound_hits'] = m.get('alt_northbound_hits', 0) + diag_data.get('alt_nb', 0)
                 m['alt_margin_hits'] = m.get('alt_margin_hits', 0) + diag_data.get('alt_mg', 0)
                 m['alt_dragon_tiger_hits'] = m.get('alt_dragon_tiger_hits', 0) + diag_data.get('alt_dt', 0)
+                # A.6-1b(2026-09-22): 主进程聚合worker回传的季度诊断计数
+                if 'quarter_diag' in diag_data:
+                    try:
+                        from core import signal_engine as _se_mod
+                        for _k, _v in diag_data['quarter_diag'].items():
+                            if _k in _se_mod._QUARTER_DIAG:
+                                _se_mod._QUARTER_DIAG[_k] += int(_v)
+                    except Exception:
+                        pass
             except Exception as e:
                 import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
         # 增量写入CSV（不在内存中累积 Signal 对象）
@@ -1524,6 +1542,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                       (_idx_df['datetime'] <= pd.Timestamp(todate))]
     calendar = pd.DatetimeIndex(sorted(_idx_df['datetime'].unique()))
     n_dates = len(calendar)
+    _STAMP_ARR = np.where(calendar.values < np.datetime64('2023-08-28'), 0.001, 0.0005).astype(np.float64)  # 印花税分档: 2023-08-28前万10后万5 (9/22成本审计)
     code_to_idx = {c: i for i, c in enumerate(stock_codes)}
     idx_to_code = {i: c for i, c in enumerate(stock_codes)}
 
@@ -1696,7 +1715,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     sell_px = sell_px * 0.97  # 跳空低开>9.5%: 成交价再折让
                     _fill_stats['gap_sell_penalized'] += 1
                 impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
-                cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
+                cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - _STAMP_ARR[i] - impact)
                 _log_realized(code, date, sell_px)
                 positions[j] = 0
                 cost_tracker.pop(code, None)  # 清仓: 移除成本记录
@@ -1728,7 +1747,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                         sell_px = sell_px * 0.97
                         _fill_stats['gap_sell_penalized'] += 1
                     impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
-                    cash += abs(diff) * sell_px * (1.0 - COMMISSION - STAMP_TAX - impact)
+                    cash += abs(diff) * sell_px * (1.0 - COMMISSION - _STAMP_ARR[i] - impact)
                     positions[j] = target_shares
                     # 减仓: 减少成本追踪股数 (均价不变)
                     if code in cost_tracker:

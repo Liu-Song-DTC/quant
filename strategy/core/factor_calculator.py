@@ -1083,7 +1083,8 @@ def _apply_chan_signal_boosts(result: Dict[str, np.ndarray], n: int) -> None:
 
 
 def get_default_params() -> Dict:
-    """获取默认参数"""
+    """获取默认参数. 此字典与factor_config.yaml indicator_params逐位一致,
+    改一处须同步另一处 (9/22审计§A'双源镜像)."""
     return {
         'ema_periods': [5, 10, 20, 60],
         'ma_periods': [5, 10, 20, 30, 60],

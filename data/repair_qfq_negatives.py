@@ -5,7 +5,9 @@
   sina stock_zh_a_daily(qfq 乘性) vs xtquant raw(none.csv) 裁判通过 -> 50只用sina整文件重建。
   但每次Windows下载器重跑 --bt-only 都会重新用xtquant生成qfq -> 修复被覆盖,
   9128行负价原样回来 (2026-09-04 实测)。故本脚本做成幂等通用版:
-    - 扫描全部 *_qfq.csv, 只修 close<=0 的文件
+    - 扫描全部 *_qfq.csv, 修 close<=0 的文件
+    - sina维护股(存在 .preQfqFix 备份, 下载器转换跳过)即使已无负价也每日重拉,
+      保尾部新鲜度 (2026-09-07修复: 只扫负价→9/4修复成功后永不再维护→52只门禁FAIL)
     - 盘中运行(15:30前)时 sina 只取到昨日, 避免当天半截bar; 盘后取到今天
     - 旧文件尾部若是当天半截bar, 允许新文件尾日=最近完整交易日(不判跳过)
     - 备份 {file}.preQfqFix (仅首次)
@@ -98,13 +100,18 @@ def main():
     files = sorted(f for f in os.listdir(BT) if f.endswith('_qfq.csv'))
     targets = []
     for f in files:
+        # sina维护股: 下载器convert_to_backtrader因preQfqFix保护跳过它们,
+        # 尾部新鲜度只能靠本脚本每日重拉 (只扫负价会漏掉已修复文件)
+        if os.path.exists(os.path.join(BT, f + '.preQfqFix')):
+            targets.append(f)
+            continue
         try:
             df = pd.read_csv(os.path.join(BT, f), usecols=['close'])
         except Exception:
             continue
         if (df['close'] <= 0).any():
             targets.append(f)
-    print(f'负价文件: {len(targets)} 只', flush=True)
+    print(f'负价/sina维护文件: {len(targets)} 只', flush=True)
     ok_n, fail_n, skip_n = 0, 0, 0
     for i, f in enumerate(targets):
         code = f.replace('_qfq.csv', '')

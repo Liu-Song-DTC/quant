@@ -405,7 +405,7 @@ class DynamicFactorSelector:
         self.min_ic_dates = dynamic_config.get('min_ic_dates', 5)
         self.ic_decay_factor = dynamic_config.get('ic_decay_factor', 1.0)
         self.min_factor_count = dynamic_config.get('min_factor_count', 2)
-        self.use_static_candidates = dynamic_config.get('use_static_candidates', True)
+        self.use_static_candidates = dynamic_config.get('use_static_candidates', True)  # 已归档9/22审计§1B: 死旋钮(全库零消费者)
         self.reweight_blend = dynamic_config.get('reweight_blend', 0.5)
 
     def set_factor_data(self, factor_df: pd.DataFrame):

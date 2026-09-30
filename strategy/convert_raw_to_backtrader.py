@@ -31,7 +31,7 @@ def convert_stock(args):
     try:
         df = pd.read_csv(qfq_file)
 
-        if stock_name == 'sh000001':
+        if stock_name in ('sh000001', '399006', 'sh000852'):
             # Index format: date,open,close,high,low,volume,amount
             df = df.rename(columns={'date': 'datetime'})
             cols_avail = set(df.columns)

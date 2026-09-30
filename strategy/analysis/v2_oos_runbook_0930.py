@@ -115,15 +115,16 @@ def phase0():
     eq_path = os.path.join(RVR, 'equity_curve.csv')
     if os.path.exists(eq_path):
         eq = pd.read_csv(eq_path, parse_dates=['date'])['date'].max()
-        print(f"  equity_curve.csv最后日期: {eq.date()} (预期9/30前为9/15态)")
+        print(f"  equity_curve.csv最后日期: {eq.date()} (预期9/30前为9/17冻结态)")
     else:
         print("  ✗ equity_curve.csv缺失")
         ok = False
-    # 5) sidecar指纹 (9/20重锚后生产态应为 6f1cb6b1|0; sidecar在signals.csv同目录)
+    # 5) sidecar指纹 (9/24生产态 6646b193|0; 9/30全链重生成后fp将变, 此值仅存档参照;
+    #    非门控 — Phase 0的阻塞门是数据日期)
     fp_path = os.path.join(RVR, '.signal_code_fp')
     if os.path.exists(fp_path):
         with open(fp_path) as f:
-            print(f"  sidecar指纹: {f.read().strip()} (C5c态预期 6f1cb6b1|0)")
+            print(f"  sidecar指纹: {f.read().strip()} (9/24生产态 6646b193|0, 9/30重生成后变更属预期)")
     # 6) 生产配置快检 (0f池+C5c+0g关闭 三键)
     with open(os.path.join(BASE_DIR, 'config', 'factor_config.yaml'), 'r', encoding='utf-8') as f:
         ytxt = f.read()
