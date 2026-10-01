@@ -265,3 +265,7 @@ current_positions.*.json
 fundamental_*_pre_fix_*.pkl
 strategy/tools/state_manifest_latest.json
 strategy/backups/
+# 转债sleeve数据缓存 (2026-10-01, 可用 data/cb_sleeve_refresh.py 重建)
+data/alternative_data/cb_daily/
+data/alternative_data/cb_value/
+data/alternative_data/cb_list.csv

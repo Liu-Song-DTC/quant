@@ -35,6 +35,8 @@ from core.signal_store import SignalStore
 from core.portfolio import PortfolioConstructor
 from core.market_regime_detector import MarketRegimeDetector
 from core.repo_sweep import compute_repo_sweep, sweep_guidance
+from core.cb_sleeve import (compute_cb_sleeve, load_snapshot as cb_load_snapshot,
+                            load_state as cb_load_state, save_state as cb_save_state)
 
 config = load_config()
 
@@ -717,13 +719,49 @@ def main():
         elif o['amount'] > _prev_amt:
             _buy_final += o['amount'] - _prev_amt
     _post_order_cash = max(account_capital - _pos_sum, 0.0) + _sell_proceeds - _buy_final
+
+    # ── 转债hybrid10 sleeve建议块 (2026-10-01, 实盘路径预备, yaml默认关闭) ──
+    # 月频全换仓差分; 出资来自闲置现金(与repo_sweep共享池: 转债先, sweep扫余量)。
+    # 研究依据 strategy/analysis/cov_research_20260926.md v3: hybrid10
+    # (rank(债价)+w×rank(纯债溢价率), w=1/n=10/cap=130) 月Sharpe 1.02, 危机月12/12。
+    # cb块任何失败都只跳过本块, 绝不阻塞股票订单(双保险: 内层catch+外层try)。
+    _cb_cfg = config.get('live_monitoring.cb_sleeve', {}) or {}
+    _cb_result = None
+    if (_cb_cfg or {}).get('enabled', False):
+        try:
+            _cb_cache_dir = (os.environ.get('QUANT_CB_CACHE')
+                             or os.path.join(_PROJECT_DIR, 'data', 'alternative_data'))
+            _cb_result = compute_cb_sleeve(
+                _post_order_cash, _cb_cfg, cb_load_state(),
+                cb_load_snapshot(_cb_cache_dir, pd.Timestamp(target_date)),
+                pd.Timestamp(target_date))
+        except Exception as e:
+            print(f"  [cb_sleeve] 生成失败(不影响股票订单): {e}")
+    _cb_spend = (_cb_result['spend_est']
+                 if _cb_result and _cb_result.get('rebalanced') else 0.0)
+
     _sweep_cfg = config.get('live_monitoring.repo_sweep', {}) or {}
-    _sweep = compute_repo_sweep(_post_order_cash, _sweep_cfg)
+    _sweep = compute_repo_sweep(max(_post_order_cash - _cb_spend, 0.0), _sweep_cfg)
 
     output = {
         'date': str(target_date),
         'orders': orders,
     }
+    if _cb_result and _cb_result.get('rebalanced'):
+        output['cb_sleeve'] = {
+            'month': _cb_result['month'],
+            'picks': _cb_result['picks'],
+            'alloc_total': _cb_result['alloc_total'],
+            'spend_est': _cb_result['spend_est'],
+            'reason': _cb_result['reason'],
+            'orders': _cb_result['orders'],
+            'notes': _cb_result['notes'],
+        }
+        print(f"\n[转债sleeve] {_cb_result['reason']}")
+        for o in _cb_result['orders']:
+            _act = '买入' if o['action'] == 'open' else '卖出'
+            print(f"  {_act:4s} {o['code']} {o['qty_zhang']:>4}张 "
+                  f"≈{o['est_amount']:>8,.0f}元 (估价{o['est_price']:.2f}/张)")
     if _sweep['enabled']:
         output['repo_sweep'] = {
             'code': _sweep['code'],
@@ -787,6 +825,12 @@ def main():
 
     # 更新持仓状态
     save_current_positions(new_positions)
+
+    # 转债sleeve状态落盘 (月度节奏跟踪, 独立于股票持仓文件)
+    if _cb_result and _cb_result.get('rebalanced'):
+        cb_save_state(_cb_result['new_state'])
+        print(f"[转债sleeve] 状态已更新: {_cb_result['new_state']['month']} "
+              f"{len(_cb_result['new_state']['positions'])}只")
 
     # ── 8. 打印选股详情 + 保存CSV ─────────────────────────────
     if hasattr(portfolio, 'last_selection') and portfolio.last_selection:

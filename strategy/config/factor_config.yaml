@@ -7789,6 +7789,26 @@ live_monitoring:
     tenor: '1d'          # v1仅隔夜: 7d/14d会锁死10d调仓周期资金
     reserve_ratio: 0.10  # 永留缓冲比例(×订单后剩余现金, 覆盖滑点/手续费)
     assumed_rate: 0.015  # 仅估算年化收益展示用, 非成交价
+  # 转债hybrid10 sleeve (2026-10-01, 实盘路径预备): 闲置现金出资的月频
+  # 低价转债组合 — 研究依据 strategy/analysis/cov_research_20260926.md v3:
+  # hybrid = rank(债价) + w×rank(纯债溢价率), n=10, cap=130 →
+  # 月Sharpe 1.02, 年化+14.8%, MDD −15.5%, 相关vs生产0.087, 危机月12/12
+  # 跑赢, 参数面60点宽平台无彩票; 出资模型=生产组合不动+闲置现金w%×hybrid
+  # (MV网格 w=0.10→1.86/0.20→1.92 vs 生产1.78, 接入起步10-20%)。
+  # 纯实盘执行层, 回测锚点不动(研究机制另建独立引擎已验证)。默认关闭;
+  # 恢复实盘后由用户决策开启(需确认QMT已开通可转债交易权限)。
+  # 建议写入trade_orders.json的cb_sleeve键, 由core/cb_sleeve.py生成,
+  # QMT侧执行脚本以市价委托为准最后下单。
+  cb_sleeve:
+    enabled: false
+    n: 10                 # 持仓券数 (参数面宽平台内点)
+    w: 1.0                # 纯债溢价率rank权重 (hybrid机理)
+    cap: 130              # 债价上限 (挡强赎区, 偏差上界=0)
+    alloc_ratio: 0.10     # 闲置现金出资比例 (MV网格稳健起点)
+    min_total: 20000      # 最低出资额, 低于此只卖不买 (10券×1手≈1.1万)
+    lot: 10               # 1手=10张 (沪深转债最小交易单位)
+    max_stale_days: 5     # 停牌/退市判定: 最新交易日距今超过N天
+    redemption_days: 15   # 强赎检查: 近30日转股价值≥130天数阈值
 multi_strategy:
   enabled: true
   trend:
