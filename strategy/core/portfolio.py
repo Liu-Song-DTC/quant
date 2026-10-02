@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from collections import deque
 from copy import deepcopy
-from datetime import date as date_type
+from datetime import date as date_type, timedelta
 from .config_loader import load_config
 from .pipeline_logger import plog
 from scipy.special import erfinv, erf
@@ -406,6 +406,9 @@ class PortfolioConstructor:
         self._mr_exit_cooldown: dict = {}  # {code: exit_date} 均值回归退出冷却期(Fix#7)
         self._entry_reason_lost_count: dict = {}  # Fix#10: 买入理由消失确认期计数
         self._post_sell_tracking: dict = {}  # {code: {'trigger_price': float, 'reason': str}}
+        # E-SD(2026-10-02): 信号卖出延迟出场 {code: deadline_date} — env-gated实验臂
+        self._sell_delay_deadline: dict = {}
+        self._sell_delay_days = int(os.environ.get('QUANT_SELL_DELAY', '0') or 0)
 
         self.peak_equity = None
         self.last_selection = []  # 每期选股结果
@@ -596,6 +599,8 @@ class PortfolioConstructor:
                                for k, v in self._mr_exit_cooldown.items()},
             "entry_reason_lost_count": self._entry_reason_lost_count,
             "post_sell_tracking": self._post_sell_tracking,
+            "sell_delay_deadline": {k: v.isoformat() if hasattr(v, 'isoformat') else str(v)
+                                    for k, v in self._sell_delay_deadline.items()},
             "current_exposure": self.current_exposure,
             "stop_loss_triggered": self._stop_loss_triggered,
             "stop_loss_recovery_days": self._stop_loss_recovery_days,
@@ -650,6 +655,12 @@ class PortfolioConstructor:
                 pass
         self._entry_reason_lost_count = state.get("entry_reason_lost_count", {})
         self._post_sell_tracking = state.get("post_sell_tracking", {})
+        self._sell_delay_deadline = {}
+        for code, ds in state.get("sell_delay_deadline", {}).items():
+            try:
+                self._sell_delay_deadline[code] = _date.fromisoformat(ds)
+            except (ValueError, TypeError):
+                pass
         self.current_exposure = state.get("current_exposure", 1.0)
         self._stop_loss_triggered = state.get("stop_loss_triggered", False)
         self._stop_loss_recovery_days = state.get("stop_loss_recovery_days", 0)
@@ -2080,6 +2091,7 @@ class PortfolioConstructor:
             self._bp2_entry.clear()
             self._entry_reason_lost_count.clear()
             self._post_sell_tracking.clear()
+            self._sell_delay_deadline.clear()
             self._dbg['positions_dist'].append(('BEAR', 0, 0.0))
             desired_value = {c: 0.0 for c in current_positions}
             return desired_value
@@ -2357,9 +2369,44 @@ class PortfolioConstructor:
             sig = signal_store.get(code, date)
 
             # === 信号层卖出：score<阈值→因子卖出 (简单模式也保留) ===
+            # E-SD(2026-10-02): QUANT_SELL_DELAY=N → 延迟N日历天后出场
+            # (probe7b: sell=1出场细胞fwd10超额+2.59%/6年全正/跨锚同号;
+            #  延迟窗内风险止损/cost止损/trailing/chan照常生效, 只抑制因子卖出路径)
+            _sd_deadline = self._sell_delay_deadline.get(code)
             if sig is not None and getattr(sig, 'sell', False):
+                if self._sell_delay_days > 0:
+                    if _sd_deadline is None:
+                        self._sell_delay_deadline[code] = date + timedelta(days=self._sell_delay_days)
+                        _sd_deadline = self._sell_delay_deadline[code]
+                    if date >= _sd_deadline:
+                        stopped = True
+                        stop_reason = "sig_sell_delayed"
+                        _exit_tags[code] = 'sig_sell_delayed'
+                        self._sell_delay_deadline.pop(code, None)
+                        stop_loss_sells[code] = 0.0
+                        self._entry_dates.pop(code, None)
+                        self._entry_reasons.pop(code, None)
+                        self._peak_prices.pop(code, None)
+                        self._entry_reason_lost_count.pop(code, None)
+                        self._post_sell_tracking.pop(code, None)
+                        continue
+                    # date < deadline: 延迟窗内抑制, 落入后续风险检查
+                else:
+                    stopped = True
+                    stop_reason = "sig_sell"
+                    stop_loss_sells[code] = 0.0
+                    self._entry_dates.pop(code, None)
+                    self._entry_reasons.pop(code, None)
+                    self._peak_prices.pop(code, None)
+                    self._entry_reason_lost_count.pop(code, None)
+                    self._post_sell_tracking.pop(code, None)
+                    continue
+            elif _sd_deadline is not None and date >= _sd_deadline:
+                # 卖出标志已清但截止日已到且分数未恢复 → 出场(决策不撤销)
                 stopped = True
-                stop_reason = "sig_sell"
+                stop_reason = "sig_sell_delayed"
+                _exit_tags[code] = 'sig_sell_delayed'
+                self._sell_delay_deadline.pop(code, None)
                 stop_loss_sells[code] = 0.0
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
@@ -2371,9 +2418,12 @@ class PortfolioConstructor:
             # === 因子转负→卖出 (不管盈亏,信因子) ===
             if sig is not None:
                 _sc = getattr(sig, 'score', 1.0)
-                if _sc < 0:
+                if _sc < 0 and _sd_deadline is None:
                     stopped = True
                     stop_reason = "factor_neg"
+                elif _sd_deadline is not None and _sc is not None and _sc >= 0:
+                    # 延迟窗内分数恢复 → 取消挂起出场
+                    self._sell_delay_deadline.pop(code, None)
             chan_div_type = getattr(sig, 'chan_divergence_type', '') if sig else ''
             chan_div_strength = getattr(sig, 'chan_divergence_strength', 0.0) if sig else 0.0
             chan_buy_point = getattr(sig, 'chan_buy_point', 0) if sig else 0
@@ -2618,6 +2668,7 @@ class PortfolioConstructor:
                 self._peak_prices.pop(code, None)
                 self._entry_reason_lost_count.pop(code, None)
                 self._post_sell_tracking.pop(code, None)
+                self._sell_delay_deadline.pop(code, None)
 
             # 更新峰值价格
             if code in self._entry_dates:
@@ -2715,6 +2766,7 @@ class PortfolioConstructor:
             if target_val > 0 and code not in self._entry_dates:
                 self._entry_dates[code] = date
                 self._peak_prices[code] = prices.get(code, 0)
+                self._sell_delay_deadline.pop(code, None)  # 新入场清除陈旧延迟标记
                 # E-L1: 新入场落章bp2标记(与_entry_dates同日期, 防re-entry误伤)
                 if self._bp2_today.get(code):
                     self._bp2_entry[code] = date
