@@ -42,3 +42,8 @@ $PY strategy/check_data_freshness.py || {
   exit 1
 }
 echo "=== 全部新鲜, 可以出单: cd strategy && $PY generate_trade_orders.py ==="
+
+echo "=== 9/8(附加) 打新提醒 (新股/新债今日申购清单→strategy/ipo_today.json, 仅信息块; 失败不阻塞) ==="
+QUANT_ALT_NO_AUTOREFRESH=1 $PY strategy/tools/ipo_reminder.py 2>&1 | tail -15 || {
+  echo "!!! 打新提醒获取失败(不影响出单; 手动: $PY strategy/tools/ipo_reminder.py)"
+}

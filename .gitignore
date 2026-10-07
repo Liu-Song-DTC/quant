@@ -271,3 +271,6 @@ strategy/cb_sleeve_state.json
 data/alternative_data/cb_daily/
 data/alternative_data/cb_value/
 data/alternative_data/cb_list.csv
+# 打新提醒运行时产物 (2026-10-07, 可用 strategy/tools/ipo_reminder.py 重建)
+strategy/tools/.ipo_cache.csv
+strategy/ipo_today.json
