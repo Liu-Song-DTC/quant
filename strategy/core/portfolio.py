@@ -90,7 +90,8 @@ def _liq_amt_ratio(code, date):
 _MS_K = float(os.environ.get('QUANT_BREADTH_K', '0.0'))
 _F_I_TILT = os.environ.get('QUANT_SECTOR_TILT', '0') == '1'  # F-I: 行业密度倾斜激活臂
 _MS_ASYM = os.environ.get('QUANT_BREADTH_ASYM', '0') == '1'  # F-H3: 仅加仓(z<0不砍)
-_AUG_GATE = os.environ.get('QUANT_AUG_GATE', '0')  # G-2: 8月入场闸(实验臂) '1'=硬闸 'soft'=×0.5
+_AUG_GATE = os.environ.get('QUANT_AUG_GATE', '1')  # G-2: 8月入场闸 硬闸(10/7全量review采纳, 4-0 vs 896,770: 932,025/272.81/1.4569/15.47) 'soft'=×0.5 '0'=关
+_MAR_GATE = os.environ.get('QUANT_MAR_GATE', '0')  # 全量review: 3月入场闸(实验臂) '1'=硬闸 'soft'=×0.5
 _DD_BOOST = float(os.environ.get('QUANT_DD_BOOST', '0.0'))  # J-2: 深回撤新仓加注倍率(实验臂)
 _DD_BOOST_ADD = os.environ.get('QUANT_DD_BOOST_ADD', '0')  # J-2b: 加注传输模式 '1'=加性(归一化后现金出资,不稀释持仓)
 _DD_TIER = float(os.environ.get('QUANT_DD_TIER', '0.05'))  # J-2c: 加注DD阈值(0.10=仅最深桶DD≤-10%, J-1: +15.72%/85.7% n=14)
@@ -1834,6 +1835,20 @@ class PortfolioConstructor:
             # 软闸: 8月新仓权重×0.5(相对权重保留, 归一化重缩放总敞口至target).
             if _AUG_GATE != '0' and date.month == 8 and current_positions.get(c['code'], 0.0) <= 0:
                 if _AUG_GATE == 'soft':
+                    w = w * 0.5
+                else:
+                    continue
+            # 全量review(2026-10-07, 实验臂, QUANT_MAR_GATE=0零行为): 3月入场闸 —
+            # 信号层全史87,234笔3月buy mean future_ret −1.45% vs 非3月 +1.10%,
+            # 5年分解(2022 −3.8/2023 +0.1/2024 +0.4/2025 −2.7/2026 −2.1),
+            # sq>0.8高分段内同型(−1.48% vs +1.42%), 分数分布与非3月恒等(0.501/0.501)
+            # → 纯日历效应非信号质量. 全概念一致拖累(最好概念仅+0.18%).
+            # 与G-2 8月闸同构: 硬闸=3月非持仓候选跳过(归一化流向持仓候选), 持仓/卖出照常.
+            # 区别: 3月效应含2022熊腿(2022−3.8%)→几何上与G-2相反可能改善MDD.
+            # 臂裁决(2026-10-07, vs 896,770): hard 770,196(1-3, MDD独胜−2.73pp)/soft 887,734
+            # (0-4) — 3月入场含2022熊腿金矿, 闸掉净毁NAV. 全量review最终REJECT, 闸保留零行为.
+            if _MAR_GATE != '0' and date.month == 3 and current_positions.get(c['code'], 0.0) <= 0:
+                if _MAR_GATE == 'soft':
                     w = w * 0.5
                 else:
                     continue

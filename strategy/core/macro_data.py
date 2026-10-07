@@ -17,6 +17,13 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__
 MACRO_DIR = os.path.join(PROJECT_DIR, 'data', 'macro')
 os.makedirs(MACRO_DIR, exist_ok=True)
 
+# 全量review(2026-10-07, env臂, 未设=生产值零行为): 宏观bearish的M1加速阈值
+# (A-1宏观探针: -1.0→-1.5 = 14个月翻neutral = 114天FAST→NORM, 唯一有实质的宏观旋钮)
+try:
+    _MACRO_M1_BEAR = float(os.environ.get('QUANT_MACRO_M1_BEAR', '-1.0'))
+except (TypeError, ValueError):
+    _MACRO_M1_BEAR = -1.0
+
 
 def download_macro_data():
     """下载内盘+外盘宏观数据"""
@@ -191,7 +198,7 @@ def get_macro_regime(date, macro_df=None):
         return 'bullish'
     elif m1_accel > 0.5 and sf_ok and margin_ok:
         return 'bullish'
-    elif m1_accel < -1.0 and not sf_ok:
+    elif m1_accel < _MACRO_M1_BEAR and not sf_ok:
         return 'bearish'  # 信用+流动性双收紧才确认
     return 'neutral'
 

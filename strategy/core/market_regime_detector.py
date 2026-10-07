@@ -1,9 +1,21 @@
 # core/market_regime_detector.py
+import os
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
 from collections import deque
+
+
+def _env_float(name, default):
+    """实验臂env覆盖读取 (未设env=返回默认值, 零行为)."""
+    v = os.environ.get(name)
+    if v in (None, ''):
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
 
 
 @dataclass
@@ -60,18 +72,20 @@ class MarketRegimeDetector:
 
     def _init_params(self):
         """初始化参数"""
+        # 全量review(2026-10-07): census审计发现这组阈值从未bracket(响应层已量化,
+        # "何时触发"未量化) — 加env覆盖臂(QUANT_REGIME_*, 未设=生产值零行为).
         # 熊市阈值 (ExpB1: 收窄中性区间, 5%→3%, 减少SHARPE因子误用)
-        self.mom5_bear = -0.01    # 5日动量 < -1% (原-3%, 2022阴跌难触发)
-        self.mom_bear = -0.015    # 20日动量 < -1.5% (原-3%)
-        self.mom_bear_sustained = -0.03  # 持续熊市：20日动量 < -3% (原-6%)
+        self.mom5_bear = _env_float('QUANT_REGIME_MOM5_BEAR', -0.01)    # 5日动量 < -1% (原-3%, 2022阴跌难触发)
+        self.mom_bear = _env_float('QUANT_REGIME_MOM_BEAR', -0.015)    # 20日动量 < -1.5% (原-3%)
+        self.mom_bear_sustained = _env_float('QUANT_REGIME_MOM_BEAR_SUS', -0.03)  # 持续熊市：20日动量 < -3% (原-6%)
 
         # 牛市阈值 (A股急涨急跌, 60日动量3%太高→MOM因子从未触发)
-        self.mom_bull = 0.015     # 20日动量 > 1.5% (原2.5%, 放宽牛市识别)
-        self.mom60_bull = -0.01    # 60日动量 > -1% (原0%, 放过刚复苏市场)
+        self.mom_bull = _env_float('QUANT_REGIME_MOM_BULL', 0.015)     # 20日动量 > 1.5% (原2.5%, 放宽牛市识别)
+        self.mom60_bull = _env_float('QUANT_REGIME_MOM60_BULL', -0.01)    # 60日动量 > -1% (原0%, 放过刚复苏市场)
 
         # 极端波动阈值
-        self.vol_extreme_high = 0.30
-        self.vol_extreme_low = 0.15
+        self.vol_extreme_high = _env_float('QUANT_REGIME_VOL_HIGH', 0.30)
+        self.vol_extreme_low = _env_float('QUANT_REGIME_VOL_LOW', 0.15)
 
         # 均线参数
         self.ema_short = 20
@@ -87,11 +101,11 @@ class MarketRegimeDetector:
         # === 新增：熊市风险检测参数 ===
         # 用于风险管理的熊市检测（不同于短期超跌检测）
         self.bear_risk_ma_period = 120  # 均线周期
-        self.bear_risk_drawdown = 0.07  # 回撤阈值 7% (2022年连续阴跌需更敏感)
-        self.bear_risk_momentum = -0.03  # 120日动量阈值 -3% (原-5%, 2022年缓慢下跌难触发)
+        self.bear_risk_drawdown = _env_float('QUANT_REGIME_BR_DD', 0.07)  # 回撤阈值 7% (2022年连续阴跌需更敏感)
+        self.bear_risk_momentum = _env_float('QUANT_REGIME_BR_MOM', -0.03)  # 120日动量阈值 -3% (原-5%, 2022年缓慢下跌难触发)
         # === 快速熊市检测：60日维度，捕捉急跌（120日动量滞后）===
-        self.bear_risk_momentum_fast = -0.02  # 60日动量阈值 -2% (原-3%)
-        self.bear_risk_drawdown_fast = 0.05   # 60日回撤阈值 5% (原7%)
+        self.bear_risk_momentum_fast = _env_float('QUANT_REGIME_BR_MOM_FAST', -0.02)  # 60日动量阈值 -2% (原-3%)
+        self.bear_risk_drawdown_fast = _env_float('QUANT_REGIME_BR_DD_FAST', 0.05)   # 60日回撤阈值 5% (原7%)
 
     def generate(self, index_df: pd.DataFrame,
                  small_cap_df: pd.DataFrame = None,      # 中证1000 (000852)
