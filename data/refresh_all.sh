@@ -2,32 +2,37 @@
 # 实盘选股前一键刷新全部数据 (串行, 禁并行防OOM)
 # 用法: bash data/refresh_all.sh
 # 说明: K线下载 2026-09-30 起由 akshare/efinance 中继代理链路替代 Windows xtquant (QMT权限撤销)
-#       raw增量 → bt全量重建 → 基本面/另类/概念 → 新鲜度门禁
+#       raw增量 → bt全量重建 → 基本面/另类/概念 → 转债sleeve → 新鲜度门禁
 set -e
 set -o pipefail
 cd /mnt/d/quant
 PY=/mnt/d/quant/.venv/bin/python
 TS=$(date +%m%d)
 
-echo "=== 1/6 K线增量 (akshare/efinance中继代理, EM侧复权变化自动全量重载) ==="
+echo "=== 1/8 K线增量 (akshare/efinance中继代理, EM侧复权变化自动全量重载) ==="
 QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/akshare_kline_downloader.py 2>&1 | tail -6
 
-echo "=== 2/6 bt文件重建 (raw_data → backtrader_data, 无停牌填充) ==="
+echo "=== 2/8 bt文件重建 (raw_data → backtrader_data, 无停牌填充) ==="
 (cd strategy && $PY convert_raw_to_backtrader.py --workers 12 2>&1 | tail -4)
 
-echo "=== 3/6 基本面 (最近3报告期) ==="
+echo "=== 3/8 基本面 (最近3报告期) ==="
 $PY -u data/refresh_fundamental_recent.py 2>&1 | tail -5
 
-echo "=== 4/6 另类数据 (龙虎榜/融资融券/北向/减持/解禁/业绩预告) ==="
+echo "=== 4/8 另类数据 (龙虎榜/融资融券/北向/减持/解禁/业绩预告) ==="
 $PY -u data/refresh_altdata_0902.py 2>&1 | tail -12
 
-echo "=== 5/6 概念历史 (60板块日涨跌, 东财K线集群限流时自动轮换重试) ==="
+echo "=== 5/8 概念历史 (60板块日涨跌, 东财K线集群限流时自动轮换重试) ==="
 $PY -u data/refresh_concept_hist_0903.py 2>&1 | tail -6
 
-echo "=== 6/7 概念映射 (股票→概念, push2delay直连已断, 走中继代理) ==="
+echo "=== 6/8 概念映射 (股票→概念, push2delay直连已断, 走中继代理) ==="
 $PY -u data/refresh_concept_map_relay.py 2>&1 | tail -6
 
-echo "=== 7/7 qfq负价修复安全网 (EM加性前复权会产生负价~56只, sina乘性复权修复) ==="
+echo "=== 7/8 转债sleeve数据 (cb_daily/cb_value增量, 2026-10-07激活接线; 失败仅告警不阻塞股票链) ==="
+QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/cb_sleeve_refresh.py 2>&1 | tail -6 || {
+  echo "!!! cb刷新失败(不影响股票出单; cb_sleeve选择器对陈旧券自动跳过)"
+}
+
+echo "=== 8/8 qfq负价修复安全网 (EM加性前复权会产生负价~56只, sina乘性复权修复) ==="
 $PY -u data/repair_qfq_negatives.py 2>&1 | tail -4
 
 echo ""

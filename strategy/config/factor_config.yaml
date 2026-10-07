@@ -7785,7 +7785,7 @@ live_monitoring:
   # 恢复实盘后由用户决策开启。估算写入trade_orders.json的repo_sweep键,
   # QMT侧以实际可用余额为准最后下单(卖出204001.SH, 1000元整数倍)。
   repo_sweep:
-    enabled: false
+    enabled: true
     tenor: '1d'          # v1仅隔夜: 7d/14d会锁死10d调仓周期资金
     reserve_ratio: 0.10  # 永留缓冲比例(×订单后剩余现金, 覆盖滑点/手续费)
     assumed_rate: 0.015  # 仅估算年化收益展示用, 非成交价
@@ -7800,7 +7800,7 @@ live_monitoring:
   # 建议写入trade_orders.json的cb_sleeve键, 由core/cb_sleeve.py生成,
   # QMT侧执行脚本以市价委托为准最后下单。
   cb_sleeve:
-    enabled: false
+    enabled: true
     n: 10                 # 持仓券数 (参数面宽平台内点)
     w: 1.0                # 纯债溢价率rank权重 (hybrid机理)
     cap: 130              # 债价上限 (挡强赎区, 偏差上界=0)
