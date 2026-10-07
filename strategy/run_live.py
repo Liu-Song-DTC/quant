@@ -24,16 +24,20 @@ CONFIG_BAK = CONFIG_PATH + '.live_bak'
 
 
 def update_kline_data():
-    """更新K线行情数据 (data_manager.py: 下载raw + 转换backtrader)."""
+    """更新K线行情数据 (akshare链: 下载raw + 转换backtrader; 9/30起替代data_manager)."""
     print("=" * 60)
     print("Step 1a: 更新K线行情数据")
     print("=" * 60)
-    result = subprocess.run(
-        [_VENV_PYTHON, os.path.join(_PROJECT_DIR, 'data', 'data_manager.py')],
-        cwd=_PROJECT_DIR,
-        capture_output=False,
-    )
-    if result.returncode != 0:
+    # 全量review(2026-10-07): 旧data_manager.py是9/30前链路, 已被refresh_all.sh
+    # 1/8+2/8步骤(akshare_kline_downloader+convert_raw_to_backtrader)替代 —
+    # 继续调用旧链会拉QMT时代数据并污染bt文件。
+    r1 = subprocess.run(
+        [_VENV_PYTHON, os.path.join(_PROJECT_DIR, 'data', 'akshare_kline_downloader.py')],
+        cwd=_PROJECT_DIR, capture_output=False)
+    r2 = subprocess.run(
+        [_VENV_PYTHON, os.path.join(_SCRIPT_DIR, 'convert_raw_to_backtrader.py'), '--workers', '12'],
+        cwd=_SCRIPT_DIR, capture_output=False)
+    if r1.returncode != 0 or r2.returncode != 0:
         print("[WARN] K线数据更新失败, 继续使用本地缓存...")
 
 
@@ -493,6 +497,8 @@ def main():
     parser.add_argument('--force-reset', action='store_true',
                         help='确认持仓文件为脏数据, 全清重选 (与generate_trade_orders对齐; '
                              '仅当已核对账户无真实持仓时使用)')
+    parser.add_argument('--skip-freshness', action='store_true',
+                        help='跳过数据新鲜度门禁 (仅调试用, 实盘勿用)')
     args = parser.parse_args()
 
     # ── 确定日期 ──────────────────────────────────────────
@@ -521,6 +527,16 @@ def main():
             restore_config()
     else:
         print("跳过信号生成 (使用已有信号)")
+
+    # ── Step 2.5: 数据新鲜度门禁 (fail-closed, 与generate_trade_orders对齐) ──
+    # 全量review(2026-10-07): 旧run_live无此门禁 — 陈旧数据下主路径拒单而本路径照常出单。
+    if not args.skip_freshness:
+        rc = subprocess.call([_VENV_PYTHON, os.path.join(_SCRIPT_DIR, 'check_data_freshness.py')],
+                             cwd=_PROJECT_DIR)
+        if rc != 0:
+            print("\n数据新鲜度门禁未通过, 拒绝出单。"
+                  "刷新数据后重试, 或调试用 --skip-freshness 绕过。")
+            sys.exit(1)
 
     # ── Step 3: 选股 + 输出 JSON ──────────────────────────
     generate_orders(target_date, args.cash, dry_run=args.dry_run)
