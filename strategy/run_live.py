@@ -116,6 +116,8 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
         build_stock_file_map, load_prices_for_date, build_orders,
         get_index_regime, load_current_positions, save_current_positions,
         build_monitor_list, print_monitor_list, build_st_filter,
+        compute_cb_sleeve, cb_load_state, cb_load_snapshot, cb_save_state,
+        compute_repo_sweep, sweep_guidance,
     )
     from core.config_loader import load_config
     from core.signal_store import SignalStore
@@ -155,8 +157,34 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     allowed_codes = None
     if stock_pool_enabled:
-        from core.stock_pool import get_stock_pool
-        allowed_codes = get_stock_pool()
+        from core.stock_pool import get_stock_pool, _quarter_boundary_prev, _month_boundary_prev, get_pool_membership_map
+        pool_calendar = config.get('stock_pool.pool_calendar', 'off')
+        if pool_calendar in ('quarterly', 'monthly', 'daily'):
+            # 0f日历池: quarterly=target_date最近季度末 / monthly=最近月末 /
+            # daily=target_date当日 的as-of成员 ∩ 最新流动性池(实盘安全滤镜)。
+            # 与回测信号membership闸同构。
+            if pool_calendar == 'daily':
+                _b = pd.Timestamp(target_date)
+            elif pool_calendar == 'monthly':
+                _b = _month_boundary_prev(pd.Timestamp(target_date))
+            else:
+                _b = _quarter_boundary_prev(pd.Timestamp(target_date))
+            # 0f-v3松弛参数: 日历membership与安全滤镜用同一relax规则 (回测同构)
+            _rf = config.get('stock_pool.pool_relax_floor', 1.0)
+            _rm = config.get('stock_pool.pool_relax_momentum', None)
+            _m = get_pool_membership_map([_b], relax_floor=_rf, relax_momentum=_rm)
+            _cal = _m[_b]
+            _today = get_stock_pool(relax_floor=_rf, relax_momentum=_rm)
+            _dropped = _cal - _today
+            allowed_codes = _cal & _today
+            if _dropped:
+                print(f"  [安全滤镜] {len(_dropped)} 只日历成员近期失流动性, "
+                      f"排除买单: {sorted(_dropped)[:15]}")
+            print(f"股票池(日历{_b.date()}+安全滤镜): {len(_cal)} ∩ {len(_today)} "
+                  f"= {len(allowed_codes)} 只")
+        else:
+            allowed_codes = get_stock_pool()
+            print(f"股票池: {len(allowed_codes)} 只 (含指数)")
 
     universe = []
     for code in stock_file_map:
@@ -178,6 +206,12 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     if stale_codes:
         print(f"  [WARN] {len(stale_codes)} 只基本面数据陈旧>120天, ST判定可能失效")
 
+    # 实盘账户约束(2026-09-14用户确认): 无科创板交易权限, 候选universe剔除688/689.
+    _no_star_codes = [c for c in universe if c.startswith(('688', '689'))]
+    if _no_star_codes:
+        universe = [c for c in universe if c not in _no_star_codes]
+        print(f"  [实盘约束] 剔除科创板候选 {len(_no_star_codes)} 只 (无交易权限)")
+
     print(f"可交易股票: {len(universe)} 只")
 
     # ── 市场状态 ──────────────────────────────────────────
@@ -188,6 +222,15 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     # ── 组合构建 ──────────────────────────────────────────
     portfolio = PortfolioConstructor(rebalance_interval=1)  # 实盘每日选股
     prev_positions = load_current_positions()
+
+    # 实盘账户约束(2026-09-14用户确认): 无科创板交易权限, 688/689前缀不可买卖.
+    # 持仓文件里此类代码=历史幻影单(从未成交), 剔除并释放资金重新部署.
+    _no_star_pos = [c for c in prev_positions if c.startswith(('688', '689'))]
+    if _no_star_pos:
+        print(f"  [实盘约束] 剔除无权限持仓 {len(_no_star_pos)} 只 (科创板, 假定从未成交): "
+              f"{sorted(_no_star_pos)}")
+        for c in _no_star_pos:
+            prev_positions.pop(c)
 
     # 账户资金=总可部署资金; 实盘持仓市值含浮盈可合理略超名义资金,
     # 只有显著超出(>1.5倍)才判脏数据重置 — 修复(2026-08-30 review P0):
@@ -240,7 +283,123 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
         signal_store, stock_file_map,
     )
 
+    # ── 0h 现金闸 (2026-09-17, 与generate_trade_orders同款): 买单总额 ≤
+    #    可用现金 + 同日卖出回款 — 只限实盘出单路径, 回测不动 ──
+    _sell_proceeds = 0.0
+    _buy_total = 0.0
+    for o in orders:
+        _code = o['stock_code'].split('.')[0].zfill(6)
+        _prev_amt = prev_positions.get(_code, {}).get('amount', 0)
+        if o['action'] == 'close':
+            _sell_proceeds += _prev_amt
+        elif o['action'] == 'open':
+            _buy_total += o['amount']
+        elif o['action'] == 'adjust':
+            _delta = o['amount'] - _prev_amt
+            if _delta > 0:
+                _buy_total += _delta
+            else:
+                _sell_proceeds += -_delta
+    _avail = max(account_capital - _pos_sum, 0.0) + _sell_proceeds
+    if _buy_total > _avail + 1:
+        _scale = (_avail / _buy_total) if _buy_total > 0 else 0.0
+        print(f"\n[现金闸] 买单总额{_buy_total:,.0f} > 可用资金{_avail:,.0f} "
+              f"(现金{max(account_capital - _pos_sum, 0):,.0f} + 卖出回款{_sell_proceeds:,.0f})")
+        _drop = []
+        for o in orders:
+            if o['action'] not in ('open', 'adjust'):
+                continue
+            _code = o['stock_code'].split('.')[0].zfill(6)
+            _prev_amt = prev_positions.get(_code, {}).get('amount', 0)
+            if o['action'] == 'adjust' and o['amount'] <= _prev_amt:
+                continue  # 净卖出单不受现金闸约束
+            _price = prices.get(_code, 0)
+            if _price <= 0:
+                continue
+            _orig = o['amount']
+            if o['action'] == 'open':
+                _new_amt = o['amount'] * _scale
+                _prev_amt = 0
+            else:
+                _new_amt = _prev_amt + (o['amount'] - _prev_amt) * _scale
+            _shares = int(_new_amt / _price / 100) * 100
+            if _shares < 100 or _new_amt <= _prev_amt:
+                print(f"  [现金闸] {o['stock_code']} 缩减后不足1手/无净买入, 取消该单")
+                _drop.append(o)
+                if o['action'] == 'open':
+                    new_positions.pop(_code, None)
+                else:
+                    new_positions[_code] = prev_positions[_code]
+                continue
+            _amt = int(_shares * _price)
+            o['amount'] = _amt
+            new_positions[_code]['amount'] = _amt
+            new_positions[_code]['shares'] = _shares
+            print(f"  [现金闸] {o['stock_code']} {_amt:>8,} ({_shares}股×{_price:.2f}, 原{_orig:,})")
+        for o in _drop:
+            orders.remove(o)
+
+    # ── 逆回购/转债 sleeve建议块 (2026-10-07接线, 与generate_trade_orders同口径:
+    #    转债先出资(闲置现金alloc_ratio), sweep扫余量留缓冲; 纯估算, QMT侧以实际余额为准) ──
+    _buy_final = 0.0
+    for o in orders:
+        _code = o['stock_code'].split('.')[0].zfill(6)
+        _prev_amt = prev_positions.get(_code, {}).get('amount', 0)
+        if o['action'] == 'open':
+            _buy_final += o['amount']
+        elif o['action'] == 'adjust':
+            _delta = o['amount'] - _prev_amt
+            if _delta > 0:
+                _buy_final += _delta
+    _post_order_cash = max(account_capital - _pos_sum, 0.0) + _sell_proceeds - _buy_final
+
+    _cb_cfg = config.get('live_monitoring.cb_sleeve', {}) or {}
+    _cb_result = None
+    if (_cb_cfg or {}).get('enabled', False):
+        try:
+            _cb_cache_dir = (os.environ.get('QUANT_CB_CACHE')
+                             or os.path.join(_PROJECT_DIR, 'data', 'alternative_data'))
+            _cb_result = compute_cb_sleeve(
+                _post_order_cash, _cb_cfg, cb_load_state(),
+                cb_load_snapshot(_cb_cache_dir, pd.Timestamp(target_date)),
+                pd.Timestamp(target_date))
+        except Exception as e:
+            print(f"  [cb_sleeve] 生成失败(不影响股票订单): {e}")
+    _cb_spend = (_cb_result['spend_est']
+                 if _cb_result and _cb_result.get('rebalanced') else 0.0)
+    _sweep_cfg = config.get('live_monitoring.repo_sweep', {}) or {}
+    _sweep = compute_repo_sweep(max(_post_order_cash - _cb_spend, 0.0), _sweep_cfg)
+
     output = {'date': str(target_date), 'orders': orders}
+    if _cb_result and _cb_result.get('rebalanced'):
+        output['cb_sleeve'] = {
+            'month': _cb_result['month'],
+            'picks': _cb_result['picks'],
+            'alloc_total': _cb_result['alloc_total'],
+            'spend_est': _cb_result['spend_est'],
+            'reason': _cb_result['reason'],
+            'orders': _cb_result['orders'],
+            'notes': _cb_result['notes'],
+        }
+        print(f"\n[转债sleeve] {_cb_result['reason']}")
+        for o in _cb_result['orders']:
+            _act = '买入' if o['action'] == 'open' else '卖出'
+            print(f"  {_act:4s} {o['code']} {o['qty_zhang']:>4}张 "
+                  f"≈{o['est_amount']:>8,.0f}元 (估价{o['est_price']:.2f}/张)")
+    if _sweep['enabled']:
+        output['repo_sweep'] = {
+            'code': _sweep['code'],
+            'tenor': _sweep['tenor'],
+            'amount': _sweep['amount'],
+            'reserve': _sweep['reserve'],
+            'estimated_annual_yield': _sweep['estimated_annual_yield'],
+            'reason': _sweep['reason'],
+            'notes': sweep_guidance(_sweep),
+        }
+        print(f"\n[逆回购sweep] {_sweep['reason']}")
+        if _sweep['amount'] >= 1000:
+            print(f"  建议单: 卖出 {_sweep['code']} {_sweep['amount']:,}元 "
+                  f"(年化估算≈{_sweep['estimated_annual_yield']:,.0f}元, 股票单成交后最后下)")
 
     print(f"\n{'='*60}")
     print(f"订单: {len(orders)} 条")
@@ -286,6 +445,12 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
 
     from generate_trade_orders import save_current_positions as _save_pos
     _save_pos(new_positions)
+
+    # 转债sleeve状态落盘 (月度节奏跟踪, 与generate_trade_orders同口径)
+    if _cb_result and _cb_result.get('rebalanced'):
+        cb_save_state(_cb_result['new_state'])
+        print(f"[转债sleeve] 状态已更新: {_cb_result['new_state']['month']} "
+              f"{len(_cb_result['new_state']['positions'])}只")
 
     # ── 选股详情 ──────────────────────────────────────────
     if hasattr(portfolio, 'last_selection') and portfolio.last_selection:
