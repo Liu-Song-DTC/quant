@@ -238,8 +238,17 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     account_capital = cash
     _pos_sum = sum(info['amount'] for info in prev_positions.values())
     if _pos_sum > account_capital * 1.5:
+        # 0h parity (2026-10-07, 全量review C-1): 与generate_trade_orders主路径对齐 —
+        # 自动全清重选是危险动作(8/28旧事故分支): 持仓文件与真实账户漂移时,
+        # 全清不发卖出却按满仓重买 → 与真实持仓叠加重复买入。改为显式确认。
+        if not args.force_reset:
+            print(f"\n[拒绝出单] 持仓成本合计{_pos_sum:,.0f} > 1.5×账户资金{account_capital:,.0f},"
+                  f" 持仓文件与真实账户可能已漂移, 自动全清重选会与真实持仓叠加重复买入。")
+            print(f"  请核对真实持仓后二选一: 手动修正 {POSITIONS_FILE}; "
+                  f"或确认账户无真实持仓后加 --force-reset 全清重选。")
+            sys.exit(1)
         print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 1.5×账户资金{account_capital:,.0f}, "
-              f"判定为脏数据, 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
+              f"--force-reset 已确认: 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
         prev_positions = {}
         _pos_sum = 0.0
     current_positions = {code: info['amount'] for code, info in prev_positions.items()}
@@ -481,6 +490,9 @@ def main():
                         help='跳过信号生成 (用已有信号)')
     parser.add_argument('--dry-run', action='store_true',
                         help='仅预览, 不写入文件')
+    parser.add_argument('--force-reset', action='store_true',
+                        help='确认持仓文件为脏数据, 全清重选 (与generate_trade_orders对齐; '
+                             '仅当已核对账户无真实持仓时使用)')
     args = parser.parse_args()
 
     # ── 确定日期 ──────────────────────────────────────────
