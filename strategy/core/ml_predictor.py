@@ -43,7 +43,9 @@ class MLFactorPredictor:
             'reg_alpha': ml_cfg.get('reg_alpha', 1.0),
             'min_child_weight': ml_cfg.get('min_child_weight', 5),
             'random_state': 42,
-            'n_jobs': min(4, __import__('os').cpu_count() or 4),
+            'n_jobs': min(16, __import__('os').cpu_count() or 4),
+            # 2026-10-09: 原min(4,...)在20核机器只用4线程; 探针证实hist树法
+            # n_jobs=4 vs 16预测逐位一致(0/363,600), 拟合1.38×加速, 免费取用
             'verbosity': 0,
             'tree_method': 'hist',      # 节省训练内存
             'device': 'cpu',            # 强制 CPU（避免 GPU OOM）
@@ -80,15 +82,31 @@ class MLFactorPredictor:
                     for f2 in top_features[i+1:]:
                         self._cross_feature_pairs.append((f1, f2))
             # Rank-based交叉: 先转截面百分位再相乘, 对异常值和分布漂移更鲁棒
+            # 性能(2026-10-09): 全部pair一次polars窗口函数完成, 替代逐pair
+            # pandas groupby.rank (每chunk最多56次全帧groupby) — /tmp/probe_polars_mlprep.py
+            # 证实与pandas逐位一致 (rank/count均只计非空, 空rank填0.5)
+            _pend_pairs = []
             for f1, f2 in self._cross_feature_pairs:
                 col = f'cross_{f1}_{f2}'
                 if col not in df.columns:
                     if f1 in df.columns and f2 in df.columns:
-                        r1 = df.groupby('date')[f1].rank(pct=True).fillna(0.5)
-                        r2 = df.groupby('date')[f2].rank(pct=True).fillna(0.5)
-                        df[col] = r1 * r2
+                        _pend_pairs.append((f1, f2, col))
                         if col not in base_features:
                             base_features.append(col)
+            if _pend_pairs:
+                import polars as pl
+                _pf = pl.from_pandas(
+                    df[['date'] + sorted({f for p in _pend_pairs for f in p[:2]})])
+                _exprs = []
+                for _f1, _f2, _col in _pend_pairs:
+                    _r1 = pl.col(_f1).rank('average').over('date') \
+                        / pl.col(_f1).count().over('date')
+                    _r2 = pl.col(_f2).rank('average').over('date') \
+                        / pl.col(_f2).count().over('date')
+                    _exprs.append((_r1.fill_null(0.5) * _r2.fill_null(0.5)).alias(_col))
+                _pf = _pf.with_columns(_exprs)
+                for _f1, _f2, _col in _pend_pairs:
+                    df[_col] = _pf[_col].to_numpy()
 
         if self._use_regime_features and regime_info:
             regime_val = regime_info.get('regime', 0)
@@ -116,6 +134,9 @@ class MLFactorPredictor:
     @staticmethod
     def _cross_sectional_zscore(df: pd.DataFrame, cols: List[str]):
         """截面标准化: 每个日期内 (x - mean) / std, 消除市场量级干扰"""
+        # 注意(2026-10-09): 勿换polars — numpy在float32列上保持f32累加,
+        # polars窗口mean/std升f64累加, 结果差~1e-7相对(探针实测378k单元
+        # 不一致), XGBoost hist分箱边界翻转会破逐位恒等。此路径保留pandas。
         if 'date' not in df.columns:
             return df
         for col in cols:
@@ -151,10 +172,15 @@ class MLFactorPredictor:
         df = self._cross_sectional_zscore(df, numeric_cols)
 
         # Rank标签: 截面百分位排名 → 中心化到[-0.5, 0.5], 预测排序而非绝对收益
+        # 性能(2026-10-09): polars窗口rank替代pandas groupby.rank, 探针逐位一致
         if 'future_ret' in df.columns and 'date' in df.columns:
-            df['future_ret_rank'] = df.groupby('date')['future_ret'].rank(pct=True) - 0.5
-            df['future_ret'] = df['future_ret_rank']
-            df.drop(columns=['future_ret_rank'], inplace=True)
+            import polars as pl
+            _pf = pl.from_pandas(df[['date', 'future_ret']])
+            _fr = pl.col('future_ret')
+            df['future_ret'] = _pf.select(
+                (_fr.rank('average').over('date')
+                 / _fr.count().over('date') - 0.5).alias('_r')
+            )['_r'].to_numpy()
 
         # 特征工程 (基于标准化后的因子值)
         df = self.prepare_features(df, regime_info, is_train=True)

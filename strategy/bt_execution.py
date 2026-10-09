@@ -365,7 +365,9 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, industry_codes, fac
         _worker_engine.set_industry_mapping(industry_codes)
         _worker_engine.dynamic_factor_selector.set_factor_cache(factor_cache, all_dates)
 
-    if ml_model_path is not None and os.path.exists(ml_model_path):
+    # 内存(2026-10-09): worker侧_ml_predictor零消费者 (信号侧消费走_ml_predictions/parquet),
+    # fixed模式(生产)跳过加载 → 每worker省~144MB (3-ensemble模型), 8 workers共省~1.2GB
+    if use_dynamic and ml_model_path is not None and os.path.exists(ml_model_path):
         try:
             from core.ml_predictor import MLFactorPredictor
             worker_ml = MLFactorPredictor()
@@ -708,6 +710,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
     ml_config = config.config.get('ml', {})
     _ml_model_path = None
     _ml_preds = {}
+    _ml_codes_arr = _ml_dates_arr = _ml_preds_arr = None  # 向量化预测累积 (性能2026-10-09)
     _has_xgb = False
     try:
         import xgboost as _xgb
@@ -771,6 +774,10 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                 _total_preds = 0
                 _last_good_predictor = None
                 _reused_chunks = 0
+                # 性能(2026-10-09): 预测结果向量化累积为数组列表, 替代3.2M次逐条dict插入
+                # (~1GB峰值dict + ~2-4min构建) — 落盘时直接concat建表
+                _ml_codes_list, _ml_dates_list, _ml_preds_list = [], [], []
+                _fd_date_set = set(factor_df['date'].values)
                 # 复用链上限: 连续复用N个chunk后旧模型已陈旧, 强制采用新模型保持适应性
                 _max_reuse = int(ml_config.get('max_consecutive_reuse', 3))
                 _consecutive_reuse = 0
@@ -855,12 +862,28 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                         _regime_val = _regime_map.get(date.strftime('%Y-%m-%d'), 0) if _regime_map else 0
                         preds = ml_predictor.predict(date_df, regime_info={'regime': _regime_val})
                         codes = date_df['code'].values
-                        for j, code in enumerate(codes):
-                            _ml_preds[(str(code).zfill(6), date)] = preds[j]
+                        # 向量化累积 (性能2026-10-09): 逐条dict插入 → 数组append
+                        _ml_codes_list.append(np.asarray([str(c).zfill(6) for c in codes]))
+                        _ml_dates_list.append([date] * len(codes))
+                        _ml_preds_list.append(np.asarray(preds))
                     _total_preds += sum(1 for d in chunk_dates
-                                        if d in factor_df['date'].values)
+                                        if d in _fd_date_set)
 
-                _ml_total_preds = len(_ml_preds)
+                # 向量化合并 (性能2026-10-09): 动态模式主引擎仍需(code,date)->pred dict,
+                # fixed模式(生产)仅需数组落盘 — 原3.2M条目dict不再在fixed模式构建
+                if _ml_codes_list:
+                    _ml_codes_arr = np.concatenate(_ml_codes_list)
+                    _ml_dates_arr = np.concatenate(_ml_dates_list)
+                    _ml_preds_arr = np.concatenate(_ml_preds_list)
+                    _ml_total_preds = len(_ml_codes_arr)
+                    if factor_mode != 'fixed':
+                        # 显式pd.Timestamp键 (np.concatenate会把Timestamp列表转成datetime64,
+                        # 与引擎内部的pd.Timestamp查找键hash一致)
+                        _ml_preds = dict(zip(zip(_ml_codes_arr,
+                                                 [pd.Timestamp(d) for d in _ml_dates_arr]),
+                                             _ml_preds_arr))
+                else:
+                    _ml_total_preds = 0
                 _ml_val_ic = float(np.mean(_val_ics)) if _val_ics else 0.0
                 _true_skip = len(chunk_starts) - len(_val_ics) - _reused_chunks
                 print(f"ML滚动训练完成: {len(chunk_starts)} chunks, 有效={len(_val_ics)} "
@@ -906,7 +929,15 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
             strategy_dir = os.path.dirname(os.path.abspath(__file__))
             _rank_parquet_path = os.path.join(strategy_dir, 'rolling_validation_results',
                                               'factor_ranks_worker.parquet')
-            factor_df[['code', 'date'] + _rank_cols].to_parquet(_rank_parquet_path, index=False)
+            # 性能(2026-10-09): 按(code,date)排序+小组行组 → worker每股读排名从
+            # 半个表(83万行解压)降到~1-2个行组(2-4万行)
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            _rank_df = factor_df[['code', 'date'] + _rank_cols].sort_values(
+                ['code', 'date'], kind='mergesort')
+            _rank_tbl = pa.Table.from_pandas(_rank_df, preserve_index=False)
+            pq.write_table(_rank_tbl, _rank_parquet_path, row_group_size=20000, compression='zstd')
+            del _rank_df, _rank_tbl
             main_engine.set_rank_parquet(_rank_parquet_path)
             strategy.signal_engine.set_rank_parquet(_rank_parquet_path)
             print(f"截面排名缓存: {len(_rank_cols)} 个排名因子 → {_rank_parquet_path}")
@@ -949,6 +980,19 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
     else:
         precomputed_cache = None
         precomputed_all_dates = None
+        # 内存(2026-10-09): fixed模式(生产)ML段结束后 factor_df/_ml_df 零引用 —
+        # 原释放只在dynamic分支, 主进程持~2.4GB进入信号段, 8 workers内存预算不足。
+        # _ml_df在ML异常早退时可能未定义 → dir()守卫
+        if '_ml_df' in dir():
+            del _ml_df
+        if 'factor_df' in dir():
+            del factor_df
+            factor_df = None
+        import gc
+        gc.collect()
+        gc.collect()
+        _malloc_trim()  # 归还OS, 降低后续spawn worker时的内存压力
+        print("已释放 factor_df/_ml_df 内存（fixed模式）")
 
     # ===================================================================
     # Phase B: 创建 Backtrader datafeeds（从磁盘重新加载，避免与 factor_df 共存）
@@ -1011,16 +1055,20 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
     dynamic_factor_stats = {'hit': 0, 'miss': 0, 'factor_names': {}}
 
     # === 保存 ML 预测到 parquet（按code索引, worker按需读取, 避免69MB/进程pickle OOM）===
+    # 性能(2026-10-09): 按(code,date)排序 + row_group_size=20000 → pyarrow filter
+    # 可剪枝到单行组 (旧布局4个行组全横跨全代码范围, 每股读ML预测全扫322万行)
     _ml_preds_path = None
-    if _ml_preds:
+    if _ml_codes_arr is not None and len(_ml_codes_arr) > 0:
         strategy_dir = os.path.dirname(os.path.abspath(__file__))
         _ml_preds_path = os.path.join(strategy_dir, 'rolling_validation_results', 'ml_preds_worker.parquet')
+        import pyarrow as pa
+        import pyarrow.parquet as pq
         ml_preds_df = pd.DataFrame(
-            [{'code': c, 'date': d, 'ml_pred': v} for (c, d), v in _ml_preds.items()],
-            columns=['code', 'date', 'ml_pred']
-        )
-        ml_preds_df.to_parquet(_ml_preds_path, index=False)
-        del ml_preds_df
+            {'code': _ml_codes_arr, 'date': _ml_dates_arr, 'ml_pred': _ml_preds_arr})
+        ml_preds_df = ml_preds_df.sort_values(['code', 'date'], kind='mergesort')
+        _tbl = pa.Table.from_pandas(ml_preds_df, preserve_index=False)
+        pq.write_table(_tbl, _ml_preds_path, row_group_size=20000, compression='zstd')
+        del ml_preds_df, _tbl
 
     # 预初始化另类数据缓存（主进程单次执行，避免8个worker同时下载）
     try:

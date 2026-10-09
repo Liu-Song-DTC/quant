@@ -581,6 +581,37 @@ def _compute_factor_data_raw(stock_file_map: dict, factor_dates: list,
     return factor_data
 
 
+def _standardize_ranks_polars(factor_df, rank_factors):
+    """截面排名标准化(polars, 2026-10-09) — 与原pandas逐日期groupby版逐位一致。
+
+    语义(与旧版完全对齐):
+      valid = 该日期全部因子非空的行; n_valid<5 该日期整组NaN
+      rank_pct = 在valid子集内 rank(method='average', pct=True)  (分母=valid行数)
+      normal = sqrt(2)*erfinv(2*clip(rank_pct,0.001,0.999)-1) → clip(-3,3)
+    polars实现要点: 先mask外行置null再rank/count(排名集合与分母都只含valid行);
+    'average'与pandas默认method一致。惰性import避免worker spawn侧开销。
+    探针: /tmp/probe_polars_rankstd.py (30日期×63因子, 0/8,783,680单元不一致)。
+    """
+    import polars as pl
+    pdf = pl.from_pandas(factor_df[['date'] + rank_factors])
+    mask = pl.all_horizontal([pl.col(fc).is_not_null() for fc in rank_factors])
+    # 表达式在pdf(含因子列)上下文中求值, 单遍select产出rank列
+    exprs = []
+    for fc in rank_factors:
+        fcm = pl.when(mask).then(pl.col(fc)).otherwise(None)
+        cnt = fcm.count().over('date')
+        e = (fcm.rank('average').over('date') / cnt) \
+            .clip(0.001, 0.999) \
+            .map_batches(lambda s: np.sqrt(2.0) * erfinv(2.0 * s.to_numpy() - 1.0)) \
+            .clip(-3.0, 3.0)
+        e = pl.when(cnt >= 5).then(e).otherwise(None)
+        exprs.append(e.fill_nan(None).alias(f'{fc}_rank'))
+    res_pd = pdf.select('date', *exprs).drop('date').to_pandas()
+    # 行序与输入一致(polars保持顺序), 直接按列赋值
+    for fc in rank_factors:
+        factor_df[f'{fc}_rank'] = res_pd[f'{fc}_rank'].to_numpy()
+
+
 def prepare_factor_data(stock_file_map: dict, fd,
                        detailed_industries: dict,
                        all_dates: list,
@@ -817,17 +848,10 @@ def prepare_factor_data(stock_file_map: dict, fd,
             if rc not in factor_data.columns:
                 factor_data[rc] = np.nan
 
-        for date_key, grp in tqdm(factor_data.groupby('date'), desc="截面排名标准化"):
-            valid_mask = grp[_RANK_FACTORS].notna().all(axis=1)
-            n_valid = valid_mask.sum()
-            if n_valid < 5:
-                continue
-            for fc in _RANK_FACTORS:
-                vals = grp.loc[valid_mask, fc].values.astype(np.float64)
-                rank_pct = pd.Series(vals).rank(pct=True).values
-                clipped = np.clip(rank_pct, 0.001, 0.999)
-                normal_rank = np.sqrt(2.0) * erfinv(2.0 * clipped - 1.0)
-                factor_data.loc[grp.index[valid_mask], f'{fc}_rank'] = np.clip(normal_rank, -3.0, 3.0)
+        # 2026-10-09 polars向量化: 原pandas逐日期groupby = 816日期×63因子
+        # 51,408次groupby切片+全帧.loc写入(单核~20min) → polars .over('date')
+        # 单遍(~10s)。探针逐位一致: /tmp/probe_polars_rankstd.py 0/8.78M单元。
+        _standardize_ranks_polars(factor_data, _RANK_FACTORS)
         if _rank_cols:
             print(f"截面排名标准化: {len(_RANK_FACTORS)} 个因子 → {len(_rank_cols)} 个 _rank 列 ([-3,3])")
 
