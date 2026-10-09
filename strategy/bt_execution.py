@@ -1327,7 +1327,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
     signal_csv = open(signals_output_path + '.tmp', 'w', encoding='utf-8')
     signal_csv.write('code,date,buy,sell,score,pre_discount_score,factor_value,factor_name,industry,factor_quality,'
                      'chan_divergence_type,chan_divergence_strength,chan_structure_score,'
-                     'chan_buy_point,chan_sell_point,signal_level,trend_type,'
+                     'chan_buy_point,chan_sell_point,bi_buy_point,signal_level,trend_type,'
                      'chan_pivot_zg,chan_pivot_zd,mom_60d,dist_ma60,max_dd_20d,vol_regime,'
                      'mtf_discount_factor,mtf_alignment_score,avg_trend_strength,'
                      'risk_vol,daily_return,volume_ratio,stroke_phase,exhaustion_risk,'
@@ -1456,6 +1456,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                 f'{getattr(sig, "chan_structure_score", 0.0)},'
                 f'{getattr(sig, "chan_buy_point", 0)},'
                 f'{getattr(sig, "chan_sell_point", 0)},'
+                f'{getattr(sig, "bi_buy_point", 0)},'
                 f'{getattr(sig, "signal_level", 0)},'
                 f'{getattr(sig, "trend_type", 0)},'
                 f'{getattr(sig, "chan_pivot_zg", float("nan"))},'

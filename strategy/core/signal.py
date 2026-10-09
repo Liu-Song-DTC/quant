@@ -39,6 +39,7 @@ class Signal:
     chan_structure_score: float = 0.0        # 结构对齐分数 [-1, 1]
     chan_buy_point: int = 0                  # 买点类型: 0/1/2/3 (来自chan_theory)
     chan_sell_point: int = 0                 # 卖点类型: 0/1/2/3 (来自chan_theory)
+    bi_buy_point: int = 0                    # 笔级买点确认: 0/1/2 (H-bi臂 2026-10-10)
     signal_level: int = 0                    # 多级别确认: 3=双级别, 2=线段级, 1=笔级, 0=无
     b3_trend_confirmed: bool = False         # B3趋势确认: 2+同向不重叠中枢
 
@@ -130,6 +131,7 @@ class Signal:
             'chan_structure_score': self.chan_structure_score,
             'chan_buy_point': self.chan_buy_point,
             'chan_sell_point': self.chan_sell_point,
+            'bi_buy_point': self.bi_buy_point,
             'signal_level': self.signal_level,
             'chan_buy_strength': self.chan_buy_strength,
             'chan_sell_strength': self.chan_sell_strength,

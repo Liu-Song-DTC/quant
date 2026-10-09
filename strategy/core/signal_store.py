@@ -43,6 +43,9 @@ class SignalStore:
         """
         from .signal import Signal
 
+        # 注意: 浮点列必须保持float64 — 2026-10-09实验证明float32读入会在
+        # 主导行业中位数分数的razor-edge处翻转产业链聚焦分支(524→21候选→全灭
+        # Gate floor→0订单), 出单路径语义被破坏。内存优化用其他手段。
         dtypes = {
             'code': str, 'buy': bool, 'sell': bool,
             'score': float, 'pre_discount_score': float,
@@ -50,7 +53,7 @@ class SignalStore:
             'factor_quality': float,
             'chan_divergence_type': str, 'chan_divergence_strength': float,
             'chan_structure_score': float, 'chan_buy_point': 'Int64',
-            'chan_sell_point': 'Int64', 'signal_level': 'Int64',
+            'chan_sell_point': 'Int64', 'bi_buy_point': 'Int64', 'signal_level': 'Int64',
             'trend_type': 'Int64',
             'chan_pivot_zg': float, 'chan_pivot_zd': float,
             'mom_60d': float, 'dist_ma60': float, 'max_dd_20d': float,
@@ -176,6 +179,7 @@ class SignalStore:
             chan_structure_score=_f('chan_structure_score'),
             chan_buy_point=_i('chan_buy_point', 0),
             chan_sell_point=_i('chan_sell_point', 0),
+            bi_buy_point=_i('bi_buy_point', 0),
             signal_level=_i('signal_level', 0),
             trend_type=_i('trend_type', 0),
             chan_pivot_zg=_f('chan_pivot_zg', float('nan')),

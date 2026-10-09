@@ -347,6 +347,10 @@ class PortfolioConstructor:
         self._b1v2_q1_end = pd.Timestamp(pp.get('b1v2_q1_end', '2021-04-01'))
         self.bp2_channel_slots = int(pp.get('bp2_channel_slots', 1))
         self.bp2_score_boost = float(pp.get('bp2_score_boost', 0.0))
+        # H-bi(2026-10-10): 笔级一买确认加成 — 探针bp0×bi1 6/6年+3.4~16.0pp胜率
+        # (55.9% vs 47.7%), bp0=最大买点桶; bp交互仅bp0稳定(bp1/bp4×bi1负或噪声)
+        # → 限定bp==0。0=关闭(anchor态)。portfolio节豁免指纹。
+        self.bi1_score_boost = float(pp.get('bi1_score_boost', 0.0))
         self.bp2_boost_norm_only = bool(pp.get('bp2_boost_norm_only', False))
         self.bp2_fade_stop_enabled = bool(pp.get('bp2_fade_stop_enabled', False))
         self.bp2_fade_stop_days = int(pp.get('bp2_fade_stop_days', 15))
@@ -1557,6 +1561,11 @@ class PortfolioConstructor:
             if self.bp2_score_boost > 0 and bp == 2 and c.get('chan_sell_point', 0) == 0 \
                     and not (self.bp2_boost_norm_only and bear_risk_fast):
                 additive += self.bp2_score_boost
+
+            # H-bi: bp0笔级一买确认加成 (部分抵消no_chan_penalty -0.20)
+            if self.bi1_score_boost > 0 and bp == 0 \
+                    and int(self._nan_safe(getattr(sig_ref, 'bi_buy_point', 0))) == 1:
+                additive += self.bi1_score_boost
 
             # E-K2.5(2026-09-11): 回购类级加成(小回购<1亿, 公告<=30d) — E-K1模式第2例
             if self.repo_score_boost > 0 and self._repo_flag(code, date):

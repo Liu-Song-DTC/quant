@@ -7418,6 +7418,8 @@ portfolio:
     # → 评分系统对bp2类的标定系统性偏低, 均匀additive加成让其凭实力竞争
     # 基线bp2选中率: NORM 2% FAST 3% (13/652笔); 0=关闭(anchor态)
     bp2_score_boost: 0.45
+    # H-bi(2026-10-10): 笔级一买确认加成(bp0×bi1探针6/6年+3.4~16.0pp, 0=关闭)
+    bi1_score_boost: 0.0
     # E-K2(2026-09-06): FAST下抑制bp2加成(n=2时排挤代价最高, E-G1曾因此限定NORM)
     bp2_boost_norm_only: false
     # E-L1(2026-09-06): bp2入场仓信号衰减止损 — 已否决(E-L1b: 37次截断, NAV -33,596,
