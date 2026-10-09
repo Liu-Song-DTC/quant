@@ -337,7 +337,7 @@ def _build_concept_industry_codes(stock_codes, min_stocks=20):
 
 
 def _init_worker(fundamental_path, stock_codes, use_dynamic, industry_codes, factor_cache, all_dates, regime_df,
-                 ml_model_path=None, ml_preds_path=None, rank_parquet_path=None):
+                 ml_model_path=None, ml_preds_path=None, rank_parquet_path=None, quarter_configs=None):
     """Worker 进程初始化函数 (spawn 模式)
 
     每个 worker 独立创建 FundamentalData 和 ML 预测器，避免 fork 导致的
@@ -349,6 +349,12 @@ def _init_worker(fundamental_path, stock_codes, use_dynamic, industry_codes, fac
     _worker_use_dynamic = use_dynamic
     _worker_ml_preds_path = ml_preds_path  # 只记路径, 按需读取
     _worker_rank_parquet_path = rank_parquet_path
+
+    # 性能(2026-10-09): 主进程预解析的季度因子配置直接注入, 跳过worker侧YAML解析
+    # (cProfile: _load_quarter_config 23次×0.66s≈15s/worker 首股税, 8 workers并发CPU峰)
+    if quarter_configs:
+        import core.signal_engine as _se_mod
+        _se_mod._QUARTER_CONFIG_CACHE.update(quarter_configs)
 
     _worker_engine = SignalEngine()
 
@@ -468,7 +474,8 @@ def _generate_stock_signal_worker(args):
         stats_snapshot = {}
         if hasattr(engine, '_stats'):
             stats_snapshot = dict(engine._stats)
-            engine._stats = {k: 0 for k in engine._stats}
+            # 类型保持重置(2026-10-09): ic_values等list容器保持list (原{k:0}把list翻转成int)
+            engine._stats = {k: ([] if isinstance(v, list) else 0) for k, v in engine._stats.items()}
 
         # 收集 worker 的 BOM 统计
         bom_snapshot = {}
@@ -1080,13 +1087,24 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
     except Exception:
         pass
 
+    # 性能(2026-10-09): 季度因子配置YAML(4.3MB/23季度)在主进程预解析一次经initargs传入,
+    # worker不再各自解析 (~15s/worker首股税消除, 且避免8 worker并发YAML解析CPU峰)
+    _quarter_configs = {}
+    try:
+        import core.signal_engine as _se_mod
+        for _qid in list(_se_mod._load_quarter_index().keys()):
+            _se_mod._load_quarter_config(_qid)
+        _quarter_configs = _se_mod._QUARTER_CONFIG_CACHE
+    except Exception:
+        pass
+
     ctx = multiprocessing.get_context('spawn')
     pool = ctx.Pool(
         processes=NUM_WORKERS,
         initializer=_init_worker,
         initargs=(FUNDAMENTAL_PATH, stock_codes, use_dynamic, industry_codes,
                   precomputed_cache, precomputed_all_dates, regime_df,
-                  _ml_model_path, _ml_preds_path, _rank_parquet_path)
+                  _ml_model_path, _ml_preds_path, _rank_parquet_path, _quarter_configs)
     )
     _sig_iter = pool.imap_unordered(_generate_stock_signal_worker, stock_items, chunksize=50)
     # 聚合 worker 因子选择统计

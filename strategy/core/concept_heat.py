@@ -172,8 +172,11 @@ class ConceptHeatCalculator:
         else:
             self._chain_signals = {}
 
-        # 缓存结果供同日期其他股票复用（限300条防内存膨胀）
-        if len(self._scores_cache) > 300:
+        # 缓存结果供同日期其他股票复用
+        # 性能(2026-10-09): 上限300→2000 — 回测单股1394个日期, 300上限下每股
+        # 复算~1100个日期(asof×60概念/日, cProfile每股~2.2s×5585股≈3.4h总wall)。
+        # 2000上限=全日期覆盖, 每worker每日期只算一次; 内存≈1334×(60浮点+链信号)≈3MB/worker。
+        if len(self._scores_cache) > 2000:
             oldest = min(self._scores_cache.keys())
             del self._scores_cache[oldest]
         self._scores_cache[cache_key] = (self._concept_scores, self._chain_signals)

@@ -21,7 +21,23 @@ class FundamentalData:
         self.data_path = data_path
         self.stock_data = {}  # {code: DataFrame} 惰性缓存，首次访问时加载
         self._file_map = {}   # {code: file_path}
+        # 性能(2026-10-09): 单条bar内 get_roe/get_eps/... 对同一(code,date)重复as-of查询
+        # (cProfile: _get_latest 8257次/股, _get_available_data 12007次/股, 占稳态~48%),
+        # 单入口memo (code, date_key) → 结果, bar循环日期单调递增 → 命中率≈80%。
+        # 所有消费方只读(iloc/to_dict/get), 返回同一对象值语义恒等。
+        self._avail_memo = None   # (code, date_key) -> DataFrame
+        self._latest_memo = None  # (code, date_key) -> row dict
+        self._nth_memo = None     # (code, (date_key, n)) -> row dict
         self._scan_stock_files(stock_codes)
+
+    @staticmethod
+    def _norm_date(d):
+        """日期归一化: 与 _get_available_data 历史口径一致 (datetime→strftime, str→replace)"""
+        if isinstance(d, datetime):
+            return d.strftime('%Y%m%d')
+        if hasattr(d, 'strftime'):
+            return d.strftime('%Y%m%d')
+        return str(d).replace('-', '')
 
     def _scan_stock_files(self, stock_codes=None):
         """扫描可用股票文件路径（不加载数据）"""
@@ -69,10 +85,19 @@ class FundamentalData:
             self.stock_data.pop(code, None)
             if FundamentalData._avail_cache is not None:
                 FundamentalData._avail_cache.pop(code, None)
+            if self._avail_memo is not None and self._avail_memo[0] == code:
+                self._avail_memo = None
+            if self._latest_memo is not None and self._latest_memo[0] == code:
+                self._latest_memo = None
+            if self._nth_memo is not None and self._nth_memo[0] == code:
+                self._nth_memo = None
         else:
             self.stock_data.clear()
             if FundamentalData._avail_cache is not None:
                 FundamentalData._avail_cache.clear()
+            self._avail_memo = None
+            self._latest_memo = None
+            self._nth_memo = None
 
     # 性能优化缓存 (2026-09-01): code -> (df_id, sorted_df, avail_arr)
     # sorted_df = df.sort_values('报告期', ascending=False) 一次性预排序,
@@ -97,12 +122,12 @@ class FundamentalData:
         df = self.stock_data[code]
 
         # 将current_date转换为字符串格式
-        if isinstance(current_date, datetime):
-            current_date = current_date.strftime('%Y%m%d')
-        elif hasattr(current_date, 'strftime'):
-            current_date = current_date.strftime('%Y%m%d')
-        else:
-            current_date = str(current_date).replace('-', '')
+        current_date = self._norm_date(current_date)
+
+        # 性能(2026-10-09): 单条bar内多次as-of查询同(code,date), 直接返回memo
+        memo = self._avail_memo
+        if memo is not None and memo[0] == code and memo[1] == current_date:
+            return memo[2]
 
         # 快速路径 (性能优化): 结果与下方旧路径逐行等价, 回退条件:
         # 重复报告期(排序不确定性) / 列缺失 / 缓存构建异常 / 比较异常
@@ -129,7 +154,9 @@ class FundamentalData:
             except TypeError:
                 mask = None  # 混合类型比较异常 → 回退旧路径(旧路径同样会抛)
             if mask is not None:
-                return sorted_df[mask]
+                out = sorted_df[mask]
+                self._avail_memo = (code, current_date, out)
+                return out
 
         # 旧路径 (缓存未构建 / 异常回退) — 与历史版本行为完全一致
         out = df
@@ -137,21 +164,39 @@ class FundamentalData:
             out = out[out['数据可用日期'] <= current_date]
         if '报告期' in out.columns:
             out = out.sort_values('报告期', ascending=False)
+        self._avail_memo = (code, current_date, out)
         return out
 
     def _get_latest(self, code, current_date):
         """获取最新可用的基本面数据"""
+        # 性能(2026-10-09): 单条bar内 get_roe/get_eps/... 连发, memo省去重复
+        # mask切片 + iloc[0].to_dict() (cProfile: 8257次/股 → ~1334次)
+        key = self._norm_date(current_date)
+        memo = self._latest_memo
+        if memo is not None and memo[0] == code and memo[1] == key:
+            return memo[2]
         df = self._get_available_data(code, current_date)
         if df.empty:
-            return None
-        return df.iloc[0].to_dict()
+            result = None
+        else:
+            result = df.iloc[0].to_dict()
+        self._latest_memo = (code, key, result)
+        return result
 
     def _get_nth_latest(self, code, current_date, n=0):
         """获取第n+1新的基本面数据（n=0最新, n=1上一季度...）"""
+        # 性能(2026-10-09): improve getters同bar连发(latest+n=1), memo省重复to_dict
+        key = (self._norm_date(current_date), n)
+        memo = self._nth_memo
+        if memo is not None and memo[0] == code and memo[1] == key:
+            return memo[2]
         df = self._get_available_data(code, current_date)
         if len(df) <= n:
-            return None
-        return df.iloc[n].to_dict()
+            result = None
+        else:
+            result = df.iloc[n].to_dict()
+        self._nth_memo = (code, key, result)
+        return result
 
     def get_eps(self, code, current_date):
         """获取每股收益"""

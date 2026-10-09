@@ -336,6 +336,9 @@ class SignalEngine:
         # === 缓存 ===
         self._alt_data = None  # 延迟加载
         self._fd_sorted_cache = {}  # code → 按日期排序的基本面DataFrame
+        # 性能(2026-10-09): _check_profit_decline 单调边界缓存
+        # code → (可用行数, date_str, result), 报告期边界未移动时结果不变
+        self._fd_decline_cache = {}
 
         # === 回测诊断 ===
         self._diag = None  # 延迟加载
@@ -2099,14 +2102,24 @@ class SignalEngine:
 
             # 找到当前日期之前的最新报告，然后取最近3份报告
             current_date_str = str(current_date)[:10].replace('-', '')
-            mask = df_sorted['数据可用日期_str'] <= current_date_str
-            if not mask.any():
+            # 性能(2026-10-09): 单调边界缓存 — 可用行数不变 → 最近3份报告不变 → 结果不变。
+            # df_sorted按数据可用日期升序, searchsorted(side='right')计数==mask.sum()逐位等价
+            # (同一总序上的二分 vs 逐元素比较), 报告期变更日(~20次/股)才重算。
+            dcache = self._fd_decline_cache.get(code)
+            if dcache is not None and dcache[1] == current_date_str:
+                return dcache[2]
+            _dstr_arr = df_sorted['数据可用日期_str'].to_numpy()
+            count = int(np.searchsorted(_dstr_arr, current_date_str, side='right'))
+            if dcache is not None and count == dcache[0]:
+                self._fd_decline_cache[code] = (count, current_date_str, dcache[2])
+                return dcache[2]
+            if count < 3:
+                self._fd_decline_cache[code] = (count, current_date_str, False)
                 return False
 
             # 取最近的3份报告
+            mask = df_sorted['数据可用日期_str'] <= current_date_str
             recent = df_sorted[mask].tail(3)
-            if len(recent) < 3:
-                return False
 
             pg_values = []
             rg_values = []
@@ -2132,14 +2145,19 @@ class SignalEngine:
                     trend = pg_values[-1] - pg_values[0]
                     if trend < -5:
                         # 降幅扩大超过5个百分点 → 加速恶化 → 过滤
-                        return True
-                    # 降幅收窄或持平 → 可能是拐点 → 再看看营收
-                    if trend > 5 and len(rg_values) >= 3 and all(v < 0 for v in rg_values):
+                        result = True
+                    elif trend > 5 and len(rg_values) >= 3 and all(v < 0 for v in rg_values):
                         # 利润改善但营收仍在下滑 → 利润改善不可持续 → 过滤
-                        return True
-                    # 利润+营收都在改善 → 拐点确认, 不过滤
-                    return False
-            return False
+                        result = True
+                    else:
+                        # 利润+营收都在改善 → 拐点确认, 不过滤
+                        result = False
+                else:
+                    result = False
+            else:
+                result = False
+            self._fd_decline_cache[code] = (count, current_date_str, result)
+            return result
         except Exception:
             logger.debug(f"基本面过滤异常 code={code}", exc_info=True)
             return False
