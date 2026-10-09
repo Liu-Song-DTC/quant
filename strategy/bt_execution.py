@@ -438,6 +438,14 @@ def _generate_stock_signal_worker(args):
         if hasattr(engine, 'fundamental_data') and engine.fundamental_data is not None:
             engine.fundamental_data.clear_stock_cache(code)
 
+        # 内存(2026-10-09): engine逐股缓存残留清理 — _bom_cache按(code,date)每股~1330条浮点,
+        # 累积至2689股≈600MB/worker (8 workers耗尽16GB→池内reclaim压力每股5.7s vs 顺序1.5s)。
+        # 读路径均仅当前code自身(generate内无跨code读, 每股仅处理一次) → 每股后清空恒等且O(1)。
+        for _ck_name in ('_bom_cache', '_fd_sorted_cache', '_fd_decline_cache', '_spec_ind_cache'):
+            _c = getattr(engine, _ck_name, None)
+            if _c is not None:
+                _c.clear()
+
         dyn_fail_snapshot = {}
         if hasattr(engine, '_dyn_fail'):
             dyn_fail_snapshot = dict(engine._dyn_fail)
