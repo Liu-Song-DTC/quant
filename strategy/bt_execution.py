@@ -262,6 +262,203 @@ def _signals_stale(signals_csv):
     return False
 
 
+# ===== ML chunk跨日缓存 (A+C项 2026-10-10) =====
+# 机制: chunk网格是_pred_dates上的index网格(range(0,N,retrain_freq)),
+# 新交易日只把新日期追加到_pred_dates末尾 → 既有chunk的chunk_dates/
+# first_pred_date/purge_end/train_mask全部不变 → 训练产物(模型+预测)可跨日复用。
+# 失效键=数据指纹(K线+基本面+题材+两融, mtime_ns+size)+信号代码指纹(含
+# ml_predictor/bt_execution/yaml剥壳摘要/季度标定) — 任一变化→全miss→全量重训,
+# 失效方向安全(只多算一次, 不会错用旧值)。与_signals_stale门禁同源。
+# 落盘顺序: preds parquet(原子) → model(原子) → manifest最后引用 → 中途被杀
+# 只产生无人引用的孤儿chunk文件, 下次运行miss重训, 不产生静默错用。
+_ML_CHUNK_CACHE_DIR = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'ml_chunk_cache')
+
+
+def _ml_chunk_cache_fp(stock_file_map, fundamental_data, boundaries) -> dict:
+    """ML缓存失效指纹 — 按chunk边界日期切分的K线内容指纹, 返回{date_str: hex}.
+
+    关键设计(2026-10-10): 不能全用mtime — 每日数据刷新会重写全部K线文件
+    (mtime+size全变)但历史行不变, mtime基指纹会让跨日复用永远失效; 固定
+    "去末行"hash也不行 — append后窗口平移(旧末行进入hash体)指纹仍变。
+    正确切分=按chunk依赖边界: chunk k的数据=日期≤last_pred_date的所有K线行,
+    新交易日追加的bar日期>既有边界→该chunk指纹稳定→跨日命中; 历史修正
+    (qfq重算/概念回修, 10/9重锚教训: 数据源确实修历史)改的是≤边界的行→失效重训。
+    实现: 每文件每行md5一次(~7.5M行/全库), 按日期≤边界聚合为每边界一个摘要。
+    成本~10-15s/run, 循环前一次。
+    """
+    import hashlib
+    _bkeys = sorted({str(pd.Timestamp(b).date()) for b in boundaries})
+    _mds = {_k: hashlib.md5() for _k in _bkeys}
+    for _p in sorted(set(stock_file_map.values())):
+        try:
+            _raw = open(_p, 'rb').read()
+        except OSError:
+            for _k in _bkeys:
+                _mds[_k].update(f"{_p}|MISSING;".encode('utf-8'))
+            continue
+        _lines = _raw.split(b'\n')
+        if _lines and not _lines[-1]:
+            _lines.pop()
+        if not _lines:
+            continue
+        _dates = np.array([_l.split(b',', 1)[0] for _l in _lines])
+        _lh = np.array([hashlib.md5(_l).digest() for _l in _lines], dtype='S16')
+        for _k in _bkeys:
+            # 日期YYYY-MM-DD零填充 → 字典序=时间序
+            _sel = _dates <= _k.encode('utf-8')
+            _mds[_k].update(_lh[_sel].tobytes())
+    return {_k: _m.hexdigest()[:12] for _k, _m in _mds.items()}
+
+
+def _ml_chunk_cache_aux_fp(fundamental_data, config=None) -> str:
+    """ML缓存辅助指纹: 非日期可切分输入(基本面/题材pkl)+ML相关config节+信号代码指纹。
+    任一变化→全部chunk失效(这些输入非append-only, 变了就是真变)。
+    config节覆盖feature_whitelist/min_val_ic/模型超参等键中未含项 —
+    否则改config会静默服务陈旧缓存模型(跨日正确性hazard)。
+    """
+    import hashlib, json
+    _h = hashlib.md5()
+    if config is not None:
+        try:
+            _cc = getattr(config, 'config', config)
+            for _sec in ('ml', 'margin_features', 'dynamic_factor'):
+                _sec_v = _cc.get(_sec) if isinstance(_cc, dict) else None
+                if _sec_v is not None:
+                    _h.update(f"{_sec}=".encode('utf-8'))
+                    _h.update(json.dumps(_sec_v, sort_keys=True, default=str).encode('utf-8'))
+                    _h.update(b";")
+        except Exception:
+            _h.update(b"configfp-ERR;")
+    else:
+        _h.update(b"noconfig;")
+    if fundamental_data is not None and getattr(fundamental_data, 'data_path', None):
+        for _root, _dirs, _files in os.walk(fundamental_data.data_path):
+            for _f in sorted(_files):
+                _fp = os.path.join(_root, _f)
+                try:
+                    _st = os.stat(_fp)
+                    _h.update(f"{_fp}|{_st.st_mtime_ns}|{_st.st_size};".encode('utf-8'))
+                except OSError:
+                    _h.update(f"{_fp}|MISSING;".encode('utf-8'))
+    for _f in ('concept_hist.pkl', 'stock_concept_map.pkl', 'concept_inception.pkl'):
+        _p = os.path.join(_PROJECT_DIR, 'data', _f)
+        try:
+            _st = os.stat(_p)
+            _h.update(f"{_p}|{_st.st_mtime_ns}|{_st.st_size};".encode('utf-8'))
+        except OSError:
+            _h.update(f"{_p}|MISSING;".encode('utf-8'))
+    return f"{_h.hexdigest()[:12]}|{_signal_code_fingerprint()}"
+
+
+def _ml_chunk_cache_margin_fp(boundaries) -> dict:
+    """margin(两融)按chunk边界切分的内容指纹: {date_str: hex}。
+
+    _ml_df经merge_asof(backward, allow_exact_matches=False)接入两融特征 —
+    历史行的margin取值只由≤该行日期的margin决定, 新追加margin日不改变
+    既有行 → 按边界切分hash与K线同构; 历史修正旧margin行→失效。加载
+    失败→{'*': 'ERR'}使全部chunk miss(安全方向, 与_ml_df降级一致)。
+    """
+    import hashlib
+    _out = {}
+    _margin_p = os.path.join(_PROJECT_DIR, 'data', 'alternative_data', 'margin_daily.pkl')
+    try:
+        import pickle
+        with open(_margin_p, 'rb') as _f:
+            _mdf = pickle.load(_f)
+        if not hasattr(_mdf, 'columns') or 'date' not in _mdf.columns:
+            return {str(pd.Timestamp(_b).date()): 'ERR' for _b in boundaries}
+        for _b in boundaries:
+            _k = str(pd.Timestamp(_b).date())
+            _sub = _mdf[_mdf['date'] < pd.Timestamp(_k)]
+            _h = hashlib.md5()
+            _h.update(pd.util.hash_pandas_object(_sub, index=False).values.tobytes())
+            _out[_k] = _h.hexdigest()[:8]
+    except Exception:
+        return {str(pd.Timestamp(_b).date()): 'ERR' for _b in boundaries}
+    return _out
+
+
+def _ml_chunk_manifest_path() -> str:
+    return os.path.join(_ML_CHUNK_CACHE_DIR, 'manifest.json')
+
+
+def _ml_chunk_load_manifest() -> dict:
+    import json
+    try:
+        with open(_ml_chunk_manifest_path(), 'r') as _f:
+            return json.load(_f)
+    except Exception:
+        return {}
+
+
+def _ml_chunk_save_manifest(_m: dict) -> None:
+    import json
+    try:
+        os.makedirs(_ML_CHUNK_CACHE_DIR, exist_ok=True)
+        _tmp = _ml_chunk_manifest_path() + '.tmp'
+        with open(_tmp, 'w') as _f:
+            json.dump(_m, _f)
+        os.replace(_tmp, _ml_chunk_manifest_path())
+    except Exception as _e:
+        print(f"[ML缓存] manifest写入失败(忽略, 下次全量重训): {_e}")
+
+
+def _ml_chunk_load(_key: str, _config):
+    """命中→(model_or_None, outcome, val_ic, preds_df); 未命中/任何异常→None(回退全量训练).
+
+    model_or_None=None表示该chunk复用上一chunk的有效模型(原逻辑不切换
+    _last_good_predictor); outcome∈{trained_good, reuse_prev, reuse_forced,
+    reuse_chain_exceeded} — 与训练路径的val_ic裁决分支一一对应, 重放保持
+    _val_ics/_reused_chunks/_consecutive_reuse演化逐位一致。
+    """
+    _m = _ml_chunk_load_manifest()
+    _e = _m.get(_key)
+    if not _e:
+        return None
+    try:
+        from core.ml_predictor import MLFactorPredictor
+        _model = None
+        if _e.get('model'):
+            _model = MLFactorPredictor(_config.config)
+            _model.load_model(os.path.join(_ML_CHUNK_CACHE_DIR, _e['model']))
+            # load_model对缺失文件静默降级(跳过不存在的ensemble成员), 必须验证
+            # 完整加载 — 否则半损模型静默进入信号生成 (正确性门禁, 2026-10-10)
+            if not getattr(_model, '_ensemble_models', None) or \
+                    not getattr(_model, 'feature_cols', None):
+                raise RuntimeError(f'缓存模型不完整(文件缺失?): {_e["model"]}')
+        _preds = pd.read_parquet(os.path.join(_ML_CHUNK_CACHE_DIR, _e['preds']))
+        return (_model, _e['outcome'], _e.get('val_ic'), _preds,
+                os.path.join(_ML_CHUNK_CACHE_DIR, _e['model']) if _e.get('model') else None)
+    except Exception as _ex:
+        print(f"[ML缓存] chunk加载失败(回退训练): {_ex}")
+        return None
+
+
+def _ml_chunk_save(_key: str, _idx: int, _outcome: str, _val_ic, _model,
+                   _codes_arr, _dates_arr, _preds_arr) -> None:
+    """chunk产物落盘: 先preds(原子)→model(原子)→manifest最后引用.
+
+    reuse_prev/reuse_chain_exceeded不存模型(model=None): 重放时沿用上一chunk
+    有效模型, 与原逻辑不切换_last_good_predictor一致。
+    """
+    _m = _ml_chunk_load_manifest()
+    _ent = {'idx': _idx, 'outcome': _outcome, 'val_ic': _val_ic, 'model': None}
+    try:
+        os.makedirs(_ML_CHUNK_CACHE_DIR, exist_ok=True)
+        _pfile = f'chunk_{_idx}_preds.parquet'
+        _pdf = pd.DataFrame({'code': _codes_arr, 'date': _dates_arr, 'ml_pred': _preds_arr})
+        _pdf.to_parquet(os.path.join(_ML_CHUNK_CACHE_DIR, _pfile), index=False)
+        _ent['preds'] = _pfile
+        if _model is not None:
+            _mfile = f'chunk_{_idx}_model.json'
+            _model.save_model(os.path.join(_ML_CHUNK_CACHE_DIR, _mfile))
+            _ent['model'] = _mfile
+        _m[_key] = _ent
+        _ml_chunk_save_manifest(_m)
+    except Exception as _e:
+        print(f"[ML缓存] chunk保存失败(忽略, 下次全量重训): {_e}")
+
+
 # 全局变量用于 worker 进程
 _worker_engine = None
 _worker_use_dynamic = False
@@ -796,6 +993,19 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                 # 复用链上限: 连续复用N个chunk后旧模型已陈旧, 强制采用新模型保持适应性
                 _max_reuse = int(ml_config.get('max_consecutive_reuse', 3))
                 _consecutive_reuse = 0
+                # A+C(2026-10-10): ML chunk跨日缓存指纹, 循环前算一次 —
+                # K线内容按chunk边界日期(各chunk的last_pred_date)切分hash:
+                # 新交易日追加的bar日期>既有边界→指纹稳定→跨日命中;
+                # 历史修正(≤边界的行变化)→失效重训。辅助指纹(基本面/题材/代码)
+                # + margin按边界切分同理。键含chunk身份。
+                _ml_cache_boundaries = [_pred_dates[min(_cs + _retrain_freq, len(_pred_dates)) - 1]
+                                        for _cs in chunk_starts]
+                _ml_cache_fp = _ml_chunk_cache_fp(stock_file_map, fundamental_data,
+                                                  _ml_cache_boundaries)
+                _ml_cache_aux = _ml_chunk_cache_aux_fp(fundamental_data, config)
+                _ml_cache_margin = _ml_chunk_cache_margin_fp(_ml_cache_boundaries)
+                # loop不变量提升 (原在循环内逐chunk重算, 值不变)
+                _fp_days = int(config.get('dynamic_factor.forward_period', 10))
 
                 for chunk_idx, chunk_start in enumerate(tqdm(chunk_starts, desc="ML滚动训练")):
                     chunk_end = min(chunk_start + _retrain_freq, len(_pred_dates))
@@ -812,7 +1022,63 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                     # 2026-09-06 797,071锚点危机定案: 根因是19:42 run的执行层代码
                     # 漂移(E2D2残留ml_predictor/signal_engine态, IC不可复现)+该run
                     # 信号生成期间另类数据三件套下载竞态; purge行本身无罪, 勿再动。
-                    _fp_days = int(config.get('dynamic_factor.forward_period', 10))
+                    # A+C(2026-10-10): 跨日缓存命中路径 — 同数据态+代码态下chunk的
+                    # 日期窗/训练窗/模型全不变, 直接重放缓存模型+预测。val_ic裁决链
+                    # 状态按outcome重放, 与训练路径逐位一致; 新追加日期(跨日时仅末
+                    # chunk)用重放后的有效模型预测并回写缓存。
+                    import hashlib as _hl
+                    _lb_key = str(pd.Timestamp(chunk_dates[-1]).date())
+                    _cache_key = _hl.md5(
+                        f"{_ml_cache_fp.get(_lb_key, 'NODIGEST')}|{_ml_cache_aux}|"
+                        f"{_ml_cache_margin.get(_lb_key, 'NOMARGIN')}|{chunk_start}|"
+                        f"{pd.Timestamp(first_pred_date).strftime('%Y-%m-%d')}|"
+                        f"{pd.Timestamp(chunk_dates[-1]).strftime('%Y-%m-%d')}|"
+                        f"{_train_window}|{_fp_days}".encode('utf-8')).hexdigest()[:16]
+                    _cache_hit = _ml_chunk_load(_cache_key, config)
+                    if _cache_hit is not None:
+                        _c_model, _c_outcome, _c_val_ic, _c_preds, _c_model_path = _cache_hit
+                        if _c_outcome == 'trained_good':
+                            _val_ics.append(_c_val_ic)
+                            _last_good_predictor = _c_model
+                            _consecutive_reuse = 0
+                            if _c_model_path:
+                                _ml_model_path = _c_model_path
+                        elif _c_outcome == 'reuse_forced':
+                            _last_good_predictor = _c_model
+                            _consecutive_reuse = 0
+                        elif _c_outcome in ('reuse_prev', 'reuse_chain_exceeded'):
+                            _reused_chunks += 1
+                            _consecutive_reuse += 1
+                        _c_dates_set = set(np.asarray(_c_preds['date'].values, dtype='datetime64[ns]'))
+                        _new_dates = [d for d in chunk_dates
+                                      if np.datetime64(pd.Timestamp(d)) not in _c_dates_set]
+                        if _new_dates:
+                            _c_new_rows = []
+                            for _nd in _new_dates:
+                                _ndf = _ml_df[_ml_df['date'] == _nd]
+                                if len(_ndf) == 0:
+                                    continue
+                                _nrv = _regime_map.get(_nd.strftime('%Y-%m-%d'), 0) if _regime_map else 0
+                                _npr = _last_good_predictor.predict(_ndf, regime_info={'regime': _nrv})
+                                _ncd = _ndf['code'].values
+                                _c_new_rows.append(pd.DataFrame({
+                                    'code': np.asarray([str(_c).zfill(6) for _c in _ncd]),
+                                    'date': np.asarray([_nd] * len(_ncd), dtype='datetime64[ns]'),
+                                    'ml_pred': np.asarray(_npr)}))
+                            if _c_new_rows:
+                                _c_preds = pd.concat([_c_preds] + _c_new_rows, ignore_index=True)
+                                _ml_chunk_save(_cache_key, chunk_idx, _c_outcome, _c_val_ic,
+                                               _c_model if _c_outcome in ('trained_good', 'reuse_forced') else None,
+                                               _c_preds['code'].values, _c_preds['date'].values,
+                                               _c_preds['ml_pred'].values)
+                        # 重放本chunk全部预测行 (最终落盘按(code,date)排序, 顺序无关)
+                        if len(_c_preds):
+                            _ml_codes_list.append(np.asarray([str(_c) for _c in _c_preds['code'].values]))
+                            _ml_dates_list.append(np.asarray(_c_preds['date'].values, dtype='datetime64[ns]'))
+                            _ml_preds_list.append(np.asarray(_c_preds['ml_pred'].values))
+                        _total_preds += sum(1 for d in chunk_dates if d in _fd_date_set)
+                        continue
+
                     _d0_ts = pd.Timestamp(first_pred_date)
                     _d0_pos = int(np.searchsorted(np.asarray(all_dates), _d0_ts))
                     _purge_end = all_dates[max(0, _d0_pos - _fp_days)]
@@ -847,12 +1113,14 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                             ml_predictor = _last_good_predictor
                             _reused_chunks += 1
                             _consecutive_reuse += 1
+                            _chunk_outcome = 'reuse_prev'
                         elif val_ic is not None and val_ic > 0:
                             # 复用链超上限且新模型IC>0: 旧模型已陈旧, 采用新模型
                             print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} <{_min_val_ic}, "
                                   f"连续复用{_consecutive_reuse}次达上限, 采用新模型")
                             _last_good_predictor = ml_predictor
                             _consecutive_reuse = 0
+                            _chunk_outcome = 'reuse_forced'
                         else:
                             # 新模型IC<=0: 比陈旧的好模型更差, 继续复用并告警
                             print(f"  chunk {chunk_idx}: 验证IC={val_ic}, "
@@ -860,16 +1128,19 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                             ml_predictor = _last_good_predictor
                             _reused_chunks += 1
                             _consecutive_reuse += 1
+                            _chunk_outcome = 'reuse_chain_exceeded'
                     else:
                         _val_ics.append(val_ic)
                         _last_good_predictor = ml_predictor
                         _consecutive_reuse = 0
+                        _chunk_outcome = 'trained_good'
                         strategy_dir = os.path.dirname(os.path.abspath(__file__))
                         model_dir = os.path.join(strategy_dir, 'models')
                         os.makedirs(model_dir, exist_ok=True)
                         _ml_model_path = os.path.join(model_dir, 'xgb_strategy_model.json')
                         ml_predictor.save_model(_ml_model_path)
 
+                    _n0 = len(_ml_codes_list)
                     for date in chunk_dates:
                         date_df = _ml_df[_ml_df['date'] == date]
                         if len(date_df) == 0:
@@ -883,6 +1154,12 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                         _ml_preds_list.append(np.asarray(preds))
                     _total_preds += sum(1 for d in chunk_dates
                                         if d in _fd_date_set)
+                    # A+C(2026-10-10): 本chunk产物入缓存(skip不缓存), 下次同态复用
+                    _ml_chunk_save(_cache_key, chunk_idx, _chunk_outcome, val_ic,
+                                   ml_predictor if _chunk_outcome in ('trained_good', 'reuse_forced') else None,
+                                   np.concatenate(_ml_codes_list[_n0:]) if len(_ml_codes_list) > _n0 else np.array([], dtype='<U6'),
+                                   np.concatenate(_ml_dates_list[_n0:]) if len(_ml_dates_list) > _n0 else np.array([], dtype='datetime64[ns]'),
+                                   np.concatenate(_ml_preds_list[_n0:]) if len(_ml_preds_list) > _n0 else np.array([], dtype='float32'))
 
                 # 向量化合并 (性能2026-10-09): 动态模式主引擎仍需(code,date)->pred dict,
                 # fixed模式(生产)仅需数组落盘 — 原3.2M条目dict不再在fixed模式构建
