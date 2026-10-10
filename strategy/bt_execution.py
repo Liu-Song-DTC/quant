@@ -1901,6 +1901,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     print(f"构建价格矩阵: {n_dates}天 × {len(stock_codes)}股 ...")
     close_px = np.full((n_dates, len(stock_codes)), np.nan, dtype=np.float32)
     open_px = np.full_like(close_px, np.nan)  # B批修复(B3): T+1开盘成交价
+    low_px = np.full_like(close_px, np.nan)  # 分段建仓(2026-10-10): 限价单触发用当日最低价
     volume_m = np.zeros_like(close_px)
     tradable = np.zeros_like(close_px, dtype=bool)
 
@@ -1908,7 +1909,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         fp = os.path.join(DATA_PATH, f'{code}_qfq.csv')
         if not os.path.exists(fp):
             continue
-        df = pd.read_csv(fp, usecols=['datetime', 'open', 'close', 'volume'])
+        df = pd.read_csv(fp, usecols=['datetime', 'open', 'low', 'close', 'volume'])
         df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
         df = df.dropna(subset=['datetime'])
         df = df.set_index('datetime')
@@ -1917,6 +1918,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         df = df.reindex(calendar)
         close_px[:, j] = df['close'].ffill().values.astype(np.float32)
         open_px[:, j] = df['open'].ffill().values.astype(np.float32)
+        low_px[:, j] = df['low'].ffill().values.astype(np.float32)
         volume_m[:, j] = df['volume'].fillna(0).values.astype(np.float32)
     del df
 
@@ -1940,6 +1942,11 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     # 0b(2026-09-09): 跳空>9.5%再折让 — 原×1.03/×0.97产生超涨跌停价的"不可能
     # 成交价"(主板跳空+9.8%时买价=昨收×1.132>涨停×1.10; 卖侧对称低于跌停)
     gap_penalty_enabled = cm_config.get('gap_fill_penalty_enabled', True)
+    # 分段建仓(实验, 2026-10-10): 新入场拆首段开盘成交+第二段限价单(坑底加仓),
+    # 未成交余量在下个调仓日开盘回补(现金自动循环). 默认关=生产锚点不变.
+    tranche_enabled = config.get('backtest', {}).get('tranche_enabled', False)
+    tranche_ratio = float(config.get('backtest', {}).get('tranche_ratio', 0.5))
+    tranche_discount = float(config.get('backtest', {}).get('tranche_discount', 0.05))
 
     def _impact(adv, size, price):
         if not impact_enabled or adv <= 0:
@@ -2016,13 +2023,16 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                    'sell_attempted': 0, 'sell_filled': 0, 'sell_partial': 0,
                    'buy_limit_up_skip': 0, 'sell_limit_down_skip': 0,
                    'sell_tplus1_blocked': 0, 'buy_cash_insufficient': 0,
-                   'gap_buy_penalized': 0, 'gap_sell_penalized': 0}
+                   'gap_buy_penalized': 0, 'gap_sell_penalized': 0,
+                   'tranche_filled': 0, 'tranche_cash_insufficient': 0}
 
     # T+1 结算：当日买入的股票不可卖出
     tplus1_enabled = config.get('cost_model', {}).get('t_plus_1_enabled', True)
     _today_buys = set()
 
     _pending = {}  # B批修复(B3): 前一日收盘目标 → 次日开盘成交
+    _pending_limits = {}  # 分段建仓: code -> [限价, 余量股数, 建仓日bar idx]
+    _tranche_plan = {}  # 分段建仓: 当日首段成交后待注册的限价单
     for i in tqdm(range(n_dates), desc="backtest"):
         date = calendar[i].date()
         px_today = close_px[i]
@@ -2112,6 +2122,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             # Step C: 加仓 — 先算总需资金, 按比例缩放确保不超现金
             _buy_plan = []
             _total_buy_cost = 0.0
+            _tranche_plan = {}
             for code, tv in _pending.items():
                 j = code_to_idx.get(code)
                 if j is None or not ok[j]:
@@ -2131,6 +2142,17 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 curr_shares = int(positions[j])
                 diff = target_shares - curr_shares
                 if diff >= 100:
+                    # 分段建仓(实验): 开盘回补取代限价单(撤单, 防超买)
+                    if tranche_enabled and code in _pending_limits:
+                        _pending_limits.pop(code, None)
+                    # 新入场拆段: 首段开盘, 余量挂限价单(需两段各>=1手)
+                    if tranche_enabled and curr_shares == 0 and diff >= 200:
+                        first = max(int(diff * tranche_ratio / 100) * 100, 100)
+                        rem = diff - first
+                        if rem >= 100:
+                            _tranche_plan[code] = (buy_px * (1.0 - tranche_discount), rem)
+                            diff = first
+                            target_shares = curr_shares + first
                     impact = _impact(_adv_matrix[i, j], diff, buy_px)
                     cost = diff * buy_px * (1.0 + COMMISSION + impact)
                     _buy_plan.append((code, j, buy_px, target_shares, curr_shares, diff, impact, cost))
@@ -2159,6 +2181,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                             cost_tracker[code] = [new_s, (old_s * old_avg + scaled_diff * buy_px) / max(new_s, 1)]
                         else:
                             cost_tracker[code] = [scaled_diff, buy_px]
+                        if tranche_enabled and code in _tranche_plan:
+                            # 首段成交 → 注册限价单(缩放削减的股数回到余量)
+                            _lp, _rem = _tranche_plan[code]
+                            _pending_limits[code] = [_lp, _rem + (diff - scaled_diff), i]
                         if tplus1_enabled:
                             _today_buys.add(code)
                     else:
@@ -2166,6 +2192,48 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 else:
                     _fill_stats['buy_cash_insufficient'] += 1
             _pending = {}  # 挂单执行完毕
+
+            # 分段建仓(实验): 第二段限价单检查 — 当日low触及限价 → min(开盘,限价)成交
+            if tranche_enabled and _pending_limits:
+                for code in list(_pending_limits.keys()):
+                    _lp, _rem, _entry_i = _pending_limits[code]
+                    j = code_to_idx.get(code)
+                    if j is None or not ok[j] or positions[j] <= 0:
+                        _pending_limits.pop(code, None)  # 已清仓/不可交易 → 撤单
+                        continue
+                    if np.isnan(open_px[i, j]) or np.isnan(low_px[i, j]):
+                        continue
+                    if limit_block_enabled and _limit_up[i, j]:
+                        continue  # 涨停买不进, 挂单保留
+                    if low_px[i, j] > _lp:
+                        continue  # 未触及限价
+                    fill_px = min(float(open_px[i, j]), _lp)
+                    if slip_enabled:
+                        fill_px *= (1.0 + slip_rate)
+                    impact = _impact(_adv_matrix[i, j], _rem, fill_px)
+                    unit = fill_px * (1.0 + COMMISSION + impact)
+                    buy_shares = _rem
+                    if buy_shares * unit > cash + 1e-6:
+                        buy_shares = max(int(cash / unit / 100) * 100, 0)
+                        if buy_shares < 100:
+                            _fill_stats['tranche_cash_insufficient'] += 1
+                            continue  # 现金不足, 挂单保留
+                    cash -= buy_shares * unit
+                    positions[j] += buy_shares
+                    _fill_stats['tranche_filled'] += 1
+                    if code in cost_tracker:
+                        old_s, old_avg = cost_tracker[code]
+                        new_s = old_s + buy_shares
+                        cost_tracker[code] = [new_s, (old_s * old_avg + buy_shares * fill_px) / max(new_s, 1)]
+                    else:
+                        cost_tracker[code] = [buy_shares, fill_px]
+                    if tplus1_enabled:
+                        _today_buys.add(code)
+                    _rem -= buy_shares
+                    if _rem < 100:
+                        _pending_limits.pop(code, None)
+                    else:
+                        _pending_limits[code][1] = _rem
 
         # 当前持仓市值 (开盘成交后, 按当日收盘价计)
         pos_value = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
@@ -2185,6 +2253,12 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         for j in range(len(stock_codes)):
             if positions[j] > 0 and ok[j]:
                 cur_pos[stock_codes[j]] = float(positions[j]) * float(px_today[j])
+        # 分段建仓(实验): 限价单余量计入持仓市值, 防止下个调仓日开盘回补吃掉限价窗口
+        if tranche_enabled and _pending_limits:
+            for code, (_lp, _rem, _ei) in _pending_limits.items():
+                j = code_to_idx.get(code)
+                if j is not None and positions[j] > 0 and ok[j]:
+                    cur_pos[code] = cur_pos.get(code, 0.0) + _rem * float(px_today[j])
 
         try:
             target = strategy.generate_positions(
@@ -2461,7 +2535,8 @@ if __name__ == "__main__":
         print(f"逐笔平仓审计已保存: {len(result['realized_trades'])} 笔 -> {trades_path}")
     _fs = result.get('fill_stats', {})
     print(f"成交统计: 买{ _fs.get('buy_filled', 0)}/{_fs.get('buy_attempted', 0)} "
-          f"(涨停跳过{_fs.get('buy_limit_up_skip', 0)}, 现金不足{_fs.get('buy_cash_insufficient', 0)}) "
+          f"(涨停跳过{_fs.get('buy_limit_up_skip', 0)}, 现金不足{_fs.get('buy_cash_insufficient', 0)}, "
+          f"限价成交{_fs.get('tranche_filled', 0)}, 限价现金不足{_fs.get('tranche_cash_insufficient', 0)}) "
           f"卖{_fs.get('sell_filled', 0)}/{_fs.get('sell_attempted', 0)} "
           f"(跌停跳过{_fs.get('sell_limit_down_skip', 0)}, T+1拦截{_fs.get('sell_tplus1_blocked', 0)})")
 
