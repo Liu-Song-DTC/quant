@@ -371,6 +371,10 @@ class PortfolioConstructor:
         self.bp_confirm_min = int(pp.get('bp_confirm_min', 0))
         self.bp_c3_boost = float(pp.get('bp_c3_boost', 0.0))
         self.bp_c4_penalty = float(pp.get('bp_c4_penalty', 0.0))
+        # H-cd(2026-10-10): 追涨日推迟入场 — 入场日涨幅>阈值当天不买(次日信号仍在可再试).
+        # 细胞证据: entry_ret>+3% fwd2 44.8%/fwd5 37.9%/均-1.26% vs 深跌<-3% 64.5%/58.1%/+3.64%;
+        # 追涨×mom>30%组合: fwd5 30.3%/均-1.46%. 0.0=关闭(anchor态)。portfolio节豁免指纹。
+        self.entry_chase_defer = float(pp.get('entry_chase_defer', 0.0))
         self.bp2_boost_norm_only = bool(pp.get('bp2_boost_norm_only', False))
         self.bp2_fade_stop_enabled = bool(pp.get('bp2_fade_stop_enabled', False))
         self.bp2_fade_stop_days = int(pp.get('bp2_fade_stop_days', 15))
@@ -992,6 +996,13 @@ class PortfolioConstructor:
                 # H-bpC4: 四重确认软罚(过选端点弱) — 独立罚变量, 仅新入场
                 if self.bp_c4_penalty > 0 and _bp_confirm == 4:
                     bp_c4_pen = -self.bp_c4_penalty
+                # H-cd(2026-10-10): 追涨日推迟入场 — 短窗准确率细胞证据(入场日涨幅>阈值
+                # 的细胞fwd2/fwd5命中率单调恶化), 删除形状: 当天拒买, 次日信号仍在可再试
+                if self.entry_chase_defer > 0 \
+                        and self._nan_safe(daily_ret) > self.entry_chase_defer:
+                    _rej.setdefault('chase_defer', 0)
+                    _rej['chase_defer'] += 1
+                    continue
                 has_chan = (
                     chan_buy > 0 or
                     sl >= 1 or
