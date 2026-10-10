@@ -351,6 +351,11 @@ class PortfolioConstructor:
         # (55.9% vs 47.7%), bp0=最大买点桶; bp交互仅bp0稳定(bp1/bp4×bi1负或噪声)
         # → 限定bp==0。0=关闭(anchor态)。portfolio节豁免指纹。
         self.bi1_score_boost = float(pp.get('bi1_score_boost', 0.0))
+        # H-bi0(2026-10-10): bp0×bi0低胜率买点附加软罚 — 探针持仓层48.4%胜率/
+        # 中位-0.16% vs 其余58.7%/+4.04%; 供给50.5%已被评分回避至29.9%选中。
+        # 罚仅新入场(keep-alive豁免), 叠在既有no_chan_penalty上。0=关闭(anchor态)。
+        # portfolio节豁免指纹。
+        self.bp0bi0_penalty = float(pp.get('bp0bi0_penalty', 0.0))
         self.bp2_boost_norm_only = bool(pp.get('bp2_boost_norm_only', False))
         self.bp2_fade_stop_enabled = bool(pp.get('bp2_fade_stop_enabled', False))
         self.bp2_fade_stop_days = int(pp.get('bp2_fade_stop_days', 15))
@@ -962,6 +967,10 @@ class PortfolioConstructor:
                         _rej['no_chan'] += 1
                         continue
                     no_chan_penalty = self.no_chan_penalty
+                    # H-bi0: bp0×bi0附加软罚 (笔级零确认=最差桶)
+                    if self.bp0bi0_penalty > 0 and chan_buy == 0 \
+                            and int(self._nan_safe(getattr(sig, 'bi_buy_point', 0))) == 0:
+                        no_chan_penalty -= self.bp0bi0_penalty
                 # P3修复: 动量不再硬惩罚, 仅极端超买(>60%)提示风险
                 mom_60d = self._nan_safe(getattr(sig, 'mom_60d', 0.0))
                 dist_ma60 = self._nan_safe(getattr(sig, 'dist_ma60', 0.0))
