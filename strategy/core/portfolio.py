@@ -356,6 +356,21 @@ class PortfolioConstructor:
         # 罚仅新入场(keep-alive豁免), 叠在既有no_chan_penalty上。0=关闭(anchor态)。
         # portfolio节豁免指纹。
         self.bp0bi0_penalty = float(pp.get('bp0bi0_penalty', 0.0))
+        # H-bpG(2026-10-10): 买点硬拒闸(剔除臂) — bp_reject全期硬拒新入场,
+        # bp_reject_fast仅FAST期。[] = 关闭(anchor态)。portfolio节豁免指纹。
+        self.bp_reject = [int(x) for x in pp.get('bp_reject', [])]
+        self.bp_reject_fast = [int(x) for x in pp.get('bp_reject_fast', [])]
+        # H-bpC(2026-10-10): 多重买点确认 — bp_confirm_min=确认数硬闸(0/≤1确认不买;
+        # 4源=bp>0且≠5/bi>0/sl≥1/底背离, 信号层单调0→4: −0.59→+1.93pp)。
+        # 终局: min=2采纳(生产, 新锚1,000,693/300.28%/1.4666/−17.05%/胜率58.2%,
+        # 闸面0→1→2→3=791k→977k→1,000k→669k=min2峰, 配对bs p=0.025 CI不含0);
+        # bp_c3_boost/bp_c4_penalty单臂+叠加全关(排挤成本>直接收益, 0.05-0.20单调恶化);
+        # entry_chan_gate:hard单独+248k但bs不显著(p=0.25)+实盘窗MDD加深4pp,
+        # 且min2下hard=no-op(CMB5与A3b逐位恒等=无缠细胞过min2全在FAST被bearhard已拒)。
+        # bp_c3/bp_c4保留dormant(0.0=关闭)。portfolio节豁免指纹。
+        self.bp_confirm_min = int(pp.get('bp_confirm_min', 0))
+        self.bp_c3_boost = float(pp.get('bp_c3_boost', 0.0))
+        self.bp_c4_penalty = float(pp.get('bp_c4_penalty', 0.0))
         self.bp2_boost_norm_only = bool(pp.get('bp2_boost_norm_only', False))
         self.bp2_fade_stop_enabled = bool(pp.get('bp2_fade_stop_enabled', False))
         self.bp2_fade_stop_days = int(pp.get('bp2_fade_stop_days', 15))
@@ -939,6 +954,14 @@ class PortfolioConstructor:
             fn = getattr(sig, 'factor_name', '')
             daily_ret = getattr(sig, 'daily_return', 0.0)
 
+            # H-bpG(2026-10-10): 买点硬拒闸 — 剔除臂(过选坏桶硬拒, 仅新入场)
+            if code not in current_positions and (
+                    chan_buy in self.bp_reject
+                    or (_regime == 'FAST' and chan_buy in self.bp_reject_fast)):
+                _rej.setdefault('bp_reject', 0)
+                _rej['bp_reject'] += 1
+                continue
+
             # Gate 统一过滤：cha_sell/trend/B3/放量下跌 均由 4-Gate 系统综合评分
             # 组合层只设 gate_quality 最低线，不逐项判断
 
@@ -951,9 +974,24 @@ class PortfolioConstructor:
             ml_gate_pen = 0.0
             divnone_pen = 0.0
             ah_pen = 0.0
+            _bp_confirm = 0
+            bp_c4_pen = 0.0
             if code not in current_positions:
                 div_type = getattr(sig, 'chan_divergence_type', '')
                 div_strength = getattr(sig, 'chan_divergence_strength', 0.0)
+                # H-bpC(2026-10-10): 纯买点确认数(4源, bp5排除—唯一负信息非零买点)
+                _bp_confirm = (int(chan_buy > 0 and chan_buy != 5)
+                               + int(int(self._nan_safe(getattr(sig, 'bi_buy_point', 0))) > 0)
+                               + int(sl >= 1)
+                               + int(div_type in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2')))
+                # H-bpC闸: 确认数不足直接拒绝(仅新入场, 旧持仓不受影响)
+                if self.bp_confirm_min > 0 and _bp_confirm < self.bp_confirm_min:
+                    _rej.setdefault('bp_confirm', 0)
+                    _rej['bp_confirm'] += 1
+                    continue
+                # H-bpC4: 四重确认软罚(过选端点弱) — 独立罚变量, 仅新入场
+                if self.bp_c4_penalty > 0 and _bp_confirm == 4:
+                    bp_c4_pen = -self.bp_c4_penalty
                 has_chan = (
                     chan_buy > 0 or
                     sl >= 1 or
@@ -1089,6 +1127,8 @@ class PortfolioConstructor:
                 'chan_buy_strength': buy_strength if sl > 0 else 0.0,
                 'trend_type': stock_trend,
                 'no_chan_penalty': no_chan_penalty,
+                '_bp_confirm': _bp_confirm,
+                'bp_c4_penalty': bp_c4_pen,
             })
             _rej['accepted'] += 1
             # DEBUG: 跟踪候选因子分布 + ML得分
@@ -1576,6 +1616,11 @@ class PortfolioConstructor:
                     and int(self._nan_safe(getattr(sig_ref, 'bi_buy_point', 0))) == 1:
                 additive += self.bi1_score_boost
 
+            # H-bpC3(2026-10-10): 三重确认加成 — 入场bp_c=3: 63.6%胜率/+8.14%均值,
+            # 选中0.96× vs bp_c=2的1.62× → 评分对三重确认欠定价(二重主力已定价)
+            if self.bp_c3_boost > 0 and c.get('_bp_confirm', 0) == 3:
+                additive += self.bp_c3_boost
+
             # E-K2.5(2026-09-11): 回购类级加成(小回购<1亿, 公告<=30d) — E-K1模式第2例
             if self.repo_score_boost > 0 and self._repo_flag(code, date):
                 additive += self.repo_score_boost
@@ -1603,7 +1648,7 @@ class PortfolioConstructor:
                 repl_buffer = 0.0  # C5c: 仅盈利持仓受保护(亏损名让位)
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
-            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0) + c.get('ah_penalty', 0.0)
+            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0) + c.get('ah_penalty', 0.0) + c.get('bp_c4_penalty', 0.0)
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))

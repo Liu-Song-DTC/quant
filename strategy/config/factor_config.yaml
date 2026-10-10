@@ -7423,6 +7423,19 @@ portfolio:
     # H-bi0(2026-10-10): bp0×bi0附加软罚(持仓层48.4%胜率vs其余58.7%) — 生产采纳0.05
     # 四臂0.03/0.05/0.08/0.12全4/4, 0.05内点峰(54.4k), 最差年−0.28pp下行不对称
     bp0bi0_penalty: 0.05
+    # H-bpG(2026-10-10): 买点硬拒闸(剔除臂) — bp_reject全期/bp_reject_fast仅FAST, [] = 关闭
+    # 实测: bp5全期剔除3/4(MDD败), FAST×bp1 0/4, 组合0/4 — 硬拒家族关闭
+    bp_reject: []
+    bp_reject_fast: []
+    # H-bpC(2026-10-10): 多重买点确认 — bp_confirm_min=确认数硬闸(4源=bp>0且≠5/bi>0/
+    # sl≥1/底背离, 信号层0→4单调−0.59→+1.93pp)。生产=2(A3b冠军: 1,000,693/300.28%/
+    # 1.4666/−17.05%/胜率58.2%, 5/5含MDD, 配对bs p=0.025, 闸面0→1→2→3=791k→977k→
+    # 1,000k→669k=min2峰; min3悬崖: MDD−22.16%供给崩塌)。bp_c3_boost/bp_c4_penalty
+    # 单臂+叠加全关(排挤, 0.05-0.20单调恶化)保留dormant; entry_chan_gate:hard单独
+    # +248k但bs不显著+实盘窗MDD加深4pp, min2下hard=no-op(CMB5与A3b逐位恒等)
+    bp_confirm_min: 2
+    bp_c3_boost: 0.0
+    bp_c4_penalty: 0.0
     # E-K2(2026-09-06): FAST下抑制bp2加成(n=2时排挤代价最高, E-G1曾因此限定NORM)
     bp2_boost_norm_only: false
     # E-L1(2026-09-06): bp2入场仓信号衰减止损 — 已否决(E-L1b: 37次截断, NAV -33,596,
