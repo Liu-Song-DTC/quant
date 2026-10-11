@@ -120,6 +120,17 @@ def compute_fundamental_score(roe=None, profit_growth=None, revenue_growth=None,
 
 # ==================== 基础指标计算 ====================
 
+def board_limit_up_pct(code: Optional[str]) -> float:
+    """按股票代码返回涨停判定阈值(留容差) — 与bt_execution._limit_rate_arr同一板块口径
+
+    创业板(30x) / 科创板(68x) = ±20%板 → 0.195; 其余(主板等) = ±10%板 → 0.095.
+    北交所已被上游排除。2026-10-11: 修复全库一刀切0.095误判20%板普通大涨为涨停。
+    """
+    if code and str(code)[:2] in ('30', '68'):
+        return 0.195
+    return 0.095
+
+
 def calculate_indicators(
     close: np.ndarray,
     high: Optional[np.ndarray] = None,
@@ -129,6 +140,7 @@ def calculate_indicators(
     turnover_rate: Optional[np.ndarray] = None,
     amplitude: Optional[np.ndarray] = None,
     open_arr: Optional[np.ndarray] = None,
+    limit_up_pct: float = 0.095,
 ) -> Dict[str, np.ndarray]:
     """
     计算所有技术指标（与signal_engine._calculate_indicators逻辑一致）
@@ -154,6 +166,8 @@ def calculate_indicators(
         'volume': volume if volume is not None else np.ones(n),
         'open': open_arr if open_arr is not None else close,
     }
+    # 内部标量(下划线前缀, 非因子列): 涨停阈值按板块 — 供limit_pullback等下游读取
+    result['_limit_up_pct'] = limit_up_pct
 
     close_arr = close
     high_arr = result['high']
@@ -241,10 +255,11 @@ def calculate_indicators(
     result['ret'] = returns
 
     # === 涨停频率因子 (limit_up_freq) ===
-    # 逻辑: 过去20日中涨停(>9.5%)的次数，捕捉妖股"持续涨停"特征
+    # 逻辑: 过去20日中涨停的次数，捕捉妖股"持续涨停"特征
+    # limit_up_pct 按板块: 主板9.5%(10%板留容差), 创业板/科创板19.5%(20%板) — 2026-10-11修复
     daily_ret = returns.copy()
     daily_ret[0] = 0
-    limit_up_mask = daily_ret >= 0.095
+    limit_up_mask = daily_ret >= limit_up_pct
     limit_up_sum_20 = _sma(limit_up_mask.astype(float), 20) * 20
     result['limit_up_freq'] = np.tanh(limit_up_sum_20 * 0.5)
 
@@ -253,7 +268,7 @@ def calculate_indicators(
     consec = np.zeros(n, dtype=np.int32)
     cnt = 0
     for i in range(n):
-        if daily_ret[i] >= 0.095:
+        if daily_ret[i] >= limit_up_pct:
             cnt += 1
         else:
             cnt = 0
@@ -599,6 +614,7 @@ def calculate_indicators(
         ema120=result['ema120'],
         macd_hist=result['macd_hist'],
         volume=volume if volume is not None else None,
+        limit_pct=limit_up_pct,
     )
 
     # === 中枢数据（来自chan_theory: 分型→笔→线段→中枢层级）===
@@ -1675,7 +1691,8 @@ def _compute_limit_pullback_score(ind: Dict[str, np.ndarray], idx: int) -> float
     if idx < 25:
         return 0.0
 
-    # 1. 寻找最近涨停日（20天内）
+    # 1. 寻找最近涨停日（20天内）— 阈值按板块(主板9.5%/创业板科创板19.5%)
+    _lu_thr = float(ind.get('_limit_up_pct', 0.095)) if isinstance(ind, dict) else 0.095
     limit_up_idx = -1
     lookback = min(idx - 1, 20)
     for i in range(idx - 1, idx - lookback - 1, -1):
@@ -1683,8 +1700,8 @@ def _compute_limit_pullback_score(ind: Dict[str, np.ndarray], idx: int) -> float
             continue
         daily_ret = (close[i] - close[i - 1]) / close[i - 1]
         close_high_ratio = close[i] / high[i]
-        # A股涨停: 涨幅>=9.5%且收盘接近最高价(>=97%)
-        if daily_ret >= 0.095 and close_high_ratio >= 0.97:
+        # A股涨停: 涨幅达板块涨停阈值且收盘接近最高价(>=97%)
+        if daily_ret >= _lu_thr and close_high_ratio >= 0.97:
             limit_up_idx = i
             break
 

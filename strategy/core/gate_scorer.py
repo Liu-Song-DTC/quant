@@ -19,9 +19,9 @@ Grade定义:
   默认 = 0.5 (无数据/一般)
 
 硬拒绝 (任一触发=不能买入):
-  - 跌停 (daily_ret <= -0.095)
+  - 跌停 (daily_ret <= -limit_pct, 板块阈值: 主板9.5%/20%板19.5%)
   - Chan强卖 (signal_level <= -3 AND confirmed_sell)
-  - 涨停 (daily_ret >= 0.095, 追涨停风险太高)
+  - 涨停 (daily_ret >= limit_pct, 追涨停风险太高)
 """
 
 import numpy as np
@@ -151,7 +151,7 @@ def gate_trend_direction(grades: np.ndarray, indicators: dict, n: int):
 
 # ── 硬拒绝检测 ──
 
-def detect_hard_rejects(indicators: dict, n: int) -> np.ndarray:
+def detect_hard_rejects(indicators: dict, n: int, limit_pct: float = 0.095) -> np.ndarray:
     """检测硬拒绝条件，返回bool数组 (True=拒绝买入)"""
     rejects = np.zeros(n, dtype=bool)
 
@@ -162,8 +162,9 @@ def detect_hard_rejects(indicators: dict, n: int) -> np.ndarray:
     valid_ret = close_prev > 0
     daily_ret[valid_ret] = (close[valid_ret] - close_prev[valid_ret]) / close_prev[valid_ret]
 
-    rejects[daily_ret <= -0.095] = True
-    rejects[daily_ret >= 0.095] = True
+    # 涨跌停阈值按板块(主板±9.5%/创业板科创板±19.5%) — 2026-10-11修复一刀切误杀20%板普通大涨大跌
+    rejects[daily_ret <= -limit_pct] = True
+    rejects[daily_ret >= limit_pct] = True
 
     sl = _safe_arr(indicators, 'signal_level', n, 0).astype(int)
     confirmed_sell = _safe_arr(indicators, 'confirmed_sell', n, False).astype(bool)
@@ -177,12 +178,12 @@ def detect_hard_rejects(indicators: dict, n: int) -> np.ndarray:
 GATE_FUNCTIONS = [gate_chan_structure, gate_mtf_alignment, gate_concept_heat, gate_trend_direction]
 
 
-def compute_all_gates(indicators: dict, n: int) -> Tuple[np.ndarray, np.ndarray]:
+def compute_all_gates(indicators: dict, n: int, limit_pct: float = 0.095) -> Tuple[np.ndarray, np.ndarray]:
     """计算所有门控Grade和硬拒绝标记（单次分配，4门控原地写入）"""
     grades = np.empty((n, 4), dtype=np.float64)
     for j, fn in enumerate(GATE_FUNCTIONS):
         fn(grades[:, j], indicators, n)
-    hard_rejects = detect_hard_rejects(indicators, n)
+    hard_rejects = detect_hard_rejects(indicators, n, limit_pct=limit_pct)
     return grades, hard_rejects
 
 

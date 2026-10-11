@@ -147,7 +147,7 @@ def update_live_engine(
         engine: 已初始化的 SignalEngine
         new_stock_data: {code: DataFrame} 新增的日线数据
     """
-    from .factor_calculator import calculate_indicators, compute_composite_factors
+    from .factor_calculator import calculate_indicators, compute_composite_factors, board_limit_up_pct
 
     selector = engine.dynamic_factor_selector
     if selector is None or selector.factor_df is None:
@@ -187,7 +187,8 @@ def update_live_engine(
         if len(df) < 60:
             continue
         indicators = calculate_indicators(
-            df['close'].values, df['high'].values, df['low'].values, df['volume'].values
+            df['close'].values, df['high'].values, df['low'].values, df['volume'].values,
+            limit_up_pct=board_limit_up_pct(code)
         )
         composites = compute_composite_factors(indicators, len(df) - 1)
         row = {'code': code, 'date': today}

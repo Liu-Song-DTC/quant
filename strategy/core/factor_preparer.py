@@ -20,7 +20,7 @@ _worker_concept_calc = None
 
 from .config_loader import load_config
 from .fundamental import FundamentalData
-from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor
+from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor, board_limit_up_pct
 from scipy.special import erfinv
 
 
@@ -165,7 +165,8 @@ def _compute_stock_factors_worker(args):
     # === 使用统一的因子计算器计算所有基础指标 ===
     params = get_default_params()
     ind = calculate_indicators(close_arr, high_arr, low_arr, vol_arr, params,
-                               open_arr=open_arr, turnover_rate=turnover_arr)
+                               open_arr=open_arr, turnover_rate=turnover_arr,
+                               limit_up_pct=board_limit_up_pct(code))
 
     # === 构建日期到索引的映射（O(1) 查找）===
     date_to_idx = {d: i for i, d in enumerate(stock_dates)}
@@ -304,6 +305,7 @@ _FACTOR_CODE_FILES = [
     'core/market_regime_detector.py',
     'core/bom_chain.py',
     'core/gate_scorer.py',
+    'core/chan_theory.py',  # 2026-10-11: B9涨停阈值等chan逻辑影响信号, 此前指纹缺口(仅改chan不触发重生成)
     'core/stock_pool.py',  # 0f: 日历池membership逻辑影响因子掩码/闸内容 (2026-09-17)
     'config/factor_config.yaml',
 ]

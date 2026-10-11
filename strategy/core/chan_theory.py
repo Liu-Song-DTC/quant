@@ -825,6 +825,7 @@ def detect_buy_sell_points(
     volume: np.ndarray = None,
     high: np.ndarray = None,
     low: np.ndarray = None,
+    limit_pct: float = 0.095,
 ) -> Dict[str, np.ndarray]:
     """
     识别三类买卖点（缠论第12-21课）。
@@ -1337,7 +1338,7 @@ def detect_buy_sell_points(
     if n_bars >= 10:
         daily_ret = np.diff(close, prepend=close[0]) / (np.roll(close, 1) + 1e-10)
         daily_ret[0] = 0
-        is_limit_up = daily_ret > 0.095  # ≥9.5%即涨停
+        is_limit_up = daily_ret > limit_pct  # 涨停阈值按板块(主板9.5%/20%板19.5%), 2026-10-11修复一刀切
         if volume is not None:
             vol_ma5 = _sma(volume, 5)
         for idx in range(8, n_bars):
@@ -1393,6 +1394,7 @@ def compute_chan_signal(
     ema120: Optional[np.ndarray] = None,
     macd_hist: Optional[np.ndarray] = None,
     volume: Optional[np.ndarray] = None,
+    limit_pct: float = 0.095,
 ) -> Dict[str, np.ndarray]:
     """
     统一Chan理论信号计算 — 模拟czsc的核心输出。
@@ -1434,7 +1436,7 @@ def compute_chan_signal(
     trend_info = classify_trend_type(pivots, segments, n)
 
     # Layer 6: 买卖点
-    bsp_info = detect_buy_sell_points(pivots, segments, strokes, n, close, volume, high, low)
+    bsp_info = detect_buy_sell_points(pivots, segments, strokes, n, close, volume, high, low, limit_pct=limit_pct)
 
     # === 多级别对齐 (向量化) ===
     alignment = np.zeros(n)
@@ -2362,6 +2364,7 @@ def compute_enhanced_chan_output(
     ema120: Optional[np.ndarray] = None,
     macd_hist: Optional[np.ndarray] = None,
     volume: Optional[np.ndarray] = None,
+    limit_pct: float = 0.095,
 ) -> Dict[str, np.ndarray]:
     """
     增强版Chan信号计算 — 整合 chanlun-pro 所有优化.
@@ -2373,7 +2376,7 @@ def compute_enhanced_chan_output(
     4. 底部分型质量分析
     """
     # 基础计算
-    base = compute_chan_signal(close, high, low, ema20, ema60, ema120, macd_hist, volume)
+    base = compute_chan_signal(close, high, low, ema20, ema60, ema120, macd_hist, volume, limit_pct=limit_pct)
 
     # 笔趋势耗尽 — 复用 base 中已计算的 strokes，避免重复调用 detect_strokes
     strokes = base.get('strokes', [])

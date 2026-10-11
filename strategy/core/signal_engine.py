@@ -35,7 +35,7 @@ from .signal import Signal
 from .signal_store import SignalStore
 from .config_loader import load_config
 from .industry_mapping import INDUSTRY_KEYWORDS, get_industry_category
-from .factor_calculator import calculate_indicators as calc_indicators, compute_composite_factors, compress_fundamental_factor
+from .factor_calculator import calculate_indicators as calc_indicators, compute_composite_factors, compress_fundamental_factor, board_limit_up_pct
 from .multi_timeframe import MultiTimeframeAnalyzer
 from .gate_scorer import compute_all_gates, compute_gate_quality
 from .bom_chain import compute_stock_bom_score
@@ -608,7 +608,7 @@ class SignalEngine:
         if len(market_data) < 60:
             return
 
-        indicators = self._calculate_indicators(market_data)
+        indicators = self._calculate_indicators(market_data, code)
         # 注入真实题材热度 (逐bar计算，避免前视偏差)
         try:
             from .concept_heat import get_calculator
@@ -822,7 +822,7 @@ class SignalEngine:
 
             # 妖股保护: 涨停股忽略缠论卖出信号（暴力拉升中的顶背离是假信号）
             _daily_ret = float(result['daily_return'][i])
-            _limit_pct = 0.195 if code.startswith('688') or code.startswith('300') else 0.095
+            _limit_pct = board_limit_up_pct(code)  # 板块阈值: 30x/68x=19.5%, 其余9.5% (2026-10-11修复漏301/302/689)
             _is_limit_up_stock = (_daily_ret >= _limit_pct)
             _is_limit_down_stock = (_daily_ret <= -_limit_pct)
             chan_force_sell = chan_sell_sig and sl <= -2 and not _is_limit_up_stock
@@ -1015,7 +1015,7 @@ class SignalEngine:
             import gc
             gc.collect()
 
-    def _calculate_indicators(self, data: pd.DataFrame) -> dict:
+    def _calculate_indicators(self, data: pd.DataFrame, code: str = None) -> dict:
         """计算技术指标（委托给factor_calculator）"""
         params = self.indicator_params
         dates = data['datetime'].values
@@ -1031,7 +1031,7 @@ class SignalEngine:
         # 使用统一的因子计算器
         result = calc_indicators(close, high, low, volume, params,
                                  turnover_rate=turnover_rate, open_arr=open_price,
-                                 amplitude=amplitude)
+                                 amplitude=amplitude, limit_up_pct=board_limit_up_pct(code))
 
         # 收益率
         result['ret_30'] = close / self._shift(close, 30) - 1
@@ -1493,8 +1493,8 @@ class SignalEngine:
         score[fund_mask] += s['fundamental_score'][fund_mask] * self.fundamental_weight
 
         # === 2. 门控质量系数 ===
-        limit_pct = 0.195 if (code and (code.startswith('688') or code.startswith('300'))) else 0.095
-        gate_grades, hard_rejects = compute_all_gates(ind, n)
+        limit_pct = board_limit_up_pct(code)
+        gate_grades, hard_rejects = compute_all_gates(ind, n, limit_pct=limit_pct)
         gate_quality = compute_gate_quality(gate_grades)
 
         # 记录Gate分项质量 (最新bar)
