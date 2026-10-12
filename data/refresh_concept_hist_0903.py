@@ -14,6 +14,11 @@ import pandas as pd
 HIST = '/mnt/d/quant/data/concept_hist.pkl'
 UA = {'User-Agent': 'Mozilla/5.0'}
 
+# 交易日历 (兜底行守卫用; refresh_all.sh步骤1 K线增量先于本步, 日历保证新鲜)
+_CAL = set(pd.to_datetime(pd.read_csv(
+    '/mnt/d/quant/data/stock_data/backtrader_data/000001_qfq.csv',
+    usecols=['datetime'])['datetime']))
+
 
 KLINE_HOSTS = [
     'https://push2his.eastmoney.com',
@@ -151,6 +156,10 @@ print(f'目标: 补到 {today.date()} (收盘后约1-2h东财发布当日板块b
 def try_clist_append(name, old_df):
     """push2his不可用时: 用push2delay实时f3补当日bar (收盘后f3=当日板块涨跌幅终值).
     返回True=已补行"""
+    # 2026-10-12: 非交易日(周末/节假日)禁止兜底 — 闭市期f3冻结为上一交易日终值,
+    # 曾产出假行(09-13/10-11等每板块3处, 已由repair_concept_hist_relay_20261012.py清理)
+    if today not in _CAL:
+        return False
     pct = BOARD_PCT.get(name) if BOARD_PCT is not None else None
     if pct is None or (isinstance(pct, float) and pd.isna(pct)):
         return False

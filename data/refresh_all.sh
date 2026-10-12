@@ -22,7 +22,8 @@ echo "=== 4/8 另类数据 (龙虎榜/融资融券/北向/减持/解禁/业绩�
 $PY -u data/refresh_altdata_0902.py 2>&1 | tail -12
 
 echo "=== 5/8 概念历史 (60板块日涨跌, 东财K线集群限流时自动轮换重试) ==="
-$PY -u data/refresh_concept_hist_0903.py 2>&1 | tail -6
+# 2026-10-12: push2his/push2delay直连被远端切断(同概念映射), 迁中继代理版
+$PY -u data/refresh_concept_hist_relay.py 2>&1 | tail -6
 
 echo "=== 6/8 概念映射 (股票→概念, push2delay直连已断, 走中继代理) ==="
 $PY -u data/refresh_concept_map_relay.py 2>&1 | tail -6
