@@ -744,6 +744,15 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
             continue
         stock_file_map[name] = filepath
 
+    # === 实盘保真臂开关(2026-10-12): 出单层无科创板权限(generate_trade_orders剔除688/689),
+    #     QUANT_STAR_EXCLUDE=1时回测universe同步剔除 — 量化"回测含科创板 vs 实盘可交易"期望差.
+    #     默认关(回测含科创板, 与生产锚点口径一致). ===
+    if os.environ.get('QUANT_STAR_EXCLUDE') == '1':
+        _n_star = len(stock_file_map)
+        stock_file_map = {k: v for k, v in stock_file_map.items()
+                          if not k.startswith(('688', '689'))}
+        print(f"[live-fidelity] 剔除科创板(688/689): {_n_star} -> {len(stock_file_map)} 只")
+
     # === 股票池过滤（先过滤再预计算，避免读不需要的文件） ===
     stock_pool_enabled = config.get('stock_pool.enabled', True)
     if stock_pool_enabled:
