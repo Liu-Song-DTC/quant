@@ -1960,6 +1960,13 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         0.20 if c[:2] in ('30', '68') else (0.30 if c[0] in ('4', '8') else 0.10)
         for c in stock_codes
     ])
+    # 跳空罚阈值按板块(留0.5pp容差, 与a77d107信号层口径一致): 主板9.5%/20%板19.5%/北交所29.5%
+    # #289(2026-10-12): 修复三处一刀切0.095 — 20%板gap 9.5%~19.5%为正常跳空(未触板), 罚无依据
+    _gap_thr_arr = np.array([
+        0.195 if c[:2] in ('30', '68') else (0.295 if c[0] in ('4', '8') else 0.095)
+        for c in stock_codes
+    ])
+    _gap_dbg = os.environ.get('QUANT_GAP_DEBUG') == '1'  # 逐笔跳空罚日志(调试)
     _pct_chg = np.full_like(close_px, np.nan)
     _pct_chg[1:] = close_px[1:] / close_px[:-1] - 1.0
     _limit_up = _pct_chg >= (_limit_rate_arr[None, :] - 0.003)
@@ -2073,8 +2080,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 sell_px = float(open_today[j])
                 if slip_enabled:
                     sell_px *= (1.0 - slip_rate)
-                if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -0.095:
-                    sell_px = sell_px * 0.97  # 跳空低开>9.5%: 成交价再折让
+                if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -_gap_thr_arr[j]:
+                    if _gap_dbg:
+                        print(f"[GAP] 卖全清 {code} {date} gap={sell_px/prev_close[j]-1:+.4f} thr=-{_gap_thr_arr[j]:.3f}", flush=True)
+                    sell_px = sell_px * 0.97  # 跳空低开超板阈: 成交价再折让
                     _fill_stats['gap_sell_penalized'] += 1
                 impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
                 cash += float(positions[j]) * sell_px * (1.0 - COMMISSION - _STAMP_ARR[i] - impact)
@@ -2105,7 +2114,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     sell_px = openx
                     if slip_enabled:
                         sell_px *= (1.0 - slip_rate)
-                    if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -0.095:
+                    if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -_gap_thr_arr[j]:
+                        if _gap_dbg:
+                            print(f"[GAP] 卖减仓 {code} {date} gap={sell_px/prev_close[j]-1:+.4f} thr=-{_gap_thr_arr[j]:.3f}", flush=True)
                         sell_px = sell_px * 0.97
                         _fill_stats['gap_sell_penalized'] += 1
                     impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
@@ -2135,8 +2146,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 buy_px = float(open_today[j])
                 if slip_enabled:
                     buy_px *= (1.0 + slip_rate)
-                if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (buy_px / prev_close[j] - 1) > 0.095:
-                    buy_px = buy_px * 1.03  # 跳空高开>9.5%: 成交价再折让
+                if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (buy_px / prev_close[j] - 1) > _gap_thr_arr[j]:
+                    if _gap_dbg:
+                        print(f"[GAP] 买 {code} {date} gap={buy_px/prev_close[j]-1:+.4f} thr={_gap_thr_arr[j]:.3f}", flush=True)
+                    buy_px = buy_px * 1.03  # 跳空高开超板阈: 成交价再折让
                     _fill_stats['gap_buy_penalized'] += 1
                 target_shares = int(tv / buy_px / 100) * 100
                 curr_shares = int(positions[j])
