@@ -124,6 +124,31 @@ def load_prices_for_date(stock_file_map: Dict[str, str], target_date) -> Dict[st
     return prices
 
 
+def get_latest_price_date():
+    """最新K线交易日(指数文件末行) — 出单定价基准.
+
+    2026-10-13修复(用户实盘反馈): 信号回退日的收盘价已过时(10-12信号配10-12收盘,
+    而10-13收盘已可用), 股数/止损/监控市值须按最新收盘价算. 信号日与价格日分离.
+    """
+    try:
+        df = pd.read_csv(INDEX_DATA_PATH, usecols=['datetime'])
+        return pd.Timestamp(df['datetime'].iloc[-1]) if len(df) else None
+    except Exception:
+        return None
+
+
+def load_last_known_close(code: str, stock_file_map: Dict[str, str]) -> float:
+    """某股最后已知收盘价 — 当日停牌时价格日无行情行的兜底."""
+    filepath = stock_file_map.get(code)
+    if not filepath:
+        return 0.0
+    try:
+        df = pd.read_csv(filepath, usecols=['close'])
+        return float(df['close'].iloc[-1]) if len(df) else 0.0
+    except Exception:
+        return 0.0
+
+
 def get_index_regime(target_date) -> Tuple[int, float, float, bool, bool]:
     """获取目标日期的市场状态."""
     if not os.path.exists(INDEX_DATA_PATH):
@@ -153,8 +178,12 @@ def compute_support_resistance(
     price: float,
     signal_store,
     stock_file_map: Dict[str, str],
+    kline_date=None,
 ) -> Tuple[float, float, dict]:
     """基于缠论结构计算支撑位(止损)和压力位(止盈).
+
+    target_date=信号日(中枢数据来源), kline_date=K线回看锚定日(默认同信号日);
+    出单用最新收盘价时kline_date=价格日, 60日高低含最新bar.
 
     止损 (支撑):
       1. 最近60日最低点 × 0.995
@@ -188,7 +217,7 @@ def compute_support_resistance(
         try:
             df = pd.read_csv(filepath, parse_dates=['datetime'],
                             usecols=['datetime', 'high', 'low'])
-            target_dt = pd.Timestamp(target_date)
+            target_dt = pd.Timestamp(kline_date or target_date)
             df = df[df['datetime'] <= target_dt]
             if len(df) >= 20:
                 lookback = min(60, len(df))
@@ -256,6 +285,7 @@ def build_orders(
     signal_store,
     stock_file_map: Dict[str, str],
     selection_map: Dict[str, dict] = None,
+    price_date=None,
 ) -> Tuple[List[dict], Dict[str, dict]]:
     """
     对比当前持仓与目标持仓, 生成订单列表.
@@ -313,7 +343,8 @@ def build_orders(
                 continue
             actual_amount = shares * price
             sl, tp, detail = compute_support_resistance(
-                code, target_date, price, signal_store, stock_file_map
+                code, target_date, price, signal_store, stock_file_map,
+                kline_date=price_date
             )
             _sel = selection_map.get(code) or {}
             orders.append({
@@ -332,7 +363,7 @@ def build_orders(
                 'entry_price': price,
                 'amount': int(actual_amount),
                 'shares': shares,
-                'entry_date': target_date,
+                'entry_date': str(price_date or target_date)[:10],
             }
             order_details.append((_normalize_code(code), 'open', detail))
         else:
@@ -349,7 +380,8 @@ def build_orders(
                     continue
                 actual_amount = shares * price
                 sl, tp, detail = compute_support_resistance(
-                    code, target_date, price, signal_store, stock_file_map
+                    code, target_date, price, signal_store, stock_file_map,
+                    kline_date=price_date
                 )
                 _sel = selection_map.get(code) or {}
                 orders.append({
@@ -384,6 +416,7 @@ def build_monitor_list(
     prices: Dict[str, float],
     signal_store,
     stock_file_map: Dict[str, str],
+    price_date=None,
 ) -> List[dict]:
     """持仓监控清单(2026-08-27): 全部持仓的最新支撑/压力位+浮盈亏+过滤警示.
 
@@ -396,12 +429,13 @@ def build_monitor_list(
         return monitor
 
     warn_map = {}
+    _asof = str(price_date or target_date)[:10]
     try:
         from core.alternative_data import AlternativeDataProvider
         p = AlternativeDataProvider()
-        plan_codes = p.get_reduction_plan_codes(target_date)
-        exec_codes = p.get_reduction_codes(target_date, 30)
-        unlock_codes = p.get_unlock_codes(target_date, 30, 0.05)
+        plan_codes = p.get_reduction_plan_codes(_asof)
+        exec_codes = p.get_reduction_codes(_asof, 30)
+        unlock_codes = p.get_unlock_codes(_asof, 30, 0.05)
         for c in positions:
             w = []
             if c in plan_codes:
@@ -420,14 +454,15 @@ def build_monitor_list(
         price = prices.get(code, 0) or pos.get('entry_price', 0)
         try:
             sl, tp, _ = compute_support_resistance(
-                code, target_date, price, signal_store, stock_file_map)
+                code, target_date, price, signal_store, stock_file_map,
+                kline_date=price_date)
         except Exception:
             sl, tp = 0.0, 0.0
         entry = pos.get('entry_price', 0)
         pnl_pct = (price / entry - 1) * 100 if entry else 0.0
         days_held = ''
         try:
-            days_held = (date_type.fromisoformat(str(target_date)[:10])
+            days_held = (date_type.fromisoformat(_asof)
                          - date_type.fromisoformat(str(pos.get('entry_date', target_date))[:10])).days
         except Exception:
             pass
@@ -534,7 +569,16 @@ def main():
             target_date = latest_sig_date
 
     # ── 2. 获取价格 ───────────────────────────────────────────
-    prices = load_prices_for_date(stock_file_map, target_date)
+    # 信号日(target_date)与价格日(price_date)分离: 信号取信号CSV最新日, 但订单定价
+    # (现价/股数/止损/监控市值)用最新K线收盘 — 显式--date历史语义仍按该日定价
+    if date_specified:
+        price_date = pd.Timestamp(target_date)
+    else:
+        price_date = get_latest_price_date() or pd.Timestamp(target_date)
+    if price_date > pd.Timestamp(target_date):
+        print(f"  [价格日] 信号日 {str(target_date)[:10]} 收盘已过时, "
+              f"订单定价改用最新K线收盘日 {str(price_date)[:10]}")
+    prices = load_prices_for_date(stock_file_map, price_date)
 
     # ── 3. 构建候选 universe ─────────────────────────────────
     # 基础过滤: 有价格, 非指数, 非低价股
@@ -609,6 +653,14 @@ def main():
     # 读取当前持仓
     prev_positions = load_current_positions()
 
+    # 价格日无行情的持仓(当日停牌): 补最后已知收盘价, 订单/监控显示不落成本价
+    for _code in prev_positions:
+        if _code not in prices:
+            _lp = load_last_known_close(_code, stock_file_map)
+            if _lp > 0:
+                prices[_code] = _lp
+                print(f"  [停牌补价] {_code} 价格日无行情, 用最后收盘 {_lp:.2f}")
+
     # (科创板权限已确认, 9/14的幻影持仓清理撤销 — 688/689持仓按真实持仓对待)
 
     # 账户资金=总可部署资金; 持仓市值含浮盈可合理略超名义资金,
@@ -679,6 +731,7 @@ def main():
     orders, new_positions, order_details = build_orders(
         str(target_date), adjusted, prices, prev_positions, total_equity,
         signal_store, stock_file_map, selection_map=selection_map,
+        price_date=price_date,
     )
 
     # ── 0h 现金闸 (2026-09-17): 买单总额 ≤ 可用现金 + 同日卖出回款 ──
@@ -783,6 +836,7 @@ def main():
 
     output = {
         'date': str(target_date),
+        'price_date': str(price_date)[:10],
         'orders': orders,
     }
     if _cb_result and _cb_result.get('rebalanced'):
@@ -864,7 +918,8 @@ def main():
     # ── 持仓监控清单: 全持仓最新支撑/压力 + 过滤警示 ──────────
     try:
         monitor = build_monitor_list(str(target_date), new_positions, prices,
-                                     signal_store, stock_file_map)
+                                     signal_store, stock_file_map,
+                                     price_date=price_date)
         output['monitor'] = monitor
         print_monitor_list(monitor)
     except Exception as e:
