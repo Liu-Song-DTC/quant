@@ -255,10 +255,12 @@ def build_orders(
     total_equity: float,
     signal_store,
     stock_file_map: Dict[str, str],
+    selection_map: Dict[str, dict] = None,
 ) -> Tuple[List[dict], Dict[str, dict]]:
     """
     对比当前持仓与目标持仓, 生成订单列表.
     止盈止损使用缠论结构的支撑/压力位.
+    订单附带现价/股数/评分/权重 (2026-10-13用户要求: 现价,买多少,评分,权重比).
 
     Returns:
         (orders, new_positions)
@@ -266,20 +268,35 @@ def build_orders(
     orders = []
     new_positions = {}
     order_details = []  # 收集计算明细用于打印
+    selection_map = selection_map or {}
 
     target_codes = set(adjusted_positions.keys())
     prev_codes = set(prev_positions.keys())
 
     # ── close: 之前持有但目标中已无 ──
     for code in sorted(prev_codes - target_codes):
-        orders.append({'stock_code': _normalize_code(code), 'action': 'close'})
+        o = {'stock_code': _normalize_code(code), 'action': 'close'}
+        _p = prices.get(code, 0)
+        if _p > 0:
+            o['price'] = round(_p, 2)
+        _sh = prev_positions.get(code, {}).get('shares')
+        if _sh:
+            o['shares'] = _sh
+        orders.append(o)
 
     # ── open / adjust / keep ──
     for code in sorted(target_codes):
         target_amount = adjusted_positions[code]
         if target_amount <= 0:
             if code in prev_codes:
-                orders.append({'stock_code': _normalize_code(code), 'action': 'close'})
+                o = {'stock_code': _normalize_code(code), 'action': 'close'}
+                _p = prices.get(code, 0)
+                if _p > 0:
+                    o['price'] = round(_p, 2)
+                _sh = prev_positions.get(code, {}).get('shares')
+                if _sh:
+                    o['shares'] = int(_sh)
+                orders.append(o)
             continue
 
         price = prices.get(code, 0)
@@ -298,12 +315,18 @@ def build_orders(
             sl, tp, detail = compute_support_resistance(
                 code, target_date, price, signal_store, stock_file_map
             )
+            _sel = selection_map.get(code) or {}
             orders.append({
                 'stock_code': _normalize_code(code),
                 'action': 'open',
                 'amount': int(actual_amount),
                 'stop_loss_price': sl,
                 'take_profit_price': tp,
+                'price': round(price, 2),
+                'shares': int(shares),
+                'score': round(float(_sel['score']), 4) if _sel.get('score') is not None else None,
+                'weight': round(float(_sel['weight']), 4) if _sel.get('weight') is not None else None,
+                'weight_pct': round(actual_amount / total_equity, 4) if total_equity else None,
             })
             new_positions[code] = {
                 'entry_price': price,
@@ -328,12 +351,19 @@ def build_orders(
                 sl, tp, detail = compute_support_resistance(
                     code, target_date, price, signal_store, stock_file_map
                 )
+                _sel = selection_map.get(code) or {}
                 orders.append({
                     'stock_code': _normalize_code(code),
                     'action': 'adjust',
                     'amount': int(actual_amount),
                     'stop_loss_price': sl,
                     'take_profit_price': tp,
+                    'price': round(price, 2),
+                    'shares': int(shares),
+                    'prev_shares': int(prev.get('shares', 0) or 0),
+                    'score': round(float(_sel['score']), 4) if _sel.get('score') is not None else None,
+                    'weight': round(float(_sel['weight']), 4) if _sel.get('weight') is not None else None,
+                    'weight_pct': round(actual_amount / total_equity, 4) if total_equity else None,
                 })
                 new_positions[code] = {
                     'entry_price': entry_price,
@@ -640,9 +670,15 @@ def main():
         print(f"  [WARN] 持仓基本面数据陈旧, ST状态无法验证: {held_stale}")
 
     # ── 6. 生成订单 ──────────────────────────────────────────
+    # 选股明细映射 (code → sel): 订单附评分/组合权重
+    selection_map = {}
+    if hasattr(portfolio, 'last_selection') and portfolio.last_selection:
+        for sel in portfolio.last_selection:
+            selection_map[str(sel.get('code', '')).zfill(6)] = sel
+
     orders, new_positions, order_details = build_orders(
         str(target_date), adjusted, prices, prev_positions, total_equity,
-        signal_store, stock_file_map,
+        signal_store, stock_file_map, selection_map=selection_map,
     )
 
     # ── 0h 现金闸 (2026-09-17): 买单总额 ≤ 可用现金 + 同日卖出回款 ──
@@ -783,12 +819,31 @@ def main():
     print(f"订单生成: {len(orders)} 条")
     for o in orders:
         if o['action'] == 'close':
-            print(f"  {o['action']:8s} {o['stock_code']}")
+            _extra = ''
+            if o.get('price') and o.get('shares'):
+                _extra = f" 现价={o['price']:.2f} 全卖{o['shares']:,}股≈{o['price']*o['shares']:,.0f}元"
+            print(f"  卖出清仓 {o['stock_code']}{_extra}")
         else:
-            print(f"  {o['action']:8s} {o['stock_code']} "
+            _sc = o.get('score')
+            _sc_s = f"{_sc:.4f}" if _sc is not None else "  —   "
+            _wp = o.get('weight_pct')
+            _wp_s = f"{_wp*100:.1f}%" if _wp is not None else "—"
+            if o['action'] == 'open':
+                _act = f"买入 {o.get('shares', 0):>5,}股"
+            else:
+                _prev_sh = prev_positions.get(
+                    o['stock_code'].split('.')[0].zfill(6), {}).get('shares', 0) or 0
+                _d = o.get('shares', 0) - _prev_sh
+                _act = (f"调仓 {o.get('shares', 0):,}股(净{'+' if _d >= 0 else ''}{_d:,}股)"
+                        if _d else f"持有 {o.get('shares', 0):,}股")
+            print(f"  {o['action']:6s} {o['stock_code']} "
+                  f"现价={o.get('price', 0):>7.2f} "
+                  f"{_act} "
                   f"金额={o['amount']:>8,} "
-                  f"止损={o.get('stop_loss_price', 'N/A'):>8} "
-                  f"止盈={o.get('take_profit_price', 'N/A'):>8}")
+                  f"评分={_sc_s} "
+                  f"权重={_wp_s:>5s} "
+                  f"止损={o.get('stop_loss_price', 'N/A'):>7} "
+                  f"止盈={o.get('take_profit_price', 'N/A'):>7}")
 
     # ── 打印支撑/压力计算明细 ─────────────────────────────────
     if order_details:
