@@ -23,6 +23,16 @@ CONFIG_PATH = os.path.join(_SCRIPT_DIR, 'config', 'factor_config.yaml')
 CONFIG_BAK = CONFIG_PATH + '.live_bak'
 
 
+def _rl_lot_shares(code: str, amount: float, price: float) -> int:
+    """整手规则: 科创板(688/689)最小200股+1股递增, 其余100股整手. 返回0=不足最小申报."""
+    if price <= 0:
+        return 0
+    if code.startswith(('688', '689')):
+        return int(amount / price) if amount / price >= 200 else 0
+    s = int(amount / price / 100) * 100
+    return s if s >= 100 else 0
+
+
 def update_kline_data():
     """更新K线行情数据 (akshare链: 下载raw + 转换backtrader; 9/30起替代data_manager)."""
     print("=" * 60)
@@ -210,11 +220,8 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     if stale_codes:
         print(f"  [WARN] {len(stale_codes)} 只基本面数据陈旧>120天, ST判定可能失效")
 
-    # 实盘账户约束(2026-09-14用户确认): 无科创板交易权限, 候选universe剔除688/689.
-    _no_star_codes = [c for c in universe if c.startswith(('688', '689'))]
-    if _no_star_codes:
-        universe = [c for c in universe if c not in _no_star_codes]
-        print(f"  [实盘约束] 剔除科创板候选 {len(_no_star_codes)} 只 (无交易权限)")
+    # 科创板权限(2026-10-13用户确认已有): 9/14的688/689出单层剔除撤销,
+    # 与generate_trade_orders.py同口径同步.
 
     print(f"可交易股票: {len(universe)} 只")
 
@@ -227,14 +234,7 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     portfolio = PortfolioConstructor(rebalance_interval=1)  # 实盘每日选股
     prev_positions = load_current_positions()
 
-    # 实盘账户约束(2026-09-14用户确认): 无科创板交易权限, 688/689前缀不可买卖.
-    # 持仓文件里此类代码=历史幻影单(从未成交), 剔除并释放资金重新部署.
-    _no_star_pos = [c for c in prev_positions if c.startswith(('688', '689'))]
-    if _no_star_pos:
-        print(f"  [实盘约束] 剔除无权限持仓 {len(_no_star_pos)} 只 (科创板, 假定从未成交): "
-              f"{sorted(_no_star_pos)}")
-        for c in _no_star_pos:
-            prev_positions.pop(c)
+    # (科创板权限已确认, 9/14的幻影持仓清理撤销 — 688/689持仓按真实持仓对待)
 
     # 账户资金=总可部署资金; 实盘持仓市值含浮盈可合理略超名义资金,
     # 只有显著超出(>1.5倍)才判脏数据重置 — 修复(2026-08-30 review P0):
@@ -335,8 +335,8 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
                 _prev_amt = 0
             else:
                 _new_amt = _prev_amt + (o['amount'] - _prev_amt) * _scale
-            _shares = int(_new_amt / _price / 100) * 100
-            if _shares < 100 or _new_amt <= _prev_amt:
+            _shares = _rl_lot_shares(_code, _new_amt, _price)
+            if _shares < 1 or _new_amt <= _prev_amt:
                 print(f"  [现金闸] {o['stock_code']} 缩减后不足1手/无净买入, 取消该单")
                 _drop.append(o)
                 if o['action'] == 'open':

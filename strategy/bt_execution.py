@@ -744,9 +744,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
             continue
         stock_file_map[name] = filepath
 
-    # === 实盘保真臂开关(2026-10-12): 出单层无科创板权限(generate_trade_orders剔除688/689),
-    #     QUANT_STAR_EXCLUDE=1时回测universe同步剔除 — 量化"回测含科创板 vs 实盘可交易"期望差.
-    #     默认关(回测含科创板, 与生产锚点口径一致). ===
+    # === 实盘保真臂开关: 科创板权限2026-10-13用户确认已有(出单层剔除撤销, 回测=实盘口径),
+    #     QUANT_STAR_EXCLUDE保留作纯反事实工具(量化科创板贡献, 普查已用: −256k p=0.150), 默认关. ===
     if os.environ.get('QUANT_STAR_EXCLUDE') == '1':
         _n_star = len(stock_file_map)
         stock_file_map = {k: v for k, v in stock_file_map.items()

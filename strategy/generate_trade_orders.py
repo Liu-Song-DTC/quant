@@ -289,10 +289,10 @@ def build_orders(
         prev = prev_positions.get(code)
 
         if prev is None:
-            # 新建仓: 整百股取整, 不足1手则跳过
-            shares = int(target_amount / price / 100) * 100
-            if shares < 100:
-                print(f"  [SKIP] {code} 资金不足1手 (target={target_amount:.0f}, price={price:.2f})")
+            # 新建仓: 整手取整(科创板200股最小+1股递增), 不足最小申报则跳过
+            shares = _lot_shares(code, target_amount, price)
+            if shares < 1:
+                print(f"  [SKIP] {code} 资金不足最小申报 (target={target_amount:.0f}, price={price:.2f})")
                 continue
             actual_amount = shares * price
             sl, tp, detail = compute_support_resistance(
@@ -317,11 +317,11 @@ def build_orders(
             prev_amount = prev.get('amount', 0)
 
             if abs(target_amount - prev_amount) > total_equity * 0.01:
-                shares = int(target_amount / price / 100) * 100
-                if shares < 100:
-                    # 调整后不足1手→清仓
+                shares = _lot_shares(code, target_amount, price)
+                if shares < 1:
+                    # 调整后不足最小申报→清仓
                     orders.append({'stock_code': _normalize_code(code), 'action': 'close'})
-                    print(f"  [CLOSE] {code} 调整后不足1手 (target={target_amount:.0f})")
+                    print(f"  [CLOSE] {code} 调整后不足最小申报 (target={target_amount:.0f})")
                     new_positions.pop(code, None)
                     continue
                 actual_amount = shares * price
@@ -432,6 +432,16 @@ def _normalize_code(code: str) -> str:
         return f"{code}.SH"
     else:
         return f"{code}.SZ"
+
+
+def _lot_shares(code: str, amount: float, price: float) -> int:
+    """整手规则: 科创板(688/689)最小200股+1股递增, 其余100股整手. 返回0=不足最小申报."""
+    if price <= 0:
+        return 0
+    if code.startswith(('688', '689')):
+        return int(amount / price) if amount / price >= 200 else 0
+    s = int(amount / price / 100) * 100
+    return s if s >= 100 else 0
 
 
 def main():
@@ -551,12 +561,8 @@ def main():
     if stale_codes:
         print(f"  [WARN] {len(stale_codes)} 只基本面数据陈旧>120天, ST判定可能失效")
 
-    # 实盘账户约束(2026-09-14用户确认): 无科创板交易权限, 候选universe剔除688/689.
-    # 仅出单层过滤, 回测池不动.
-    _no_star_codes = [c for c in universe if c.startswith(('688', '689'))]
-    if _no_star_codes:
-        universe = [c for c in universe if c not in _no_star_codes]
-        print(f"  [实盘约束] 剔除科创板候选 {len(_no_star_codes)} 只 (无交易权限)")
+    # 科创板权限(2026-10-13用户确认已有): 9/14的688/689出单层剔除撤销,
+    # 回测口径(含科创板)与实盘可交易集重合. 整手差异由 _lot_shares 处理.
 
     print(f"可交易股票: {len(universe)} 只 (过滤后)")
 
@@ -573,14 +579,7 @@ def main():
     # 读取当前持仓
     prev_positions = load_current_positions()
 
-    # 实盘账户约束(2026-09-14用户确认): 无科创板交易权限, 688/689前缀不可买卖.
-    # 持仓文件里此类代码=历史幻影单(从未成交), 剔除并释放资金重新部署.
-    _no_star_pos = [c for c in prev_positions if c.startswith(('688', '689'))]
-    if _no_star_pos:
-        print(f"  [实盘约束] 剔除无权限持仓 {len(_no_star_pos)} 只 (科创板, 假定从未成交): "
-              f"{sorted(_no_star_pos)}")
-        for c in _no_star_pos:
-            prev_positions.pop(c)
+    # (科创板权限已确认, 9/14的幻影持仓清理撤销 — 688/689持仓按真实持仓对待)
 
     # 账户资金=总可部署资金; 持仓市值含浮盈可合理略超名义资金,
     # 只有显著超出(>1.5倍)才判脏数据重置 — 修复(2026-08-30 review P0):
