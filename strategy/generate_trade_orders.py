@@ -734,6 +734,9 @@ def main():
                 continue
             _amt = int(_shares * _price)
             o['amount'] = _amt
+            o['shares'] = _shares  # 2026-10-13: 现金闸缩放后同步shares/weight_pct(否则打印与金额失同步)
+            if account_capital:
+                o['weight_pct'] = round(_amt / account_capital, 4)
             new_positions[_code]['amount'] = _amt
             new_positions[_code]['shares'] = _shares
             print(f"  [现金闸] {o['stock_code']} {_amt:>8,} ({_shares}股×{_price:.2f}, 原{_orig:,})")
