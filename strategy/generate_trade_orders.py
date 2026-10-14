@@ -159,7 +159,11 @@ def get_index_regime(target_date) -> Tuple[int, float, float, bool, bool]:
     regime_df = detector.generate(df)
     del df
 
-    target_dt = pd.Timestamp(target_date)
+    # 修复(2026-10-14): dt.date列是datetime.date对象, 与pd.Timestamp比较恒False
+    # → row.empty恒真 → 本函数自2026-07-17(197bc321)起一直静默返回默认中性值,
+    # 实盘出单层从未看到bear_risk/trend_score(回测侧用date对象比较, 一直正常).
+    # 10/13实盘买6只 vs 回测BEAR空仓的分歧根因. 修复=转date对象比较.
+    target_dt = pd.Timestamp(target_date).date()
     row = regime_df[regime_df['datetime'].dt.date == target_dt]
     if row.empty:
         return 0, 0.0, 0.0, False, False
