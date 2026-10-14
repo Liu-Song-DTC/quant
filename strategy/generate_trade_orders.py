@@ -849,8 +849,12 @@ def main():
                 _prev_amt = 0
             else:
                 _new_amt = _prev_amt + (o['amount'] - _prev_amt) * _scale
-            _shares = int(_new_amt / _price / 100) * 100
-            if _shares < 100 or _new_amt <= _prev_amt:
+            # 修复(2026-10-14): 原为硬编码100股整手 — 科创板(688/689)最小申报200股,
+            # 缩放后 _new_amt/_price ∈ [100,200) 时会产出 100 股的无效单(_shares>=100 通过检查).
+            # 改用与建单层同一函数 _lot_shares(科创板=200股起+1股递增, 其余=100股整手).
+            # 非688/689 逐位等价: _lot_shares 的 "<100 返回0" 对应此处 "<1 取消".
+            _shares = _lot_shares(_code, _new_amt, _price)
+            if _shares < 1 or _new_amt <= _prev_amt:
                 print(f"  [现金闸] {o['stock_code']} 缩减后不足1手/无净买入, 取消该单")
                 _drop.append(o)
                 if o['action'] == 'open':
