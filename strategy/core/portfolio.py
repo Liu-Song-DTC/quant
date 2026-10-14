@@ -209,6 +209,11 @@ class PortfolioConstructor:
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 0.5)
         self.exit_mode = portfolio_config.get('exit_mode', 'simple')  # simple=仅成本止损让利润奔跑; 其他值启用完整退出栈
         self._rebalance_interval = rebalance_interval  # 实盘=1每日, 回测=10
+        # A-cadence臂(2026-10-14): 实盘每日全重建从未被回测 — env覆盖臂(默认None=零改动).
+        # 用法: QUANT_REBAL_INTERVAL=1 python bt_execution.py
+        _rb_env = os.environ.get('QUANT_REBAL_INTERVAL')
+        if _rb_env:
+            self._rebalance_interval = int(_rb_env)
 
         # === 波动率控制 ===
         self.vol_control_enabled = portfolio_config.get('volatility_control_enabled', True)
@@ -829,6 +834,49 @@ class PortfolioConstructor:
             return False
         return (d - arr[i - 1]) <= np.timedelta64(30, 'D')
 
+    def _ensure_lowsh_map(self):
+        """E-lsh1 (2026-10-13): 20日下影线占比查找表 — 惰性加载, 仅QUANT_LOWSH_PEN设置时。
+
+        数据源=生产canonical backtrader_data glob (duckdb一次性滚动计算~18s),
+        主进程查找表注入(L2c认证模式): 信号CSV schema零改动, 信号指纹不动。
+        {code: {'YYYY-MM-DD': lowsh20}} — SQL层按QUANT_LOWSH_TH预过滤控内存。
+        加载失败时罚自动失效(空表), 不影响基线行为。
+        """
+        if getattr(self, '_lowsh_map', None) is not None:
+            return
+        import os
+        if not os.environ.get('QUANT_LOWSH_PEN', ''):
+            return  # 关闭态: 永不加载, 零行为
+        th = float(os.environ.get('QUANT_LOWSH_TH', '0.28'))
+        try:
+            import duckdb
+            con = duckdb.connect()
+            df = con.execute(f"""
+                WITH k AS (
+                  SELECT regexp_extract(filename, '([0-9]{{6}})_qfq', 1) AS code,
+                         datetime AS dt,
+                         (LEAST(open, close) - low) / NULLIF(high - low, 0) AS lsh
+                  FROM read_csv('/mnt/d/quant/data/stock_data/backtrader_data/*_qfq.csv',
+                                union_by_name=true, header=true, filename=true)
+                  WHERE regexp_extract(filename, '([0-9]{{6}})_qfq', 1) != ''
+                ), r AS (
+                  SELECT code, dt,
+                         AVG(lsh) OVER (PARTITION BY code ORDER BY dt
+                                        ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS lowsh20
+                  FROM k
+                )
+                SELECT code, strftime(dt, '%Y-%m-%d') AS ds, lowsh20
+                FROM r WHERE lowsh20 > {th}
+            """).df()
+            m = {}
+            for c, ds, v in zip(df['code'], df['ds'], df['lowsh20']):
+                m.setdefault(c, {})[ds] = float(v)
+            self._lowsh_map = m
+            print(f"E-lsh1 lowsh20查找表: {len(m):,}码/{len(df):,}行 超阈{th}")
+        except Exception as e:
+            print(f"E-lsh1 lowsh20查找表加载失败(罚自动失效): {e}")
+            self._lowsh_map = {}
+
     def _build_desired_value(
         self,
         date,
@@ -887,6 +935,13 @@ class PortfolioConstructor:
         _reducing_codes = self._reduction_codes(date)
         _plan_codes = self._reduction_plan_codes(date)
         _unlocking_codes = self._unlock_codes(date)
+        # E-lsh1 (2026-10-13): 下影线软罚预置 — 惰性查找表+决策日键+阈值
+        # (QUANT_LOWSH_PEN未设时零行为: _ensure直接return, 查找表永不加载)
+        self._ensure_lowsh_map()
+        _lowsh_map = getattr(self, '_lowsh_map', None) or {}
+        _lshp = os.environ.get('QUANT_LOWSH_PEN', '')
+        _lowsh_th = float(os.environ.get('QUANT_LOWSH_TH', '0.28'))
+        _dkey = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
         for code in universe:
             sig = signal_store.get(code, date)
             if sig is None:
@@ -978,6 +1033,7 @@ class PortfolioConstructor:
             ml_gate_pen = 0.0
             divnone_pen = 0.0
             ah_pen = 0.0
+            lowsh_pen = 0.0
             _bp_confirm = 0
             bp_c4_pen = 0.0
             if code not in current_positions:
@@ -1118,6 +1174,20 @@ class PortfolioConstructor:
                 if _ahp and str(getattr(sig, 'industry', '') or '') == 'AH股':
                     ah_pen = -float(_ahp)
 
+                # E-lsh1 下影线软罚 (2026-10-13实验臂, env默认关闭): 20日下影线
+                # 占比>阈值的候选=边际坏桶. 三关证据: ①边际top10%剂量反应单调
+                # (Q1 +2.23%→Q4 +1.01%, 6/6年同向); ②chase<0.5%安静入场内独立成立
+                # (+1.72% vs +2.60%, 非zg域伪影); ③锚点501笔实现层n=97
+                # +2.32%/52% vs 其余+5.86%/59% (−3.54pp, 4/6年劣, 门槛≥30✓).
+                # 与body10相关仅−0.39(形态族内), 与价格类因子正交. 软罚式(同
+                # ZG1b/K-10): 罚分跌出而非硬拒. QUANT_LOWSH_PEN: 空=关闭; 数值=罚
+                # 幅度. QUANT_LOWSH_TH: 阈值(默认0.28). 查找表=主进程duckdb惰性
+                # 加载backtrader_data glob (L2c认证注入模式, 信号CSV schema零改动).
+                if _lshp and _lowsh_map:
+                    _lsh = _lowsh_map.get(code, {}).get(_dkey)
+                    if _lsh is not None and _lsh > _lowsh_th:
+                        lowsh_pen = -float(_lshp)
+
             candidates.append({
                 'code': code,
                 'factor_value': factor_value,
@@ -1130,6 +1200,7 @@ class PortfolioConstructor:
                 'divnone_penalty': divnone_pen,
                 'tt1chase_penalty': tt1chase_pen,
                 'ah_penalty': ah_pen,
+                'lowsh_penalty': lowsh_pen,
                 'sig': sig,
                 # Chan 融合字段
                 'signal_level': sl,
@@ -1659,7 +1730,7 @@ class PortfolioConstructor:
                 repl_buffer = 0.0  # C5c: 仅盈利持仓受保护(亏损名让位)
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
-            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0) + c.get('ah_penalty', 0.0) + c.get('bp_c4_penalty', 0.0)
+            c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0) + c.get('ah_penalty', 0.0) + c.get('bp_c4_penalty', 0.0) + c.get('lowsh_penalty', 0.0)
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
