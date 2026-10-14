@@ -231,7 +231,11 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     print(f"市场状态: {regime_names.get(market_regime, '未知')}")
 
     # ── 组合构建 ──────────────────────────────────────────
-    portfolio = PortfolioConstructor(rebalance_interval=1)  # 实盘每日选股
+    # 调仓节奏对齐(2026-10-14): 原 rebalance_interval=1(每日全重建) 与回测及活跃出单路径
+    # (generate_trade_orders.py:55,708 = backtest.rebalance_days=10) 分叉. 10/14 A轴探索
+    # 实证"实盘每日全重建" −188k NAV 已证伪 → 对齐回测10日(同一 config 源).
+    _rb_interval = int(config.get('backtest.rebalance_days', 10))
+    portfolio = PortfolioConstructor(rebalance_interval=_rb_interval)
     prev_positions = load_current_positions()
 
     # (科创板权限已确认, 9/14的幻影持仓清理撤销 — 688/689持仓按真实持仓对待)
@@ -265,8 +269,15 @@ def generate_orders(target_date: str, cash: float, dry_run: bool = False):
     total_equity = account_capital
     cash_available = max(account_capital - _pos_sum, 0)
 
+    # 日期类型修复(2026-10-14): 本文件 target_date 是字符串(args.date 或 strftime),
+    # 而 portfolio.build 内部按 datetime.date 处理(portfolio.py:1997 `date.month` 等).
+    # 活跃路径 generate_trade_orders.py:579/582 传的是 .date() 对象, 二者不一致.
+    # 6b5aeb1(10/7)引入8月入场闸后, 任何非BEAR/非trend_bear日走到候选循环即
+    # AttributeError 崩溃(崩溃点在写 trade_orders.json 之前 → 磁盘残留旧单被执行).
+    # 10/8 起持续 BEAR 使两条早退(:2252/:914)始终先于崩溃点返回, 掩盖至今.
+    _build_date = pd.Timestamp(target_date).date()
     adjusted = portfolio.build(
-        date=target_date,
+        date=_build_date,
         universe=universe,
         current_positions=current_positions,
         signal_store=signal_store,

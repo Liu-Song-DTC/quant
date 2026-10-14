@@ -235,6 +235,17 @@ class PortfolioConstructor:
         self.stop_loss_enabled = ps_top.get('enabled', True)
         self.portfolio_stop_loss = portfolio_stop_loss if portfolio_stop_loss is not None else ps_top.get('trigger_drawdown', 0.10)
         self.base_exposure = portfolio_config.get('base_exposure', 0.85)
+        # 臂钩子(2026-10-14晚): QUANT_BASE_EXPOSURE 覆写 base_exposure, 默认空=逐位零改动.
+        # 动机: 0.85 的三条否决(0.80 4-0败 / 0.90 / 1.00 全败, 9/20锚732,689)理由全是 MDD 铁律,
+        # 而 10/10 用户已裁定"收益/胜率优先, MDD记录不否决"; 且锚已 732,689→1,306,112(+78%),
+        # 按"否决臂必须新锚点重验"铁律重开.
+        # ★重验结果(10/14晚, 锚1,306,112): 1.00=1,318,225(Δ+12,113) / 0.95=1,307,336(Δ+1,224),
+        #   两条均远低于150k噪声地板且剂量非单调(1.00优于0.95)+MDD双恶化(+0.39/+0.20pp)
+        #   → 敞口水平不携带edge, 维持 0.85, 轴第二次闭合(见记忆 base-exposure-closed-20261014).
+        #   钩子保留供将来新锚点重验. 用法: QUANT_BASE_EXPOSURE=1.0 python bt_execution.py
+        _be_env = os.environ.get('QUANT_BASE_EXPOSURE')
+        if _be_env:
+            self.base_exposure = float(_be_env)
         self.emergency_exposure = ps_top.get('emergency_exposure', 0.65)
         self.stop_loss_recovery_days = ps_top.get('recovery_days', 10)
         self.stop_loss_refill = ps_top.get('stop_refill', False)
@@ -2976,6 +2987,34 @@ class PortfolioConstructor:
         n_pos = sum(1 for v in adjusted.values() if v > 0)
         exposure = sum(adjusted.values()) / max(total_equity, 1)
         self._dbg['positions_dist'].append((regime, n_pos, exposure))
+
+        # 探针(2026-10-14晚, env门控 QUANT_BOOK_DUMP=1, 默认零行为):
+        # 账簿构成落盘. 动机 — max_positions 只限"每期重新定权/新入选"的只数
+        # (portfolio.py:1804 len(selected)>=n_positions), 并不限制账簿总只数:
+        # 掉出 selected 的持仓无卖出路径(仅 sig_sell/cost_stop/trend_bear 退出),
+        # 实测账簿 NORM 均 7.3 只/最大 18 只 (regime_state.csv) 而 max_positions=4.
+        # 本探针分离"被重新定权的腿"与"陈旧腿", 供 stale-tail 反事实分析.
+        if os.environ.get('QUANT_BOOK_DUMP') == '1':
+            try:
+                import csv as _csvmod
+                _sel_codes = {k for k, v in desired_value.items() if v > 0}
+                _hold = {k: v for k, v in adjusted.items() if v > 0}
+                _fresh = {k: v for k, v in _hold.items() if k in _sel_codes}
+                _stale = {k: v for k, v in _hold.items() if k not in _sel_codes}
+                _p = '/tmp/book_dump.csv'
+                _new = not os.path.exists(_p)
+                with open(_p, 'a', newline='') as _bf:
+                    _bw = _csvmod.writer(_bf)
+                    if _new:
+                        _bw.writerow(['date', 'regime', 'n_hold', 'n_fresh', 'n_stale',
+                                      'val_fresh', 'val_stale', 'equity', 'cash',
+                                      'codes_hold', 'codes_fresh'])
+                    _bw.writerow([date, regime, len(_hold), len(_fresh), len(_stale),
+                                  round(sum(_fresh.values()), 1), round(sum(_stale.values()), 1),
+                                  round(total_equity, 1), round(cash, 1),
+                                  '|'.join(sorted(_hold)), '|'.join(sorted(_fresh))])
+            except Exception:
+                pass
 
         return adjusted
 
