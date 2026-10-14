@@ -214,6 +214,15 @@ class PortfolioConstructor:
         _rb_env = os.environ.get('QUANT_REBAL_INTERVAL')
         if _rb_env:
             self._rebalance_interval = int(_rb_env)
+        # 相位偏移臂(2026-10-14): 首个调仓日推迟 N 个日历日, 之后节奏不变. 默认0=逐位零改动.
+        # ⚠ 实测无效(2026-10-14晚): PH=1 与 PH=0 产出逐字节相同(md5 e9251824...).
+        #   根因: _last_rebalance_date 只在真实调仓时更新(:2862), HDS/BEAR 封锁期不更新 —
+        #   回测前3个月(至2021-04-08)无调仓, 偏移在首个真实调仓点被覆盖吸收.
+        #   推论: 调仓日程非自由运行时钟, 而是被 regime 事件反复重锚
+        #   (141个调仓日中有9处27-65交易日长间隔, 全部落在熊市封锁期).
+        #   间隔参数只控制长间隔之间的子节奏, 其对齐由 regime 解除时点外生决定.
+        # 用法: QUANT_REBAL_INTERVAL=7 QUANT_REBAL_PHASE=2 python bt_execution.py
+        self._rebalance_phase_offset = int(os.environ.get('QUANT_REBAL_PHASE', '0') or 0)
 
         # === 波动率控制 ===
         self.vol_control_enabled = portfolio_config.get('volatility_control_enabled', True)
@@ -2841,7 +2850,14 @@ class PortfolioConstructor:
         if not hasattr(self, '_last_rebalance_date'):
             self._last_rebalance_date = None
         if self._last_rebalance_date is None:
-            _should_rebalance = True
+            if self._rebalance_phase_offset > 0:
+                # 推迟首个调仓至 date+offset: 令 _last = date+offset-interval,
+                # 则触发条件 (date'-_last).days >= interval 首次成立于 date' = date+offset ✓
+                self._last_rebalance_date = date + timedelta(
+                    days=self._rebalance_phase_offset - self._rebalance_interval)
+                _should_rebalance = False
+            else:
+                _should_rebalance = True
         elif hasattr(date, 'timetuple'):
             # 计算交易日差(近似: 日历日差*0.7≈交易日)
             _calendar_days = (date - self._last_rebalance_date).days
