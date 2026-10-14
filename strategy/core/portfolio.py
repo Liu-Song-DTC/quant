@@ -371,6 +371,9 @@ class PortfolioConstructor:
         self.b1v2_q1_half = bool(pp.get('b1v2_q1_half', False))
         self._b1v2_q1_end = pd.Timestamp(pp.get('b1v2_q1_end', '2021-04-01'))
         self.bp2_channel_slots = int(pp.get('bp2_channel_slots', 1))
+        # FAST入场数上限(2026-10-15采纳): 默认2 = 原硬编码 max(2, n//3) 逐位等价.
+        # portfolio节豁免信号指纹 → 改此键不触发信号重生成.
+        self.fast_entry_cap = int(pp.get('fast_entry_cap', 2))
         self.bp2_score_boost = float(pp.get('bp2_score_boost', 0.0))
         # H-bi(2026-10-10): 笔级一买确认加成 — 探针bp0×bi1 6/6年+3.4~16.0pp胜率
         # (55.9% vs 47.7%), bp0=最大买点桶; bp交互仅bp0稳定(bp1/bp4×bi1负或噪声)
@@ -437,7 +440,20 @@ class PortfolioConstructor:
         self.sector_signal_density_weight = pp.get('sector_signal_density_weight', 0.60)
         self.mr_exit_cooldown_days = pp.get('mr_exit_cooldown_days', 14)
         self.ideal_position_max_mult = pp.get('ideal_position_max_mult', 2.0)
-        self._min_hold_days = pp.get('min_hold_days', 5)
+        # 接线修复(2026-10-14): yaml 的 min_hold_days 位于 portfolio.params 下, 而 :301
+        # 只读 portfolio_config **顶层** → 恒取默认 5; params 版此前只写进 self._min_hold_days
+        # (全库零读). 即 yaml 旋钮是**孤儿**: 改它零效果, 活值是硬编码 5.
+        self.min_hold_days = pp.get('min_hold_days', 5)
+        self._min_hold_days = self.min_hold_days
+        # 臂钩子(2026-10-14晚): QUANT_MIN_HOLD_DAYS 覆写最小持仓天数, 默认空=逐位零改动.
+        # 动机 — census(9/21)对 min_hold_days 是**静态kill**("10d周期>5d锁从不绑定"),
+        # 从未跑臂: 静态推理正确(入场在调仓日, 下个调仓日 held_days≈14日历日>5 → 恒不解锁),
+        # 但推论只覆盖了 5, 未覆盖**绑定区**(>14日历日). 且该闸机制=硬闸锁住已持仓
+        # (排序键 -_locked 置顶, 挤掉新候选), 与 mp4 采纳的"少换手→赢家不被提前换掉"
+        # 同族 —— mp4 已证该族有效, 本闸是其未探索的硬闸实现.
+        _mhd = os.environ.get('QUANT_MIN_HOLD_DAYS')
+        if _mhd:
+            self.min_hold_days = int(_mhd)
 
         # === 缠论止盈配置 ===
         chan_config = config.get('chan_theory', {}) if hasattr(config, 'get') else {}
@@ -933,7 +949,16 @@ class PortfolioConstructor:
             # E-A1(2026-09-05采纳): FAST快速预警期仓位上限 1→2
             # 三版实测: cap1 726,762/Sharpe1.1453 → cap3 769,524/1.2031(2022 -11.14%)
             #          → cap2 818,884/1.2546/回撤20.58% 全面最优, 采纳为新基线
-            n_positions = max(2, n_positions // 3)
+            # 2026-10-15采纳 fast_entry_cap (yaml, portfolio.params) — 见 factor_config.yaml 注释.
+            # E-A1(2026-09-05)的 1/2/3 三点扫描是锚818,884且max_positions=6时代, 未覆盖与mp4的交互;
+            # 10/14晚重扫面 {0,1,2,3,4}: cap=1 内部峰 +452,252 / P(>1)=96.4% (详见yaml).
+            # 默认 fast_entry_cap=2 时本式与原 `max(2, n_positions // 3)` 逐字等价.
+            n_positions = max(self.fast_entry_cap, n_positions // 3)
+            # 臂钩子(2026-10-14晚): QUANT_FAST_ENTRY_CAP 覆写FAST入场数, 默认空=逐位零改动.
+            # 0=FAST期完全不开新仓(边界测试点, 面 {0,1,2,3,4} 的端点).
+            _fec = os.environ.get('QUANT_FAST_ENTRY_CAP')
+            if _fec:
+                n_positions = max(0, int(_fec))
             _eff_min_rank = max(self.min_rank_pct, 0.80)
             _eff_min_score = max(self.min_absolute_score, self.fast_min_score)
         else:
@@ -1019,7 +1044,9 @@ class PortfolioConstructor:
                 continue
             # 100股整手下，100*price必须不超过理想仓位
             # 允许2倍理想仓位（100股整手会导致超配，但至少能买入）
-            ideal_per_stock = total_equity / n_positions
+            # max(1,·): QUANT_FAST_ENTRY_CAP=0 时 n_positions=0, 防除零.
+            # 默认路径 n_positions>=2 (max(2, n//3)), 故逐位零改动.
+            ideal_per_stock = total_equity / max(1, n_positions)
             if price * 100 > ideal_per_stock * self.ideal_position_max_mult:
                 _rej['too_expensive'] += 1
                 continue
@@ -1756,12 +1783,18 @@ class PortfolioConstructor:
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
         # 持仓>=min_hold_days才允许被替换
         # 动态锁定: 新信号显著强于入场信号时可提前解锁
+        self._dbg.setdefault('mhd', {'days': 0, 'eligible': 0, 'bypass': 0, 'locked': 0,
+                                     'held_days_sum': 0})
+        _mhd_d = self._dbg['mhd']
+        _mhd_d['days'] += 1
         for c in qualified:
             code = c.get('code', '')
             if c['is_held'] and code in self._position_entry_dates:
                 held_days = (date - self._position_entry_dates[code]).days if isinstance(date, date_type) else 999
                 lock_bypass = False
                 if held_days < self.min_hold_days:
+                    _mhd_d['eligible'] += 1
+                    _mhd_d['held_days_sum'] += held_days
                     # 持仓score显著弱于候选池中位数 → 提前解锁, 允许被替换
                     held_score = c.get('score', 0.0)
                     if held_score < pool_median_score * 0.7:
@@ -1771,6 +1804,8 @@ class PortfolioConstructor:
                 # 有卖点信号的持仓不锁(让位)
                 c['_locked'] = (held_days < self.min_hold_days) and not lock_bypass \
                     and c.get('chan_sell_point', 0) == 0
+                if held_days < self.min_hold_days:
+                    _mhd_d['bypass' if lock_bypass else 'locked'] += 1
             else:
                 c['_locked'] = False
 
@@ -1959,16 +1994,31 @@ class PortfolioConstructor:
                 weights[i] *= self.exhaustion_reduce_mult
 
         # 行业集中度上限
+        # 臂钩子(2026-10-14晚): QUANT_INDUSTRY_CAP 覆写上限, 默认空=逐位零改动.
+        # 动机 — 上限在 census(9/21, 锚732,689, max_positions=6)闭合, 但mp6→mp4(10/14)
+        # 使每只目标权重 1/6→1/4: 同行业**2只**占比 33%→50%, 跨过 0.40 阈值.
+        # 即该闸在mp4下binding频率结构性上升, 属"结构性变更后依赖其阈值的闸须同臂重标定".
+        _imw = self.industry_max_weight
+        _imw_env = os.environ.get('QUANT_INDUSTRY_CAP')
+        if _imw_env:
+            _imw = float(_imw_env)
         industry_weights_post = {}
         for i, c in enumerate(selected):
             ind = c.get('industry', '其他')
             industry_weights_post[ind] = industry_weights_post.get(ind, 0.0) + weights[i]
+        self._dbg.setdefault('ind_cap', {'days': 0, 'hits': 0, 'cut': 0.0})
+        _icap_day = 0
         for ind, total_w in industry_weights_post.items():
-            if total_w > self.industry_max_weight * target_exposure:
-                scale = (self.industry_max_weight * target_exposure) / total_w
+            if total_w > _imw * target_exposure:
+                scale = (_imw * target_exposure) / total_w
+                _icap_day += 1
+                self._dbg['ind_cap']['cut'] += total_w - _imw * target_exposure
                 for i, c in enumerate(selected):
                     if c.get('industry', '其他') == ind:
                         weights[i] *= scale
+        if selected:
+            self._dbg['ind_cap']['days'] += 1
+            self._dbg['ind_cap']['hits'] += _icap_day
 
         # 上限执行后不重新归一化：剩余敞口保留为现金，让上限真正绑定
         # 如果归一化，上限约束会被"剩余资金再分配"瓦解
@@ -3043,6 +3093,17 @@ class PortfolioConstructor:
                 print(f"  [{regime}] 平均持仓={n_pos_avg:.1f}只, 平均敞口={expo_avg:.2f}, 样本={len(items)}")
         if d['exit_reasons']:
             print(f"  退出原因分布: {dict(sorted(d['exit_reasons'].items(), key=lambda x:-x[1]))}")
+        _ic = d.get('ind_cap')
+        if _ic and _ic.get('days'):
+            print(f"  行业上限(industry_max_weight={self.industry_max_weight}): "
+                  f"{_ic['hits']}/{_ic['days']} 次选股触发 "
+                  f"({_ic['hits']/_ic['days']*100:.0f}%), 累计削减权重={_ic['cut']:.2f}")
+        _m = d.get('mhd')
+        if _m and _m.get('days'):
+            _avg = _m['held_days_sum'] / max(_m['eligible'], 1)
+            print(f"  最小持仓锁(min_hold_days={self.min_hold_days}日历日): "
+                  f"窗口内持仓 {_m['eligible']} 次 (均{_avg:.1f}日), "
+                  f"其中锁定 {_m['locked']} / 豁免 {_m['bypass']}")
         if d.get('winner_trim_events', 0) > 0:
             print(f"  A1赢家修剪: {d['winner_trim_events']}次, 累计被砍市值={d.get('winner_trim_value', 0.0)/1e4:.0f}万 (float={'ON' if self.winner_float_enabled else 'OFF'})")
         if d['peak_trail_hits'] > 0:
