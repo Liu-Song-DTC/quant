@@ -234,9 +234,21 @@ def compute_support_resistance(
                 lookback = min(60, len(df))
                 recent_high = float(df['high'].iloc[-lookback:].max())
                 recent_low = float(df['low'].iloc[-lookback:].min())
+            else:
+                # 静默降级修复(2026-10-14): 行数不足时 recent_high/low 保持 = price,
+                # 止损/止盈退化为 93%/125% 兜底 — 必须可见, 否则用户按假位挂单.
+                print(f"  [支撑压力][降级] {code} K线仅{len(df)}行(<20), "
+                      f"止损/止盈退化为兜底 {price*0.93:.2f}/{price*1.25:.2f}")
             del df
-        except Exception:
-            pass
+        except Exception as _e:
+            # 静默降级修复(2026-10-14): 原 `except Exception: pass` 会把读失败吞成
+            # 兜底位(93%/125%), 与"读到真60日高低"在输出上无法区分 — 同
+            # live-regime-blind-bug 一类"查表失败返回默认值"的温床.
+            print(f"  [支撑压力][降级] {code} K线读取失败({type(_e).__name__}: {_e}), "
+                  f"止损/止盈退化为兜底 {price*0.93:.2f}/{price*1.25:.2f}")
+    else:
+        print(f"  [支撑压力][降级] {code} 无K线文件, "
+              f"止损/止盈退化为兜底 {price*0.93:.2f}/{price*1.25:.2f}")
     detail['high_60d'] = recent_high
     detail['low_60d'] = recent_low
 
@@ -596,8 +608,11 @@ def main():
     signal_store.finalize(SIGNALS_CSV)
 
     # 检查目标日期是否有信号
-    test_code = next((c for c in stock_file_map if c != 'sh000001'), None)
-    if test_code and signal_store.get(test_code, target_date) is None:
+    # 修复(2026-10-14): 原为 `test_code = next(c for c in stock_file_map ...)` 抽**任意首只**
+    # 股票试探 — build_stock_file_map 用 os.listdir, 顺序随文件系统, 该股票恰好无信号
+    # (新股/停牌/不在信号universe)时误判为"当日无信号" → 静默回退到旧日期出单.
+    # 改用 SignalStore 的日期索引判定, 与抽样无关.
+    if not signal_store.has_date(target_date):
         if date_specified:
             print(f"\n错误: 目标日期 {target_date} 无信号数据")
             print(f"请更新信号CSV: cd strategy && python bt_execution.py")

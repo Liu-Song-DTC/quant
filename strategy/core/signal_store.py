@@ -18,6 +18,7 @@ class SignalStore:
         self._df = None   # Phase 2: DataFrame with MultiIndex (code, date)
         self._cache = OrderedDict()  # Phase 2: LRU cache for constructed Signals
         self._cache_max = 512
+        self._dates = None  # Phase 2: 惰性日期集合, has_date() 用
 
     def set(self, code, date, signal):
         """写入信号（仅 Phase 1 可用）"""
@@ -116,6 +117,22 @@ class SignalStore:
         if self._df is None or len(self._df) == 0:
             return None
         return str(self._df.index.get_level_values('date').max())[:10]
+
+    def has_date(self, date):
+        """信号数据中是否存在该日期. 出单层"当日有无信号"判定用.
+
+        2026-10-14新增: 替代 generate_trade_orders.py 原"抽任意单只股票 get()!=None"
+        的试探法 — 该法在抽中股票恰好无信号(新股/停牌/不在信号universe)时误判为
+        "当日无信号", 触发静默回退到旧日期出单. 本方法直接查日期索引, 与抽样无关.
+        """
+        if self._df is None or len(self._df) == 0:
+            return False
+        date_str = (date.strftime('%Y-%m-%d') if hasattr(date, 'strftime')
+                    else str(date)[:10])
+        if self._dates is None:  # 惰性构建, 单次~5000个日期
+            self._dates = set(
+                self._df.index.get_level_values('date').astype(str).str[:10])
+        return date_str in self._dates
 
     def _get_from_df(self, code, date):
         """从 DataFrame 查找并构造 Signal 对象（带 LRU 缓存）。"""
