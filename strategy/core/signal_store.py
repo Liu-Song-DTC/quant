@@ -111,6 +111,12 @@ class SignalStore:
         print(f"SignalStore finalized: {len(self._df):,} rows in DataFrame "
               f"({self._df.memory_usage(deep=True).sum() / 1024**2:.0f} MB)")
 
+    def max_date(self):
+        """信号数据中的最新日期 ('YYYY-MM-DD'), 空→None. 出单层信号新鲜度闸用."""
+        if self._df is None or len(self._df) == 0:
+            return None
+        return str(self._df.index.get_level_values('date').max())[:10]
+
     def _get_from_df(self, code, date):
         """从 DataFrame 查找并构造 Signal 对象（带 LRU 缓存）。"""
         # 统一日期格式：DataFrame index 使用字符串 (YYYY-MM-DD)

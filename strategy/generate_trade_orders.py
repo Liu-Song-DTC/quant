@@ -46,6 +46,13 @@ FUNDAMENTAL_DIR = os.path.join(_PROJECT_DIR, 'data/stock_data/fundamental_data')
 SIGNALS_CSV = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'backtest_signals.csv')
 POSITIONS_FILE = os.path.join(_PROJECT_DIR, 'current_positions.json')
 ORDERS_FILE = os.path.join(_PROJECT_DIR, 'trade_orders.json')
+REBUILD_STATE_FILE = os.path.join(_PROJECT_DIR, 'live_rebuild_state.json')
+
+# 实盘调仓周期 = 回测同一旋钮(单一真源, 禁止两处各写一个数).
+# 2026-10-14: 实盘此前硬编码 rebalance_interval=1(每日全重建), 而回测生产=10日历日.
+# A轴实证(rb1臂, todate=10-13): interval=1 = NAV 818,735(−188,181), Sharpe 1.4988→1.1521,
+# 笔数505→2,226, 均ret +3.79%→+1.00% = 广谱churn磨损(非彩票承载). 对齐后实盘与锚点同周期.
+REBALANCE_INTERVAL = int(config.get('backtest.rebalance_days', 10))
 OUTPUT_DIR = os.path.join(_PROJECT_DIR, 'output')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 INDEX_DATA_PATH = os.path.join(DATA_PATH, 'sh000001_qfq.csv')
@@ -278,6 +285,37 @@ def save_current_positions(positions: Dict[str, dict]):
     with open(POSITIONS_FILE, 'w', encoding='utf-8') as f:
         json.dump(positions, f, ensure_ascii=False, indent=2)
     print(f"持仓已保存: {POSITIONS_FILE}")
+
+
+def load_rebuild_state():
+    """读取上次完整重建日期(实盘跨进程调仓周期状态).
+
+    缺失/损坏 → None = 视为未重建(build()首日强制重建), 与回测中
+    _last_rebalance_date=None 的初值语义一致.
+    """
+    try:
+        with open(REBUILD_STATE_FILE, 'r', encoding='utf-8') as f:
+            _d = json.load(f).get('last_rebuild_date')
+        return pd.Timestamp(_d).date() if _d else None
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"  [WARN] 调仓状态文件读取失败({e}), 按未重建处理")
+        return None
+
+
+def save_rebuild_state(last_rebuild_date):
+    """写入上次完整重建日期. 仅在真实出单(非dry-run)路径调用."""
+    try:
+        _d = last_rebuild_date if hasattr(last_rebuild_date, 'strftime') else pd.Timestamp(last_rebuild_date).date()
+        with open(REBUILD_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'last_rebuild_date': _d.strftime('%Y-%m-%d'),
+                       'updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')},
+                      f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"  [WARN] 调仓状态文件写入失败: {e}")
+        return False
 
 
 def build_orders(
@@ -582,6 +620,17 @@ def main():
     if price_date > pd.Timestamp(target_date):
         print(f"  [价格日] 信号日 {str(target_date)[:10]} 收盘已过时, "
               f"订单定价改用最新K线收盘日 {str(price_date)[:10]}")
+
+    # ── 信号新鲜度硬闸 (fail-closed, 2026-10-14) ──────────────
+    # 教训(10/13实盘): 锚链实验晚于每日流未推进todate → 信号止于10-12, 旧行为仅
+    # 打印"(今日X无信号, 回退到最新交易日期Y)"便继续出单 = 旧信号配新价格。
+    # 规则: 信号CSV最后日期必须 ≥ 价格日(订单定价所用K线日), 否则拒绝出单。
+    _sig_max = signal_store.max_date()
+    _px_date = str(pd.Timestamp(price_date).date())
+    if _sig_max and _sig_max < _px_date and not args.skip_freshness:
+        print(f"\n[拒绝出单] 信号止于 {_sig_max}, 而价格日已到 {_px_date} — 信号落后于数据。")
+        print(f"  请先重生成信号: cd strategy && python bt_execution.py")
+        sys.exit(1)
     prices = load_prices_for_date(stock_file_map, price_date)
 
     # ── 3. 构建候选 universe ─────────────────────────────────
@@ -652,7 +701,16 @@ def main():
     print(f"市场状态: {regime_names.get(market_regime, '未知')} (regime={market_regime})")
 
     # ── 5. 运行组合构建 ──────────────────────────────────────
-    portfolio = PortfolioConstructor(rebalance_interval=1)  # 实盘每日选股
+    # 调仓周期对齐回测(2026-10-14): 回测生产=10日历日, 实盘曾=1(每日全重建, 已证伪).
+    # 跨进程状态由 live_rebuild_state.json 承载 — 进程每次重启, 必须显式注入上次重建日,
+    # 否则 _last_rebalance_date=None 会让 build() 每天都走完整重建(即 interval=1 行为).
+    _rebuild_state = load_rebuild_state()
+    portfolio = PortfolioConstructor(rebalance_interval=REBALANCE_INTERVAL)
+    if _rebuild_state is not None:
+        portfolio._last_rebalance_date = _rebuild_state
+        print(f"调仓状态: 上次完整重建 {_rebuild_state} (间隔={REBALANCE_INTERVAL}日历日)")
+    else:
+        print(f"调仓状态: 无记录 → 本次完整重建 (间隔={REBALANCE_INTERVAL}日历日)")
 
     # 读取当前持仓
     prev_positions = load_current_positions()
@@ -714,6 +772,17 @@ def main():
         bear_risk_fast=bear_risk_fast,
         cost=cost,
     )
+
+    # 调仓状态落盘: build()通过闸门时会把 _last_rebalance_date 置为本次日期;
+    # trend_bear双确认清仓路径在闸门之前早退(portfolio.py:2243) → 不推进, 与回测一致.
+    _new_rebuild_date = getattr(portfolio, '_last_rebalance_date', None)
+    if _new_rebuild_date is not None and _new_rebuild_date != _rebuild_state:
+        if args.dry_run:
+            print(f"  [调仓状态][dry-run] 完整重建日将更新: {_rebuild_state} → {_new_rebuild_date} (不落盘)")
+        elif save_rebuild_state(_new_rebuild_date):
+            print(f"  [调仓状态] 完整重建日更新: {_rebuild_state} → {_new_rebuild_date}")
+    else:
+        print(f"  [调仓状态] 本次未做完整重建(不出新选股, 仅出场/清仓)")
 
     # 持仓中的ST强制清仓 (2026-08-31修复): 从目标中移除 → build_orders生成close
     held_st = [c for c in current_positions if c in st_codes]

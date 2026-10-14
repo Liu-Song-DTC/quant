@@ -194,6 +194,16 @@ def _signal_code_fingerprint() -> str:
     return h.hexdigest()[:8]
 
 
+def _latest_data_date():
+    """K线最新交易日(指数文件末行, 'YYYY-MM-DD') — 信号新鲜度的内容级基准."""
+    _idx = os.path.join(DATA_PATH, 'sh000001_qfq.csv')
+    try:
+        _df = pd.read_csv(_idx, usecols=['datetime'])
+        return str(_df['datetime'].iloc[-1])[:10] if len(_df) else ''
+    except Exception:
+        return ''
+
+
 def _signals_stale(signals_csv):
     """信号CSV是否比任何数据文件旧 (数据刷新后必须重新生成信号).
     2026-09-04: 旧行为无条件复用既有CSV, 数据全量刷新后曾混用旧信号
@@ -225,6 +235,24 @@ def _signals_stale(signals_csv):
         print(f"信号CSV代码态过期 (生成时={_fp_saved or '无记录'}/warmup={_fp_saved_warmup or '?'} "
               f"当前={_fp_now}/warmup={_warmup_now}), 重新生成信号")
         return True
+    # 2026-10-14: todate推进必须触发重生成 — 内容级检查(旧门禁只看mtime+代码指纹).
+    # 教训: 锚链实验(todate=10-12)晚于每日流时, 每日流把todate推进到10-13却因数据
+    # 文件未变而复用止于10-12的CSV → 10/13实盘用过期一天信号出单(用户实盘发现
+    # "价格是昨天的")。规则: CSV最后日期必须覆盖 min(todate, K线最新交易日) —
+    # 用min避免周末/节假日(数据未更新)时无谓重生成。
+    _expected = _latest_data_date()
+    _todate = str(config.get('backtest.todate', '') or '')[:10]
+    if _todate and (not _expected or _todate < _expected):
+        _expected = _todate
+    if _expected:
+        try:
+            _sig_max = str(pd.read_csv(signals_csv, usecols=['date'])['date'].max())[:10]
+        except Exception as _e:
+            print(f"信号CSV日期读取失败({_e}), 重新生成信号")
+            return True
+        if _sig_max < _expected:
+            print(f"信号CSV止于 {_sig_max} < 应覆盖 {_expected} (todate/K线最新日), 重新生成信号")
+            return True
     # 2026-09-12 收窄(#54): 信号层仅消费4个另类文件 — 经消费路径核验, signal_engine
     # 只调get_northbound_signal(northbound_daily)/get_margin_signal(margin_daily)/
     # get_dragon_tiger_signal(dragon_tiger_history+dragon_tiger); 其余(yjyg/unlock/
