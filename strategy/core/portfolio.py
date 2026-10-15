@@ -206,6 +206,17 @@ class PortfolioConstructor:
 
         self.position_stop_loss = position_stop_loss if position_stop_loss is not None else portfolio_config.get('position_stop_loss', 0.12)
         self.entry_speed = entry_speed if entry_speed is not None else portfolio_config.get('entry_speed', 0.5)
+        # 入场速度臂(2026-10-15, env门控 QUANT_ENTRY_SPEED, 默认空=零改动):
+        # build() 返回的是 **adjusted** 不是 desired_value (portfolio.py:3119 vs 2271):
+        #   adjusted[code] = current + entry_speed * (desired - current)   # :3046
+        # 新腿 current=0 ⇒ 实得 = entry_speed × 目标。这正是探针 scale_diag 里
+        # "实现/目标"比**硬顶恰为 0.80** 的来源(yaml entry_speed=0.8), 与 98% 现金闸
+        # (只 88/1036 日触发, 8%) 无关。组合层现金权重 6.3% ≈ 斜坡缺口。
+        # 该旋钮在 factor_config.yaml 无任何臂注释 ⇒ 从未 bracket (仅 legacy
+        # parameter_optimizer.py:49 有 [0.6,0.8,1.0] 网格, 无臂证据)。
+        _es_env = os.environ.get('QUANT_ENTRY_SPEED')
+        if _es_env:
+            self.entry_speed = float(_es_env)
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 0.5)
         self.exit_mode = portfolio_config.get('exit_mode', 'simple')  # simple=仅成本止损让利润奔跑; 其他值启用完整退出栈
         self._rebalance_interval = rebalance_interval  # 实盘=1每日, 回测=10
@@ -260,7 +271,12 @@ class PortfolioConstructor:
 
         # === 绝对质量门槛 ===
         sel_config = portfolio_config.get('selection', {})
-        self.min_rank_pct = sel_config.get('min_rank_pct', 0.5)
+        # 臂钩子(2026-10-15): QUANT_MIN_RANK_PCT 覆写绝对质量门槛, 默认空=逐位零改动.
+        # 池边界: 只作用于非FAST路径的 _eff_min_rank (FAST 恒为 max(min_rank_pct, 0.80)).
+        # 机制与 ea2 同族但**反向**: 收紧→池小→_fresh_best(池内非持仓max)低→E-A2闸少开
+        # →保护留存多→换手少; 放宽则反之. 9/21 census 在 mp6 下判 0.3 平坦区, mp4 后未重扫.
+        self.min_rank_pct = float(os.environ.get(
+            'QUANT_MIN_RANK_PCT', sel_config.get('min_rank_pct', 0.5)))
         self.min_absolute_score = sel_config.get('min_absolute_score', 0.15)
         self.min_confidence = sel_config.get('min_confidence', 0.80)
         # 2026-08-25: 股东减持期过滤(用户硬约束) - 减持期内股票不入选
@@ -280,8 +296,14 @@ class PortfolioConstructor:
         self.exhaustion_reduce_mult = sel_config.get('exhaustion_reduce_mult', 0.5)
         self.industry_max_weight = sel_config.get('industry_max_weight', 0.35)
         self.max_per_industry = sel_config.get('max_per_industry', 3)  # ExpB2: 同行业最多N只
-        self.max_single_weight_from_cfg = sel_config.get('rank_weight_cap',
-                                              sel_config.get('max_single_weight', 0.18))
+        # 臂钩子(2026-10-15): QUANT_RANK_WEIGHT_CAP 覆写单票权重上限, 默认空=逐位零改动.
+        # 实证(探针 sel_w, 非 portfolio_selections.csv 的执行层 tv/nav):
+        #   该上限经 slack 放宽后在 95/142 选股日(67%)**精确 binding** — FAST nsel=1 日
+        #   56/58 命中 0.375 而当日 target_exposure 均 0.6455 ⇒ 单只只拿目标敞口的 57.5%;
+        #   nsel=4 日 38/78 命中 0.25。旧"死旋钮"判决源于口径混用(判据已推翻)。
+        self.max_single_weight_from_cfg = float(os.environ.get(
+            'QUANT_RANK_WEIGHT_CAP',
+            sel_config.get('rank_weight_cap', sel_config.get('max_single_weight', 0.18))))
         self._orig_max_single_weight = self.max_single_weight_from_cfg  # CLB恢复时还原
         # A1(2026-09-10): 赢家浮动权重 — 盈利持仓不被排名目标削减(让利润奔跑),
         # 上限winner_float_cap兜集中度风险。默认关=基线。review A类首项。
@@ -1979,9 +2001,24 @@ class PortfolioConstructor:
 
         # 单票权重上限: 候选不足时动态放宽以提升资金利用率
         # E-LAD臂覆盖 (2026-09-24, env门控默认生产零行为):
-        # QUANT_SLACK_MULT 覆写slack乘数 (生产1.5); QUANT_SLACK_CAP 覆写放宽上限 (生产1.5)
+        # QUANT_SLACK_MULT 覆写slack乘数 (生产1.5); QUANT_SLACK_CAP 覆写放宽上限
+        #
+        # ⚠ 2026-10-15 采纳 slk180: _SC 默认 1.5 → 1.80 (臂面 run_arms4.sh slk2)
+        # 天花板 = cap*_SC: 1.5→0.375(旧生产) / 1.80→0.450(采纳) / 3.0→0.75
+        # 臂证据(数据态10-14, 基线 anchor_1015b 2,249,964):
+        #   _SC: 1.60→2,251,231(+0.04pp) 1.70→2,381,214(+1.47pp) 1.75→2,422,528(+1.92pp)
+        #        1.80→2,461,946(+2.34pp, CI[+0.32,+5.00] P=99.0%) 2.00→2,403,613(+1.74pp)
+        #        2.125→2,382,168(+1.53pp) 3.00→2,062,832(−1.92pp)
+        #   严格单峰于 1.80; LOSO 剔任一年 Δ 全正(+0.85~+2.48pp); 六年全正;
+        #   剔3月+0.90 / 剔5月+0.33 / 剔10月−0.11 / 剔15月+0.08 / 剔20月+0.22
+        #   机制(非杠杆): 均敞口 0.5685→0.5841(+1.56pp 绝对/+2.7% 相对) 换 +2.34pp/年;
+        #   对照 base_exposure 0.85→1.00 花 +17.6% 相对敞口只换 +0.1pp/年 ⇒ 效率差 ~23×。
+        #   按持仓只数分桶敞口Δ: 0只 0.00 / 1只 +6.28 / 2只 +9.86 / 3-4只 +4.81 / ≥5只 +0.70
+        #   —— 正是 slack=(max_positions−n)/max_positions 的设计签名。
+        #   Jaccard=1.000 (100%完全同批/314笔入场完全相同) ⇒ 纯仓位大小变化, 非换股彩票。
+        # 代价: MDD 16.76%→17.99%(+1.23pp, 按"收益/胜率优先"记录不否决); 2026 −1.12pp。
         _SM = float(os.environ.get('QUANT_SLACK_MULT', '') or 1.5)
-        _SC = float(os.environ.get('QUANT_SLACK_CAP', '') or 1.5)
+        _SC = float(os.environ.get('QUANT_SLACK_CAP', '') or 1.8)
         max_single = self.max_single_weight_from_cfg
         if len(selected) < self.max_positions:
             # 候选不足 → 提高单票上限, 集中资金到优质标的
