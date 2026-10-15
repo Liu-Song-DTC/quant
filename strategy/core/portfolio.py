@@ -287,6 +287,17 @@ class PortfolioConstructor:
         # 上限winner_float_cap兜集中度风险。默认关=基线。review A类首项。
         self.winner_float_enabled = sel_config.get('winner_float_enabled', False)
         self.winner_float_cap = sel_config.get('winner_float_cap', 0.24)
+        # 臂钩子(2026-10-15): QUANT_WINNER_FLOAT=1 开启A1浮动 / QUANT_WINNER_FLOAT_CAP 覆写上限.
+        # 默认空=逐位零改动. 动机 — A1(2026-09-10设计)从未臂化; 且 cap=0.24 是 **mp6时代标定**
+        # (1/6=0.167 → cap/理想=1.44), mp4下 1/4=0.25 > 0.24 → 阈值**结构性反转**:
+        # 现在开浮动会把每个赢家**压到0.24**(低于等权目标), 语义与设计意图相反.
+        # 保mp6语义需 cap≈0.36 (=1.44×0.25).
+        _wf_env = os.environ.get('QUANT_WINNER_FLOAT')
+        if _wf_env:
+            self.winner_float_enabled = (_wf_env == '1')
+        _wfc_env = os.environ.get('QUANT_WINNER_FLOAT_CAP')
+        if _wfc_env:
+            self.winner_float_cap = float(_wfc_env)
 
         # === fv_exposure 可配置参数 ===  # 已归档9/22审计§1B: 死旋钮(全库零消费者, 回测恒用默认值)
         fv_params = portfolio_config.get('fv_exposure_params', {})
@@ -297,6 +308,14 @@ class PortfolioConstructor:
 
         # === 换手惩罚 ===
         self.turnover_bonus = portfolio_config.get('turnover_bonus', 0.04)
+        # 臂钩子(2026-10-15): QUANT_TURNOVER_BONUS 覆写换手保护加成, 默认空=逐位零改动.
+        # 动机 — 该键是**唯一活着的换手保护**(replacement_buffer=0.0关闭, min_hold_days=5
+        # 锁从不bind因调仓间隔10日>5日), 却在 9/20 被误归入"死旋钮普查"名单
+        # (那一行的括号只对 time_stop 成立) → 9/21 census 42臂因此漏掉它, 从未sweep.
+        # config_loader.py:93 确认白名单转发 → yaml 0.1 是活值.
+        _tb_env = os.environ.get('QUANT_TURNOVER_BONUS')
+        if _tb_env:
+            self.turnover_bonus = float(_tb_env)
         self.max_turnover_ratio = portfolio_config.get('max_turnover_ratio', 0.60)
         self.min_hold_days = portfolio_config.get('min_hold_days', 5)
         # C实验(2026-08-29): 换仓缓冲 — 已持仓在effective_score上的额外δ(rank尺度),
@@ -937,6 +956,13 @@ class PortfolioConstructor:
 
         total_equity = cash + sum(current_positions.values())
         n_positions = self._calc_max_position(total_equity, prices)
+
+        # 臂钩子(2026-10-15): QUANT_EA2_RATIO 覆写 E-A2"强势新候选顶替持仓"的强度比,
+        # 默认空=1.15(逐位零改动). 动机 — E-A2(2026-09-06 采纳, 提交4d40366)是随
+        # E-A1 组合实验**捆绑**采纳的, 1.15 这个阈值本身从未被sweep; 它是 turnover_bonus
+        # 的**总闸**(fresh_best > held×r 时保护被清零) → 阈值高低直接决定换手保护是否活着.
+        # 大值(如99)=保护恒生效; 1.0=任何更强新候选都顶替(最激进换手).
+        _ea2_ratio = float(os.environ.get('QUANT_EA2_RATIO', '') or 1.15)
 
         # === 熊市仓位: bear_IC为负→因子反指, 空仓保本金 ===
         if bear_risk:
@@ -1708,8 +1734,9 @@ class PortfolioConstructor:
             turnover = 0.0
             if c['is_held'] and c['rank_pct'] > hold_threshold:
                 held_score = c.get('score', 0.0)
-                # E-A2: 存在明显更强的新候选(fresh_best > held×1.15) → 取消保护, 让位顶替
-                if _fresh_best > held_score * 1.15:
+                # E-A2: 存在明显更强的新候选(fresh_best > held×r) → 取消保护, 让位顶替
+                # r 由 QUANT_EA2_RATIO 覆写(默认1.15=原硬编码, 逐位零改动)
+                if _fresh_best > held_score * _ea2_ratio:
                     turnover = 0.0
                 elif held_score > pool_median_score * 1.2:
                     turnover = self.turnover_bonus              # 明显强于中位数 → 保留
@@ -1799,7 +1826,7 @@ class PortfolioConstructor:
                     held_score = c.get('score', 0.0)
                     if held_score < pool_median_score * 0.7:
                         lock_bypass = True   # 远弱于中位数 → 解锁
-                    elif _fresh_best > held_score * 1.15:
+                    elif _fresh_best > held_score * _ea2_ratio:
                         lock_bypass = True   # E-A2: 新候选明显更强 → 解锁顶替
                 # 有卖点信号的持仓不锁(让位)
                 c['_locked'] = (held_days < self.min_hold_days) and not lock_bypass \
