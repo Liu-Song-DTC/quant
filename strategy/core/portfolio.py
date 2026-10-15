@@ -316,6 +316,23 @@ class PortfolioConstructor:
         _tb_env = os.environ.get('QUANT_TURNOVER_BONUS')
         if _tb_env:
             self.turnover_bonus = float(_tb_env)
+
+        # === E-A2 强度比 (2026-10-15 采纳 1.15→2.0) ===
+        # `if _fresh_best > held_score * ea2_ratio: turnover = 0.0` — 换手保护的**总闸**。
+        # 原值 1.15 于 2026-09-06 随 E-A1 组合实验**捆绑**采纳(4d40366), 从未独立 sweep。
+        # 因 `_fresh_best` 是**全池非持仓候选的 max**(极值次序统计量)而 `held_score` 是单只,
+        # 比值系统性偏大(实测336事件 中位2.31/均值3.82) → r=1.15 时闸开 **96.7%**,
+        # 即 turnover_bonus 这个 yaml 活键被结构性空转, 生产实际等于"无换手保护"。
+        # 臂面(anchor_1015, 平顶 r∈[1.8,2.5]): 1.15=0 / 1.5=+89k / **1.8=+422k /
+        # **2.0=+492k** / 2.5=+416k / 3.0=+325k / 5.0=99=+221k / (3.0,tb0.30)=−20k。
+        # 留一年剔任一年仍 ≥+220k; 配对bootstrap r=2.0 CI[+0.04,+0.40] 排除0 (P=99.5%);
+        # 笔级 327→309笔 / 均收益 5.60%→6.38% / 胜率 60.9%→62.8%; 剔最大3-15月不受影响。
+        self.ea2_ratio = sel_config.get('ea2_ratio', 2.0)
+        # 臂钩子: QUANT_EA2_RATIO 覆写, 默认空=用yaml/默认值(逐位零改动)
+        _ea2_env = os.environ.get('QUANT_EA2_RATIO')
+        if _ea2_env:
+            self.ea2_ratio = float(_ea2_env)
+
         self.max_turnover_ratio = portfolio_config.get('max_turnover_ratio', 0.60)
         self.min_hold_days = portfolio_config.get('min_hold_days', 5)
         # C实验(2026-08-29): 换仓缓冲 — 已持仓在effective_score上的额外δ(rank尺度),
@@ -957,12 +974,7 @@ class PortfolioConstructor:
         total_equity = cash + sum(current_positions.values())
         n_positions = self._calc_max_position(total_equity, prices)
 
-        # 臂钩子(2026-10-15): QUANT_EA2_RATIO 覆写 E-A2"强势新候选顶替持仓"的强度比,
-        # 默认空=1.15(逐位零改动). 动机 — E-A2(2026-09-06 采纳, 提交4d40366)是随
-        # E-A1 组合实验**捆绑**采纳的, 1.15 这个阈值本身从未被sweep; 它是 turnover_bonus
-        # 的**总闸**(fresh_best > held×r 时保护被清零) → 阈值高低直接决定换手保护是否活着.
-        # 大值(如99)=保护恒生效; 1.0=任何更强新候选都顶替(最激进换手).
-        _ea2_ratio = float(os.environ.get('QUANT_EA2_RATIO', '') or 1.15)
+        _ea2_ratio = self.ea2_ratio  # E-A2 强度比 (2026-10-15 采纳 2.0, 见 __init__ 注释)
 
         # === 熊市仓位: bear_IC为负→因子反指, 空仓保本金 ===
         if bear_risk:
@@ -1735,7 +1747,7 @@ class PortfolioConstructor:
             if c['is_held'] and c['rank_pct'] > hold_threshold:
                 held_score = c.get('score', 0.0)
                 # E-A2: 存在明显更强的新候选(fresh_best > held×r) → 取消保护, 让位顶替
-                # r 由 QUANT_EA2_RATIO 覆写(默认1.15=原硬编码, 逐位零改动)
+                # r=2.0 (2026-10-15 采纳; 原硬编码1.15=结构性空转保护, 见 __init__ 注释)
                 if _fresh_best > held_score * _ea2_ratio:
                     turnover = 0.0
                 elif held_score > pool_median_score * 1.2:

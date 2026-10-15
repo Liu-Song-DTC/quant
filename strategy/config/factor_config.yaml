@@ -7338,6 +7338,10 @@ portfolio:
     industry_max_weight: 0.4
     max_per_industry: 0
     rank_weight_cap: 0.25
+    # E-A2 强度比 (2026-10-15 采纳 1.15→2.0): `fresh_best > held×r` 时清零换手保护。
+    # 原 1.15 因 fresh_best 是"全池 max"而闸开96.7% → turnover_bonus 被结构性空转。
+    # 臂面平顶 r∈[1.8,2.5](+422k/+492k/+416k), 留一年剔任一年≥+220k, bootstrap CI排除0。
+    ea2_ratio: 2.0
     # A1(2026-09-10): 赢家浮动权重 — 盈利持仓不被排名目标削减(让利润奔跑),
     # 上限winner_float_cap兜集中度风险。默认关=基线。执行层实验(portfolio节
     # 指纹豁免, 暖跑复用信号CSV, 无0c发现的ML重训噪声)。
