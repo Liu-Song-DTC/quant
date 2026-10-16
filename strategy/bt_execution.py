@@ -144,7 +144,16 @@ def _load_pool_membership():
 # 数据路径 - 从配置文件读取，默认相对于策略目录（而非 CWD）
 _STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_STRATEGY_DIR)
-DATA_PATH = config.get('paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data/backtrader_data/'))
+# 2026-10-16: QUANT_DATA_PATH 研究钩子(复权口径臂) — 默认空 = 逐位零改动。
+# 换数据源必须重生成信号, 故 DATA_PATH 已计入 _signal_code_fingerprint。
+# **归一化是必要的**: 指纹是**字符串**级 — `.../backtrader_data` 与
+# `.../backtrader_data/` 指向同一目录却指纹不同 ⇒ 显式传生产路径(少个斜杠)
+# 会白跑一次 78min 信号重生成, 且指纹与锚点不可比 (实测 7d13263b vs 8b9e99b5)。
+# 归一化后**强制补回尾斜杠**: L125/127/816 是 `DATA_PATH + item` 字符串拼接,
+# 去掉尾斜杠会拼出 `...backtrader_data000001_qfq.csv` ⇒ 目录扫描静默空集。
+DATA_PATH = os.path.normpath(os.environ.get('QUANT_DATA_PATH') or config.get(
+    'paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data/backtrader_data/'))
+).rstrip(os.sep) + os.sep
 FUNDAMENTAL_PATH = config.get('paths.fundamental', os.path.join(_PROJECT_DIR, 'data/stock_data/fundamental_data/'))
 
 
@@ -191,6 +200,40 @@ def _signal_code_fingerprint() -> str:
             h.update(f"config/quarterly_factors/{_qn}|{_st.st_mtime_ns}|{_st.st_size};".encode('utf-8'))
     except OSError:
         h.update('config/quarterly_factors|MISSING;'.encode('utf-8'))
+    # 2026-10-16: 概念映射计入指纹(**内容级**, 非 mtime)。
+    # 教训(假臂, 实测): `_signals_stale` 的数据新鲜度检查是**单向**的 — 只问
+    # "有没有比信号 CSV 更新的数据文件"。把概念映射换成一份**更旧**的
+    # (冻结快照 / 版本回滚 / QUANT_CONCEPT_MAP 指向历史版本) 对门禁完全不可见
+    # ⇒ 静默复用旧信号 ⇒ 臂的 NAV/md5 与基线**逐字节相同**却看不出来
+    # (pit_map0531 只跑 9min vs pit_ident 84min, 两臂数字一模一样 = 假臂)。
+    # 用**内容 md5** 而非 mtime: 概念映射是信号输入(concept_heat 的成分股归属),
+    # 内容相同 ⇒ 信号必然相同(复用正确, 顺带省一次 78min 重生成),
+    # 内容不同 ⇒ 必须重生成。两个方向都对。
+    _cmap_p = os.environ.get('QUANT_CONCEPT_MAP') or os.path.join(
+        _PROJECT_DIR, 'data', 'stock_concept_map.pkl')
+    try:
+        with open(_cmap_p, 'rb') as _cf:
+            _cmap_digest = hashlib.md5(_cf.read()).hexdigest()
+        h.update(f"concept_map|{_cmap_p}|{_cmap_digest};".encode('utf-8'))
+    except OSError:
+        h.update(f"concept_map|{_cmap_p}|MISSING;".encode('utf-8'))
+
+    # 2026-10-16: 版本化概念映射(QUANT_CONCEPT_MAP_HIST)也计入指纹 — 同上, 内容级。
+    # 版本化模式下 concept_heat 的成分股名单来自该文件而**不是** stock_concept_map.pkl,
+    # 不记账 ⇒ 换 history 文件时指纹不变 ⇒ 静默复用上一臂的信号(同类假臂, 已踩过)。
+    _cmap_hist_p = os.environ.get('QUANT_CONCEPT_MAP_HIST')
+    if _cmap_hist_p:
+        try:
+            with open(_cmap_hist_p, 'rb') as _hf:
+                _hh = hashlib.md5(_hf.read()).hexdigest()
+            h.update(f"cmap_hist|{_cmap_hist_p}|{_hh};".encode('utf-8'))
+        except OSError:
+            h.update(f"cmap_hist|{_cmap_hist_p}|MISSING;".encode('utf-8'))
+
+    # 2026-10-16: **数据源路径**也计入指纹 (复权口径臂引入 QUANT_DATA_PATH 钩子)。
+    # 同类假臂防线: 换 DATA_PATH 而指纹不变 ⇒ 因子仍从**旧数据源**算出 ⇒
+    # 信号被静默复用 ⇒ 臂只换了成交价不换选股 = 半假臂。路径变了必须重生成。
+    h.update(f"data_path|{DATA_PATH};".encode('utf-8'))
     return h.hexdigest()[:8]
 
 
@@ -268,6 +311,11 @@ def _signals_stale(signals_csv):
              os.environ.get('QUANT_CONCEPT_MAP') or os.path.join(
                  _PROJECT_DIR, 'data/stock_concept_map.pkl'),
              os.path.join(_PROJECT_DIR, 'data/concept_inception.pkl')]
+    # 2026-10-16: 版本化概念映射**仅在启用时**计入新鲜度 — 未启用时它不是信号输入,
+    # 无条件计入会让"文件比信号新"永远成立 ⇒ 每次白跑一次 84min 信号重生成。
+    _ch = os.environ.get('QUANT_CONCEPT_MAP_HIST')
+    if _ch:
+        roots.append(_ch)
     newest, newest_what = 0, ''
     for root in roots:
         if os.path.isdir(root):
