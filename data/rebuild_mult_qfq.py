@@ -55,6 +55,8 @@ MERGE_TOL = 0.02                     # 相邻段 a 相对差 < 2% ⇒ 合并(分
 # ⚠ 旧守卫 `nexd > 60` 已废: J 的门限 TOL·(1+a)=0.012 **低于 2 位小数的舍入噪声底**
 #   (σ_J = sqrt(2+2a²)·0.0029 ≈ 0.0058), 低价股 4% 的日子被误计成"除权日"
 #   ⇒ 90 只假失败。实测该计数在真失败群与正常群上完全无分离(中位 6 vs 4)。
+# ⚠ 模型分派已于 2026-10-16 **取消**(旧 `mult_resid < aff_resid` 判据是掷硬币, 见 rebuild_one)。
+#   现在一律跑仿射重建 —— 它对加性/纯乘性/总收益乘性**三类都正确**, 是超集。
 MAX_CVIOL = 0.05                     # 段内 C=raw−qfq/a 单调性违反 (真守卫)
 AMP_LO, AMP_HI = 0.60, 1.10          # amp_Q=σ(ret_Q)/σ(ret_raw) 合理带(真守卫)
 COLS = ['datetime', 'open', 'high', 'low', 'close', 'volume', 'openinterest',
@@ -229,29 +231,43 @@ def rebuild_one(sym):
     ok = np.abs(dr) > 0.005 * raw[:-1]
     a0 = float(np.median(dq[ok] / dr[ok])) if ok.sum() >= 100 else 1.0
     aff_resid = float(np.median(np.abs(dq - a0 * dr)) / raw.mean())
+    # ── 模型分派(2026-10-16 **取消**): 一律跑仿射重建, 不再有 mult 直通 ──
+    # 旧判据 `mult_resid < aff_resid` 是**掷硬币**:
+    #   ① 两个统计量**都在量化噪声底**(实测 603187: 0.00121 vs 0.00139) ⇒ 边距 0.0002 无意义;
+    #   ② `a0` 是**全局标量**而 a=1/Π **每段都变** ⇒ 拆股多的股(603187 有 5 次, Π 跨度 5.1×)
+    #      a0=0.716 拟合不到任何一段, aff_resid 被"全局 a 失配"污染而非"是不是仿射"。
+    #   ⇒ 实测后果: 592 只走 mult 直通(Q≡qfq, **重建零作用**), 其中 364 只其实是加性失真股
+    #      —— 恰是 C/raw 最大的一群(s_med 中位 0.669) ⇒ 加性失真最重的股被放过。
+    # 中间试过的替代判据(绝对漂移 d60 vs 量化地板)也**不行**: 000750 的 s 从 0.53 漂到 1.00
+    #   (失真巨大) 但低价股 2 位小数的分辨率让 d60=0.006 只到地板的 2.4 倍 ⇒ 仍误判。
+    # ⇒ 正解是**不判**: 仿射重建对**三类模型都正确**, 是它们的超集 —
+    #   · 纯乘性 `qfq=raw/Π`: 段内 a=1/Π 恒定 ⇒ J=dq−a·dr=0 ⇒ Q∝raw, 与 qfq 段内收益逐位相同;
+    #   · 总收益乘性(分红已乘性入 Π): 除权日 J=a·D≠0 ⇒ 加回 ⇒ 与 qfq 收益相同;
+    #   · 加性 `qfq=(raw−C)/Π`: 正是要修的模型。
+    #   唯一风险是**检测错**(假分段 ⇒ a 估错 / 假除权), 而那是 cviol + amp 守卫的职责, 不是分派的。
+    _s = qfq / raw
+    _K = min(60, len(_s) // 4)
+    d60 = float(np.median(np.abs(_s[_K:] / _s[:-_K] - 1))) if _K >= 10 else 0.0
+    drift_floor = 0.01 / max(float(np.median(qfq)), 1e-9)   # 仅供审计, 不参与分派
 
     amp_qfq = _amp(qfq, raw)
-    if mult_resid < aff_resid:
-        Q = qfq.copy(); model = 'mult'; nseg = 1; nsplit = 0; cviol = 0.0; nexd = 0
-        amp_Q = amp_qfq; det = 'mult'        # 乘性直通: Q≡qfq
-    else:
-        # **两遍法**: 先 v5, 通过守卫则直接用(对已 OK 的股逐位零扰动);
-        # 否则再试 union。单用 union 会引入 13/5378 回归 —— v6 的假阳性候选
-        # 造出假分段 ⇒ a 估错 (002601 从 amp 0.90 退回 3.56)。
-        Q = None; det = 'fallback'
-        for fn, tag in ((split_candidates_v5, 'v5'), (split_candidates, 'union')):
-            Q2, d_eff, a_seg, seg = affine_recon(raw, qfq, fn)
-            cv = c_viol(raw, qfq, a_seg, seg)
-            aq = _amp(Q2, raw)
-            if cv <= MAX_CVIOL and AMP_LO <= aq <= AMP_HI:
-                Q, cviol, amp_Q, det = Q2, cv, aq, tag
-                nseg, nsplit = len(a_seg), int(seg[-1])
-                nexd = int((np.abs(d_eff) > 1e-9).sum())
-                break
-        model = 'affine' if det != 'fallback' else 'fallback'
-        if Q is None:
-            Q = qfq.copy(); amp_Q = amp_qfq
-            nseg = nsplit = nexd = 0; cviol = 0.0
+    # **两遍法**: 先 v5, 通过守卫则直接用(对已 OK 的股逐位零扰动);
+    # 否则再试 union。单用 union 会引入 13/5378 回归 —— v6 的假阳性候选
+    # 造出假分段 ⇒ a 估错 (002601 从 amp 0.90 退回 3.56)。
+    Q = None; det = 'fallback'
+    for fn, tag in ((split_candidates_v5, 'v5'), (split_candidates, 'union')):
+        Q2, d_eff, a_seg, seg = affine_recon(raw, qfq, fn)
+        cv = c_viol(raw, qfq, a_seg, seg)
+        aq = _amp(Q2, raw)
+        if cv <= MAX_CVIOL and AMP_LO <= aq <= AMP_HI:
+            Q, cviol, amp_Q, det = Q2, cv, aq, tag
+            nseg, nsplit = len(a_seg), int(seg[-1])
+            nexd = int((np.abs(d_eff) > 1e-9).sum())
+            break
+    model = 'affine' if det != 'fallback' else 'fallback'
+    if Q is None:
+        Q = qfq.copy(); amp_Q = amp_qfq
+        nseg = nsplit = nexd = 0; cviol = 0.0
 
     # OHLC: Q ∝ raw 段内 ⇒ 按 f(t)=Q_close/raw_close 缩放
     f = Q / raw
@@ -277,7 +293,10 @@ def rebuild_one(sym):
     out = out[COLS]
     return 'ok', {'model': model, 'det': det, 'nseg': nseg, 'nsplit': nsplit,
                   'nexd': nexd, 'cviol': round(cviol, 5),
-                  'amp_qfq': round(amp_qfq, 4), 'amp_Q': round(amp_Q, 4)}, out
+                  'amp_qfq': round(amp_qfq, 4), 'amp_Q': round(amp_Q, 4),
+                  # 分派审计字段(2026-10-16): d60/floor 是新判据的两侧, mult_resid/aff_resid 是旧判据
+                  'd60': round(d60, 6), 'drift_floor': round(drift_floor, 6),
+                  'mult_resid': round(mult_resid, 6), 'aff_resid': round(aff_resid, 6)}, out
 
 
 def main():
