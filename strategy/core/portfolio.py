@@ -237,7 +237,10 @@ class PortfolioConstructor:
 
         # === 波动率控制 ===
         self.vol_control_enabled = portfolio_config.get('volatility_control_enabled', True)
-        self.target_volatility = target_volatility if target_volatility is not None else portfolio_config.get('target_volatility', 0.15)
+        # tvol臂(2026-10-16): env门控默认空=逐位零改动 (同族 QUANT_VOL_FLOOR=1.0 可直接关闸)
+        self.target_volatility = float(os.environ.get('QUANT_TARGET_VOL', '') or (
+            target_volatility if target_volatility is not None
+            else portfolio_config.get('target_volatility', 0.15)))
         self.vol_lookback = portfolio_config.get('volatility_control_lookback', 20)
         self._daily_returns = deque(maxlen=self.vol_lookback * 2)  # store up to 2x for safety
 
