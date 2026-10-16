@@ -238,7 +238,12 @@ for i, name in enumerate(names):
             fail += 1
     time.sleep(2.0)
 
-with open(HIST, 'wb') as f:
+# 2026-10-16: 原子写(tmp + os.replace) — 数据冻结快照层前置。
+# 原地 pickle.dump 会改到与硬链接快照共享的 inode ⇒ 静默污染历史快照;
+# 且 concept_hist 是信号输入, 中途被杀会留下截断 pkl(回测直接崩/读到残缺概念)。
+_HIST_TMP = HIST + '.tmp'
+with open(_HIST_TMP, 'wb') as f:
     pickle.dump(hist, f)
+os.replace(_HIST_TMP, HIST)
 dates_all = sorted({d.date() for df in hist.values() for d in df['date']})
 print(f'=== 完成: 更新{ok} 跳过{skip} 失败{fail} (clist兜底{clist_n}); 全局日期 {dates_all[0]} -> {dates_all[-1]} ({len(dates_all)}个交易日) ===', flush=True)

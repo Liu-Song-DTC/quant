@@ -124,7 +124,14 @@ def main():
     for name, ok, data in results:
         if ok:
             output_file = OUTPUT_DIR / f'{name}_qfq.csv'
-            data.to_csv(output_file, index=False)
+            # 2026-10-16: 原子写(tmp + os.replace) — 数据冻结快照层前置。
+            # 原地 to_csv 有两个问题: ①硬链接快照与该文件共享 inode, 原地写会
+            # **静默污染历史快照**(快照不再是当时的数据态); ②中途被杀留下截断
+            # 的 CSV, 回测读到残缺数据(旧代码无任何校验)。
+            # os.replace 在同一文件系统内是原子的 ⇒ 快照的旧 inode 不受影响。
+            _tmp = output_file.with_name(output_file.name + '.tmp')
+            data.to_csv(_tmp, index=False)
+            os.replace(_tmp, output_file)
             success += 1
         elif 'no data in range' in str(data):
             skipped += 1

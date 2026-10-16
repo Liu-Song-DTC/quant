@@ -94,8 +94,14 @@ def main():
           f'(新增{len(new_concepts-old_concepts)} 消失{len(old_concepts-new_concepts)})', flush=True)
     if not os.path.exists(MAP + '.preMapRefresh_0903'):
         shutil.copy2(MAP, MAP + '.preMapRefresh_0903')
-    with open(MAP, 'wb') as f:
+    # 2026-10-16: 原子写(tmp + os.replace) — 数据冻结快照层前置。
+    # 原地 pickle.dump 会改到与硬链接快照共享的 inode ⇒ 静默污染历史快照;
+    # 且概念映射是信号输入(见 bt_execution._signal_code_fingerprint 概念映射摘要),
+    # 中途被杀会留下截断 pkl ⇒ 信号层读到残缺映射且指纹不可见。
+    _MAP_TMP = MAP + '.tmp'
+    with open(_MAP_TMP, 'wb') as f:
         pickle.dump(new_map, f)
+    os.replace(_MAP_TMP, MAP)
     print(f'=== map 刷新完成: {len(new_map)} 只 / {len(new_concepts)} 概念 ===', flush=True)
     return 0
 
