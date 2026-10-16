@@ -42,6 +42,17 @@ class ConceptHeatCalculator:
         self._ema_concept_scores: Dict[str, float] = {}  # EMA平滑后的概念分数 (仅实盘增量模式)
         self._hist_ema: Dict[str, pd.Series] = {}  # 回测: 概念→截至每日的EMA序列(确定性)
         self._loaded = False
+        # 2026-10-16: 概念映射**版本化** (as-of 成分股归属)
+        # 前视根因: _concept_scores(概念涨跌幅)是 as-of 的, 但 _stock_concepts(哪只股票
+        # 属于哪个概念)是**今天的静态名单** ⇒ 拿今天的成分股回测历史。
+        # 实测 churn: 10/4→10/16 仅12天, 5656只共同股票中 26.3% 的归属集合变了
+        # (成员 Jaccard 中位 1.000, 但每股12.7个概念里增删1个就翻转集合判定)
+        # ⇒ concept_heat 每次刷新全史重写 ⇒ 回测曲线不可复现。
+        # 修法: 按决策日 τ 取"截止 τ 的最近版本"的成分股名单, 与 concept_inception
+        # 的成立日 gates 同构。默认关闭(QUANT_CONCEPT_MAP_HIST 空) ⇒ 逐位零改动。
+        self._cmap_versions: Optional[List[tuple]] = None  # [(date_str, map_dict), ...] 升序
+        self._cmap_vcache: Dict[str, tuple] = {}           # date_str → (stock_concepts, concept_stocks)
+        self._cmap_cur: Optional[str] = None               # 当前已应用的版本日期
 
     def load(self, hist_path: str = None):
         """加载股票→概念映射 + 历史概念数据"""
@@ -54,6 +65,22 @@ class ConceptHeatCalculator:
         for code, concepts in self._stock_concepts.items():
             for c in concepts:
                 self._concept_stocks.setdefault(c, []).append(code)
+
+        # 2026-10-16: 版本化映射(研究钩子, 默认空=关闭) — 见 __init__ 注释
+        _hist_p = os.environ.get('QUANT_CONCEPT_MAP_HIST')
+        if _hist_p and os.path.exists(_hist_p):
+            try:
+                with open(_hist_p, 'rb') as f:
+                    _h = pickle.load(f)
+                vs = sorted((v for v in _h.get('versions', []) if v.get('map')),
+                            key=lambda v: str(v['date']))
+                if vs:
+                    self._cmap_versions = [(str(v['date']), v['map']) for v in vs]
+                    print(f"[ConceptHeat] 版本化映射已启用: {len(vs)} 版 "
+                          f"({self._cmap_versions[0][0]} → {self._cmap_versions[-1][0]})")
+            except Exception as _e:
+                print(f"[ConceptHeat] ⚠ 版本化映射加载失败({str(_e)[:60]}), 退回静态映射")
+                self._cmap_versions = None
 
         # 加载概念历史数据(回测用)
         if hist_path is None:
@@ -80,6 +107,38 @@ class ConceptHeatCalculator:
         if len(self._concept_hist) >= 10:
             self._compute_auto_edges()
         self._loaded = True
+
+    def _apply_map_asof(self, date):
+        """按决策日 τ 切换到"截止 τ 的最近版本"成分股名单 (版本化映射关闭时=no-op)
+
+        τ 早于最早版本 ⇒ 用最早版本(能拿到的最早名单, 恒定 ⇒ 可复现)。
+        切换只换两个属性的**引用**(构造结果按版本缓存), 所有下游消费者
+        (get_concept_heat / get_chain_lead_score / signal_engine 的 bom_chain)
+        读的都是属性, 无需改动。
+        """
+        if not self._cmap_versions:
+            return
+        d = str(pd.Timestamp(date).date())
+        # 截止 d 的最近版本; d 早于最早版本时取最早版本
+        ver = self._cmap_versions[0][0]
+        for vd, _ in self._cmap_versions:
+            if vd <= d:
+                ver = vd
+            else:
+                break
+        if ver == self._cmap_cur:
+            return
+        cached = self._cmap_vcache.get(ver)
+        if cached is None:
+            m = next(mm for vd, mm in self._cmap_versions if vd == ver)
+            cs: Dict[str, List[str]] = {}
+            for code, concepts in m.items():
+                for c in concepts:
+                    cs.setdefault(c, []).append(code)
+            cached = (m, cs)
+            self._cmap_vcache[ver] = cached
+        self._stock_concepts, self._concept_stocks = cached
+        self._cmap_cur = ver
 
     def _compute_auto_edges(self):
         """从历史概念数据自动发现传导关系
@@ -127,6 +186,9 @@ class ConceptHeatCalculator:
         - 回测模式: 从 concept_hist 按日期查找
         - 手动模式: 传入 concept_returns
         """
+        # 2026-10-16: 先按决策日切换成分股名单, 再走缓存(缓存存的是涨跌幅/链信号,
+        # 与名单无关; 但名单必须在 get_concept_heat 之前就位)
+        self._apply_map_asof(date)
         # 统一规范化日期键，确保所有路径使用一致缓存键
         cache_key = str(pd.Timestamp(date).date())
 

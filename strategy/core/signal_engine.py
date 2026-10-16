@@ -68,6 +68,25 @@ def _load_industry_factors():
     return {}
 
 
+# 过滤宽泛标签概念（与标定一致）
+STYLE_KW = ['融资融券', '深股通', '沪股通', '富时罗素', '标准普尔', 'MSCI',
+             '创业板综', '机构重仓', 'QFII', '破增发', '破发股', '昨日高',
+             '中证500', '深成500', '中盘股', '小盘股', '央国企改革',
+             '西部大开发', '年报预增', '专精特新', '上证380', 'HS300',
+             '微盘股', '百元股', '大盘股', '小盘成长', '小盘价值',
+             '转债标的', '长江三角', '深圳特区', '破净股', '创投']
+
+
+def _filter_concept_map(raw):
+    """过滤宽泛标签概念（与标定一致）"""
+    result = {}
+    for code, concepts in raw.items():
+        filtered = [c for c in concepts if not any(kw in c for kw in STYLE_KW)]
+        if filtered:
+            result[code] = filtered
+    return result
+
+
 def _load_concept_map():
     """加载概念板块映射（与标定对齐，用于因子配置查找）"""
     import pickle
@@ -79,19 +98,42 @@ def _load_concept_map():
         return {}
     with open(map_path, 'rb') as f:
         raw = pickle.load(f)
-    # 过滤宽泛标签概念（与标定一致）
-    STYLE_KW = ['融资融券', '深股通', '沪股通', '富时罗素', '标准普尔', 'MSCI',
-                 '创业板综', '机构重仓', 'QFII', '破增发', '破发股', '昨日高',
-                 '中证500', '深成500', '中盘股', '小盘股', '央国企改革',
-                 '西部大开发', '年报预增', '专精特新', '上证380', 'HS300',
-                 '微盘股', '百元股', '大盘股', '小盘成长', '小盘价值',
-                 '转债标的', '长江三角', '深圳特区', '破净股', '创投']
-    result = {}
-    for code, concepts in raw.items():
-        filtered = [c for c in concepts if not any(kw in c for kw in STYLE_KW)]
-        if filtered:
-            result[code] = filtered
-    return result
+    return _filter_concept_map(raw)
+
+
+def _load_concept_map_history():
+    """加载概念映射**版本表** (as-of 成分股归属), 默认空=关闭 ⇒ 逐位零改动.
+
+    2026-10-16: 与 core/concept_heat.py 的同名修复同源。此处是**第二条**消费静态
+    名单的路径: `_get_specific_industry` 用 STOCK_CONCEPT_MAP[code] 决定该股套用
+    哪个季度因子配置(哪套因子权重)。有概念**成立日** gate, 但**没有成分股归属 gate**
+    ⇒ 拿今天的成分股决定历史每一天用哪套权重。
+    实测敏感度: 静态名单 vs 5/31 名单, **26.0% 的 (股票×季度) 单元选中不同配置**
+    (134,448 单元; 2026Q3 达 34.4%)。这是比 concept_heat 更一阶的通道 —
+    它直接决定评分用哪套因子, 不是 scale-invariant。
+    ⇒ 每次概念刷新全史重写 + 回测/实盘分叉。
+
+    τ 早于最早版本 ⇒ 用最早版本(能拿到的最早名单, 恒定 ⇒ 可复现)。
+    """
+    import pickle
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    hist_p = os.environ.get('QUANT_CONCEPT_MAP_HIST')
+    if not hist_p or not os.path.exists(hist_p):
+        return None
+    try:
+        with open(hist_p, 'rb') as f:
+            h = pickle.load(f)
+        vs = sorted((v for v in h.get('versions', []) if v.get('map')),
+                    key=lambda v: str(v['date']))
+        if not vs:
+            return None
+        out = [(str(v['date']), _filter_concept_map(v['map'])) for v in vs]
+        print(f"[SignalEngine] 版本化概念映射已启用: {len(out)} 版 "
+              f"({out[0][0]} → {out[-1][0]})")
+        return out
+    except Exception as e:
+        print(f"[SignalEngine] ⚠ 版本化概念映射加载失败({str(e)[:60]}), 退回静态映射")
+        return None
 
 
 def _load_concept_inception():
@@ -110,6 +152,30 @@ def _load_concept_inception():
 INDUSTRY_FACTOR_CONFIG = _load_industry_factors()
 STOCK_CONCEPT_MAP = _load_concept_map()  # 概念板块→因子配置查找（与标定对齐）
 CONCEPT_INCEPTION = _load_concept_inception()  # 概念成立日PIT gate（阶段6c）
+CONCEPT_MAP_HIST = _load_concept_map_history()  # 版本化概念映射（默认 None=关闭）
+_CONCEPT_MAP_HIST_CACHE = {}                    # date_str → 名单
+
+
+def _concept_map_asof(ts):
+    """按决策日取"截止该日的最近版本"概念名单.
+
+    Returns: (名单, 版本号) — 版本号用于缓存键; 未启用版本化时 = (静态名单, '')
+    """
+    if not CONCEPT_MAP_HIST:
+        return STOCK_CONCEPT_MAP, ''
+    d = str(pd.Timestamp(ts).date())
+    hit = _CONCEPT_MAP_HIST_CACHE.get(d)
+    if hit is not None:
+        return hit
+    ver, m = CONCEPT_MAP_HIST[0]
+    for vd, vm in CONCEPT_MAP_HIST:
+        if vd <= d:
+            ver, m = vd, vm
+        else:
+            break
+    hit = (m, ver)
+    _CONCEPT_MAP_HIST_CACHE[d] = hit
+    return hit
 
 # 季度因子配置缓存
 _QUARTER_INDEX = None        # {quarter_id: {start, end, file}}
@@ -2723,7 +2789,12 @@ class SignalEngine:
     def _get_specific_industry(self, code, current_date) -> str:
         """获取具体行业名（优先industry_codes反向映射保证DYN缓存命中，回退概念板块）"""
         # 内存缓存: 同股票同季度行业不变, 避免逐bar重复计算
-        _ck = f'{code}_{_get_quarter_id(current_date)}'
+        # ⚠ 缓存键须含概念映射版本(2026-10-16): 版本边界可能落在季度中间; 若不入键,
+        #   同一 (股票,季度) 的答案取决于该 worker 首次调用的日期 ⇒ 跨 worker 不确定,
+        #   且"同季度内答案不同"本身违反缓存前提。
+        _cur_ts = pd.Timestamp(current_date)
+        _cmap, _cmap_ver = _concept_map_asof(_cur_ts)
+        _ck = f'{code}_{_get_quarter_id(current_date)}_{_cmap_ver}'
         if not hasattr(self, '_spec_ind_cache'):
             self._spec_ind_cache = {}
         _cached = self._spec_ind_cache.get(_ck)
@@ -2735,10 +2806,11 @@ class SignalEngine:
         result = None
         # P0: 优先从概念板块映射查找（与季度标定对齐，季度配置用概念名）
         # PIT gate（阶段6c）: 概念成立日前跳过 — 前视概念不参与行业归属
+        # PIT gate（2026-10-16）: 成分股归属也按决策日取版本 — 未启用时 _cmap
+        #   就是 STOCK_CONCEPT_MAP（同一对象），逐位零改动。
         cfg = _resolve_factor_config(current_date)
-        _cur_ts = pd.Timestamp(current_date)
-        if code in STOCK_CONCEPT_MAP:
-            for concept in STOCK_CONCEPT_MAP[code]:
+        if code in _cmap:
+            for concept in _cmap[code]:
                 _incep = CONCEPT_INCEPTION.get(concept)
                 if _incep is not None and _cur_ts < _incep:
                     _QUARTER_DIAG['concept_gated'] += 1
