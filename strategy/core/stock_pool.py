@@ -17,7 +17,20 @@ from pathlib import Path
 
 
 def _get_data_dir():
-    """获取backtrader数据目录"""
+    """获取backtrader数据目录
+
+    2026-10-16: 尊重 QUANT_DATA_PATH (与 bt_execution.DATA_PATH 同一钩子)。
+    动机 = **假臂防线**: 池成员资格由**价格水平**决定(`last_price < min_price`
+    在历史边界上直接受复权口径影响 — qfq 早期可为负/极小), 若信号层读新数据源
+    而池筛选仍读生产目录, 臂只换了因子价格不换股票池 = 半假臂(实测踩过:
+    pit_map0531 只跑 9min 且与基线逐字节相同)。默认空 ⇒ 逐位零改动。
+    ⚠ stock_pool.py 在 _FACTOR_CODE_FILES 内 ⇒ 本文件 mtime 计入信号指纹,
+      改这里会让旧信号 CSV 失效(符合预期: 池规则变 = 信号内容变)。
+    """
+    # 返回格式与默认分支一致(**不带**尾斜杠) — 调用方全走 os.path.join/os.listdir
+    _dp = os.environ.get('QUANT_DATA_PATH')
+    if _dp:
+        return os.path.normpath(_dp)
     base = Path(__file__).parent.parent.parent
     return str(base / 'data' / 'stock_data' / 'backtrader_data')
 
