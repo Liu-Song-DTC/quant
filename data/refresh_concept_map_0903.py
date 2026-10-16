@@ -102,6 +102,21 @@ def main():
     with open(_MAP_TMP, 'wb') as f:
         pickle.dump(new_map, f)
     os.replace(_MAP_TMP, MAP)
+
+    # 2026-10-16: **版本快照** — 概念层是全系统唯一没有日期维度的输入, 每刷新一次
+    # 追加一版 as-of 成分股归属(见 concept_map_version.py / QUANT_CONCEPT_MAP_HIST).
+    # ⚠ 时间敏感: 东财只提供**当前**名单, 历史名单不可回补 ⇒ 今天不记就永久丢失.
+    # 失败**不阻塞**刷新(映射本体已落盘), 但要显式告警 —— 丢版本是不可逆的.
+    try:
+        import sys as _sys
+        _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from concept_map_version import record_version
+        _r = record_version(new_map, src='refresh_concept_map_relay',
+                            note=f'{ok_b}/{len(name_of)} 板块')
+        print(f'版本快照: {_r}', flush=True)
+    except Exception as _e:
+        print(f'!!! 概念映射版本快照失败({str(_e)[:80]}) — 该日归属将永久缺失, 请手工补', flush=True)
+
     print(f'=== map 刷新完成: {len(new_map)} 只 / {len(new_concepts)} 概念 ===', flush=True)
     return 0
 
