@@ -12,6 +12,7 @@
 校验: 与3只流动股交易历并集对齐(无非交易日行), 除死板块外末日=今天。
 备份: concept_hist.pkl.preRepair_20261012
 """
+import os
 import pickle
 import shutil
 import time
@@ -149,8 +150,11 @@ for i, name in enumerate(list(hist.keys())):
         stats['fail'] += 1
     time.sleep(1.2)
 
-with open(HIST, 'wb') as f:
+# 2026-10-16: 原子写(tmp + os.replace) — 数据冻结快照层前置
+_hist_tmp = HIST + '.tmp'
+with open(_hist_tmp, 'wb') as f:
     pickle.dump(hist, f)
+os.replace(_hist_tmp, HIST)
 
 bad = []
 for name, df in hist.items():

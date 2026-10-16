@@ -90,7 +90,10 @@ def main():
             jc['kind'] = jc['title'].map(classify)
             df = jc if df is None else pd.concat([df, jc], ignore_index=True)
             df = df.drop_duplicates(subset=['code', 'ann_date', 'title']).reset_index(drop=True)
-        df.to_pickle(PKL)
+        # 2026-10-16: 原子写(tmp + os.replace) — 见 alternative_data.py 同名修复
+        _tmp = PKL + '.tmp'
+        df.to_pickle(_tmp)
+        os.replace(_tmp, PKL)
         n_s = int((df['kind'] == 'start').sum()) if len(df) else 0
         print(f'[{i+1}/{len(todo)}] {b[:7]} 本月减持公告{len(jc)}条, 累计{len(df)}(start {n_s})', flush=True)
         time.sleep(SLEEP)

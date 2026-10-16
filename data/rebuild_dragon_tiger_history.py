@@ -115,8 +115,11 @@ def write_hist(hist, ok_months, min_ok=1):
         if not os.path.exists(bak):
             shutil.copy2(OUT, bak)
             print(f'备份: {bak}')
-    with open(OUT, 'wb') as f:
+    # 2026-10-16: 原子写(tmp + os.replace) — 数据冻结快照层前置
+    _tmp = OUT + '.tmp'
+    with open(_tmp, 'wb') as f:
         pickle.dump(hist, f)
+    os.replace(_tmp, OUT)
     print(f'写入: {OUT} ({len(hist)} 只)')
     return True
 

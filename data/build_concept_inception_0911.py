@@ -172,8 +172,12 @@ for c in warn:
 
 # ---------- 输出 ----------
 out = dict(sorted(inc.items()))
-with open(f'{ROOT}/data/concept_inception.pkl', 'wb') as f:
+# 2026-10-16: 原子写(tmp + os.replace) — 数据冻结快照层前置。concept_inception 是
+# **信号输入**(概念成立日 PIT gate), 原地写会污染硬链接快照 inode + 截断风险。
+_inc_tmp = f'{ROOT}/data/concept_inception.pkl.tmp'
+with open(_inc_tmp, 'wb') as f:
     pickle.dump(out, f)
+os.replace(_inc_tmp, f'{ROOT}/data/concept_inception.pkl')
 print(f'\n=== 写入 data/concept_inception.pkl: {len(out)} 个gate '
       f'(ths={n_ths} hist={n_hist} rpt={n_rpt} know={n_know}) ===')
 # 摘要: gate落在各年的概念数

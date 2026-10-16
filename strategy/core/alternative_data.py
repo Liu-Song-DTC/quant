@@ -13,6 +13,7 @@ A股另类数据信号源 — 龙虎榜、北向资金、融资融券。
 import numpy as np
 import pandas as pd
 import os
+import pickle
 from datetime import date as date_type
 from pathlib import Path
 
@@ -22,6 +23,28 @@ from pathlib import Path
 # (自动刷新静默改写pkl内容+mtime → 复用臂误判stale全链重生成 + 冻结数据态污染)。
 # 默认关: 行为与9/19前逐位一致(信号指纹豁免验证见9/20冷跑重锚)。
 _AUTOREFRESH_OFF = os.environ.get('QUANT_ALT_NO_AUTOREFRESH', '') in ('1', 'true', 'yes', 'on')
+
+
+# 原子写 (2026-10-16) — 数据冻结快照层前置。与 convert_raw_to_backtrader.py /
+# refresh_concept_*.py 同源修复。另类数据是**信号输入**(龙虎榜/北向/两融/减持/
+# 解禁/业绩预告), 原地写有两个问题:
+#   ① 硬链接快照与该文件**共享 inode** ⇒ 原地写会静默污染历史快照
+#      (快照不再是当时的数据态 ⇒ 回测不可复现);
+#   ② 中途被杀留下**截断 pkl** ⇒ 回测读到残缺数据(旧代码无任何校验)。
+# os.replace 同文件系统内原子 ⇒ 快照旧 inode 不受影响。
+def _atomic_write_bytes(path, data: bytes):
+    path = Path(path)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def _atomic_to_pickle(df, path):
+    """df.to_pickle 的原子版 — 见 _atomic_write_bytes"""
+    path = Path(path)
+    tmp = path.with_name(path.name + '.tmp')
+    df.to_pickle(tmp)
+    os.replace(tmp, path)
 
 
 class AlternativeDataProvider:
@@ -94,7 +117,7 @@ class AlternativeDataProvider:
             # akshare 1.18: symbol 参数改为 '近一月'/'近三月'/'近一年'
             df = ak.stock_lhb_stock_statistic_em(symbol='近一年')
             if df is not None and len(df) > 0:
-                df.to_pickle(cache_path)
+                _atomic_to_pickle(df, cache_path)
                 self._dragon_tiger = df
                 print(f"[AltData] 龙虎榜: {len(df)} 条 -> {cache_path}")
             return df if df is not None else pd.DataFrame()
@@ -130,7 +153,7 @@ class AlternativeDataProvider:
                         for code, grp in df.groupby('code_6'):
                             if code and len(str(code)) == 6:
                                 self._dt_history[code] = set(grp['dt'].unique())
-                        history_path.write_bytes(pickle.dumps(self._dt_history))
+                        _atomic_write_bytes(history_path, pickle.dumps(self._dt_history))
                         return
             except Exception:
                 pass
@@ -169,7 +192,7 @@ class AlternativeDataProvider:
                     for code, grp in merged.groupby('code_6'):
                         if code and len(str(code)) == 6:
                             self._dt_history[code] = set(grp['dt'].unique())
-                    history_path.write_bytes(pickle.dumps(self._dt_history))
+                    _atomic_write_bytes(history_path, pickle.dumps(self._dt_history))
                     print(f"[AltData] 龙虎榜历史: {len(self._dt_history)} 只股票 -> {history_path}")
         except ImportError:
             pass  # akshare未安装, 静默跳过
@@ -300,7 +323,7 @@ class AlternativeDataProvider:
                 }
                 df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
                 df['date'] = pd.to_datetime(df['date'])
-                df.to_pickle(cache_path)
+                _atomic_to_pickle(df, cache_path)
                 self._northbound = df
                 print(f"[AltData] 北向资金: {len(df)} 天 -> {cache_path}")
             return df if df is not None else pd.DataFrame()
@@ -423,7 +446,7 @@ class AlternativeDataProvider:
                 }
                 df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
                 df['date'] = pd.to_datetime(df['date'])
-                df.to_pickle(cache_path)
+                _atomic_to_pickle(df, cache_path)
                 self._margin = df
                 print(f"[AltData] 融资融券: {len(df)} 天 -> {cache_path}")
             return df if df is not None else pd.DataFrame()
@@ -555,7 +578,7 @@ class AlternativeDataProvider:
                 df = old
             if df is not None and len(df):
                 df = df.sort_values('eitime').reset_index(drop=True)
-                df.to_pickle(cache_path)
+                _atomic_to_pickle(df, cache_path)
             self._reduction = df
             print(f"[AltData] 股东减持: {len(df)} 条 -> {cache_path}")
             return df if df is not None else pd.DataFrame()
@@ -629,7 +652,7 @@ class AlternativeDataProvider:
             df = pd.concat([f for f in frames if len(f)], ignore_index=True)
             df = df.drop_duplicates(subset=['code', 'unlock_date', 'type', 'shares'])
             df = df.sort_values('unlock_date').reset_index(drop=True)
-            df.to_pickle(cache_path)
+            _atomic_to_pickle(df, cache_path)
             self._unlock = df
             print(f"[AltData] 限售解禁: {len(df)} 条 ({df['unlock_date'].min().date()}~{df['unlock_date'].max().date()}) -> {cache_path}")
             return df
@@ -726,7 +749,7 @@ class AlternativeDataProvider:
                 return self._yjyg
             df = df.drop_duplicates(subset=['code', 'report_period', 'indicator', 'notice_date'])
             df = df.sort_values('notice_date').reset_index(drop=True)
-            df.to_pickle(cache_path)
+            _atomic_to_pickle(df, cache_path)
             self._yjyg = df
             print(f"[AltData] 业绩预告: {len(df)} 条 ({df['notice_date'].min().date()}~{df['notice_date'].max().date()}) -> {cache_path}")
             return df
@@ -862,7 +885,7 @@ class AlternativeDataProvider:
                     df = fresh if not len(df) else pd.concat([df, fresh], ignore_index=True)
                     df = df.drop_duplicates(subset=['code', 'ann_date', 'title']).reset_index(drop=True)
                 if len(df):
-                    df.to_pickle(pkl)
+                    _atomic_to_pickle(df, pkl)
                 new_last = df['ann_date'].max() if len(df) else 'NA'
                 print(f"[AltData] 减持计划已增量更新: {len(df)} 条, 最新公告 {new_last}")
             except Exception as e:
