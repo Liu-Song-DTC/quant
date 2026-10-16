@@ -11,6 +11,7 @@
 实盘: 每日调用一次 stock_board_concept_name_em()
 """
 
+import os
 import numpy as np
 import pickle
 from pathlib import Path
@@ -25,7 +26,9 @@ class ConceptHeatCalculator:
 
     def __init__(self, map_path: str = None):
         if map_path is None:
-            map_path = str(Path(__file__).parent.parent.parent / "data" / "stock_concept_map.pkl")
+            # 研究钩子: QUANT_CONCEPT_MAP 覆盖概念映射路径(默认空=生产路径, 逐位零改动)
+            map_path = os.environ.get('QUANT_CONCEPT_MAP') or str(
+                Path(__file__).parent.parent.parent / "data" / "stock_concept_map.pkl")
 
         self._map_path = map_path
         self._stock_concepts: Dict[str, List[str]] = {}

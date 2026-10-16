@@ -72,7 +72,9 @@ def _load_concept_map():
     """加载概念板块映射（与标定对齐，用于因子配置查找）"""
     import pickle
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    map_path = os.path.join(project_root, 'data', 'stock_concept_map.pkl')
+    # 研究钩子: QUANT_CONCEPT_MAP 覆盖概念映射路径(默认空=生产路径, 逐位零改动)
+    map_path = os.environ.get('QUANT_CONCEPT_MAP') or os.path.join(
+        project_root, 'data', 'stock_concept_map.pkl')
     if not os.path.exists(map_path):
         return {}
     with open(map_path, 'rb') as f:

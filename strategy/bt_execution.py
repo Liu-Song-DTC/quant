@@ -265,7 +265,8 @@ def _signals_stale(signals_csv):
              *[os.path.join(_PROJECT_DIR, 'data/alternative_data', fn)
                for fn in _SIGNAL_ALT_FILES],
              os.path.join(_PROJECT_DIR, 'data/concept_hist.pkl'),
-             os.path.join(_PROJECT_DIR, 'data/stock_concept_map.pkl'),
+             os.environ.get('QUANT_CONCEPT_MAP') or os.path.join(
+                 _PROJECT_DIR, 'data/stock_concept_map.pkl'),
              os.path.join(_PROJECT_DIR, 'data/concept_inception.pkl')]
     newest, newest_what = 0, ''
     for root in roots:
@@ -369,7 +370,9 @@ def _ml_chunk_cache_aux_fp(fundamental_data, config=None) -> str:
                 except OSError:
                     _h.update(f"{_fp}|MISSING;".encode('utf-8'))
     for _f in ('concept_hist.pkl', 'stock_concept_map.pkl', 'concept_inception.pkl'):
-        _p = os.path.join(_PROJECT_DIR, 'data', _f)
+        # 研究钩子: QUANT_CONCEPT_MAP 覆盖(默认空=生产路径) — 换路径必须换指纹, 否则信号静默复用
+        _p = (os.environ.get('QUANT_CONCEPT_MAP')
+              if _f == 'stock_concept_map.pkl' else None) or os.path.join(_PROJECT_DIR, 'data', _f)
         try:
             _st = os.stat(_p)
             _h.update(f"{_p}|{_st.st_mtime_ns}|{_st.st_size};".encode('utf-8'))
@@ -509,7 +512,9 @@ def _build_concept_industry_codes(stock_codes, min_stocks=20):
         dict: {concept_name: [code1, code2, ...]}
     """
     import pickle
-    concept_map_path = os.path.join(_PROJECT_DIR, 'data', 'stock_concept_map.pkl')
+    # 研究钩子: QUANT_CONCEPT_MAP 覆盖概念映射路径(默认空=生产路径, 逐位零改动)
+    concept_map_path = os.environ.get('QUANT_CONCEPT_MAP') or os.path.join(
+        _PROJECT_DIR, 'data', 'stock_concept_map.pkl')
     if not os.path.exists(concept_map_path):
         print("[WARNING] stock_concept_map.pkl 不存在，回退到关键词映射")
         return {}
@@ -2319,6 +2324,22 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             traceback.print_exc()
             target = {}
 
+        # 诊断(env门控, 默认零改动): 记录闸前量与组合层/引擎层权益差
+        _dg = {'date': str(date)[:10], 'nav': float(nav[i]), 'cash': float(cash),
+               'pos_value': float(pos_value), 'sum_cur_pos': float(sum(cur_pos.values())),
+               'n_cur_pos': len(cur_pos), 'n_pos_all': int(np.sum(positions > 0)),
+               'n_ok_pos': int(np.sum((positions > 0) & ok)),
+               'n_sel': len(target) if target else 0,
+               'tgt_before': float(sum(target.values())) if target else 0.0,
+               'scale': 1.0, 'tgt_total': float(sum(target.values())) if target else 0.0,
+               'invisible_codes': ''}
+        if os.environ.get('QUANT_DBG_SCALE') == '1':
+            _vis = set(cur_pos.keys())
+            _inv = [stock_codes[j] for j in range(len(stock_codes))
+                    if positions[j] > 0 and not _vis.__contains__(stock_codes[j])]
+            _dg['invisible_codes'] = '|'.join(_inv[:12])
+            _dg['n_invisible'] = len(_inv)
+
         # 现金流约束: target按total_equity算但实际只有cash可用, 缩放total到cash能支持的范围
         if target:
             _target_total = sum(target.values())
@@ -2327,6 +2348,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             if _target_total > _available * 0.98:
                 _scale = (_available * 0.98) / max(_target_total, 1.0)
                 target = {c: v * _scale for c, v in target.items()}
+                _dg['scale'] = float(_scale)
+                _dg['tgt_total'] = float(_target_total)
+                _dg['available'] = float(_available)
 
         # 记录选股
         for c, tv in target.items():
@@ -2338,6 +2362,23 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 selections.append({'date': date, 'code': c,
                                    'weight': tv / max(nav[i], 1.0),
                                    'score': sig_score})
+
+        # 诊断落盘(env门控, 只写/tmp)
+        if os.environ.get('QUANT_DBG_SCALE') == '1':
+            try:
+                import csv as _csvd
+                _dg['sum_sel_w'] = float(sum(s['weight'] for s in
+                                             strategy.portfolio.last_selection))
+                _dg.setdefault('available', float(nav[i]))
+                _p = '/tmp/scale_diag.csv'
+                _new = not os.path.exists(_p)
+                with open(_p, 'a', newline='') as _fd:
+                    _wd = _csvd.DictWriter(_fd, fieldnames=sorted(_dg.keys()))
+                    if _new:
+                        _wd.writeheader()
+                    _wd.writerow(_dg)
+            except Exception as _e:
+                print(f' [scale_diag] {_e}')
 
         # 调仓执行 (B批修复B3): 目标只入挂单簿, 次日开盘成交; 当日收盘只决策不成交
         _pending = target
