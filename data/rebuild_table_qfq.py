@@ -49,6 +49,9 @@ import argparse
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from market_codes import is_stock_code                     # noqa: E402
+
 PROJ = '/mnt/d/quant'
 RAW = f'{PROJ}/data/stock_data/raw_data'
 BT = f'{PROJ}/data/stock_data/backtrader_data'
@@ -74,7 +77,10 @@ def _settle_guard():
     p = sorted(glob.glob(f'{RAW}/*/none.csv'))
     if not p:
         return
-    lt = pd.to_datetime(pd.read_csv(p[0], encoding='utf-8-sig', usecols=['日期'])['日期']).max()
+    # 抽样 200 只取**最大**末行日期 —— 单只可能停牌(末行停在很久以前), 会漏判。
+    # 抽样而非全量: 全量读 5000+ 文件约 1 分钟, 而本函数只需要一个"今天是否已有行"的信号。
+    lt = max(pd.to_datetime(pd.read_csv(f, encoding='utf-8-sig', usecols=['日期'])['日期']).max()
+             for f in p[::max(1, len(p) // 200)])
     now = pd.Timestamp.now()
     if lt.normalize() == now.normalize() and (now.hour, now.minute) < (15, 5):
         raise SystemExit(
@@ -82,11 +88,18 @@ def _settle_guard():
             f"⇒ 该行是临时值(实测次日必被修正), 拒绝构建。收盘后重跑。")
 
 
-def build_one(sym, actions, raw_df, bt_df, anchor='frozen', kfix=None):
+def build_one(sym, actions, raw_df, bt_df, anchor='frozen', kfix=None, drift=None):
     """返回 (P_close, nev)。P 的锚因子见模块 docstring 的锚点说明。
+
+    actions: 可迭代的 (ex_date, s, D[, mult]) —— 4 元组的第 4 项是**直接乘数**
+      (新浪因子通道, 见 2026-10-17 融合说明): `mult` 非 None 时用它替换
+      `((1+s)·raw(t)+D)/raw(t−1)` 的分子口径, 即 `r = mult · raw(t)/raw(t−1)`。
+      用于填补东财分红送配表**结构性不覆盖**的事件(配股 / 重整转增 / 特别股息)。
 
     kfix: frozen 锚的冻结因子 {sym: k}。缺失时由本函数算出并**回写调用方**
           (调用方负责持久化 ⇒ 下次重建逐位复用)。
+    drift: 可选 list; 锚因子与重算值不符时追加 (sym, k_old, k_new)。
+           **不符 = 事件集变了(数据修正)** ⇒ 采用新锚并上报。稳定态下永不触发。
     """
     dt = pd.to_datetime(raw_df['日期']).values
     raw = raw_df['收盘'].values.astype(float)
@@ -96,21 +109,24 @@ def build_one(sym, actions, raw_df, bt_df, anchor='frozen', kfix=None):
     # 事件聚合到"第一个 >= 除权日的交易日"(除权日可能落在非交易日/停牌日)
     idx = pd.Series(np.arange(n), index=pd.DatetimeIndex(dt))
     ev = {}
-    for ex, s, D in actions:
+    for act in actions:
+        ex, s, D = act[0], act[1], act[2]
+        mm = act[3] if len(act) > 3 else None
         pos = idx.index.searchsorted(pd.Timestamp(ex), side='left')
         if pos >= n:
             continue                      # 样本之后 ⇒ 忽略
         key = dt[pos]
-        s0, D0 = ev.get(key, (0.0, 0.0))
-        ev[key] = ((1 + s0) * (1 + s) - 1, D0 + D)   # 同日多事件合并
+        s0, D0, m0 = ev.get(key, (0.0, 0.0, None))
+        ev[key] = ((1 + s0) * (1 + s) - 1, D0 + D, mm if mm is not None else m0)
     W = np.empty(n); W[0] = raw[0]
     nev = 0
     for t in range(1, n):
         r = raw[t] / raw[t - 1]
         e = ev.get(dt[t])
         if e is not None and raw[t - 1] > 0:
-            s, D = e
-            r = ((1 + s) * raw[t] + D) / raw[t - 1]
+            s, D, mm = e
+            r = (mm * raw[t] / raw[t - 1]) if mm is not None \
+                else (((1 + s) * raw[t] + D) / raw[t - 1])
             nev += 1
         W[t] = W[t - 1] * r
     if not np.isfinite(W[-1]) or W[-1] <= 0:
@@ -124,9 +140,17 @@ def build_one(sym, actions, raw_df, bt_df, anchor='frozen', kfix=None):
     elif anchor == 'latest':
         P = W * (raw[-1] / W[-1])
     else:                                   # frozen
+        k_cur = float(raw[-1] / W[-1])
         k = kfix.get(sym)
         if k is None:
-            k = float(raw[-1] / W[-1])
+            k = k_cur
+            kfix[sym] = k
+        elif abs(k - k_cur) > 1e-9 * max(abs(k), 1e-12):
+            # 锚漂移 = W(末) 变了 = 事件集变了。**只可能来自数据修正**(增删事件)。
+            # 稳定态下 raw(末)/W(末) 对"新增一个交易日"不变(分子分母同乘), 故永不触发。
+            if drift is not None:
+                drift.append((sym, k, k_cur))
+            k = k_cur
             kfix[sym] = k
         P = W * k
     if (P <= 0).any():
@@ -141,6 +165,9 @@ def main():
     ap.add_argument('--anchor', choices=['frozen', 'first', 'latest'], default='frozen',
                     help='frozen=锚冻结在首建日(生产默认,满足铁律); first=P≡W 仅对照; latest=每次重锚 仅对照')
     ap.add_argument('--anchor-file', default=ANCHOR_FILE)
+    ap.add_argument('--events', default=CA,
+                    help='事件表 pickle。默认东财 corporate_actions.pkl (code,ex_date,s,D); '
+                         '可传融合表 (…,mult,src) —— mult 非空时按**直接乘数**消费(新浪通道填补)')
     a = ap.parse_args()
     _settle_guard()                     # 铁律守卫: 拒绝用"今天未收盘的临时 raw"构建
     if a.out is None:
@@ -158,8 +185,22 @@ def main():
             print(f"锚因子: 首建, 将生成 {a.anchor_file} (此后为合约, 不得重算)")
     k_new = 0
 
-    ca = pd.read_pickle(CA)
-    ca_by = {c: g[['ex_date', 's', 'D']].values.tolist() for c, g in ca.groupby('code')}
+    ca = pd.read_pickle(a.events)
+    ca['code'] = ca['code'].astype(str).str.zfill(6)
+    if 'mult' in ca.columns:      # 融合表: (ex_date, s, D, mult) —— 同日多事件时 mult 由首条携带
+        ca_by = {}
+        for c, g in ca.groupby('code'):
+            rows = []
+            for r in g.itertuples():
+                mm = r.mult if (isinstance(r.mult, float) and np.isfinite(r.mult)) else None
+                rows.append((r.ex_date, 0.0 if not np.isfinite(r.s) else r.s,
+                             0.0 if not np.isfinite(r.D) else r.D, mm))
+            ca_by[c] = rows
+        print(f"事件表: {a.events}  {len(ca)} 条 / {ca.code.nunique()} 只"
+              f"  (含直接乘数 {int(ca['mult'].notna().sum() - ca['s'].notna().sum())} 条)")
+    else:
+        ca_by = {c: g[['ex_date', 's', 'D']].values.tolist() for c, g in ca.groupby('code')}
+        print(f"事件表: {a.events}  {len(ca)} 条 / {ca.code.nunique()} 只 (s,D 口径)")
 
     if a.only:
         syms = [s.strip().zfill(6) for s in a.only.split(',')]
@@ -168,6 +209,10 @@ def main():
         syms = sorted(os.path.basename(os.path.dirname(p))
                       for p in glob.glob(f'{RAW}/*/none.csv'))
         syms = [s for s in syms if s[0] in '036']       # 北交所排除(铁律)
+        # 指数伪码排除(见 market_codes.py): 它们的 6 位代码与深市股票相同, 新浪会抓到
+        # **同代码深市股票**的事件 ⇒ 造出假除权(实测 000851 被塞 1.40×, 历史改写 4044 点)。
+        # 排除后落入下方"补集沿用生产文件"分支 ⇒ 与基线逐位相同。
+        syms = [s for s in syms if is_stock_code(s)]
         # 补集: **重建没产出的股票一律沿用生产文件**, 保证股票池与基线逐位相同
         #   (a) 118 只退市股 —— raw_data 只有 qfq.csv 无原始价, 且官方分红表查不到
         #       (ak.stock_fhps_detail_em 对退市码返回 None) ⇒ 无法反解 raw
@@ -177,6 +222,7 @@ def main():
 
     report = {}
     stats = {}
+    drift = []
     for i, sym in enumerate(syms):
         bp = f'{BT}/{sym}_qfq.csv'
         rp = f'{RAW}/{sym}/none.csv'
@@ -192,7 +238,7 @@ def main():
         r['日期'] = pd.to_datetime(r['日期'])
         r = r.sort_values('日期').reset_index(drop=True)
         acts = ca_by.get(sym, [])
-        got = build_one(sym, acts, r, b, anchor=a.anchor, kfix=kfix)
+        got = build_one(sym, acts, r, b, anchor=a.anchor, kfix=kfix, drift=drift)
         if got is None:
             stats['build_fail'] = stats.get('build_fail', 0) + 1
             continue
@@ -235,8 +281,18 @@ def main():
             print(f'  ...{i}/{len(syms)}', flush=True)
 
     # 补集逐位沿用生产文件(见上方注释)
+    # ⚠ 原地重建(--out == BT)时 src == dst: `open(dst,'wb')` 会**先把源截断成 0 字节**
+    #   再读 ⇒ 文件被清空。必须走"建到临时目录 + 原子换名"(见 refresh_all.sh)。
+    #   这里加硬闸: 命中即拒绝, 不静默跳过(静默跳过会留下缺文件的目录)。
     ncarry = 0
     if not a.only:
+        _inplace = [s for s in prod_syms
+                    if os.path.abspath(f'{BT}/{s}_qfq.csv') ==
+                    os.path.abspath(os.path.join(a.out, f'{s}_qfq.csv'))]
+        if _inplace:
+            raise SystemExit(
+                f"[接线守卫] --out 与生产目录 {BT} 相同 ⇒ 沿用生产文件会把源文件截断成 0 字节"
+                f" (涉及 {len(_inplace)} 只, 如 {_inplace[:3]})。请建到临时目录后原子换名。")
         for s in prod_syms:
             if s in report:
                 continue
@@ -263,6 +319,12 @@ def main():
         json.dump(report, fh)
     print(f"\n=== 落盘 {a.out} ===")
     print(f"  表驱动重建 {len(report)}   沿用生产 {ncarry}   异常 {stats}")
+    if drift:
+        print(f"  ⚠ 锚漂移 {len(drift)} 只 (**事件集变了 = 数据修正**, 已采用新锚):")
+        for s, ko, kn in drift[:10]:
+            print(f"      {s}  k {ko:.8f} → {kn:.8f}  (×{kn / ko:.6f})")
+    else:
+        print("  锚漂移 0 只 (事件集未变 ⇒ 铁律成立)")
     if report:
         amp = np.array([v['amp'] for v in report.values()])
         print(f"  amp(事件日跳变幅度比) 中位 {np.median(amp):.4f}  >1.10 占比 {(amp > 1.10).mean():.1%}"

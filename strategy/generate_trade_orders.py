@@ -42,6 +42,14 @@ config = load_config()
 
 # ── 路径 ────────────────────────────────────────────────────────
 DATA_PATH = config.get('paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data/backtrader_data/'))
+# ── 真实价层 (2026-10-17) ─────────────────────────────────────────────────────
+# `DATA_PATH` 里是**复权价**: 信号/中枢/回测都在复权空间算, 收益与分红才正确。
+# 但**下单价格必须是真实成交价** —— 复权价在除权日与真实价分叉(10转10 之后复权价
+# 是真实价的 2 倍), 拿它出单会按错价位、错股数下单。
+# 旧链路侥幸没事: 东财 qfq **每次除权整条重锚** ⇒ 末行 ≡ 真实价。表驱动复权改用
+# **冻结锚**(满足铁律"更新今天不得改写历史") ⇒ 该巧合消失, 必须显式读裸价。
+# 实测(raw_data/{code}/none.csv 是唯一 PIT 安全的价格输入)。
+RAW_DATA_DIR = os.path.join(_PROJECT_DIR, 'data/stock_data/raw_data')
 FUNDAMENTAL_DIR = os.path.join(_PROJECT_DIR, 'data/stock_data/fundamental_data')
 SIGNALS_CSV = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'backtest_signals.csv')
 POSITIONS_FILE = os.path.join(_PROJECT_DIR, 'current_positions.json')
@@ -112,22 +120,80 @@ def build_st_filter(codes: List[str], target_date) -> Tuple[set, set]:
     return st_codes, stale_codes
 
 
-def load_prices_for_date(stock_file_map: Dict[str, str], target_date) -> Dict[str, float]:
-    """读取所有股票在 target_date 的收盘价."""
+def build_raw_file_map() -> Dict[str, str]:
+    """扫描 RAW_DATA_DIR, 构建 {code: none.csv 路径} —— **真实价**来源."""
+    file_map = {}
+    if not os.path.isdir(RAW_DATA_DIR):
+        return file_map
+    for code in os.listdir(RAW_DATA_DIR):
+        p = os.path.join(RAW_DATA_DIR, code, 'none.csv')
+        if os.path.exists(p):
+            file_map[code] = p
+    return file_map
+
+
+_RAW_COLS = {'日期': 'datetime', '开盘': 'open', '最高': 'high', '最低': 'low', '收盘': 'close'}
+
+
+def read_raw_prices(code: str, raw_map: Dict[str, str], cols=('datetime', 'close')):
+    """读裸价(none.csv) 的指定列, 返回英文列名的 DataFrame; 失败返回 None."""
+    filepath = raw_map.get(code)
+    if not filepath:
+        return None
+    try:
+        want = {k: v for k, v in _RAW_COLS.items() if v in cols}
+        df = pd.read_csv(filepath, encoding='utf-8-sig', usecols=list(want.keys()))
+        df = df.rename(columns=want)
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        return df.sort_values('datetime').reset_index(drop=True)
+    except Exception:
+        return None
+
+
+def price_scale(code: str, date, raw_map: Dict[str, str], stock_file_map: Dict[str, str]) -> float:
+    """复权价 → 真实价 换算因子 `S(t) = raw(t)/P(t)`。
+
+    信号里的缠论中枢是在**复权序列**上算的, 而 60 日高低/现价是**真实价**;
+    两者要取 max/min 就必须同口径 ⇒ 用本因子把中枢搬到真实价空间。
+    S 在两次除权之间是常数(非事件日 P 与 raw 同比), 除权日才跳变。
+    任一日期取不到价 ⇒ 返回 1.0 并**告警**(静默返回默认值是本仓库已知的 bug 温床)。
+    """
+    dt = pd.Timestamp(date)
+    r = read_raw_prices(code, raw_map, ('datetime', 'close'))
+    if r is None:
+        print(f"  [真实价][降级] {code} 无裸价文件, 复权↔真实 换算因子取 1.0")
+        return 1.0
+    rv = r.loc[r['datetime'] == dt, 'close']
+    bf = stock_file_map.get(code)
+    if bf is None or rv.empty or float(rv.iloc[0]) <= 0:
+        print(f"  [真实价][降级] {code} {dt.date()} 裸价缺失, 换算因子取 1.0")
+        return 1.0
+    try:
+        b = pd.read_csv(bf, parse_dates=['datetime'], usecols=['datetime', 'close'])
+        bv = b.loc[b['datetime'] == dt, 'close']
+        if bv.empty or float(bv.iloc[0]) <= 0:
+            raise ValueError('复权价缺失')
+        return float(rv.iloc[0]) / float(bv.iloc[0])
+    except Exception as e:
+        print(f"  [真实价][降级] {code} {dt.date()} 复权价读取失败({type(e).__name__}), 换算因子取 1.0")
+        return 1.0
+
+
+def load_prices_for_date(raw_map: Dict[str, str], target_date) -> Dict[str, float]:
+    """读取所有股票在 target_date 的**真实收盘价**(裸价, 非复权价 —— 见 RAW_DATA_DIR 注释)."""
     prices = {}
     target_dt = pd.Timestamp(target_date)
-    for code, filepath in stock_file_map.items():
-        if code == 'sh000001':
-            continue
+    for code in raw_map:
         try:
-            df = pd.read_csv(filepath, parse_dates=['datetime'], usecols=['datetime', 'close'])
-            row = df[df['datetime'] == target_dt]
+            df = read_raw_prices(code, raw_map, ('datetime', 'close'))
+            if df is None:
+                continue
+            row = df.loc[df['datetime'] == target_dt, 'close']
             if not row.empty:
-                prices[code] = float(row['close'].iloc[0])
-            del df
+                prices[code] = float(row.iloc[0])
         except Exception:
             continue
-    print(f"价格数据: {len(prices)} 只股票有 {target_date} 的数据")
+    print(f"价格数据: {len(prices)} 只股票有 {target_date} 的真实价")
     return prices
 
 
@@ -144,16 +210,27 @@ def get_latest_price_date():
         return None
 
 
-def load_last_known_close(code: str, stock_file_map: Dict[str, str]) -> float:
-    """某股最后已知收盘价 — 当日停牌时价格日无行情行的兜底."""
-    filepath = stock_file_map.get(code)
-    if not filepath:
-        return 0.0
-    try:
-        df = pd.read_csv(filepath, usecols=['close'])
-        return float(df['close'].iloc[-1]) if len(df) else 0.0
-    except Exception:
-        return 0.0
+def load_last_known_close(code: str, raw_map: Dict[str, str],
+                          stock_file_map: Dict[str, str] = None) -> float:
+    """某股最后已知**真实**收盘价 — 当日停牌时价格日无行情行的兜底.
+
+    118 只**退市股** raw_data 里只有 `qfq.csv` 没有 `none.csv` ⇒ 裸价层拿不到价。
+    这类码不在股票池、不可交易, 但若残留在持仓文件里, 返回 0 会让监控市值静默归零。
+    ⇒ 回退到复权文件末行并**告警**(口径不完全等价, 必须可见)。
+    """
+    df = read_raw_prices(code, raw_map, ('datetime', 'close'))
+    if df is not None and len(df):
+        return float(df['close'].iloc[-1])
+    if stock_file_map and stock_file_map.get(code):
+        try:
+            b = pd.read_csv(stock_file_map[code], usecols=['close'])
+            if len(b):
+                print(f"  [真实价][降级] {code} 无裸价(退市股?), 用复权文件末行 "
+                      f"{float(b['close'].iloc[-1]):.2f} 代真实价")
+                return float(b['close'].iloc[-1])
+        except Exception:
+            pass
+    return 0.0
 
 
 def get_index_regime(target_date) -> Tuple[int, float, float, bool, bool]:
@@ -188,6 +265,7 @@ def compute_support_resistance(
     target_date,
     price: float,
     signal_store,
+    raw_map: Dict[str, str],
     stock_file_map: Dict[str, str],
     kline_date=None,
 ) -> Tuple[float, float, dict]:
@@ -214,20 +292,24 @@ def compute_support_resistance(
     detail = {'code': code, 'price': price}
 
     # ── 1. 从信号中取缠论中枢数据 ──────────────────────────
+    # ⚠ 中枢是**复权价**口径(回测在复权序列上算的), 而下面 60 日高低与现价是**真实价**。
+    #   两者要取 max/min 就必须同口径 ⇒ 用 S = raw(t)/P(t) 把中枢搬到真实价空间。
+    #   不同口径直接混用会让中枢一侧**恒输**(除权后复权价可比真实价小几倍)⇒ 中枢通道
+    #   被静默忽略, 而输出上看不出差别 —— 正是本文件反复标记的"查表失败返回默认值"温床。
     sig = signal_store.get(code, target_date) if signal_store else None
-    pivot_zg = float(getattr(sig, 'chan_pivot_zg', np.nan)) if sig else np.nan
-    pivot_zd = float(getattr(sig, 'chan_pivot_zd', np.nan)) if sig else np.nan
+    _S = price_scale(code, target_date, raw_map, stock_file_map)
+    pivot_zg = (float(getattr(sig, 'chan_pivot_zg', np.nan)) * _S) if sig else np.nan
+    pivot_zd = (float(getattr(sig, 'chan_pivot_zd', np.nan)) * _S) if sig else np.nan
     detail['pivot_zg'] = pivot_zg
     detail['pivot_zd'] = pivot_zd
+    detail['price_scale'] = _S
 
-    # ── 2. 从市场数据取60日高低点 ──────────────────────────
+    # ── 2. 从市场数据取60日高低点 (**真实价**, 止损止盈要挂在真实价位上) ──
     recent_high = price
     recent_low = price
-    filepath = stock_file_map.get(code)
-    if filepath:
+    df = read_raw_prices(code, raw_map, ('datetime', 'high', 'low'))
+    if df is not None:
         try:
-            df = pd.read_csv(filepath, parse_dates=['datetime'],
-                            usecols=['datetime', 'high', 'low'])
             target_dt = pd.Timestamp(kline_date or target_date)
             df = df[df['datetime'] <= target_dt]
             if len(df) >= 20:
@@ -247,7 +329,7 @@ def compute_support_resistance(
             print(f"  [支撑压力][降级] {code} K线读取失败({type(_e).__name__}: {_e}), "
                   f"止损/止盈退化为兜底 {price*0.93:.2f}/{price*1.25:.2f}")
     else:
-        print(f"  [支撑压力][降级] {code} 无K线文件, "
+        print(f"  [支撑压力][降级] {code} 无裸价K线文件, "
               f"止损/止盈退化为兜底 {price*0.93:.2f}/{price*1.25:.2f}")
     detail['high_60d'] = recent_high
     detail['low_60d'] = recent_low
@@ -337,6 +419,7 @@ def build_orders(
     prev_positions: Dict[str, dict],
     total_equity: float,
     signal_store,
+    raw_map: Dict[str, str],
     stock_file_map: Dict[str, str],
     selection_map: Dict[str, dict] = None,
     price_date=None,
@@ -397,7 +480,7 @@ def build_orders(
                 continue
             actual_amount = shares * price
             sl, tp, detail = compute_support_resistance(
-                code, target_date, price, signal_store, stock_file_map,
+                code, target_date, price, signal_store, raw_map, stock_file_map,
                 kline_date=price_date
             )
             _sel = selection_map.get(code) or {}
@@ -434,7 +517,7 @@ def build_orders(
                     continue
                 actual_amount = shares * price
                 sl, tp, detail = compute_support_resistance(
-                    code, target_date, price, signal_store, stock_file_map,
+                    code, target_date, price, signal_store, raw_map, stock_file_map,
                     kline_date=price_date
                 )
                 _sel = selection_map.get(code) or {}
@@ -469,6 +552,7 @@ def build_monitor_list(
     positions: Dict[str, dict],
     prices: Dict[str, float],
     signal_store,
+    raw_map: Dict[str, str],
     stock_file_map: Dict[str, str],
     price_date=None,
 ) -> List[dict]:
@@ -508,7 +592,7 @@ def build_monitor_list(
         price = prices.get(code, 0) or pos.get('entry_price', 0)
         try:
             sl, tp, _ = compute_support_resistance(
-                code, target_date, price, signal_store, stock_file_map,
+                code, target_date, price, signal_store, raw_map, stock_file_map,
                 kline_date=price_date)
         except Exception:
             sl, tp = 0.0, 0.0
@@ -598,6 +682,12 @@ def main():
     # ── 1. 加载信号 ──────────────────────────────────────────
     stock_file_map = build_stock_file_map()
     print(f"股票文件: {len(stock_file_map)} 只")
+    # 真实价层(见 RAW_DATA_DIR 注释): 下单/止损止盈用裸价, 信号/中枢/回测用复权价。
+    raw_map = build_raw_file_map()
+    print(f"裸价文件: {len(raw_map)} 只 (下单定价来源)")
+    if not raw_map:
+        print(f"[拒绝出单] 裸价目录为空: {RAW_DATA_DIR} —— 无法定价")
+        sys.exit(1)
 
     if not os.path.exists(SIGNALS_CSV):
         print(f"\n错误: 信号文件不存在 ({SIGNALS_CSV})")
@@ -646,7 +736,7 @@ def main():
         print(f"\n[拒绝出单] 信号止于 {_sig_max}, 而价格日已到 {_px_date} — 信号落后于数据。")
         print(f"  请先重生成信号: cd strategy && python bt_execution.py")
         sys.exit(1)
-    prices = load_prices_for_date(stock_file_map, price_date)
+    prices = load_prices_for_date(raw_map, price_date)
 
     # ── 3. 构建候选 universe ─────────────────────────────────
     # 基础过滤: 有价格, 非指数, 非低价股
@@ -733,7 +823,7 @@ def main():
     # 价格日无行情的持仓(当日停牌): 补最后已知收盘价, 订单/监控显示不落成本价
     for _code in prev_positions:
         if _code not in prices:
-            _lp = load_last_known_close(_code, stock_file_map)
+            _lp = load_last_known_close(_code, raw_map, stock_file_map)
             if _lp > 0:
                 prices[_code] = _lp
                 print(f"  [停牌补价] {_code} 价格日无行情, 用最后收盘 {_lp:.2f}")
@@ -818,7 +908,7 @@ def main():
 
     orders, new_positions, order_details = build_orders(
         str(target_date), adjusted, prices, prev_positions, total_equity,
-        signal_store, stock_file_map, selection_map=selection_map,
+        signal_store, raw_map, stock_file_map, selection_map=selection_map,
         price_date=price_date,
     )
 
@@ -1010,7 +1100,7 @@ def main():
     # ── 持仓监控清单: 全持仓最新支撑/压力 + 过滤警示 ──────────
     try:
         monitor = build_monitor_list(str(target_date), new_positions, prices,
-                                     signal_store, stock_file_map,
+                                     signal_store, raw_map, stock_file_map,
                                      price_date=price_date)
         output['monitor'] = monitor
         print_monitor_list(monitor)

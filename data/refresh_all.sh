@@ -2,33 +2,74 @@
 # 实盘选股前一键刷新全部数据 (串行, 禁并行防OOM)
 # 用法: bash data/refresh_all.sh
 # 说明: K线下载 2026-09-30 起由 akshare/efinance 中继代理链路替代 Windows xtquant (QMT权限撤销)
-#       raw增量 → bt全量重建 → 基本面/另类/概念 → 转债sleeve → 新鲜度门禁
+#       raw增量 → 事件表 → 表驱动复权重建 → 基本面/另类/概念 → 转债sleeve → 新鲜度门禁
 set -e
 set -o pipefail
 cd /mnt/d/quant
 PY=/mnt/d/quant/.venv/bin/python
-TS=$(date +%m%d)
+SD=/mnt/d/quant/data/stock_data
 
-echo "=== 1/8 K线增量 (akshare/efinance中继代理, EM侧复权变化自动全量重载) ==="
+echo "=== 1/9 K线增量 (akshare/efinance中继代理, EM侧复权变化自动全量重载) ==="
 QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/akshare_kline_downloader.py 2>&1 | tail -6
 
-echo "=== 2/8 bt文件重建 (raw_data → backtrader_data, 无停牌填充) ==="
-(cd strategy && $PY convert_raw_to_backtrader.py --workers 12 2>&1 | tail -4)
+# ── 2/9 事件表 ────────────────────────────────────────────────────────────────
+# 复权口径 = **表驱动乘性**(2026-10-17 接入). 旧链路 `convert_raw_to_backtrader.py`
+# 直通东财**加性**前复权(qfq=(raw−C)/Π), 在非除权日不保收益:
+#   实测失真 `ret_q/ret_n = raw·Π/qfq` 随累计分红单调增 ⇒ amp>1.10 占 13.9%, 尾部 7.2×;
+#   合成一次未来分红 ⇒ **97.01% 历史日漂移**(乘性 0.05%)。且东财每次除权**整条重锚**
+#   ⇒ 违反铁律"更新今天不得改写历史"。
+# 新口径: W(0)=raw(0); 事件日 W(t)=W(t−1)·((1+s)·raw(t)+D)/raw(t−1); 否则 W(t−1)·raw(t)/raw(t−1)。
+#   非事件日 ⇒ 复权收益 ≡ 裸收益(**恒等式**, 零自由参数)。
+echo "=== 2/9 公司行动表 (东财 stock_fhps_detail_em) + 新浪乘性因子 → 融合事件表 ==="
+# 东财表**不是完备事件源**(结构性不覆盖配股/重整转增; 漏"特别股息"), 新浪乘性因子补洞。
+# 两者融合规则见 data/build_events_table.py 的 docstring(逐事件, 无自由阈值)。
+# ⚠ 每天都要拉: 事件**必须在除权日之前**进表, 否则事后补 = 改历史(锚漂移)。
+#   未到期的除权日在重建里被 `pos >= n ⇒ continue` 忽略 ⇒ 提前进表零副作用。
+$PY -u data/fetch_actions_table.py 2>&1 | tail -6
+$PY -u data/fetch_sina_factors.py 2>&1 | tail -6
+$PY -u data/build_events_table.py 2>&1 | tail -10
 
-echo "=== 3/8 基本面 (最近3报告期) ==="
+# ── 3/9 表驱动复权重建 ────────────────────────────────────────────────────────
+echo "=== 3/9 bt文件重建 (表驱动乘性复权, 建到临时目录后原子换名) ==="
+BT_NEW=$SD/.bt_new
+BT_OLD=$SD/.bt_prev
+rm -rf "$BT_NEW"
+$PY -u data/rebuild_table_qfq.py \
+    --events /mnt/d/quant/data/alternative_data/events_table.pkl \
+    --anchor frozen --out "$BT_NEW" 2>&1 | tail -12
+# 落盘守卫: 新目录必须与生产**符号集完全相同**(缺一个 = 该股票从池子里消失)
+$PY - "$SD" "$BT_NEW" <<'EOF'
+import glob, os, sys
+sd, new = sys.argv[1], sys.argv[2]
+p = {os.path.basename(x)[:-8] for x in glob.glob(f'{sd}/backtrader_data/*_qfq.csv')}
+t = {os.path.basename(x)[:-8] for x in glob.glob(f'{new}/*_qfq.csv')}
+if p - t:
+    raise SystemExit(f"[换名守卫] 新目录缺 {len(p - t)} 只: {sorted(p - t)[:10]} ⇒ 拒绝换名")
+print(f"  符号集核对: {len(t)} 只, 与生产完全一致")
+EOF
+# 原子换名: mv 是原子的 ⇒ 任何时刻 backtrader_data 都指向完整目录。
+# 快照(datastate.py)是**硬链接**, 换名不影响其 inode ⇒ 历史快照不被污染。
+rm -rf "$BT_OLD"
+mv "$SD/backtrader_data" "$BT_OLD"
+if ! mv "$BT_NEW" "$SD/backtrader_data"; then
+  echo "!!! 换名失败, 回滚"; mv "$BT_OLD" "$SD/backtrader_data"; exit 1
+fi
+echo "  已换名; 上一版留在 $BT_OLD (下次刷新时清除)"
+
+echo "=== 4/9 基本面 (最近3报告期) ==="
 $PY -u data/refresh_fundamental_recent.py 2>&1 | tail -5
 
-echo "=== 4/8 另类数据 (龙虎榜/融资融券/北向/减持/解禁/业绩预告) ==="
+echo "=== 5/9 另类数据 (龙虎榜/融资融券/北向/减持/解禁/业绩预告) ==="
 $PY -u data/refresh_altdata_0902.py 2>&1 | tail -12
 
-echo "=== 5/8 概念历史 (60板块日涨跌, 东财K线集群限流时自动轮换重试) ==="
+echo "=== 6/9 概念历史 (60板块日涨跌, 东财K线集群限流时自动轮换重试) ==="
 # 2026-10-12: push2his/push2delay直连被远端切断(同概念映射), 迁中继代理版
 $PY -u data/refresh_concept_hist_relay.py 2>&1 | tail -6
 
-echo "=== 6/8 概念映射 (股票→概念, push2delay直连已断, 走中继代理) ==="
+echo "=== 7/9 概念映射 (股票→概念, push2delay直连已断, 走中继代理) ==="
 $PY -u data/refresh_concept_map_relay.py 2>&1 | tail -6
 
-echo "=== 7/8 转债sleeve数据 (cb_daily/cb_value增量, 2026-10-07激活接线; 失败仅告警不阻塞股票链) ==="
+echo "=== 8/9 转债sleeve数据 (cb_daily/cb_value增量, 2026-10-07激活接线; 失败仅告警不阻塞股票链) ==="
 # 2026-10-15 门控: live_monitoring.cb_sleeve.enabled=false 时整步跳过.
 # 依据: 回测/信号链对 cb_daily/cb_value/cb_sleeve 零读取(grep core/*.py + bt_execution.py = 0 命中),
 #       关闭态下 compute_cb_sleeve() 返回空块; 本步实测耗时 ~22分钟/天(1043只券×2端点+SLEEP=0.3).
@@ -50,8 +91,9 @@ else
   echo "  [跳过] live_monitoring.cb_sleeve.enabled=false (省 ~22分钟; 开启后自动恢复全量增量)"
 fi
 
-echo "=== 8/8 qfq负价修复安全网 (EM加性前复权会产生负价~56只, sina乘性复权修复) ==="
-$PY -u data/repair_qfq_negatives.py 2>&1 | tail -4
+# 原 8/8 `repair_qfq_negatives.py`(新浪乘性复权修 52 只负价)**已删除**(2026-10-17):
+#   它是在**输出**上打补丁, 而表驱动重建从 (raw + 事件表) 重新构造 ⇒ 负价在输入侧就不存在。
+#   留着它反而会把新浪口径混进表驱动产物(两种口径混用)。
 
 echo ""
 echo "=== 刷新完成, 跑新鲜度门禁 ==="
@@ -61,7 +103,7 @@ $PY strategy/check_data_freshness.py || {
 }
 echo "=== 全部新鲜, 可以出单: cd strategy && $PY generate_trade_orders.py ==="
 
-echo "=== 9/8(附加) 打新提醒 (新股/新债今日申购清单→strategy/ipo_today.json, 仅信息块; 失败不阻塞) ==="
+echo "=== 9/9(附加) 打新提醒 (新股/新债今日申购清单→strategy/ipo_today.json, 仅信息块; 失败不阻塞) ==="
 QUANT_ALT_NO_AUTOREFRESH=1 $PY strategy/tools/ipo_reminder.py 2>&1 | tail -15 || {
   echo "!!! 打新提醒获取失败(不影响出单; 手动: $PY strategy/tools/ipo_reminder.py)"
 }
