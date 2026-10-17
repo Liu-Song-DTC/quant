@@ -2005,13 +2005,14 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     open_px = np.full_like(close_px, np.nan)  # B批修复(B3): T+1开盘成交价
     low_px = np.full_like(close_px, np.nan)  # 分段建仓(2026-10-10): 限价单触发用当日最低价
     volume_m = np.zeros_like(close_px)
+    amount_m = np.zeros_like(close_px)  # 真实成交额(元) — 文件自带列, 宇宙闸用(2026-10-17)
     tradable = np.zeros_like(close_px, dtype=bool)
 
     for j, code in enumerate(tqdm(stock_codes, desc="loading")):
         fp = os.path.join(DATA_PATH, f'{code}_qfq.csv')
         if not os.path.exists(fp):
             continue
-        df = pd.read_csv(fp, usecols=['datetime', 'open', 'low', 'close', 'volume'])
+        df = pd.read_csv(fp, usecols=['datetime', 'open', 'low', 'close', 'volume', 'amount'])
         df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
         df = df.dropna(subset=['datetime'])
         df = df.set_index('datetime')
@@ -2022,6 +2023,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         open_px[:, j] = df['open'].ffill().values.astype(np.float32)
         low_px[:, j] = df['low'].ffill().values.astype(np.float32)
         volume_m[:, j] = df['volume'].fillna(0).values.astype(np.float32)
+        amount_m[:, j] = pd.to_numeric(df['amount'], errors='coerce').fillna(0).values.astype(np.float32)
     del df
 
     # 预计算滚动ADV矩阵（20日回溯，shift(1)排除当日，无前视偏差）
@@ -2077,11 +2079,26 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
 
     # 2. 预计算可交易矩阵（含流动性过滤：日均成交额>500万）
     # volume单位为手, ×100换算真实成交额(元); 2026-08-22修复: 此前漏乘100导致阈值实际为5亿
-    daily_value = close_px * volume_m * 100.0  # 每日成交额(元)
+    #
+    # 口径修复(2026-10-17): 上面那句"换算真实成交额"**并没有做到** —— 此前两处闸用的都是
+    # **复权价 close_px**, 而不是真实价格/真实成交额:
+    #     闸B: daily_value = close_px * volume_m * 100   (注释称"真实成交额", 实为 真实额×复权比)
+    #     闸A: close_px > 2.0                            (2元仙股闸也用复权价)
+    # 冻结锚 qfq 满足 P(t)=W(t)*k <= raw(t), 两闸因此**只能单向误杀**(真实价/额够格、复权口径不够),
+    # 且越往过去越狠 —— 实测误杀率 2021 0.829% → 2026 0.015%(55x 梯度), 全期 68,607 格 / 1,311 只。
+    # 实盘 ratio≈1 完全不受影响 ⇒ 该口径把**回测宇宙变成实盘的子集**, 违反"实盘=回测同一套标准";
+    # 而误杀最重的 2021 恰是决定终值 NAV 的那一年。
+    # 正解: 用文件自带的 amount 列(真实成交额, 元) + raw VWAP = amount/(手×100);
+    # 两者缺失时退回复权口径兜底(仅 1993~2015 老数据 + 末日, 回测窗口内≈0)。
+    _proxy_value = close_px * volume_m * 100.0  # 旧口径, 仅作 amount 缺失兜底
+    daily_value = np.where(amount_m > 0, amount_m, _proxy_value).astype(np.float32)
     # 20日滚动均值: 用 pandas rolling (沿 time axis=0)
     dv = pd.DataFrame(daily_value, index=calendar, columns=stock_codes)
     avg_daily_value = dv.rolling(20, min_periods=5).mean().shift(1).values
-    tradable = (~np.isnan(close_px)) & (close_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
+    _raw_px = np.where((amount_m > 0) & (volume_m > 0),
+                       amount_m / np.maximum(volume_m * 100.0, 1.0),
+                       close_px).astype(np.float32)
+    tradable = (~np.isnan(close_px)) & (_raw_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
     # ST 过滤: 预计算每只股票ST状态时间线后向量化匹配交易日
     # 2026-08-22性能优化: 原双重循环约250万次is_st调用(每次含过滤+排序)耗时~42min
     if fundamental_data is not None and hasattr(fundamental_data, 'get_st_timeline'):
