@@ -120,6 +120,35 @@ def _relax_momentum_ok(closes, cut: int, relax_momentum) -> bool:
         return False
 
 
+# ── 非个股序列的内容型判别 (Fix#44, 2026-10-17) ────────────────────────────────
+# 指数以**裸数字代码**存在 (000003 Ｂ股指数 / 000013 企债指数 / 000660 SK海力士 ...),
+# 而文件名前缀守卫只认 sh000001/sh000852 ⇒ 24 个中国指数 + 3 只海外股混进宇宙。
+# 它们不是"策略选择", 是**数据错误**: 在信号层有真实产出 —— 000013 企债指数买入率
+# 76.5%、均分 3.2x 全市场 (债券指数近乎零波动的稳定上行, 被风险调整动量类因子打到顶分)。
+#
+# 判别式(纯内容, 不依赖名单/前缀/名字 —— 名字里不含"指数"字样的有 14 个):
+#   个股   成交额 ÷ (成交量 × 100手) = VWAP ≈ 收盘价   ⇒ 比值 ∈ [0.998, 1.006]
+#   指数/海外股 该比值差 20 倍以上
+# 实测 5351 个文件**完美二分、零重叠**: 5324 只个股中位比值 ∈ [0.998,1.006];
+# 27 个非个股 ∈ [0.000,0.042]。取**中位数** ⇒ 单日脏数据不改变判定; 阈值 0.5
+# ⇒ 距两侧各留 ~12 倍余量。任取窗口(全史/近20日/任意边界截断)结论都相同 ⇒ PIT 安全。
+NON_STOCK_VWAP_RATIO = 0.5
+
+
+def _is_non_stock_series(df) -> bool:
+    """该行情文件是"非个股序列"(指数/海外股)吗? 判不了 ⇒ False(宁可不误杀)。"""
+    if 'amount' not in df.columns or 'volume' not in df.columns:
+        return False
+    amt = pd.to_numeric(df['amount'], errors='coerce')
+    vol = pd.to_numeric(df['volume'], errors='coerce')
+    close = pd.to_numeric(df['close'], errors='coerce')
+    ok = amt.notna() & vol.notna() & close.notna() & (vol > 0) & (close > 0)
+    if int(ok.sum()) < 20:
+        return False
+    ratio = (amt[ok] / (vol[ok] * 100.0)) / close[ok]
+    return bool(ratio.median() < NON_STOCK_VWAP_RATIO)
+
+
 def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
                             bse_exclude: bool = True, cache_key: str = None,
                             relax_floor: float = 1.0,
@@ -178,6 +207,7 @@ def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
     exclusion_set = get_exclusion_set()
     rows = []
     valid_files = []
+    non_stock_skipped = 0
     for f in os.listdir(data_dir):
         if f.startswith('._') or f.startswith(('sh000001', 'sh000852')):
             continue
@@ -210,6 +240,10 @@ def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
         except Exception:
             continue
         dt = pd.to_datetime(df['datetime'])
+        if _is_non_stock_series(df):
+            # Fix#44: 指数/海外股以裸数字代码存在, 前缀守卫抓不到 (与get_stock_pool同规则)
+            non_stock_skipped += 1
+            continue
         if code.startswith('688'):
             min_amount = 40_000_000
             min_vol = 300_000
@@ -261,7 +295,8 @@ def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
 
     counts = {str(b.date()): len(m[b]) for b in boundaries}
     print(f"股票池成员映射: {len(valid_files)} 文件单遍扫描, {len(rows)} 条成员记录 "
-          f"({len(boundaries)} 边界: {counts})")
+          f"({len(boundaries)} 边界: {counts})"
+          + (f" | 剔除非个股序列 {non_stock_skipped} 个 (Fix#44)" if non_stock_skipped else ""))
     return m
 
 
@@ -348,6 +383,7 @@ def get_stock_pool(min_price: float = 2.0,
     selected = set()
     data_errors = 0
     liquidity_filtered = 0
+    non_stock_skipped = 0
 
     for item, code in valid_files:
         if code in exclusion_set:
@@ -360,6 +396,10 @@ def get_stock_pool(min_price: float = 2.0,
             if todate is not None and 'datetime' in df.columns:
                 df['_dt'] = pd.to_datetime(df['datetime'])
                 df = df[df['_dt'] <= pd.Timestamp(todate)]
+            if _is_non_stock_series(df):
+                # Fix#44: 指数/海外股以裸数字代码存在, 前缀守卫抓不到
+                non_stock_skipped += 1
+                continue
             if len(df) < 60:
                 data_errors += 1
                 continue
@@ -406,7 +446,8 @@ def get_stock_pool(min_price: float = 2.0,
 
     selected.add('sh000001')
     selected.add('sh000852')  # Fix#43: 中证1000(小盘风格输入), 回测端stock_codes已排除
-    print(f"股票池: {len(valid_files)} 总文件 -> 科创板{len(exclusion_set)} | 异常{data_errors} | 流动性{liquidity_filtered} -> {len(selected)} 只 (含sh000001/sh000852)")
+    print(f"股票池: {len(valid_files)} 总文件 -> 科创板{len(exclusion_set)} | 异常{data_errors} | 流动性{liquidity_filtered} -> {len(selected)} 只 (含sh000001/sh000852)"
+          + (f" | 剔除非个股序列 {non_stock_skipped} 个 (Fix#44)" if non_stock_skipped else ""))
     return selected
 
 
