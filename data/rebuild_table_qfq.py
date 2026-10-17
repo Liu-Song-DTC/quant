@@ -53,7 +53,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from market_codes import is_stock_code                     # noqa: E402
+from market_codes import is_stock_code, INDEX_REAL        # noqa: E402
 
 PROJ = '/mnt/d/quant'
 RAW = f'{PROJ}/data/stock_data/raw_data'
@@ -64,6 +64,11 @@ ANCHOR_FILE = f'{PROJ}/data/stock_data/qfq_anchor.json'   # frozen 锚的冻结�
 
 COLS = ['datetime', 'open', 'high', 'low', 'close', 'volume', 'openinterest',
         'amount', 'amplitude', 'change_percent', 'change_amount', 'turnover_rate']
+# ⚠ 指数 bt 文件是**另一套列**: 只有前 8 列, 没有 amplitude/change_percent/
+#   change_amount/turnover_rate (指数无涨跌幅/换手率语义)。生产旧文件就是这个格式,
+#   沿用分支一直原样保着它 ⇒ 显式重建必须**逐列对齐**, 否则换名后指数文件变形,
+#   而 bt_execution.py:242 直接读 sh000001_qfq.csv 做 regime 检测。
+IDX_COLS = COLS[:8]
 
 
 def _settle_guard():
@@ -303,12 +308,11 @@ def main():
         if i % 500 == 0:
             print(f'  ...{i}/{len(syms)}', flush=True)
 
-    # 补集逐位沿用生产文件(见上方注释)
-    # ⚠ 原地重建(--out == BT)时 src == dst: `open(dst,'wb')` 会**先把源截断成 0 字节**
-    #   再读 ⇒ 文件被清空。必须走"建到临时目录 + 原子换名"(见 refresh_all.sh)。
-    #   这里加硬闸: 命中即拒绝, 不静默跳过(静默跳过会留下缺文件的目录)。
-    ncarry = 0
+    n_idx = ncarry = 0
     if not a.only:
+        # ⚠ 原地重建守卫必须**先**跑: 下面两个分支都往 a.out 写文件, 守卫若排在写之后
+        #   就成了"先破坏再报错"。--out == BT 时沿用分支 `open(dst,'wb')` 会先把源
+        #   截断成 0 字节再读 ⇒ 文件被清空。必须走"建到临时目录 + 原子换名"。
         _inplace = [s for s in prod_syms
                     if os.path.abspath(f'{BT}/{s}_qfq.csv') ==
                     os.path.abspath(os.path.join(a.out, f'{s}_qfq.csv'))]
@@ -316,6 +320,40 @@ def main():
             raise SystemExit(
                 f"[接线守卫] --out 与生产目录 {BT} 相同 ⇒ 沿用生产文件会把源文件截断成 0 字节"
                 f" (涉及 {len(_inplace)} 只, 如 {_inplace[:3]})。请建到临时目录后原子换名。")
+
+        # ── 真指数: 必须**显式重建**, 否则落入下方"沿用生产"分支被永久冻结 ──────
+        # 指数无公司行动 ⇒ P ≡ raw(不做任何复权)。但 raw 目录里是 `qfq.csv` 而**不是**
+        # `none.csv` ⇒ 不进 `syms`; 且 `is_stock_code()` 排除 INDEX_REAL ⇒ 主循环也不碰。
+        # 不管的话它们就落进"沿用生产"被**逐字节冻结在切换前那一天**。
+        # (2026-10-17 实测: raw 已到 10-16 而 bt 停在 10-15 ⇒ 新鲜度门禁硬失败, 链按
+        #  fail-closed 中止 —— 三个指数都是回测输入: 上证(regime) + 创业板指 + 中证1000。)
+        # 列序也不同: raw = date,open,close,high,low,volume,amount
+        #             bt  = datetime,open,high,low,close,volume,openinterest,amount
+        for idx in INDEX_REAL:
+            rp = f'{RAW}/{idx}/qfq.csv'
+            if not os.path.exists(rp):
+                stats[f'idx_missing_{idx}'] = stats.get(f'idx_missing_{idx}', 0) + 1
+                continue
+            try:
+                d = pd.read_csv(rp, encoding='utf-8-sig')
+                d.columns = [str(c).strip().lstrip('﻿') for c in d.columns]
+                o = pd.DataFrame({
+                    'datetime': pd.to_datetime(d['date']).dt.strftime('%Y-%m-%d'),
+                    'open': d['open'].astype(float), 'high': d['high'].astype(float),
+                    'low': d['low'].astype(float), 'close': d['close'].astype(float),
+                    'volume': d['volume'].fillna(0), 'openinterest': 0.0,
+                    'amount': d['amount'].astype(float),
+                })
+                o = o[IDX_COLS]           # 指数用 8 列格式(见 IDX_COLS 注释)
+                o.to_csv(os.path.join(a.out, f'{idx}_qfq.csv'), index=False)
+            except Exception as e:
+                print(f'  !!! 指数 {idx} 重建失败({type(e).__name__}: {e})')
+                stats[f'idx_fail_{idx}'] = stats.get(f'idx_fail_{idx}', 0) + 1
+                continue
+            report[idx] = dict(nev=0, nact=0, amp=1.0, index=True)
+            n_idx += 1
+
+        # 补集逐位沿用生产文件(见上方注释; 原地重建守卫已提前到本分支开头)
         for s in prod_syms:
             if s in report:
                 continue
@@ -341,7 +379,7 @@ def main():
     with open(os.path.join(a.out, '_rebuild_table_report.json'), 'w') as fh:
         json.dump(report, fh)
     print(f"\n=== 落盘 {a.out} ===")
-    print(f"  表驱动重建 {len(report)}   沿用生产 {ncarry}   异常 {stats}")
+    print(f"  表驱动重建 {len(report) - n_idx}   指数 {n_idx}   沿用生产 {ncarry}   异常 {stats}")
     if drift:
         print(f"  ⚠ 锚漂移 {len(drift)} 只 (**已保留冻结锚**, 未采用新锚 — 铁律优先):")
         print(f"     ⇒ 这些股的 P(末) 自此偏离 raw(末) ×(k/k_cur), 历史价位不变。")
@@ -351,11 +389,12 @@ def main():
             print(f"      {s}  k {ko:.8f} (冻结)  vs k_cur {kn:.8f}  ⇒ P/raw 末端 ×{ko / kn:.6f}")
     else:
         print("  锚漂移 0 只 (事件集未变 ⇒ 铁律成立)")
-    if report:
-        amp = np.array([v['amp'] for v in report.values()])
+    _stk = {k: v for k, v in report.items() if not v.get('index')}
+    if _stk:
+        amp = np.array([v['amp'] for v in _stk.values()])
         print(f"  amp(事件日跳变幅度比) 中位 {np.median(amp):.4f}  >1.10 占比 {(amp > 1.10).mean():.1%}"
-              f"  max {amp.max():.2f}")
-        print(f"  事件总数 {sum(v['nev'] for v in report.values())}")
+              f"  max {amp.max():.2f}   (统计 {len(amp)} 只个股, 不含指数)")
+        print(f"  事件总数 {sum(v['nev'] for v in _stk.values())}")
 
 
 if __name__ == '__main__':
