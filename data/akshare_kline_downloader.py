@@ -131,12 +131,27 @@ def read_tail_date(path):
         return None
 
 def last_complete_trading_day():
+    """最近一个**已收盘**的交易日 (2026-10-17 修周末叠加 bug)。
+
+    旧实现两条规则**叠加**: `weekday()>=5 → 退到周五`, 再 `time()<15:30 → 再退一天`。
+    对工作日这两条是"今天没收盘就用昨天", 正确; 但周末日期已被第一条改写成周五,
+    第二条再退就多退一天 ⇒ **周五的数据被静默跳过**。
+    实测 2026-10-17(周六)跑 refresh_all.sh: 5215 只全部 'skip', raw 停在 10-15,
+    而中继源上 10-16 数据已存在(600519=1329.00 / 000001=11.50)。
+    危害 = **静默陈旧一天**: 下游看到的是"刷新成功"而不是"少了一天"。
+    (该次被 `check_data_freshness.py` 的 fail-closed 门禁拦下 — 门禁逻辑本来就是
+     对的, 只有本函数错。)
+
+    修正后与门禁 `expected_trading_day()` 同构, 只把收盘界从 17:30 提前到 15:30:
+      工作日 >=15:30 → 今天; 否则回退一天并跳过周末。
+    """
     now = pd.Timestamp.now()
-    if now.weekday() >= 5:
-        now -= pd.Timedelta(days=now.weekday() - 4)
-    if now.time() < pd.Timestamp('15:30').time():
-        now -= pd.Timedelta(days=1)
-    return now.strftime('%Y%m%d')
+    if now.weekday() < 5 and now.time() >= pd.Timestamp('15:30').time():
+        return now.strftime('%Y%m%d')           # 工作日已收盘 = 今天
+    d = now - pd.Timedelta(days=1)
+    while d.weekday() >= 5:                     # 回退到最近工作日
+        d -= pd.Timedelta(days=1)
+    return d.strftime('%Y%m%d')
 
 def compute_fq_factors(code, none_df, qfq_df, hfq_df):
     n = none_df[['日期', '收盘']].copy()
