@@ -117,6 +117,29 @@ def main():
     except Exception as _e:
         print(f'!!! 概念映射版本快照失败({str(_e)[:80]}) — 该日归属将永久缺失, 请手工补', flush=True)
 
+    # 2026-10-17: **一致性守卫** — 概念 PIT 开启后, 今天的实盘决策走"版本表最后一版",
+    # 而不是静态快照。上面的快照失败是**非阻塞**的 ⇒ 会出现"静态快照前进、版本表落后"
+    # 的静默分叉: 回测用新名单、实盘用旧名单, 且两边都不报错
+    # (形态同 live-regime-blind-bug: 查表失败返回默认=静默温床)。
+    # 这里只告警(映射本体已落盘, 回滚无意义); 硬闸在下单前的门控里。
+    try:
+        import subprocess as _sp
+        import sys as _sys  # 上一段的 import 在 try 内, 可能未执行到
+        _ck = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
+                           'strategy', 'tools', 'check_cmap_consistency.py')
+        _r2 = _sp.run([_sys.executable, os.path.abspath(_ck), '--quiet'],
+                      capture_output=True, text=True)
+        if _r2.returncode != 0:
+            print('!!! 概念映射一致性守卫失败 — 实盘将用旧名单, 与回测分叉:',
+                  flush=True)
+            print('    ' + (_r2.stdout or _r2.stderr).strip().replace('\n', '\n    '),
+                  flush=True)
+        else:
+            print('一致性守卫: 静态快照 ≡ 版本表最后一版 ✓', flush=True)
+    except Exception as _e:
+        print(f'一致性守卫未能运行({str(_e)[:80]}) — 请手工执行 '
+              f'strategy/tools/check_cmap_consistency.py', flush=True)
+
     print(f'=== map 刷新完成: {len(new_map)} 只 / {len(new_concepts)} 概念 ===', flush=True)
     return 0
 
