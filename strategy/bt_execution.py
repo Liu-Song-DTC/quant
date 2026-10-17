@@ -39,6 +39,17 @@ except ImportError:
 # 加载配置
 config = load_config()
 
+# 实验钩子: 回测截止日覆盖 (仅实验用, 默认None=跟随配置文件).
+# 动机(2026-10-17 铁律扰动测试): 验证"推进一天是否改写历史"需要在**同一数据态**下
+# 用 T-1 重跑, 再与 T 的产物逐格对比。只改下面的模块变量 TODATE 不够 —
+# 信号重生成门禁(_needs_regen)读的是 config.get('backtest.todate'), 不覆盖它
+# 会静默复用 T 的信号 = **假臂**(本仓库踩过: pit_map0531 只跑 9min 且逐字节相同)。
+# 故必须同时写回 config。用法: QUANT_TODATE=2026-10-15 python bt_execution.py
+_QUANT_TODATE = os.environ.get('QUANT_TODATE') or None
+if _QUANT_TODATE:
+    config.set('backtest.todate', _QUANT_TODATE)
+    print(f"[hook] QUANT_TODATE={_QUANT_TODATE} (已覆盖配置文件值)")
+
 # 回测参数 - 从配置文件读取
 CASH = config.get('backtest.cash', 100000.0)
 COMMISSION = config.get('backtest.commission', 0.0001)  # 万1佣金
