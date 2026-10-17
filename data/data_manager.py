@@ -843,7 +843,25 @@ class StockDataManager:
         return False
 
     def create_backtrader_data(self, symbols, start_date, end_date, adj_type='qfq'):
-        """创建Backtrader格式数据（增量追加：仅有新增日期时才更新bt文件）"""
+        """创建Backtrader格式数据（增量追加：仅有新增日期时才更新bt文件）
+
+        ⚠ 本方法是**遗留链路**(旧加性复权 + 美式BDay日历伪造停牌行), 不能用于生产目录:
+        生产 `backtrader_data/` 由 `data/refresh_all.sh` 第3/9步
+        (`data/rebuild_table_qfq.py --anchor frozen`) 生成 —— 表驱动**乘性**复权。
+        两者写同一批文件, 跑错一次就把乘性产物整体覆盖成加性, 且伪造行会污染
+        tradable 闸(volume=0 ⇒ 整池不可交易 ⇒ 调仓日静默跳过)。
+        见 memory: adjustment-method-affine-20261016 / artifact-path-dependence-20261017。
+        """
+        _marker = self.data_dir / "qfq_anchor.json"
+        if _marker.exists() and os.environ.get("QUANT_ALLOW_LEGACY_BT") != "1":
+            raise RuntimeError(
+                f"[遗留链路守卫] {self.data_dir} 是表驱动乘性复权生产库 "
+                f"(存在 {_marker.name}), 拒绝用旧加性链路写 backtrader_data/。\n"
+                f"  生产每日链路: bash strategy/run_daily_live.sh (内含 data/refresh_all.sh)\n"
+                f"  只重算 bt 产物: python data/rebuild_table_qfq.py --events "
+                f"data/alternative_data/events_table.pkl --anchor frozen --out <dir>\n"
+                f"  确要跑遗留链路(仅限一次性对比/临时目录): QUANT_ALLOW_LEGACY_BT=1"
+            )
         skipped = 0
         updated = 0
         for symbol in symbols:

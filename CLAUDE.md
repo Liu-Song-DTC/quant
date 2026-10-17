@@ -24,8 +24,18 @@ cd strategy && python analysis/analysis_framework.py
 
 ### Download/Update Stock Data
 ```bash
-cd data && python data_manager.py
+# 生产每日链路 (数据刷新 + 新鲜度门禁 + 信号重生成 + 出单)
+bash strategy/run_daily_live.sh
+
+# 只刷新数据 (不跑信号/出单)
+bash data/refresh_all.sh
 ```
+
+⚠ **不要用 `data_manager.py` / `main.py run` / `update_data.py` 更新生产数据** ——
+那是 2026-09-30 前的遗留链路: 旧**加性**复权 + 美式 BDay 日历伪造停牌行(volume=0)。
+生产 `backtrader_data/` 由 `data/refresh_all.sh` 的 `rebuild_table_qfq.py --anchor frozen`
+生成(表驱动**乘性**复权), 两者写同一批文件。`create_backtrader_data` 已加守卫会拒绝写入,
+但**别去绕过它**。
 
 ### Configuration
 All parameters are defined in `strategy/config/factor_config.yaml`:
