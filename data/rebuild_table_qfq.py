@@ -26,6 +26,9 @@
     --anchor frozen (生产默认): k = raw(T0)/W(T0), **T0=首次构建日, 持久化后永不变**
         ✓ 满足铁律 f(t;T)≡f(t;t): 值永久冻结, 与样本终点 T 无关
         ✓ 切换日价格 ≡ 真实价 ⇒ 手数取整忠实; 之后按事后除权缓慢漂移(可量化, 有界)
+        ⚠ 2026-10-17 修: 旧实现在"锚漂移"时 `k = k_cur` **采用新锚**并写回磁盘,
+          把 frozen 降级成 latest。触发条件不是"数据修正", 而是**新交易日恰为除权日**
+          (那天分子分母不同乘) ⇒ 10转10 直接把整条历史砍半。详见 build_one 内注释。
     --anchor first  : k=1 ⇒ P ≡ W。值冻结但高价股价格被放大数倍(实测 001309 达 3.6×)
         ⇒ 手数取整严重失真(仓位被腰斩), **不用于生产**, 仅作"值冻结"的对照
     --anchor latest : k = raw(T)/W(T) 每次构建重算 ⇒ **违反铁律**(全部历史价位随 T 缩放), 仅对照
@@ -146,12 +149,25 @@ def build_one(sym, actions, raw_df, bt_df, anchor='frozen', kfix=None, drift=Non
             k = k_cur
             kfix[sym] = k
         elif abs(k - k_cur) > 1e-9 * max(abs(k), 1e-12):
-            # 锚漂移 = W(末) 变了 = 事件集变了。**只可能来自数据修正**(增删事件)。
-            # 稳定态下 raw(末)/W(末) 对"新增一个交易日"不变(分子分母同乘), 故永不触发。
+            # 锚漂移 ⇒ **保留冻结 k, 只报告, 绝不采用 k_cur**(2026-10-17 修)。
+            #
+            # 旧实现在这里 `k = k_cur; kfix[sym] = k`, 理由写在注释里:
+            #   "锚漂移只可能来自数据修正(增删事件)。稳定态下 raw(末)/W(末) 对
+            #    '新增一个交易日'不变(分子分母同乘), 故永不触发。"
+            # **这个推理漏了"新交易日恰是除权日"**: 那天 W 乘的是
+            # ((1+s)·raw(t)+D)/raw(t−1) 而非 raw(t)/raw(t−1), 分子分母不再同乘,
+            # ⇒ k_cur 按 `raw(t)/((1+s)·raw(t)+D)` 变。10转10 时该因子 = 0.5
+            # ⇒ **整条历史被砍半**。于是 `frozen` 被悄悄降级成 `latest`
+            # —— 而 `latest` 正是本文件 docstring 自己标注"违反铁律, 仅对照"的那档。
+            #
+            # 且 line 311 `old.update(kfix)` 会把漂移值**写回磁盘**, 上面那句
+            # "已有键绝不覆盖" 并不成立 ⇒ 冻结合约被销毁, 不可恢复。
+            #
+            # 保留冻结 k 的代价(诚实记账): P(末) 从此偏离 raw(末), 偏离量 = 锚点日
+            # 以来该股的累计事件因子; 影响**回测手数取整**(P 越大 100股/手越粗)。
+            # 出单层已改读裸价(generate_trade_orders.py 的 price_scale) ⇒ 实盘不受影响。
             if drift is not None:
                 drift.append((sym, k, k_cur))
-            k = k_cur
-            kfix[sym] = k
         P = W * k
     if (P <= 0).any():
         return None
@@ -320,9 +336,12 @@ def main():
     print(f"\n=== 落盘 {a.out} ===")
     print(f"  表驱动重建 {len(report)}   沿用生产 {ncarry}   异常 {stats}")
     if drift:
-        print(f"  ⚠ 锚漂移 {len(drift)} 只 (**事件集变了 = 数据修正**, 已采用新锚):")
+        print(f"  ⚠ 锚漂移 {len(drift)} 只 (**已保留冻结锚**, 未采用新锚 — 铁律优先):")
+        print(f"     ⇒ 这些股的 P(末) 自此偏离 raw(末) ×(k/k_cur), 历史价位不变。")
+        print(f"     ⇒ 若漂移来自**回溯新增事件**(见 build_events_table.py 的守卫), 那才是真问题;")
+        print(f"        若来自新交易日恰为除权日, 属正常。")
         for s, ko, kn in drift[:10]:
-            print(f"      {s}  k {ko:.8f} → {kn:.8f}  (×{kn / ko:.6f})")
+            print(f"      {s}  k {ko:.8f} (冻结)  vs k_cur {kn:.8f}  ⇒ P/raw 末端 ×{ko / kn:.6f}")
     else:
         print("  锚漂移 0 只 (事件集未变 ⇒ 铁律成立)")
     if report:
