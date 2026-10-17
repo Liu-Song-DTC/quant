@@ -76,6 +76,99 @@ def _vendor_close(code):
     return dict(zip(d['日期'].values, d['收盘'].values.astype(float)))
 
 
+META = f'{ALT}/.events_table_meta.json'
+
+
+def _backdate_guard(m, out_path):
+    """**铁律守卫**: 事后新增的历史事件 = 改写历史 (2026-10-17)。
+
+    表驱动重建是**前向**递推 `W(t)=W(t−1)·r(t)`, 只在走到 ex_date 那一格时消费事件
+    ⇒ 在 ex_date **之前**进表零副作用; 但在 ex_date **之后**补进来, 就会把
+    `W(t)` 对**所有 t ≥ ex_date** 改掉 ⇒ 历史格子被重写, 且 `P = W·k` 全段位移。
+    (frozen 锚的 k 也会随之漂移, 由 `rebuild_table_qfq.py` 的 drift 报告兜住 ——
+     但那是**事后**, 且默认采用新锚。本守卫把同一件事**提前到写盘前**, 并点名。)
+
+    判据: 与上一版表逐 (code, ex_date) 比对, 新表**多出来**的、且 ex_date 早于
+    上一版构建时**已覆盖到的数据末日**的事件 = 回溯新增。
+    非新增(改 s/D/mult)不算改历史 —— 那是同一格上的值修正, 仍会动历史, 故一并报。
+
+    首建(无上一版) ⇒ 无基准, 跳过。
+    meta 缺失时**降级但不瞎**: 用"上一版表自己的最大事件日"当界 —— 上一版在该日
+    **有事件** ⇒ 构建时数据必然已覆盖到它 ⇒ 该界以下的回溯新增是**零假阳性**的,
+    只是窗口比 meta 的 data_end 窄。
+    """
+    import json
+    prev, prev_meta = None, {}
+    if os.path.exists(out_path):
+        try:
+            prev = pd.read_pickle(out_path)
+            prev['code'] = prev['code'].astype(str).str.zfill(6)
+        except Exception as e:
+            print(f'  [守卫] 上一版表读取失败({type(e).__name__}: {e}) ⇒ 无基准, 跳过比对')
+            prev = None
+        if prev is not None:
+            if os.path.exists(META):
+                try:
+                    with open(META) as fh:
+                        prev_meta = json.load(fh)
+                except Exception as e:
+                    print(f'  [守卫] meta 读取失败({type(e).__name__}) ⇒ 回溯判据降级')
+            else:
+                print('  [守卫] 无 meta(本守卫首次运行?) ⇒ 回溯判据降级为"上一版最大事件日"')
+
+    # 数据末日: 本版实测(最新 raw 末行), 作为**写盘时**的"现在"
+    ends = []
+    for c in list(m.code.unique())[:400]:
+        try:
+            d = pd.read_csv(f'{RAW}/{c}/none.csv', encoding='utf-8-sig', usecols=['日期'])
+            ends.append(pd.to_datetime(d['日期']).max())
+        except Exception:
+            pass
+    now_end = max(ends) if ends else None
+
+    if prev is not None:
+        key = ['code', 'ex_date']
+        pm = prev.set_index(key)
+        nm = m.set_index(key)
+        added = nm.index.difference(pm.index)
+        removed = pm.index.difference(nm.index)
+        both = nm.index.intersection(pm.index)
+        # 全向量化 —— 逐键 .loc 在 36k 事件上要 40s, refresh 第2步扛不住
+        ca_ = nm.loc[both, ['s', 'D', 'mult']].fillna(-999).values
+        cb_ = pm.loc[both, ['s', 'D', 'mult']].fillna(-999).values
+        changed = both[~(ca_ == cb_).all(axis=1)]
+        # 回溯新增 = 新增且 ex_date <= 上一版构建时已覆盖到的数据末日
+        prev_end = prev_meta.get('data_end')
+        if prev_end is not None:
+            base, how = pd.Timestamp(prev_end), f'上一版数据末日 {prev_end}'
+        else:
+            base = pd.Timestamp(prev['ex_date'].max())      # 降级: 零假阳性但窗口窄
+            how = f'降级界=上一版最大事件日 {base.date()}'
+        retro = added[added.get_level_values(1) <= base] if len(added) else added
+        print(f'\n  [守卫] vs 上一版: 新增 {len(added)}  删除 {len(removed)}  改值 {len(changed)}'
+              f'  ({how})')
+        if len(retro):
+            print(f'  !!! **回溯新增 {len(retro)} 条** = 改写历史(铁律违反) !!!')
+            for k in retro[:15]:
+                print(f'      {k[0]}  ex_date={pd.Timestamp(k[1]).date()}'
+                      f'  s={nm.loc[k, "s"]} D={nm.loc[k, "D"]} src={nm.loc[k, "src"]}')
+            if len(retro) > 15:
+                print(f'      ... 另 {len(retro) - 15} 条')
+            print('      ⇒ 这些格子在过去的重建里**没有事件**, 现在有了 ⇒ 历史复权价被改写。')
+            print('      ⇒ 冻结锚 k 会随之漂移(rebuild 会报"锚漂移"); 四指标铁律豁免, 但须登记。')
+        if len(removed):
+            print(f'  !!! 事件**消失** {len(removed)} 条 ⇒ 同样改写历史, 上游数据源不稳?')
+            for k in list(removed)[:8]:
+                print(f'      {k[0]}  ex_date={pd.Timestamp(k[1]).date()}')
+
+    tmp = META + '.tmp'
+    with open(tmp, 'w') as fh:
+        json.dump({'built_at': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
+                   'data_end': str(now_end.date()) if now_end is not None else None,
+                   'n_events': int(len(m)), 'n_codes': int(m.code.nunique())}, fh)
+    os.replace(tmp, META)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default=OUT)
@@ -181,6 +274,7 @@ def main():
 
     m = pd.DataFrame(rows, columns=['code', 'ex_date', 's', 'D', 'mult', 'src'])
     m = m.sort_values(['code', 'ex_date']).reset_index(drop=True)
+    _backdate_guard(m, a.out)
     m.to_pickle(a.out)
     print(f'\n=== 落盘 {a.out} ===')
     print(f'  事件 {len(m)} 条 / {m.code.nunique()} 只')
