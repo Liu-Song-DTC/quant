@@ -38,13 +38,29 @@ $PY -u data/rebuild_table_qfq.py \
     --events /mnt/d/quant/data/alternative_data/events_table.pkl \
     --anchor frozen --out "$BT_NEW" 2>&1 | tail -12
 # 落盘守卫: 新目录必须与生产**符号集完全相同**(缺一个 = 该股票从池子里消失)
+# ⚠ 2026-10-17: 守卫原来只查 `*_qfq.csv` **一个方向** ⇒ 生产目录里的**非 qfq 文件**
+#   会在 `mv` 换名时被**静默丢弃**(换名是整目录替换, 不是合并)。
+#   实测代价: 10-17 10:59 换名丢掉了 57 个 `*.preQfqFix*`(09-03 修复脚本留在目录里的
+#   取证备份), 5,437 → 5,381, 守卫一声不吭。备份在 `.arms/snapshots/test_1016/` 与
+#   `data/.preFullRefresh_0904/` 各有一份 ⇒ 未丢数据, 但**静默**本身是缺陷。
+#   修法: 换名前把生产目录里所有非 `_qfq.csv` 文件**原样搬进新目录**(严格超集),
+#   并大声列出来 —— 未知文件既不丢也不静默。
 $PY - "$SD" "$BT_NEW" <<'EOF'
-import glob, os, sys
+import glob, os, shutil, sys
 sd, new = sys.argv[1], sys.argv[2]
-p = {os.path.basename(x)[:-8] for x in glob.glob(f'{sd}/backtrader_data/*_qfq.csv')}
+prod = f'{sd}/backtrader_data'
+p = {os.path.basename(x)[:-8] for x in glob.glob(f'{prod}/*_qfq.csv')}
 t = {os.path.basename(x)[:-8] for x in glob.glob(f'{new}/*_qfq.csv')}
 if p - t:
     raise SystemExit(f"[换名守卫] 新目录缺 {len(p - t)} 只: {sorted(p - t)[:10]} ⇒ 拒绝换名")
+extra = sorted(f for f in os.listdir(prod)
+               if not f.endswith('_qfq.csv') and os.path.isfile(f'{prod}/{f}'))
+for f in extra:
+    if not os.path.exists(f'{new}/{f}'):
+        shutil.copy2(f'{prod}/{f}', f'{new}/{f}')
+if extra:
+    print(f"  ⚠ 生产目录有 {len(extra)} 个非 qfq 文件, 已原样搬入: {extra[:8]}"
+          f"{' …' if len(extra) > 8 else ''}")
 print(f"  符号集核对: {len(t)} 只, 与生产完全一致")
 EOF
 # 原子换名: mv 是原子的 ⇒ 任何时刻 backtrader_data 都指向完整目录。
