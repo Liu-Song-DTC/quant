@@ -289,13 +289,52 @@ def main():
             out['change_amount'] = np.round(P - prev, 2)
             out['amplitude'] = np.round((out['high'].values - out['low'].values) / prev * 100, 2)
         out['turnover_rate'] = m['换手率'].values
+        # ⚠ 2026-10-17 修: **旧 bt 文件里没有的行(= 本次刷新新增的交易日)必须从 raw 补量额**。
+        #   旧实现 `merge(旧bt,[volume,amount])` + `fillna(0)`: 新行匹配不上 ⇒ volume=0 /
+        #   amount=NaN, 而下一轮重建又把这份 0 当源 ⇒ **永久固化**。
+        #   实测 10-17 刷新后 5,216 只的 2026-10-16 行 volume=0。后果不是"少个统计量":
+        #     (a) 因子层: volume_ratio / volume_surge / price_volume_corr_20 /
+        #         Amihud |ret|/(close·vol) / volume_contraction 全被 0 污染;
+        #         `amount` NaN ⇒ factor_preparer.py:209 的 ln_cap 直接落 0.0;
+        #     (b) 执行层: `tradable` 硬闸 `volume_m > 100` ⇒ 该日**整池不可交易**,
+        #         而 bt_execution.py:2356 `universe = [c for c in stock_codes if ok[...]]`
+        #         ⇒ 当日 universe 为空 ⇒ generate_positions 返回 {} ⇒ `_pending={}`
+        #         ⇒ **调仓日被静默跳过**, 且 `_last_rebalance_date` 已被推后 ⇒ 相位错位。
+        #   根因是**路径依赖**(产物内容取决于上一轮产物) ⇒ 违反铁律 f(t;T)≡f(t;t)。
+        #   ⚠ 修法刻意**不做**"量额一律取自 raw": 旧 bt 文件的 volume 是**派生浮点**
+        #     (600519 2016-01-04: 旧 17349.69 vs raw 17350), 一律换源会改动全市场
+        #     约 1,300 万格的**既有**值(<1% 但非零) ⇒ 那才是改写历史。
+        #   故只补**丢失签名**: 旧 bt 里没有该行, 或旧值 volume==0 / amount 缺失 而 raw 有值。
+        #   真实停牌日 raw 也是 0 ⇒ 不会误补。其余既有值逐位保留。
+        #   实测爆炸半径(400 只抽样): 变化格 19,314, 其中 1996–2015 占 18,927(退市股旧链路
+        #   整段缺量), 2026 占 384(= 10-16 新行), **回测窗口 2021-01-01~2026-10-15 内 0 格**。
         b2 = b.copy()
         b2['datetime'] = pd.to_datetime(b2['datetime'])
         out = out.merge(b2[['datetime', 'volume', 'openinterest', 'amount']],
                         on='datetime', how='left')
+        _dtm = pd.to_datetime(out['datetime'])
+        _rv = (pd.to_numeric(m['成交量'], errors='coerce').values.astype(float)
+               if '成交量' in m.columns else np.full(len(m), np.nan))
+        _ra = (pd.to_numeric(m['成交额'], errors='coerce').values.astype(float)
+               if '成交额' in m.columns else np.full(len(m), np.nan))
+        _rv = pd.Series(_rv, index=pd.DatetimeIndex(pd.to_datetime(m['datetime'])))
+        _ra = pd.Series(_ra, index=pd.DatetimeIndex(pd.to_datetime(m['datetime'])))
+        _rv = _rv[~_rv.index.duplicated()]
+        _ra = _ra[~_ra.index.duplicated()]
+        _rv_out = _dtm.map(_rv)
+        _ra_out = _dtm.map(_ra)
+        _lost_v = (out['volume'].isna() | (out['volume'] == 0)) & (_rv_out > 0)
+        _lost_a = out['amount'].isna() & _ra_out.notna()
+        if _lost_v.any():
+            out.loc[_lost_v, 'volume'] = _rv_out[_lost_v].values
+        if _lost_a.any():
+            out.loc[_lost_a, 'amount'] = _ra_out[_lost_a].values
         out['volume'] = out['volume'].fillna(0)
         out['openinterest'] = out['openinterest'].fillna(0.0)
         out['amount'] = out['amount'].fillna(np.nan)
+        if _lost_v.any() or _lost_a.any():
+            print(f'  [量额补丢失] {sym}: 量 {int(_lost_v.sum())} 行 / 额 {int(_lost_a.sum())} 行 '
+                  f'取自 raw (旧 bt 缺失或为0)', flush=True)
         out['datetime'] = pd.to_datetime(out['datetime']).dt.strftime('%Y-%m-%d')
         for c in ['open', 'high', 'low', 'close']:
             out[c] = out[c].round(2)
