@@ -40,6 +40,7 @@ from .multi_timeframe import MultiTimeframeAnalyzer
 from .gate_scorer import compute_all_gates, compute_gate_quality
 from .bom_chain import compute_stock_bom_score
 from .pipeline_logger import plog
+from .cmap_hist import resolve_hist_path
 import yaml
 import os
 
@@ -116,9 +117,8 @@ def _load_concept_map_history():
     τ 早于最早版本 ⇒ 用最早版本(能拿到的最早名单, 恒定 ⇒ 可复现)。
     """
     import pickle
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    hist_p = os.environ.get('QUANT_CONCEPT_MAP_HIST')
-    if not hist_p or not os.path.exists(hist_p):
+    hist_p = resolve_hist_path()   # 默认开启; 见 core/cmap_hist.py
+    if not hist_p:
         return None
     try:
         with open(hist_p, 'rb') as f:

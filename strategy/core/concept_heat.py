@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from .industry_chain import compute_chain_signals, get_chain_lead_score, discover_chain_edges
+from .cmap_hist import resolve_hist_path
 
 
 class ConceptHeatCalculator:
@@ -49,7 +50,8 @@ class ConceptHeatCalculator:
         # (成员 Jaccard 中位 1.000, 但每股12.7个概念里增删1个就翻转集合判定)
         # ⇒ concept_heat 每次刷新全史重写 ⇒ 回测曲线不可复现。
         # 修法: 按决策日 τ 取"截止 τ 的最近版本"的成分股名单, 与 concept_inception
-        # 的成立日 gates 同构。默认关闭(QUANT_CONCEPT_MAP_HIST 空) ⇒ 逐位零改动。
+        # 的成立日 gates 同构。**默认开启**(2026-10-17, 见 core/cmap_hist.py):
+        # 此前是"研究钩子默认空=关闭", 但生产与回测必须是同一个东西。
         self._cmap_versions: Optional[List[tuple]] = None  # [(date_str, map_dict), ...] 升序
         self._cmap_vcache: Dict[str, tuple] = {}           # date_str → (stock_concepts, concept_stocks)
         self._cmap_cur: Optional[str] = None               # 当前已应用的版本日期
@@ -66,9 +68,12 @@ class ConceptHeatCalculator:
             for c in concepts:
                 self._concept_stocks.setdefault(c, []).append(code)
 
-        # 2026-10-16: 版本化映射(研究钩子, 默认空=关闭) — 见 __init__ 注释
-        _hist_p = os.environ.get('QUANT_CONCEPT_MAP_HIST')
-        if _hist_p and os.path.exists(_hist_p):
+        # 2026-10-17: 版本化映射**默认开启** — 见 core/cmap_hist.py 的模块说明。
+        # 此前是"研究钩子, 默认空=关闭", 但"设了 env 才 PIT 正确"本身就是铁律
+        # 禁止的"两个东西", 且是静默失效的温床(参 live-regime-blind-bug)。
+        # 显式关闭仅用于对照臂: QUANT_CONCEPT_MAP_HIST=off
+        _hist_p = resolve_hist_path()
+        if _hist_p:
             try:
                 with open(_hist_p, 'rb') as f:
                     _h = pickle.load(f)

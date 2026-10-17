@@ -43,6 +43,8 @@ LAYERS = [
     ('raw', 'dir', 'data/stock_data/raw_data'),
     ('concept', 'file', 'data/concept_hist.pkl'),
     ('concept_map', 'file', 'data/stock_concept_map.pkl'),
+    # 2026-10-17: 版本表是**实际生效**的成分股来源(默认开启), 必须入台账
+    ('concept_map_hist', 'file', 'data/concept_map_history.pkl'),
     ('yaml', 'file', 'strategy/config/factor_config.yaml'),
 ]
 OUTPUTS = [

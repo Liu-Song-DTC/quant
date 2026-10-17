@@ -27,6 +27,7 @@ from core.pipeline_logger import plog
 from core.industry_mapping import INDUSTRY_KEYWORDS, build_fine_industry_map
 from core.market_regime_detector import MarketRegimeDetector
 from core.stock_pool import get_stock_pool, get_exclusion_set
+from core.cmap_hist import resolve_hist_path as _resolve_cmap_hist
 
 # 情绪分析集成
 try:
@@ -221,7 +222,7 @@ def _signal_code_fingerprint() -> str:
     # 2026-10-16: 版本化概念映射(QUANT_CONCEPT_MAP_HIST)也计入指纹 — 同上, 内容级。
     # 版本化模式下 concept_heat 的成分股名单来自该文件而**不是** stock_concept_map.pkl,
     # 不记账 ⇒ 换 history 文件时指纹不变 ⇒ 静默复用上一臂的信号(同类假臂, 已踩过)。
-    _cmap_hist_p = os.environ.get('QUANT_CONCEPT_MAP_HIST')
+    _cmap_hist_p = _resolve_cmap_hist()
     if _cmap_hist_p:
         try:
             with open(_cmap_hist_p, 'rb') as _hf:
@@ -311,9 +312,10 @@ def _signals_stale(signals_csv):
              os.environ.get('QUANT_CONCEPT_MAP') or os.path.join(
                  _PROJECT_DIR, 'data/stock_concept_map.pkl'),
              os.path.join(_PROJECT_DIR, 'data/concept_inception.pkl')]
-    # 2026-10-16: 版本化概念映射**仅在启用时**计入新鲜度 — 未启用时它不是信号输入,
-    # 无条件计入会让"文件比信号新"永远成立 ⇒ 每次白跑一次 84min 信号重生成。
-    _ch = os.environ.get('QUANT_CONCEPT_MAP_HIST')
+    # 2026-10-17: 版本化概念映射**默认开启**, 故恒计入新鲜度。
+    # (它确实是信号输入了; 且 stock_concept_map.pkl 本就在 roots 里且每天变,
+    #  所以"每天重生成一次信号"这件事的成本没有变化。)
+    _ch = _resolve_cmap_hist()
     if _ch:
         roots.append(_ch)
     newest, newest_what = 0, ''
