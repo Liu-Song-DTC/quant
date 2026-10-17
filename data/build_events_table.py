@@ -145,15 +145,50 @@ def _backdate_guard(m, out_path):
             base = pd.Timestamp(prev['ex_date'].max())      # 降级: 零假阳性但窗口窄
             how = f'降级界=上一版最大事件日 {base.date()}'
         retro = added[added.get_level_values(1) <= base] if len(added) else added
+        # ⚠ 2026-10-17: 把回溯新增按"**上一版表里这只股有没有任何事件**"拆成两类 ——
+        #   否则新纳入宇宙的整只股票(如 115 只退市股补裸价后首次进表, ~1,500 条历史事件)
+        #   会全部报成"改写历史", 把**真信号**(已有码被补进旧事件)淹没在噪声里。
+        #   区别在**该码的 bt 文件过去是不是表驱动产出的**:
+        #     整只缺席 ⇒ 它过去走"沿用生产"分支(vendor 加性文件), 从没被表驱动过
+        #                ⇒ 进表不构成"改写"任何表驱动历史, 只是换了口径(仍须登记)。
+        #     码在表内 ⇒ 这些格子过去确实没有事件, 现在有了 ⇒ **真回溯新增, 铁律违反**。
+        if len(retro):
+            _prev_codes = set(pm.index.get_level_values(0))
+            # "上一版表里没有这只码"**不足以**判定它没被表驱动过 —— 零事件的码也缺席
+            # (W=raw, k=1, 表里查不到)。精确判据 = 上一版**重建报告**:
+            #   本步(build_events_table)在 refresh 里排在重建**之前** ⇒ 此刻 bt 目录里的
+            #   `_rebuild_table_report.json` 还是**上一版**的, 正好记录"哪些码是表驱动产出的"。
+            #   在报告里 ⇒ 表驱动过(零事件) ⇒ 补进旧事件 = **真回溯新增**。
+            #   不在报告里 ⇒ 走的"沿用生产"分支(vendor 加性) ⇒ 只是口径切换。
+            _built = set()
+            try:
+                import json as _json
+                with open(f'{PROJ}/data/stock_data/backtrader_data/_rebuild_table_report.json') as _fh:
+                    _built = set(_json.load(_fh))
+            except Exception as _e:
+                print(f'  [守卫] 上一版重建报告读取失败({type(_e).__name__}) ⇒ '
+                      f'新码分类降级为"表内是否出现过"')
+            _lev0 = retro.get_level_values(0)
+            _newcode = ~_lev0.isin(_prev_codes)
+            retro_old = retro[(_lev0.isin(_prev_codes)) | (_lev0.isin(_built))]
+            retro_new = retro[_newcode & ~_lev0.isin(_built)]
+        else:
+            retro_new = retro_old = retro
         print(f'\n  [守卫] vs 上一版: 新增 {len(added)}  删除 {len(removed)}  改值 {len(changed)}'
               f'  ({how})')
-        if len(retro):
-            print(f'  !!! **回溯新增 {len(retro)} 条** = 改写历史(铁律违反) !!!')
-            for k in retro[:15]:
+        if len(retro_new):
+            _c = sorted(set(retro_new.get_level_values(0)))
+            print(f'  [说明] **整只新码进表 {len(retro_new)} 条 / {len(_c)} 只**'
+                  f' (既不在上一版事件表、也不在上一版重建报告里, 如 {_c[:5]})')
+            print('      ⇒ 这些码过去走"沿用生产"分支(vendor 加性文件), 从未被表驱动过')
+            print('      ⇒ 不算改写表驱动历史, 但是**口径切换** ⇒ 数据重锚, 须登记。')
+        if len(retro_old):
+            print(f'  !!! **回溯新增 {len(retro_old)} 条**(已有码被补进旧事件) = 改写历史(铁律违反) !!!')
+            for k in retro_old[:15]:
                 print(f'      {k[0]}  ex_date={pd.Timestamp(k[1]).date()}'
                       f'  s={nm.loc[k, "s"]} D={nm.loc[k, "D"]} src={nm.loc[k, "src"]}')
-            if len(retro) > 15:
-                print(f'      ... 另 {len(retro) - 15} 条')
+            if len(retro_old) > 15:
+                print(f'      ... 另 {len(retro_old) - 15} 条')
             print('      ⇒ 这些格子在过去的重建里**没有事件**, 现在有了 ⇒ 历史复权价被改写。')
             print('      ⇒ 冻结锚 k 会随之漂移(rebuild 会报"锚漂移"); 四指标铁律豁免, 但须登记。')
         if len(removed):
