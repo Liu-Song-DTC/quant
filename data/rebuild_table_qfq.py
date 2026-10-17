@@ -107,7 +107,14 @@ def build_one(sym, actions, raw_df, bt_df, anchor='frozen', kfix=None, drift=Non
     dt = pd.to_datetime(raw_df['日期']).values
     raw = raw_df['收盘'].values.astype(float)
     n = len(raw)
-    if n < 60:
+    # ⚠ 2026-10-17: 原为 `n < 60` ⇒ 26 只次新股**整只**走"沿用生产"分支, 即**旧加性文件**,
+    #   在口径上留了一道 5,224(乘性) + 26(加性) 的混合口子。
+    #   代价实测: 001232(n=48, 唯一有事件的次新股, D=0.5) 的 P 全段 = raw − 0.50,
+    #   非事件日比值恒等式**逐日违反**(全市场 26 个违规全是它一只)。
+    #   其余 25 只 C=0 ⇒ 加性≡raw, 无失真(但口径仍是旧的)。
+    #   `n<60` 对**价格文件**没有理由 —— 短序列的兜底在因子层(V41, idx<60), 不在价格层。
+    #   降到 n<2 只拒退化文件; 无事件的股重建结果 ≡ 沿用结果(P=W·k=raw, k=1), 零风险。
+    if n < 2:
         return None
     # 事件聚合到"第一个 >= 除权日的交易日"(除权日可能落在非交易日/停牌日)
     idx = pd.Series(np.arange(n), index=pd.DatetimeIndex(dt))
