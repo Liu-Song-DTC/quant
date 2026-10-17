@@ -12,7 +12,8 @@
   - 新报告期 = 追加
   - 写文件: 临时文件 + os.replace 原子替换, 中途被杀不产生半文件
   - 列对齐: 新行 reindex 到旧列 (akshare列变动时旧值缺失补NaN, 多余新列丢弃)
-  - 数据可用日期沿用系统约定 = 报告期 (与既有行一致; as-of精细化属B批工作)
+  - 数据可用日期 = 法定披露截止日 (2026-10-17 起; 原为"系统既有约定=报告期",
+    会让回测提前1~4个月看到未公开财报 ⇒ 实盘≠回测。见 data/fundamental_pit.py)
 
 用法: /mnt/d/quant/.venv/bin/python data/refresh_fundamental_recent.py
 """
@@ -25,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd  # noqa: E402
 import requests  # noqa: E402
 from data_manager import StockDataManager  # noqa: E402 (含akshare代理patch)
+from fundamental_pit import pit_available_series  # noqa: E402 可用日=法定披露截止日
 
 QUARTERS = ['20251231', '20260331', '20260630']
 
@@ -83,7 +85,10 @@ def build_quarter_frame(qdir, q):
             yjbb_df = yjbb_df.merge(df, on='股票代码', how='left')
 
     yjbb_df['报告期'] = q
-    yjbb_df['数据可用日期'] = q  # 系统既有约定: 数据可用日期=报告期
+    # 2026-10-17: 原为 `= q`(报告期)。报告期≠可披露日 —— 用报告期当可用日会让
+    # **回测**提前1~4个月看到未公开财报, 而**实盘**库里物理上没有未披露的行
+    # ⇒ 两边信息集不同, 违反铁律。改用法定披露截止日(见 data/fundamental_pit.py)。
+    yjbb_df['数据可用日期'] = pit_available_series(yjbb_df['报告期'])
     return yjbb_df
 
 
@@ -177,6 +182,28 @@ def main():
             st_hits.append((code, names.iloc[-1], add['报告期'].iloc[-1] if '报告期' in add.columns else '?'))
 
     print(f"=== 完成: 更新 {updated} 只, 替换旧季度行 {replaced_rows} 行 ===")
+
+    # 2026-10-17: **可用日口径守卫** — 本脚本刚写入了新行, 这里立刻验一遍全库
+    # `数据可用日期 ≡ 法定披露截止日`。防的是: 将来有人把上面的 pit_available_series
+    # 改回 `= q`(报告期), 或历史遗留行被复制进来 ⇒ 泄漏口径静默复活。
+    # 泄漏**不会报错**, 只会让回测悄悄变好看 —— 形态同 live-regime-blind-bug。
+    try:
+        import subprocess as _sp
+        _ck = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
+                           'strategy', 'tools', 'check_fundamental_pit.py')
+        _r = _sp.run([sys.executable, os.path.abspath(_ck), '--quiet'],
+                     capture_output=True, text=True)
+        if _r.returncode != 0:
+            print('!!! 基本面可用日守卫失败 — 回测会提前看到未公开财报, 与实盘分叉:',
+                  flush=True)
+            print('    ' + (_r.stdout or _r.stderr).strip().replace('\n', '\n    '),
+                  flush=True)
+        else:
+            print('可用日守卫: 数据可用日期 ≡ 法定披露截止日 ✓', flush=True)
+    except Exception as _e:
+        print(f'可用日守卫未能运行({str(_e)[:80]}) — 请手工执行 '
+              f'strategy/tools/check_fundamental_pit.py', flush=True)
+
     if st_hits:
         print(f"=== 新数据中发现 ST/带风险警示名称 {len(st_hits)} 只 ===")
         for code, name, rp in sorted(st_hits):

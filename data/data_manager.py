@@ -29,6 +29,7 @@ import akshare as ak
 import efinance as ef
 import pandas as pd
 import numpy as np
+from fundamental_pit import pit_available_series  # 基本面可用日=法定披露截止日
 from datetime import datetime, timedelta
 import os
 import json
@@ -1317,7 +1318,11 @@ class StockDataManager:
             # 合并该日期的所有数据
             if yjbb_df is not None:
                 yjbb_df['报告期'] = date
-                yjbb_df['数据可用日期'] = date  # 添加数据可用日期，防止数据泄露
+                # 2026-10-17: 原为 `= date`(报告期)。报告期≠可披露日 —— A股年报次年4/30
+                # 才截止披露, 用报告期当可用日会让**回测**提前1~4个月看到未公开财报,
+                # 而**实盘**库里物理上没有未披露的行 ⇒ 两边信息集不同, 违反铁律。
+                # 改用法定披露截止日(纯日历规则, 见 data/fundamental_pit.py)。
+                yjbb_df['数据可用日期'] = pit_available_series(yjbb_df['报告期'])
                 merged = yjbb_df
 
                 # 按股票代码合并其他表
