@@ -1299,7 +1299,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
     # 准备信号生成用的参数
     global use_dynamic, precomputed_cache
     use_dynamic = factor_mode != 'fixed'
-    stock_codes = [name for name in stock_file_map.keys() if name != "sh000001"]
+    # 指数排除(Fix#44b, 2026-10-18): 上面 983/1003 行排除了三只指数, 但**这一行只排除 sh000001**,
+    # 把 sh000852(中证1000)/399006(创业板指) 放回了**信号层** —— 而 1417 行的 stock_items
+    # (信号 worker 的实际清单) 用的正是这个变量。实测信号 CSV 里两只指数各 1400 行(整条序列),
+    # 以指数点位(数千点)混入截面因子排名 = memory 记录的"截面因子污染"通道。
+    # Fix#44 只修了池层, 信号层漏网 ⇒ 这里与 983/1003 行口径对齐。
+    stock_codes = [name for name in stock_file_map.keys()
+                   if name not in ('sh000001', 'sh000852', '399006')]
 
     # 创建带动态因子的 SignalEngine + 预计算因子选择（如果启用）
     main_engine = None
