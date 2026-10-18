@@ -73,7 +73,15 @@ class Stroke:
 
 @dataclass
 class Segment:
-    """线段"""
+    """线段
+
+    confirmed: 该线段是否已由特征序列**确认结束**(内层循环 break)。
+      ⚠ 承重字段(2026-10-18)。最后一段永远 confirmed=False —— 它的扫描
+      `for j in range(i, len(strokes))` 没有 break, `seg_end_idx` 会随新 bar
+      继续前移 ⇒ 它的 `end_idx`/`high`/`low` **不是终值**。
+      任何把它当终值用的下游(尤其 detect_chan_pivots)都会得到
+      "todate 推进一天 ⇒ 历史被重标" 的结果 —— 实测 #344: 22,434 格/130 只票。
+    """
     start_idx: int
     end_idx: int
     direction: int    # 1=向上线段, -1=向下线段
@@ -82,6 +90,7 @@ class Segment:
     high: float
     low: float
     stroke_count: int
+    confirmed: bool = True
 
 
 @dataclass
@@ -444,6 +453,9 @@ def detect_segments(
         seg_dir_val = s1.direction
         seg_start = s1.start_idx
         seg_end_idx = i + 2  # strokes索引
+        # 2026-10-18: 只有内层 break(特征序列确认)才是"线段结束"。跑到 strokes
+        # 末尾而没 break 的那一段, seg_end_idx 会随新 bar 继续前移 ⇒ 不是终值。
+        seg_confirmed = False
 
         # P1 fix: 特征序列法 — 替代硬编码0.95/1.05百分比
         # 向上线段：特征序列=向下笔序列，向下笔破前向下笔低点→线段结束
@@ -467,6 +479,7 @@ def detect_segments(
                     elif sj.low < last_down_low:
                         # 向下笔破前向下笔低点 → 特征序列顶分型 → 线段结束
                         seg_end_idx = j - 1
+                        seg_confirmed = True
                         break
                     else:
                         # 未破前低，更新最新向下笔
@@ -491,6 +504,7 @@ def detect_segments(
                     elif sj.high > last_up_high:
                         # 向上笔破前向上笔高点 → 特征序列底分型 → 线段结束
                         seg_end_idx = j - 1
+                        seg_confirmed = True
                         break
                     else:
                         # 未破前高，更新最新向上笔
@@ -511,6 +525,7 @@ def detect_segments(
             high=max(seg_highs),
             low=min(seg_lows),
             stroke_count=len(seg_strokes),
+            confirmed=seg_confirmed,
         )
         segments.append(seg)
 
@@ -557,7 +572,14 @@ def detect_chan_pivots(
     pivot_zz = np.full(n_bars, np.nan)
     pivot_level = np.zeros(n_bars, dtype=int)
 
-    if len(segments) < 3:
+    # 2026-10-18 因果守卫 (#344 铁律违反): **只用已确认的线段**建中枢。
+    # 未确认的末段(扫描没 break ⇒ end_idx/high/low 随新 bar 前移)一旦参与,
+    # todate 推进一天就重标该中枢覆盖的全部历史 —— 实测 chan_pivot_zd 11,816 +
+    # chan_pivot_zg 10,618 格 / 130 只票 / trend_type 4,340 格 / 68 只。
+    # 实测反证: 600000 零改写 —— 它的最后中枢不含未确认段。
+    segs = [s for s in segments if getattr(s, 'confirmed', True)]
+
+    if len(segs) < 3:
         return [], pivot_present, {
             'pivot_present': pivot_present,
             'pivot_zg': pivot_zg,
@@ -568,8 +590,8 @@ def detect_chan_pivots(
 
     pivots = []
 
-    for i in range(len(segments) - 2):
-        s1, s2, s3 = segments[i], segments[i + 1], segments[i + 2]
+    for i in range(len(segs) - 2):
+        s1, s2, s3 = segs[i], segs[i + 1], segs[i + 2]
 
         # 三个线段重叠区域
         zg = min(s1.high, s2.high, s3.high)
@@ -598,7 +620,7 @@ def detect_chan_pivots(
 
         # 中枢级别: 由构成线段的笔数间接反映
         # 大中枢(多段重叠) 对价格有更强的支撑/阻力
-        n_segments = sum(1 for s in segments if s.high >= zd and s.low <= zg)
+        n_segments = sum(1 for s in segs if s.high >= zd and s.low <= zg)
         level = min(30, 5 + n_segments)  # 5F ~ 30F 级别
 
         pivot = Pivot(
@@ -617,8 +639,8 @@ def detect_chan_pivots(
         # 尝试扩展: 后续线段若仍在重叠区间内 → 中枢延续
         # P4 fix: ZG/ZD 由前3段确定后保持不变（与原著一致），延伸仅增加段数和时间跨度
         # 通过要求后续线段的high/low必须覆盖ZG/ZD来判断是否仍在重叠区间
-        for j in range(i + 3, len(segments)):
-            sj = segments[j]
+        for j in range(i + 3, len(segs)):
+            sj = segs[j]
             # 只要有部分重叠即算中枢延续（sj.high > pivot.zd and sj.low < pivot.zg）
             if sj.high > pivot.zd and sj.low < pivot.zg:
                 pivot.end_idx = sj.end_idx
@@ -627,14 +649,35 @@ def detect_chan_pivots(
                 # 脱离中枢 → 第三类买卖点可在此产生
                 break
 
-    # 填充数组
-    for pivot in pivots:
-        for idx in range(pivot.start_idx, min(pivot.end_idx + 1, n_bars)):
+    # 填充数组 (2026-10-18 改因果版)
+    #
+    # 原实现: `for idx in range(pivot.start_idx, pivot.end_idx+1)` —— 把中枢值
+    # **回填**到它的整个区间, 而 end_idx 被上面的「延续」链一路推到最新。
+    # 后果: bar start_idx 处的值用了 start_idx **之后**才成立的第三段
+    # (zg = min(s1.high, s2.high, s3.high), s3 晚于 s1) ⇒ **前视**;
+    # 且该区间随新 bar 变 ⇒ 整段历史被重标 (实测 #344: 22,434 格 / 130 只票)。
+    # 反证: 000026 的中枢#12 span [2205,2616] 而确认时点 2588 —— bar 2205
+    # 用了 383 根之后的信息; 600000 零改写(其最后中枢不含未确认段)。
+    #
+    # 新实现: bar idx 处可见的中枢 = 截止 idx **已完成**的最后一个
+    # (`end_idx <= idx`)。这与 `pivot_position` 里早就写好的守卫
+    # (`relevant_pivots = [p for p in pivots if p.end_idx <= idx]  # 防止前视偏差`)
+    # **同口径** ⇒ CSV 记录的 chan_pivot_zg/zd 与决策层用的中枢终于是同一个。
+    if pivots:
+        ends = np.array([p.end_idx for p in pivots], dtype=int)
+        order = np.argsort(ends, kind='stable')
+        k = 0
+        for idx in range(n_bars):
+            while k < len(order) and ends[order[k]] <= idx:
+                k += 1
+            if k == 0:
+                continue
+            p = pivots[order[k - 1]]
             pivot_present[idx] = True
-            pivot_zg[idx] = pivot.zg
-            pivot_zd[idx] = pivot.zd
-            pivot_zz[idx] = pivot.zz
-            pivot_level[idx] = pivot.level
+            pivot_zg[idx] = p.zg
+            pivot_zd[idx] = p.zd
+            pivot_zz[idx] = p.zz
+            pivot_level[idx] = p.level
 
     return pivots, pivot_present, {
         'pivot_present': pivot_present,
