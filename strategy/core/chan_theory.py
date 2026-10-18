@@ -18,9 +18,26 @@
 纯 NumPy 实现，与现有 factor_calculator 风格一致。
 """
 
+import bisect
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
+
+
+def pivot_visible_idx(p) -> int:
+    """中枢"对决策可见"的时刻 (2026-10-18 铁律因果守卫) — 全模块唯一判据。
+
+    铁律: `f(t;T) ≡ f(t;t)`。任何"bar idx 处用到了中枢 p"的判断都必须写成
+    `pivot_visible_idx(p) <= idx` —— 即 p 的**构成段全部确认**之后才可见。
+
+    三种时刻的语义(勿混):
+      · `p.end_idx`      中枢的**形成**结束 bar (= 第3段的 end_idx), 创建时冻结
+      · `p.ext_idx`      中枢的**延伸**结束 bar (后续仍与区间重叠的段), 随 T 变
+      · `p.visible_idx`  中枢**可见** bar (= 构成段确认时刻的最大值), 终值
+    只有 `visible_idx` 是 T-无关的 ⇒ 只有它能进决策判断。
+    """
+    v = getattr(p, 'visible_idx', None)
+    return int(v) if v is not None else int(p.end_idx)
 
 
 def _sma(arr: np.ndarray, window: int) -> np.ndarray:
@@ -57,6 +74,10 @@ class Fractal:
     high: float
     low: float
     price: float      # 顶分型用high, 底分型用low
+    # 2026-10-18 铁律 #347: 该分型**可被知道**的原始 bar (= 下一个分型被确认的时刻)。
+    # -1 = 尚未定稿(它还是 `filtered` 的最后一个, 可能被同类型更极端者替换)。
+    # ⚠ 分型几何仍用 idx; 只有"何时可知"用 conf —— 决策一律以 conf 为准。
+    conf: int = -1
 
 
 @dataclass
@@ -69,6 +90,9 @@ class Stroke:
     end_price: float
     high: float       # 笔的最高价
     low: float        # 笔的最低价
+    # 2026-10-18 铁律 #347: 该笔**可被知道**的原始 bar (= 终点分型的 conf)。
+    # -1 = 终点分型未定稿 ⇒ 该笔不得用于确认线段。
+    vis_idx: int = -1
 
 
 @dataclass
@@ -104,6 +128,9 @@ class Pivot:
     level: int        # 中枢级别 (基于构成线段对应的级别)
     segment_count: int  # 构成中枢的线段数
     trend_dir: int = 0  # 中枢趋势方向: 1=上移(涨), -1=下移(跌), 0=无方向
+    # 2026-10-18 铁律因果字段 (见 pivot_visible_idx 的说明)
+    visible_idx: Optional[int] = None  # 构成段全部确认的时刻(终值) — 唯一可进决策的判据
+    ext_idx: Optional[int] = None      # 延伸结束 bar(随 T 变) — 仅展示/统计
 
 
 # ==================== 1. 包含关系处理 ====================
@@ -202,12 +229,15 @@ def detect_fractals(
     top_fractals = np.zeros(n, dtype=bool)
     bottom_fractals = np.zeros(n, dtype=bool)
     f_type = np.zeros(n, dtype=int)
+    # 分型可见时刻 (见 Fractal.conf)
+    fractal_vis = np.full(n, -1, dtype=int)
 
     if n < 3:
         return {
             'top_fractals': top_fractals,
             'bottom_fractals': bottom_fractals,
             'fractal_type': f_type,
+            'fractal_vis': fractal_vis,
         }
 
     # 先处理包含关系
@@ -219,6 +249,7 @@ def detect_fractals(
             'top_fractals': top_fractals,
             'bottom_fractals': bottom_fractals,
             'fractal_type': f_type,
+            'fractal_vis': fractal_vis,
         }
 
     # 在包含处理后的K线上检测分型
@@ -253,6 +284,7 @@ def detect_fractals(
             'top_fractals': top_fractals,
             'bottom_fractals': bottom_fractals,
             'fractal_type': f_type,
+            'fractal_vis': fractal_vis,
         }
 
     # 过滤: 同类型连续时保留更极端的
@@ -272,21 +304,39 @@ def detect_fractals(
         else:
             filtered.append((idx, ftype))
 
-    # 映射回原始K线索引
-    for proc_idx, ftype in filtered:
+    # 映射回原始K线索引 + 计算**可见时刻** (2026-10-18 铁律 #347)
+    #
+    # ⚠ 为什么需要它: `process_inclusions` 会把**尾部**的 bar 并进当前最后一个
+    #   proc bar ⇒ 某根 proc bar 的 high/low 在"它还是最后一个"期间一直在变,
+    #   分型判定也随之变。实测 301082: 顶分型在原始 bar 1158, 但 bar 1159 被并进
+    #   1158(向上处理抬低了 low), 于是要等到 bar 1160 造出新的 proc bar 才认得出
+    #   ⇒ 该分型在 T=1160 时**还不存在**, 到 T=1161 才出现, 却被盖上 end_idx=1158
+    #   的戳 ⇒ 信息"从过去冒出来" = 铁律违反。
+    #
+    # 判据(可证): 候选分型 p 需要右邻 proc[p+1] 才能判定; proc[p+1] 一旦**冻结**
+    #   (即 proc[p+2] 存在) 判定就不再变。交替过滤里 filtered[k] 的归属由**下一个
+    #   候选** filtered[k+1] 决定 ⇒ filtered[k] 定稿于 filtered[k+1] 被确认的时刻。
+    #   orig_map[q+2] 就是那根 raw bar (proc bar 的 orig 索引创建后永不改变) ⇒ 终值。
+    for k, (proc_idx, ftype) in enumerate(filtered):
         orig_idx = orig_map[proc_idx]
-        if orig_idx < n:
-            if ftype == 1:
-                top_fractals[orig_idx] = True
-                f_type[orig_idx] = 1
-            else:
-                bottom_fractals[orig_idx] = True
-                f_type[orig_idx] = -1
+        if orig_idx >= n:
+            continue
+        if ftype == 1:
+            top_fractals[orig_idx] = True
+            f_type[orig_idx] = 1
+        else:
+            bottom_fractals[orig_idx] = True
+            f_type[orig_idx] = -1
+        if k + 1 < len(filtered):
+            _nxt = filtered[k + 1][0]
+            if _nxt + 2 < pn:
+                fractal_vis[orig_idx] = int(orig_map[_nxt + 2])
 
     return {
         'top_fractals': top_fractals,
         'bottom_fractals': bottom_fractals,
         'fractal_type': f_type,
+        'fractal_vis': fractal_vis,
     }
 
 
@@ -317,6 +367,7 @@ def detect_strokes(
     top_f = fractals['top_fractals']
     bottom_f = fractals['bottom_fractals']
     f_type = fractals['fractal_type']
+    f_vis = fractals['fractal_vis']      # 分型可见时刻 (铁律 #347)
 
     stroke_dir = np.zeros(n, dtype=int)
     stroke_ids = np.full(n, -1, dtype=int)
@@ -325,9 +376,9 @@ def detect_strokes(
     fractal_list = []
     for i in range(n):
         if top_f[i]:
-            fractal_list.append(Fractal(i, 1, high[i], low[i], high[i]))
+            fractal_list.append(Fractal(i, 1, high[i], low[i], high[i], int(f_vis[i])))
         elif bottom_f[i]:
-            fractal_list.append(Fractal(i, -1, high[i], low[i], low[i]))
+            fractal_list.append(Fractal(i, -1, high[i], low[i], low[i], int(f_vis[i])))
 
     if len(fractal_list) < 2:
         return {
@@ -362,6 +413,8 @@ def detect_strokes(
                                 start_price=f1.price, end_price=f2.price,
                                 high=max(f1.high, f2.high),
                                 low=min(f1.low, f2.low),
+                                # 笔的可见时刻 = 终点分型的可见时刻 (铁律 #347)
+                                vis_idx=f2.conf,
                             )
                             strokes.append(stroke)
                             i = j
@@ -375,6 +428,7 @@ def detect_strokes(
                                 start_price=f1.price, end_price=f2.price,
                                 high=max(f1.high, f2.high),
                                 low=min(f1.low, f2.low),
+                                vis_idx=f2.conf,   # 铁律 #347
                             )
                             strokes.append(stroke)
                             i = j
@@ -399,6 +453,17 @@ def detect_strokes(
         first_dir = strokes[0].direction
         for idx in range(0, strokes[0].start_idx):
             stroke_ids[idx] = -1
+        # 2026-10-18 铁律 #347: **尾部预填**。最后一笔之后是"未完成段", 其方向由
+        # strokes[-1] 的终点分型确定(笔必交替 ⇒ 与上一笔反向), 但 detect_strokes
+        # 要求笔**结束**才形成 ⇒ 原版此处留空(全 0)。
+        # 后果: 一笔跨 1296 根时, 它在 prefix 里尚不存在(如 002413 的 1051→2347),
+        # 形成后整段回填 ⇒ 改写 1245 根前的 stroke_dir, 再经 analyze_bottom_fractal
+        # → bottom_fractal_quality → B4 的 has_fractal 传播到 buy_point。
+        # 预填后, prefix 与 full 在该段上取值相同 ⇒ 不再改写。
+        _tail_dir = -strokes[-1].direction
+        for idx in range(strokes[-1].end_idx, n):
+            stroke_dir[idx] = _tail_dir
+            stroke_ids[idx] = len(strokes)
     else:
         stroke_dir[:] = 0
         stroke_ids[:] = -1
@@ -456,6 +521,10 @@ def detect_segments(
         # 2026-10-18: 只有内层 break(特征序列确认)才是"线段结束"。跑到 strokes
         # 末尾而没 break 的那一段, seg_end_idx 会随新 bar 继续前移 ⇒ 不是终值。
         seg_confirmed = False
+        # 2026-10-18 铁律 #347: 记录**确认时刻**。确认发生在"能看到 strokes[j]"
+        # 之时 = 该笔的终点 bar。段一旦确认就不再变 ⇒ 该时刻是**终值**, 可安全
+        # 用作因果守卫 (见 detect_chan_pivots 的 ci / visible_idx)。
+        seg_confirmed_idx = None
 
         # P1 fix: 特征序列法 — 替代硬编码0.95/1.05百分比
         # 向上线段：特征序列=向下笔序列，向下笔破前向下笔低点→线段结束
@@ -478,8 +547,24 @@ def detect_segments(
                         last_down_idx = j
                     elif sj.low < last_down_low:
                         # 向下笔破前向下笔低点 → 特征序列顶分型 → 线段结束
+                        # ⚠ 曾试过 `and j < len(strokes)-1` (怕末笔未定稿) —— **错**:
+                        #   detect_strokes 是贪心左→右扫描, 笔一旦创建 (start_idx,
+                        #   end_idx) **永不修改** ⇒ strokes[j].end_idx 天然是终值。
+                        #   加了那个条件反而**推迟**确认: 301082 T=1173 时该段不可见,
+                        #   到 T=1205 才以 ci=1158 出现 —— 可见时刻**倒着跳回过去**,
+                        #   是更隐蔽的铁律违反。已回退。
                         seg_end_idx = j - 1
                         seg_confirmed = True
+                        # 确认时刻 = **确认笔的可见时刻** (不是它的 end_idx!)
+                        # ⚠ 原版用 strokes[j].end_idx ⇒ 若该笔终点分型要等后续 bar
+                        #   才能认出, 线段就"从过去冒出来" (实测 301082 ci=1158 但
+                        #   T=1160 时该段还不存在) ⇒ 铁律违反。
+                        _vj = getattr(strokes[j], 'vis_idx', -1)
+                        # 确认笔的终点分型尚未定稿 ⇒ 本段**尚未确认** (它必是末段)。
+                        # ⚠ 若这里仍写 confirmed=True 而 ci=None, 下游 ci 构造的
+                        #   `or s.end_idx` 回退会把 end_idx 当确认时刻 ⇒ 前视复活。
+                        seg_confirmed = _vj >= 0
+                        seg_confirmed_idx = _vj if _vj >= 0 else None
                         break
                     else:
                         # 未破前低，更新最新向下笔
@@ -503,8 +588,12 @@ def detect_segments(
                         last_up_idx = j
                     elif sj.high > last_up_high:
                         # 向上笔破前向上笔高点 → 特征序列底分型 → 线段结束
+                        # ⚠ 同上行: 不加 `j < len(strokes)-1` (笔的 end_idx 是终值)
                         seg_end_idx = j - 1
                         seg_confirmed = True
+                        _vj = getattr(strokes[j], 'vis_idx', -1)   # 铁律 #347
+                        seg_confirmed = _vj >= 0   # 见上: 不得留下 confirmed=True+ci=None
+                        seg_confirmed_idx = _vj if _vj >= 0 else None
                         break
                     else:
                         # 未破前高，更新最新向上笔
@@ -527,8 +616,17 @@ def detect_segments(
             stroke_count=len(seg_strokes),
             confirmed=seg_confirmed,
         )
+        seg.confirmed_idx = seg_confirmed_idx   # 确认时刻(终值); 未确认为 None
         segments.append(seg)
 
+        # ⚠ 2026-10-18 铁律 #347: 未确认段是**最后一段**, 它的 seg_end_idx 是
+        #   临时边界 (会随新笔前移)。从它后面再起新段 ⇒ 新段的**起点**依赖 T。
+        #   实测 301082: T=1104 时 seg7=(835,849) 确认(ci=1102); T=1161 时前一段
+        #   延伸到 1102, seg7 干脆**不存在**, 而新 seg6=(820,1102,ci=1158) ——
+        #   于是 bar∈[1102,1158) 处可见的段集合随 T 变 ⇒ 中枢身份错位。
+        #   修法: 未确认段直接终止线段列表 (与 `confirmed` 过滤器同口径)。
+        if not seg_confirmed:
+            break
         i = seg_end_idx + 1  # 线段之间可以共用边界笔
 
         if i >= len(strokes) - 2:
@@ -588,96 +686,123 @@ def detect_chan_pivots(
             'pivot_level': pivot_level,
         }
 
-    pivots = []
-
-    for i in range(len(segs) - 2):
-        s1, s2, s3 = segs[i], segs[i + 1], segs[i + 2]
-
-        # 三个线段重叠区域
-        zg = min(s1.high, s2.high, s3.high)
-        zd = max(s1.low, s2.low, s3.low)
-
-        if zg <= zd:
-            continue  # 无重叠，非中枢
-
-        # 检查是否与前一中枢重叠（中枢延续或扩展/趋势方向）
-        trend_dir = 0  # 1=中枢上移(上涨趋势), -1=中枢下移(下跌趋势)
-        if pivots:
-            prev = pivots[-1]
-            if zg <= prev.zg and zd >= prev.zd:
-                # 新中枢被旧中枢包含 → 中枢延续（震荡区间收窄或不变）
-                # ZG/ZD 不变（旧区间已经更大），只延长结束位置
-                prev.end_idx = s3.end_idx
-                prev.segment_count += 1
-                continue
-            elif zd > prev.zg:
-                # 新中枢在旧中枢之上 → 中枢上移 → 上涨趋势
-                trend_dir = 1
-            elif zg < prev.zd:
-                # 新中枢在旧中枢之下 → 中枢下移 → 下跌趋势
-                trend_dir = -1
-            # 部分重叠（非包含）：新中枢独立，正常创建
-
-        # 中枢级别: 由构成线段的笔数间接反映
-        # 大中枢(多段重叠) 对价格有更强的支撑/阻力
-        n_segments = sum(1 for s in segs if s.high >= zd and s.low <= zg)
-        level = min(30, 5 + n_segments)  # 5F ~ 30F 级别
-
-        pivot = Pivot(
-            start_idx=s1.start_idx,
-            end_idx=s3.end_idx,
-            zg=zg,
-            zd=zd,
-            zz=(zg + zd) / 2,
-            level=level,
-            segment_count=3,
-        )
-        # 记录中枢趋势方向（用于趋势分类）
-        pivot.trend_dir = trend_dir
-        pivots.append(pivot)
-
-        # 尝试扩展: 后续线段若仍在重叠区间内 → 中枢延续
-        # P4 fix: ZG/ZD 由前3段确定后保持不变（与原著一致），延伸仅增加段数和时间跨度
-        # 通过要求后续线段的high/low必须覆盖ZG/ZD来判断是否仍在重叠区间
-        for j in range(i + 3, len(segs)):
-            sj = segs[j]
-            # 只要有部分重叠即算中枢延续（sj.high > pivot.zd and sj.low < pivot.zg）
-            if sj.high > pivot.zd and sj.low < pivot.zg:
-                pivot.end_idx = sj.end_idx
-                pivot.segment_count += 1
-            else:
-                # 脱离中枢 → 第三类买卖点可在此产生
-                break
-
-    # 填充数组 (2026-10-18 改因果版)
+    # ── 因果构造 (2026-10-18 铁律 #347) ────────────────────────────────────
     #
-    # 原实现: `for idx in range(pivot.start_idx, pivot.end_idx+1)` —— 把中枢值
-    # **回填**到它的整个区间, 而 end_idx 被上面的「延续」链一路推到最新。
-    # 后果: bar start_idx 处的值用了 start_idx **之后**才成立的第三段
-    # (zg = min(s1.high, s2.high, s3.high), s3 晚于 s1) ⇒ **前视**;
-    # 且该区间随新 bar 变 ⇒ 整段历史被重标 (实测 #344: 22,434 格 / 130 只票)。
-    # 反证: 000026 的中枢#12 span [2205,2616] 而确认时点 2588 —— bar 2205
-    # 用了 383 根之后的信息; 600000 零改写(其最后中枢不含未确认段)。
+    # 原实现有两个 T-依赖源, 都是**前视**:
+    #   (a) `pivots` 由**全部**线段构造, 而"末段是否 confirmed"随 T 变 ⇒ 段的
+    #       **身份**本身依赖 T (实测 301082: full 的三重组合=(s4,s5,s6),
+    #       prefix 变成 (s4,s5,s7) —— 不是值回填, 是组合错位)。
+    #   (b) `pivot.end_idx` 被「延续链」推到最新, 填充守卫 `end_idx <= idx` 在
+    #       历史 bar 上**换人** ⇒ ZG/ZD 跳到另一个中枢。
     #
-    # 新实现: bar idx 处可见的中枢 = 截止 idx **已完成**的最后一个
-    # (`end_idx <= idx`)。这与 `pivot_position` 里早就写好的守卫
-    # (`relevant_pivots = [p for p in pivots if p.end_idx <= idx]  # 防止前视偏差`)
-    # **同口径** ⇒ CSV 记录的 chan_pivot_zg/zd 与决策层用的中枢终于是同一个。
-    if pivots:
-        ends = np.array([p.end_idx for p in pivots], dtype=int)
-        order = np.argsort(ends, kind='stable')
-        k = 0
-        for idx in range(n_bars):
-            while k < len(order) and ends[order[k]] <= idx:
-                k += 1
-            if k == 0:
-                continue
-            p = pivots[order[k - 1]]
-            pivot_present[idx] = True
-            pivot_zg[idx] = p.zg
-            pivot_zd[idx] = p.zd
-            pivot_zz[idx] = p.zz
-            pivot_level[idx] = p.level
+    # 修法: 中枢 = **已确认线段的纯函数**。定义
+    #     ci[s] = 该段的确认时刻 (段一旦被特征序列分型确认就不再变 ⇒ 终值)
+    #     k(t)  = #{s : ci[s] <= t}          —— 只依赖 t, 不依赖 T
+    #     _build(k)                          —— 对 k 是纯函数, 只读 segs[:k]
+    # 则 bar t 处可见的中枢 = _build(k(t)) 的末元素 ⇒ f(t;T) ≡ f(t;t) 成立。
+    #
+    # 反证(旧): 000026 中枢#12 span [2205,2616] 而确认时点 2588 —— bar 2205 用了
+    # 383 根之后才成立的信息; 600000 零改写(其最后中枢不含未确认段)。
+    # ⚠ 原为 `... or s.end_idx`: ci=None 时回退到 end_idx ⇒ 把"几何终点"当"确认
+    #   时刻", 前视复活。现在 None 只可能出现在"未确认"段上, 而它们已被上面的
+    #   `confirmed` 过滤剔除 ⇒ 这里断言式兜底: 兜不住就取一个永不满足的值。
+    ci = [int(getattr(s, 'confirmed_idx', None)
+              if getattr(s, 'confirmed_idx', None) is not None else 10 ** 9)
+          for s in segs]
+    for _k in range(1, len(ci)):          # 强制单调 ⇒ bisect 语义正确
+        if ci[_k] < ci[_k - 1]:
+            ci[_k] = ci[_k - 1]
+
+    def _build(k: int) -> List[Pivot]:
+        """只用前 k 个线段构造中枢。**纯函数**: 绝不读 segs[k:]。"""
+        ps: List[Pivot] = []
+        for i in range(k - 2):
+            s1, s2, s3 = segs[i], segs[i + 1], segs[i + 2]
+
+            # 三个线段重叠区域
+            zg = min(s1.high, s2.high, s3.high)
+            zd = max(s1.low, s2.low, s3.low)
+
+            if zg <= zd:
+                continue  # 无重叠，非中枢
+
+            # 检查是否与前一中枢重叠（中枢延续或扩展/趋势方向）
+            trend_dir = 0  # 1=中枢上移(上涨趋势), -1=中枢下移(下跌趋势)
+            if ps:
+                prev = ps[-1]
+                if zg <= prev.zg and zd >= prev.zd:
+                    # 新中枢被旧中枢包含 → 中枢延续（震荡区间收窄或不变）
+                    # ZG/ZD 不变（旧区间已经更大），只延长结束位置
+                    # ⚠ 只写 ext_idx: end_idx 必须保持创建时的终值, 否则
+                    #   "已完成"守卫会随 T 换人 (前视)。
+                    prev.ext_idx = s3.end_idx
+                    prev.segment_count += 1
+                    continue
+                elif zd > prev.zg:
+                    # 新中枢在旧中枢之上 → 中枢上移 → 上涨趋势
+                    trend_dir = 1
+                elif zg < prev.zd:
+                    # 新中枢在旧中枢之下 → 中枢下移 → 下跌趋势
+                    trend_dir = -1
+                # 部分重叠（非包含）：新中枢独立，正常创建
+
+            # 中枢级别: 由构成线段的笔数间接反映
+            # 大中枢(多段重叠) 对价格有更强的支撑/阻力
+            # ⚠ 只数**已出现**的段 (segs[:i+3]) —— 原版数全部 segs ⇒ 用未来段。
+            n_segments = sum(1 for s in segs[:i + 3] if s.high >= zd and s.low <= zg)
+            level = min(30, 5 + n_segments)  # 5F ~ 30F 级别
+
+            pivot = Pivot(
+                start_idx=s1.start_idx,
+                end_idx=s3.end_idx,
+                zg=zg,
+                zd=zd,
+                zz=(zg + zd) / 2,
+                level=level,
+                segment_count=3,
+            )
+            # 记录中枢趋势方向（用于趋势分类）
+            pivot.trend_dir = trend_dir
+            pivot.ext_idx = s3.end_idx
+            # 可见时刻 = 三个构成段**全部确认**之后 (终值)
+            pivot.visible_idx = max(ci[i], ci[i + 1], ci[i + 2])
+            ps.append(pivot)
+
+            # 尝试扩展: 后续线段若仍在重叠区间内 → 中枢延续
+            # P4 fix: ZG/ZD 由前3段确定后保持不变（与原著一致），延伸仅增加段数和时间跨度
+            # 通过要求后续线段的high/low必须覆盖ZG/ZD来判断是否仍在重叠区间
+            for j in range(i + 3, k):
+                sj = segs[j]
+                # 只要有部分重叠即算中枢延续（sj.high > pivot.zd and sj.low < pivot.zg）
+                if sj.high > pivot.zd and sj.low < pivot.zg:
+                    pivot.ext_idx = sj.end_idx
+                    pivot.segment_count += 1
+                else:
+                    # 脱离中枢 → 第三类买卖点可在此产生
+                    break
+        return ps
+
+    # 每个 k 的"末中枢" —— bar t 处可见的中枢
+    last_by_k: Dict[int, Pivot] = {}
+    for k in range(3, len(segs) + 1):
+        ps = _build(k)
+        if ps:
+            last_by_k[k] = ps[-1]
+
+    for idx in range(n_bars):
+        k = bisect.bisect_right(ci, idx)
+        if k < 3:
+            continue
+        p = last_by_k.get(k)
+        if p is None:
+            continue
+        pivot_present[idx] = True
+        pivot_zg[idx] = p.zg
+        pivot_zd[idx] = p.zd
+        pivot_zz[idx] = p.zz
+        pivot_level[idx] = p.level
+
+    pivots = _build(len(segs))
 
     return pivots, pivot_present, {
         'pivot_present': pivot_present,
@@ -717,20 +842,39 @@ def classify_trend_type(
             'consolidation_zone': consolidation_zone,
         }
 
-    # 标记中枢区间
-    for pivot in pivots:
-        for idx in range(pivot.start_idx, min(pivot.end_idx + 1, n_bars)):
-            consolidation_zone[idx] = True
+    # ── 因果化 (2026-10-18 铁律 #347) ──────────────────────────────────────
+    # 原实现的三个 T-依赖源, 全部是前视:
+    #   (a) `for idx in range(pivot.start_idx, end_idx+1)` —— 把"此 bar 在盘整区"
+    #       回填到中枢**开始**处, 而中枢要第3段结束才成立 (start_idx 早于成立点)。
+    #   (b) `fill_start = p2.end_idx` —— end_idx 曾被延续链推大 (见 detect_chan_pivots)。
+    #   (c) `len(pivots)` 与 `pivots[i+1]` —— 用**全序列**的中枢数/配对; bar t 处
+    #       应当只认"截止 t 可见"的中枢 (实测 trend_type 2,204 格改写 / 1,386 格
+    #       深埋 >120 交易日)。
+    # 修法: 一切以 `pivot_visible_idx(p) <= idx` 为准, 且填充区间**只向前**。
+    #   可见时刻序列 vis 非降 ⇒ 逐对 j 递增填充 [vis[j], n_bars) 时, bar idx 只
+    #   会看到 vis <= idx 的那些对 —— 与截断到 t 重跑的结果逐位一致。
+    vis = np.array([pivot_visible_idx(p) for p in pivots], dtype=int)
 
-    # 分析中枢关系
-    if len(pivots) == 1:
-        # 单中枢 = 盘整
-        p = pivots[0]
-        for idx in range(p.end_idx, n_bars):
+    # (1) 盘整区标记: 中枢**可见之后**才算处于盘整区
+    for v in vis:
+        consolidation_zone[int(v):] = True
+
+    # (2) 单中枢区 = [vis[0], vis[1]) —— 此刻**只看得见 1 个中枢** ⇒ 盘整。
+    # ⚠ 2026-10-18 铁律 #347: 原版写成 `if len(pivots)==1: 填 [vis[0], n_bars)`,
+    #   `elif len(pivots)>=2:` 走配对分支。于是**第 2 个中枢一出现**, 整个
+    #   [vis[0], vis[1]) 区间的 1 被清成 0 —— 配对分支只从 vis[1] 起填, 没人补它。
+    #   实测 002801 T=2142: bar 110..2140 由 1→0 (2,031 格), 而那 2,031 格在
+    #   bar 110 处**本来就该是 1** (当时确实只看得见 1 个中枢) ⇒ 纯历史改写。
+    #   修法: 单中枢区按 vis[1] **截断** (没有第 2 个中枢时截到 n_bars), 与配对
+    #   分支拼起来恰好等价于"标签由 K(idx)=#{可见中枢} 决定"。
+    if len(vis) >= 1:
+        _end1 = int(vis[1]) if len(vis) >= 2 else n_bars
+        for idx in range(int(vis[0]), min(_end1, n_bars)):
             trend_type[idx] = 1
             trend_strength[idx] = 0.3
-    elif len(pivots) >= 2:
-        # 多中枢: 用连续同向关系判定趋势（从中枢结束点赋值，防止前视偏差）
+
+    if len(pivots) >= 2:
+        # 多中枢: 用连续同向关系判定趋势（从中枢**可见点**赋值）
         consecutive_up = 0
         consecutive_down = 0
         for i in range(len(pivots) - 1):
@@ -738,7 +882,7 @@ def classify_trend_type(
 
             # 优先使用 trend_dir（在detect_chan_pivots中设置）
             td = p2.trend_dir
-            fill_start = p2.end_idx  # 两个中枢都完成后趋势才确认
+            fill_start = int(vis[i + 1])  # 两中枢都**可见**后趋势才确认
             if td == 1 or (td == 0 and p2.zd > p1.zg):
                 # 中枢上移 = 上涨趋势
                 consecutive_up += 1
@@ -760,7 +904,7 @@ def classify_trend_type(
                 # 但重置连续同向计数（方向不明确）
                 consecutive_up = 0
                 consecutive_down = 0
-                for idx in range(p1.start_idx, min(p2.end_idx + 1, n_bars)):
+                for idx in range(fill_start, n_bars):
                     consolidation_zone[idx] = True
                     if trend_type[idx] == 0:
                         trend_type[idx] = 1
@@ -915,19 +1059,17 @@ def detect_buy_sell_points(
     for rank, p in enumerate(non_overlap_up, 1):
         pivot_upward_rank[id(p)] = rank
 
-    if not pivots or not segments:
-        return {
-            'buy_point': buy_point,
-            'sell_point': sell_point,
-            'buy_confidence': buy_confidence,
-            'sell_confidence': sell_confidence,
-            'pivot_position': pivot_position,
-            'b3_trend_rank': b3_trend_rank,
-            'b3_trend_confirmed': b3_trend_confirmed,
-            'b3_breakout_vol_ratio': b3_breakout_vol_ratio,
-            'b3_pullback_vol_ratio': b3_pullback_vol_ratio,
-            'b3_pullback_shallowness': b3_pullback_shallowness,
-        }
+    # 2026-10-18 铁律 #347: 原版此处有一个**全局开关式** early return:
+    #     `if not pivots or not segments: return {全零数组}`
+    # 判据是**全序列**是否有中枢, 而中枢是**末尾才形成**的 ⇒ 一旦末尾凑够 3 个
+    # confirmed 线段, 函数就在**全部历史 bar** 上跑 B1..B9。实测 300868:
+    # prefix(T=1238) 笔=7 线段=1 ⇒ 中枢=0 ⇒ 全数组归零; full(n=1488) 笔=17
+    # 线段=4 ⇒ 中枢=1(可见点≈1374)。该中枢与 bar 48 毫无关系, 但 full 在 bar 48
+    # 打出 buy_point=9 ⇒ 137 格改写距截断点 1,189 根。
+    # 而 B8(横盘突破)/B9(涨停回调) **完全不引用 pivots/segments** —— 只吃
+    # close/volume/limit_pct。它们被这个开关无辜掐掉。
+    # `segments` 参数在整个函数体内**只出现在这一行**, 是未使用参数; 所有
+    # `pivots[...]` 访问点都在 `len(pivots) >= n` 守卫内 ⇒ 删除是安全的。
 
     # 为每个位置计算相对最近中枢的状态
     for idx in range(n_bars):
@@ -935,21 +1077,24 @@ def detect_buy_sell_points(
         if c <= 0 or np.isnan(c):
             continue
 
-        # 找已完成的、包含当前位置的中枢（end_idx <= idx 防止前视偏差）
-        relevant_pivots = [p for p in pivots if p.end_idx <= idx]  # 只取已完成中枢(start_idx<=idx隐含于end_idx<=idx)
+        # 找已完成的、包含当前位置的中枢（`visible_idx <= idx` 防止前视偏差）
+        # ⚠ 2026-10-18 铁律 #347: 判据从 `end_idx <= idx` 改为 `visible_idx <= idx`。
+        #   前者用中枢的**延伸**末端, 而延伸末端随 T 变 ⇒ bar idx 处"已完成的中枢"
+        #   会换人。后者是"构成段全部确认"的终值, 只依赖 t。
+        relevant_pivots = [p for p in pivots if pivot_visible_idx(p) <= idx]
 
         if not relevant_pivots:
             # 不在任何中枢附近，找最近的中枢
+            # ⚠ 只认**可见**的中枢: 原版 `elif p.start_idx > idx` 分支直接用了
+            #   一个**还没开始**的中枢算距离 —— 纯前视 (探针实测经此改写
+            #   pivot_position/signal_level/confirmed_buy/breakout_below_pivot)。
             nearest = None
             min_dist = float('inf')
             for p in pivots:
+                if pivot_visible_idx(p) > idx:
+                    continue
                 if p.end_idx < idx:
                     dist = idx - p.end_idx
-                    if dist < min_dist:
-                        min_dist = dist
-                        nearest = p
-                elif p.start_idx > idx:
-                    dist = p.start_idx - idx
                     if dist < min_dist:
                         min_dist = dist
                         nearest = p
@@ -984,7 +1129,9 @@ def detect_buy_sell_points(
         _l = low if low is not None else close
         # Step 1: 检查新的突破信号（中枢完成后5bar内, 用最高价检测真突破）
         for pi, p in enumerate(pivots):
-            p_end = p.end_idx
+            # ⚠ 2026-10-18 铁律 #347: `end_idx` → `visible_idx`。用形成末端会让
+            #   状态机在一个**尚未可见**的中枢上开窗 ⇒ 该窗口内的历史 bar 被改写。
+            p_end = pivot_visible_idx(p)
             if i <= p_end or i > p_end + 5 or pi in b3_pending:
                 continue
             if pivot_position[i] == 1 and _h[i] > p.zg * 1.02:  # 用high检测突破
@@ -1029,7 +1176,8 @@ def detect_buy_sell_points(
 
         # === S3 状态机: 逐bar处理跌破→反弹 ===
         for pi, p in enumerate(pivots):
-            p_end = p.end_idx
+            # ⚠ 2026-10-18 铁律 #347: 同 B3 —— 用 visible_idx
+            p_end = pivot_visible_idx(p)
             if i <= p_end or i > p_end + 5 or pi in s3_pending:
                 continue
             if pivot_position[i] == -1 and close[i] < p.zd * 0.98:
@@ -1056,19 +1204,51 @@ def detect_buy_sell_points(
         for pi in resolved_s3:
             s3_pending.pop(pi, None)
 
-    # === 一买/一卖: 基于累计趋势方向 ===
-    if len(pivots) >= 2:
-        # 统计最近N个中枢的整体走向（而非仅看最后两个）
-        n_check = min(len(pivots), 5)
-        recent_pivots = pivots[-n_check:]
-        last_pivot = recent_pivots[-1]
+    # === 一买/一卖/横盘突破: 逐 bar 因果版 (2026-10-18 铁律 #347) ===
+    #
+    # 原实现用 `pivots[-1]` (全序列**最后**一个中枢) + 把标记**回填**到
+    # `[last_pivot.end_idx, +20)` —— 中枢每延伸一段、或末尾新形成一个中枢,
+    # 就把一批历史 bar 重标一次 (探针实测 back=250 时 644 格改写距末尾 >120 根,
+    # 最大 1,189; 经 pivot_position → signal_level → confirmed_buy 传播到准入闸)。
+    #
+    # 因果版: bar i 只用**截止 i 可见**的末中枢 (visible_idx <= i), 且只写 bar i。
+    # 背驰强度按"可见末中枢"缓存 —— 同一 kp 必得同一值。
+    def _kp_at(_i: int) -> int:
+        """bar _i 处可见的**末**中枢下标 (无则 -1)。"""
+        _kp = -1
+        for _k in range(len(pivots)):
+            if pivot_visible_idx(pivots[_k]) <= _i:
+                _kp = _k
+            else:
+                break
+        return _kp
 
-        # 累计下跌/上涨计数
+    _div_cache: Dict[int, float] = {}
+
+    def _div_at(_kp: int) -> float:
+        if _kp not in _div_cache:
+            _div_cache[_kp] = _compute_macd_divergence(
+                close, pivots[:_kp + 1], pivots[_kp], n_bars,
+                max_idx=pivots[_kp].end_idx)
+        return _div_cache[_kp]
+
+    # === 一买 (B1) / 一卖 (S1): 基于**可见**中枢的累计趋势方向 ===
+    for i in range(n_bars):
+        kp = _kp_at(i)
+        if kp < 1:
+            continue
+        last_pivot = pivots[kp]
+        if i >= last_pivot.end_idx + 20:
+            continue
+        recent_pivots = pivots[max(0, kp - 4):kp + 1]
+        n_check = len(recent_pivots)
+
+        # 累计下跌/上涨计数 (只看可见中枢)
         down_count = 0
         up_count = 0
-        for i in range(1, len(recent_pivots)):
-            p_prev = recent_pivots[i - 1]
-            p_curr = recent_pivots[i]
+        for _k in range(1, n_check):
+            p_prev = recent_pivots[_k - 1]
+            p_curr = recent_pivots[_k]
             td = p_curr.trend_dir
             if td == -1 or (td == 0 and p_curr.zg < p_prev.zd):
                 down_count += 1
@@ -1077,83 +1257,100 @@ def detect_buy_sell_points(
 
         # === 一买 (B1): 标准背驰路径 ===
         # 下跌趋势确认（>=2次中枢下移）→ 背驰确认后一买
-        if down_count >= 2 or (down_count >= 1 and len(recent_pivots) <= 2):
-            div_strength = _compute_macd_divergence(close, pivots, last_pivot, n_bars,
-                                                     max_idx=last_pivot.end_idx)
+        if down_count >= 2 or (down_count >= 1 and n_check <= 2):
+            div_strength = _div_at(kp)
             if div_strength > 0.10:
-                for idx in range(last_pivot.end_idx, min(last_pivot.end_idx + 20, n_bars)):
-                    if pivot_position[idx] == -1 and buy_point[idx] == 0:
-                        buy_point[idx] = 1
-                        dist_pct = (last_pivot.zd - close[idx]) / (close[idx] + 1e-10)
-                        base_conf = 0.35 + down_count * 0.10 + div_strength * 0.3
-                        buy_confidence[idx] = min(0.9, base_conf + dist_pct * 10)
+                if pivot_position[i] == -1 and buy_point[i] == 0:
+                    buy_point[i] = 1
+                    dist_pct = (last_pivot.zd - close[i]) / (close[i] + 1e-10)
+                    base_conf = 0.35 + down_count * 0.10 + div_strength * 0.3
+                    buy_confidence[i] = min(0.9, base_conf + dist_pct * 10)
 
-        # === B1扩展: V型反转 — 深度回撤后强力反弹 + 量能确认 ===
-        # 60日最大回撤>15% + 近3日反弹>2% + 近期曾跌破MA20 + 反弹放量
-        if n_bars >= 60:
-            for idx in range(60, n_bars):
-                if buy_point[idx] != 0:
-                    continue
-                max60 = np.max(close[idx - 60:idx])
-                dd_from_high = (max60 - close[idx]) / max60 if max60 > 0 else 0
-                bounce_3d = (close[idx] - close[max(0, idx - 3)]) / (close[max(0, idx - 3)] + 1e-10)
-                # 曾跌破MA20：近20日最低价低于近20日均价(用SMA20近似)
-                recent_low = np.min(close[max(0, idx - 20):idx + 1])
-                recent_avg = np.mean(close[max(0, idx - 20):idx + 1])
-                was_below_ma = recent_low < recent_avg * 0.97
-                # 量能确认: 反弹3日均量 > 前5日均量 × 1.1（放量反弹才是真反转）
-                vol_ok = True
-                if volume is not None and idx >= 8:
-                    vol_bounce = np.mean(volume[max(0, idx - 2):idx + 1])
-                    vol_pre = np.mean(volume[max(0, idx - 7):max(0, idx - 2)])
-                    vol_ok = vol_bounce > vol_pre * 1.1 if vol_pre > 0 else True
-                if dd_from_high > 0.15 and bounce_3d > 0.02 and was_below_ma and vol_ok:
-                    buy_point[idx] = 1
-                    buy_confidence[idx] = float(np.clip(0.30 + dd_from_high * 0.5 + bounce_3d * 3, 0.25, 0.7))
+    # === B1扩展: V型反转 — 深度回撤后强力反弹 + 量能确认 ===
+    # 60日最大回撤>15% + 近3日反弹>2% + 近期曾跌破MA20 + 反弹放量
+    if n_bars >= 60:
+        for idx in range(60, n_bars):
+            if buy_point[idx] != 0:
+                continue
+            max60 = np.max(close[idx - 60:idx])
+            dd_from_high = (max60 - close[idx]) / max60 if max60 > 0 else 0
+            bounce_3d = (close[idx] - close[max(0, idx - 3)]) / (close[max(0, idx - 3)] + 1e-10)
+            # 曾跌破MA20：近20日最低价低于近20日均价(用SMA20近似)
+            recent_low = np.min(close[max(0, idx - 20):idx + 1])
+            recent_avg = np.mean(close[max(0, idx - 20):idx + 1])
+            was_below_ma = recent_low < recent_avg * 0.97
+            # 量能确认: 反弹3日均量 > 前5日均量 × 1.1（放量反弹才是真反转）
+            vol_ok = True
+            if volume is not None and idx >= 8:
+                vol_bounce = np.mean(volume[max(0, idx - 2):idx + 1])
+                vol_pre = np.mean(volume[max(0, idx - 7):max(0, idx - 2)])
+                vol_ok = vol_bounce > vol_pre * 1.1 if vol_pre > 0 else True
+            if dd_from_high > 0.15 and bounce_3d > 0.02 and was_below_ma and vol_ok:
+                buy_point[idx] = 1
+                buy_confidence[idx] = float(np.clip(0.30 + dd_from_high * 0.5 + bounce_3d * 3, 0.25, 0.7))
 
-        # === B1扩展: 缺口反转 — 跳空高开放量突破下跌趋势 ===
-        if n_bars >= 3:
-            for idx in range(3, n_bars):
-                if buy_point[idx] != 0:
-                    continue
-                gap_up = (close[idx] - close[idx - 1]) / (close[idx - 1] + 1e-10)
-                # 之前处于下跌：近5日趋势向下
-                pre_trend = (close[idx - 1] - close[max(0, idx - 5)]) / (close[max(0, idx - 5)] + 1e-10)
-                # 量能确认: 跳空日量比>1.0（放量跳空才是真突破，缩量跳空=假突破）
-                vol_ok = True
-                if volume is not None and idx >= 20:
-                    avg_vol_20 = np.mean(volume[max(0, idx - 20):idx])
-                    vol_ok = volume[idx] > avg_vol_20 * 1.0 if avg_vol_20 > 0 else True
-                if gap_up > 0.02 and pre_trend < -0.03 and vol_ok:
-                    buy_point[idx] = 1
-                    buy_confidence[idx] = float(np.clip(0.30 + gap_up * 5, 0.25, 0.7))
+    # === B1扩展: 缺口反转 — 跳空高开放量突破下跌趋势 ===
+    if n_bars >= 3:
+        for idx in range(3, n_bars):
+            if buy_point[idx] != 0:
+                continue
+            gap_up = (close[idx] - close[idx - 1]) / (close[idx - 1] + 1e-10)
+            # 之前处于下跌：近5日趋势向下
+            pre_trend = (close[idx - 1] - close[max(0, idx - 5)]) / (close[max(0, idx - 5)] + 1e-10)
+            # 量能确认: 跳空日量比>1.0（放量跳空才是真突破，缩量跳空=假突破）
+            vol_ok = True
+            if volume is not None and idx >= 20:
+                avg_vol_20 = np.mean(volume[max(0, idx - 20):idx])
+                vol_ok = volume[idx] > avg_vol_20 * 1.0 if avg_vol_20 > 0 else True
+            if gap_up > 0.02 and pre_trend < -0.03 and vol_ok:
+                buy_point[idx] = 1
+                buy_confidence[idx] = float(np.clip(0.30 + gap_up * 5, 0.25, 0.7))
 
-        # === B1扩展: 横盘突破 — 中枢震荡后向上突破ZG ===
-        if len(pivots) >= 1:
-            last_p = pivots[-1]
-            # 中枢已横盘超过30根K线 → 充分蓄力
-            pivot_width = last_p.end_idx - last_p.start_idx
-            if pivot_width >= 20:
-                for idx in range(last_p.end_idx, min(last_p.end_idx + 15, n_bars)):
-                    if buy_point[idx] != 0:
-                        continue
-                    if close[idx] > last_p.zg and pivot_position[idx] == 1:
-                        buy_point[idx] = 3  # 突破中枢上沿→B3,非B1
-                        breakout_pct = (close[idx] - last_p.zg) / last_p.zg
-                        buy_confidence[idx] = float(np.clip(0.30 + breakout_pct * 8, 0.25, 0.65))
+    # === B1扩展: 横盘突破 — 中枢震荡后向上突破ZG ===
+    # [因果化] 同 B1: 逐 bar, 只用**可见**末中枢, 只写 bar i。
+    for i in range(n_bars):
+        kp = _kp_at(i)
+        if kp < 0:
+            continue
+        last_p = pivots[kp]
+        if i < last_p.end_idx or i >= last_p.end_idx + 15:
+            continue
+        # 中枢已横盘超过20根K线 → 充分蓄力
+        if last_p.end_idx - last_p.start_idx < 20:
+            continue
+        if buy_point[i] != 0:
+            continue
+        if close[i] > last_p.zg and pivot_position[i] == 1:
+            buy_point[i] = 3  # 突破中枢上沿→B3,非B1
+            breakout_pct = (close[i] - last_p.zg) / last_p.zg
+            buy_confidence[i] = float(np.clip(0.30 + breakout_pct * 8, 0.25, 0.65))
 
-        # 上涨趋势确认（>=2次中枢上移）→ 可能一卖
-        # P0+P2 fix: S1必须同时满足"中枢上方"+"背驰确认"
-        if up_count >= 2 or (up_count >= 1 and len(recent_pivots) <= 2):
-            div_strength = _compute_macd_divergence(close, pivots, last_pivot, n_bars,
-                                                     max_idx=last_pivot.end_idx)
+    # === 一卖 (S1): 上涨趋势 + 背驰 ===
+    # P0+P2 fix: S1必须同时满足"中枢上方"+"背驰确认"
+    for i in range(n_bars):
+        kp = _kp_at(i)
+        if kp < 1:
+            continue
+        last_pivot = pivots[kp]
+        if i >= last_pivot.end_idx + 20:
+            continue
+        recent_pivots = pivots[max(0, kp - 4):kp + 1]
+        n_check = len(recent_pivots)
+        up_count = 0
+        for _k in range(1, n_check):
+            p_prev = recent_pivots[_k - 1]
+            p_curr = recent_pivots[_k]
+            td = p_curr.trend_dir
+            if td == 1 or (td == 0 and p_curr.zd > p_prev.zg):
+                up_count += 1
+        if up_count >= 2 or (up_count >= 1 and n_check <= 2):
+            div_strength = _div_at(kp)
             if div_strength > 0.15:
-                for idx in range(last_pivot.end_idx, min(last_pivot.end_idx + 20, n_bars)):
-                    if pivot_position[idx] == 1 and sell_point[idx] == 0:
-                        sell_point[idx] = 1
-                        dist_pct = (close[idx] - last_pivot.zg) / (last_pivot.zg + 1e-10)
-                        base_conf = 0.35 + up_count * 0.10 + div_strength * 0.3
-                        sell_confidence[idx] = min(0.9, base_conf + dist_pct * 10)
+                if pivot_position[i] == 1 and sell_point[i] == 0:
+                    sell_point[i] = 1
+                    dist_pct = (close[i] - last_pivot.zg) / (last_pivot.zg + 1e-10)
+                    base_conf = 0.35 + up_count * 0.10 + div_strength * 0.3
+                    sell_confidence[i] = min(0.9, base_conf + dist_pct * 10)
 
     # === 二买/二卖: 由 detect_second_buy_point 实现 (详见函数14) ===
     # 旧的B2/S2 crude循环已删除 — 改用MACD确认+黄金分割回调+笔确认的完整实现
@@ -1320,8 +1517,12 @@ def detect_buy_sell_points(
                 continue
 
             # 找最近已完成的中枢
+            # ⚠ 2026-10-18 铁律 #347: 原判据 `p.end_idx > idx` 用的是中枢的**几何
+            #   终点** —— 而中枢要等构成它的三个线段**全部确认**才可知 (visible_idx
+            #   可能晚得多)。实测 301082: 中枢 (759,1102) 的 end_idx=1102 但
+            #   visible_idx=1162 ⇒ bar 1103-1114 被判为 B7, 而那时该中枢尚不存在。
             for p in reversed(pivots):
-                if p.end_idx > idx:
+                if pivot_visible_idx(p) > idx:
                     continue
                 # 条件1: 价格在中枢内部或略低于ZD（不超2%）
                 in_pivot = p.zd <= close[idx] <= p.zg * 1.01
@@ -1528,6 +1729,7 @@ def compute_chan_signal(
         'top_fractals': fractals['top_fractals'],
         'bottom_fractals': fractals['bottom_fractals'],
         'fractal_type': fractals['fractal_type'],
+        'fractal_vis': fractals['fractal_vis'],   # 分型可见时刻 (铁律 #347)
 
         # 笔
         'strokes': strokes,  # Stroke对象列表，供增强计算复用
@@ -1590,6 +1792,48 @@ def compute_chan_signal(
 
 # ==================== 9. 笔趋势耗尽检测 (chanlun-pro bi_td) ====================
 
+def _stroke_depletion_idx(s, high: np.ndarray, low: np.ndarray) -> int:
+    """笔 s 内的趋势耗尽起点 (raw bar 索引), 无则 -1。
+
+    ⚠ 纯几何: 只读 s 自身的 [start_idx, end_idx] 跨度, 不含任何跨笔/末端依赖。
+       抽出成函数是为了让 `detect_stroke_mmd` 能直接问"前一笔是否耗尽",
+       而不必去查一个**按 bar 回填**的数组 (那种数组天然会回溯改写, 见下)。
+    """
+    if s.start_idx >= s.end_idx:
+        return -1
+    seg_high = high[s.start_idx:s.end_idx + 1]
+    seg_low = low[s.start_idx:s.end_idx + 1]
+    seg_len = len(seg_high)
+    if seg_len < 8:
+        return -1
+
+    # 将笔内部按每3-5根K线分成"次级别段"
+    sub_seg_size = max(3, seg_len // 5)
+    sub_highs = []
+    sub_lows = []
+    for j in range(0, seg_len, sub_seg_size):
+        end = min(j + sub_seg_size, seg_len)
+        sub_highs.append(np.max(seg_high[j:end]))
+        sub_lows.append(np.min(seg_low[j:end]))
+    if len(sub_highs) < 3:
+        return -1
+
+    # 检查趋势耗尽
+    if s.direction == 1:  # 向上笔
+        # 高点不再创新高 + 最后一段回调较大
+        for j in range(2, len(sub_highs)):
+            if sub_highs[j] < sub_highs[j-1] * 0.995:
+                if sub_lows[j] < sub_lows[j-1]:
+                    return s.start_idx + j * sub_seg_size
+    else:  # 向下笔
+        # 低点不再创新低 + 最后一段反弹较大
+        for j in range(2, len(sub_lows)):
+            if sub_lows[j] > sub_lows[j-1] * 1.005:
+                if sub_highs[j] > sub_highs[j-1]:
+                    return s.start_idx + j * sub_seg_size
+    return -1
+
+
 def check_bi_trend_depletion(
     stroke_info: Dict,
     close: np.ndarray,
@@ -1617,50 +1861,19 @@ def check_bi_trend_depletion(
     strokes = stroke_info['strokes']
 
     for s in strokes:
-        if s.start_idx >= s.end_idx:
+        depletion_idx = _stroke_depletion_idx(s, high, low)
+        if depletion_idx < 0 or depletion_idx >= n:
             continue
-        seg_high = high[s.start_idx:s.end_idx + 1]
-        seg_low = low[s.start_idx:s.end_idx + 1]
-        seg_close = close[s.start_idx:s.end_idx + 1]
-        seg_len = len(seg_close)
-
-        if seg_len < 8:
-            continue
-
-        # 将笔内部按每3-5根K线分成"次级别段"
-        sub_seg_size = max(3, seg_len // 5)
-        sub_highs = []
-        sub_lows = []
-        for j in range(0, seg_len, sub_seg_size):
-            end = min(j + sub_seg_size, seg_len)
-            sub_highs.append(np.max(seg_high[j:end]))
-            sub_lows.append(np.min(seg_low[j:end]))
-
-        if len(sub_highs) < 3:
-            continue
-
-        # 检查趋势耗尽
-        depletion_idx = -1
-        if s.direction == 1:  # 向上笔
-            # 高点不再创新高 + 最后一段回调较大
-            for j in range(2, len(sub_highs)):
-                if sub_highs[j] < sub_highs[j-1] * 0.995:
-                    # 还有: 最后一段的低点比前一段低点更低
-                    if j >= 2 and sub_lows[j] < sub_lows[j-1]:
-                        depletion_idx = s.start_idx + j * sub_seg_size
-                        break
-        else:  # 向下笔
-            # 低点不再创新低 + 最后一段反弹较大
-            for j in range(2, len(sub_lows)):
-                if sub_lows[j] > sub_lows[j-1] * 1.005:
-                    if j >= 2 and sub_highs[j] > sub_highs[j-1]:
-                        depletion_idx = s.start_idx + j * sub_seg_size
-                        break
-
-        if depletion_idx >= 0 and depletion_idx < n:
-            # 标记笔末尾为趋势耗尽
-            for idx in range(depletion_idx, min(s.end_idx + 1, n)):
-                bi_td[idx] = True
+        # ⚠ 2026-10-18 铁律 #347: 原版对**每一笔**回填 [depletion_idx, s.end_idx]。
+        #   但 `detect_strokes` 是**逐笔追加**的 —— 一笔成立时它的回填区间整段在
+        #   过去 ⇒ 每形成一笔就改写一段历史格 (实测 688690 3,162 格 / 001256 175 格)。
+        #   且**末笔**的终点分型可能被同类型更极端者替换 ⇒ 连笔本身都会变。
+        #   修法: 标在**笔定稿的时刻** (= 终点分型的确认 bar, vis_idx)。
+        #   语义: "得知该笔趋势耗尽的时刻", 单调、不回溯。
+        #   ⚠ 别改回"回填整段" —— 那会让 base['bi_td'] 成为历史改写的载体。
+        _vis = int(getattr(s, 'vis_idx', -1))
+        if 0 <= _vis < n:
+            bi_td[_vis] = True
 
     return bi_td
 
@@ -1704,6 +1917,16 @@ def detect_stroke_mmd(
             'bi_sell_confidence': bi_sell_conf,
         }
 
+    # 各笔的耗尽区间 [dep, end] —— 一次性预计算, 只保留**已定稿**的笔。
+    # 见下方 td_present 的注释: 用数组回填/查询会回溯改写历史。
+    _dep_zones = []
+    for _s in strokes:
+        if getattr(_s, 'vis_idx', -1) < 0:
+            continue
+        _d = _stroke_depletion_idx(_s, high, low)
+        if _d >= 0:
+            _dep_zones.append((_d, _s.end_idx))
+
     for i in range(2, len(strokes)):
         s_prev2 = strokes[i - 2]  # 前前笔
         s_prev = strokes[i - 1]   # 前笔
@@ -1713,8 +1936,15 @@ def detect_stroke_mmd(
         # 笔级≈30分钟级别：捕捉小时间框架背驰结构
         if (s_prev.direction == -1 and s_curr.direction == 1 and
                 s_prev.low < s_prev2.low):  # 创新低
-            end_zone = range(s_prev.end_idx - 5, min(s_prev.end_idx + 5, n))
-            td_present = any(bi_td[idx] for idx in end_zone if 0 <= idx < n)
+            # ⚠ 2026-10-18 铁律 #347: 原来查 `bi_td[±5]` —— 但 bi_td 现在是"得知
+            #   时刻"的数组, 且**笔是逐笔追加**的 ⇒ 拿数组查过去区间必然回溯。
+            #   改为直接问几何 (判据与旧口径一致: 某笔的耗尽区间 [dep, end] 与
+            #   [s_prev.end_idx−5, s_prev.end_idx+5) 相交), 只统计**已定稿**的笔
+            #   (vis_idx ≥ 0 —— 末笔的终点分型还可能被替换, 此刻不可知)。
+            #   上界同时收在 s_curr.end_idx+1: 再往后就跨进了尚未定稿的笔。
+            _lo = s_prev.end_idx - 5
+            _hi = min(s_prev.end_idx + 5, s_curr.end_idx + 1, n)
+            td_present = any(_d <= _hi and _e >= _lo for _d, _e in _dep_zones)
             # 笔力度递减: 第二笔下跌力度 < 第一笔 → 笔级背驰
             force_prev2 = (abs(s_prev2.end_price - s_prev2.start_price) / (s_prev2.start_price + 1e-10)) / max(s_prev2.end_idx - s_prev2.start_idx, 1)
             force_prev = (abs(s_prev.end_price - s_prev.start_price) / (s_prev.start_price + 1e-10)) / max(s_prev.end_idx - s_prev.start_idx, 1)
@@ -1727,24 +1957,41 @@ def detect_stroke_mmd(
                 micro_div = seg1_delta < seg2_delta * 0.85 and seg1_delta > 0
             if td_present or force_decay or micro_div:
                 conf = 0.65 if (td_present and force_decay) else (0.60 if force_decay else 0.50)
-                for idx in range(s_curr.start_idx, min(s_curr.end_idx + 1, n)):
-                    if bi_buy_point[idx] == 0:
+                # 2026-10-18 铁律 #347: 原版把标记回填到**整笔跨度**
+                # [start, E] —— 而笔要到 E 之后才由分型确认 ⇒ 每完成一笔,
+                # 它整段历史被一次性改写 0→1 (实测 2,019 格)。
+                # 因果版: 只标记笔的**结束点** (唯一在 bar E 处可知的位置)。
+                _v = getattr(s_curr, 'vis_idx', -1)
+                for idx in range(_v, min(_v + 1, n)):
+                    if idx >= 0 and bi_buy_point[idx] == 0:
                         bi_buy_point[idx] = 1
                         bi_buy_conf[idx] = conf
 
         # === 笔1卖: 两个向上笔后，第二笔趋势耗尽 ===
         if (s_prev.direction == 1 and s_curr.direction == -1 and
                 s_prev.high > s_prev2.high):  # 创新高
-            end_zone = range(s_prev.end_idx - 5, min(s_prev.end_idx + 5, n))
-            td_present = any(bi_td[idx] for idx in end_zone if 0 <= idx < n)
+            # ⚠ 2026-10-18 铁律 #347: 原来查 `bi_td[±5]` —— 但 bi_td 现在是"得知
+            #   时刻"的数组, 且**笔是逐笔追加**的 ⇒ 拿数组查过去区间必然回溯。
+            #   改为直接问几何 (判据与旧口径一致: 某笔的耗尽区间 [dep, end] 与
+            #   [s_prev.end_idx−5, s_prev.end_idx+5) 相交), 只统计**已定稿**的笔
+            #   (vis_idx ≥ 0 —— 末笔的终点分型还可能被替换, 此刻不可知)。
+            #   上界同时收在 s_curr.end_idx+1: 再往后就跨进了尚未定稿的笔。
+            _lo = s_prev.end_idx - 5
+            _hi = min(s_prev.end_idx + 5, s_curr.end_idx + 1, n)
+            td_present = any(_d <= _hi and _e >= _lo for _d, _e in _dep_zones)
             # 笔力度递减: 第二笔上涨力度 < 第一笔 → 顶背驰前兆
             force_prev2 = (abs(s_prev2.end_price - s_prev2.start_price) / (s_prev2.start_price + 1e-10)) / max(s_prev2.end_idx - s_prev2.start_idx, 1)
             force_prev = (abs(s_prev.end_price - s_prev.start_price) / (s_prev.start_price + 1e-10)) / max(s_prev.end_idx - s_prev.start_idx, 1)
             force_decay = force_prev < force_prev2 * 0.85
             if td_present or force_decay:
                 conf = 0.65 if (td_present and force_decay) else 0.55
-                for idx in range(s_curr.start_idx, min(s_curr.end_idx + 1, n)):
-                    if bi_sell_point[idx] == 0:
+                # 2026-10-18 铁律 #347: 原版把标记回填到**整笔跨度**
+                # [start, E] —— 而笔要到 E 之后才由分型确认 ⇒ 每完成一笔,
+                # 它整段历史被一次性改写 0→1 (实测 2,019 格)。
+                # 因果版: 只标记笔的**结束点** (唯一在 bar E 处可知的位置)。
+                _v = getattr(s_curr, 'vis_idx', -1)
+                for idx in range(_v, min(_v + 1, n)):
+                    if idx >= 0 and bi_sell_point[idx] == 0:
                         bi_sell_point[idx] = 1
                         bi_sell_conf[idx] = conf
 
@@ -1752,16 +1999,26 @@ def detect_stroke_mmd(
         # 当前笔向上，前一笔向下但不创新低
         if s_curr.direction == 1 and s_prev.direction == -1:
             if s_prev.low > s_prev2.low:  # 不创新低 → 2买
-                for idx in range(s_curr.start_idx, min(s_curr.end_idx + 1, n)):
-                    if bi_buy_point[idx] == 0:
+                # 2026-10-18 铁律 #347: 原版把标记回填到**整笔跨度**
+                # [start, E] —— 而笔要到 E 之后才由分型确认 ⇒ 每完成一笔,
+                # 它整段历史被一次性改写 0→1 (实测 2,019 格)。
+                # 因果版: 只标记笔的**结束点** (唯一在 bar E 处可知的位置)。
+                _v = getattr(s_curr, 'vis_idx', -1)
+                for idx in range(_v, min(_v + 1, n)):
+                    if idx >= 0 and bi_buy_point[idx] == 0:
                         bi_buy_point[idx] = 2
                         bi_buy_conf[idx] = 0.5
 
         # === 笔2卖: 1卖之后反弹不破前高 ===
         if s_curr.direction == -1 and s_prev.direction == 1:
             if s_prev.high < s_prev2.high:  # 不创新高 → 2卖
-                for idx in range(s_curr.start_idx, min(s_curr.end_idx + 1, n)):
-                    if bi_sell_point[idx] == 0:
+                # 2026-10-18 铁律 #347: 原版把标记回填到**整笔跨度**
+                # [start, E] —— 而笔要到 E 之后才由分型确认 ⇒ 每完成一笔,
+                # 它整段历史被一次性改写 0→1 (实测 2,019 格)。
+                # 因果版: 只标记笔的**结束点** (唯一在 bar E 处可知的位置)。
+                _v = getattr(s_curr, 'vis_idx', -1)
+                for idx in range(_v, min(_v + 1, n)):
+                    if idx >= 0 and bi_sell_point[idx] == 0:
                         bi_sell_point[idx] = 2
                         bi_sell_conf[idx] = 0.5
 
@@ -2099,6 +2356,7 @@ def detect_second_buy_point(
     buy_point: np.ndarray,
     stroke_direction: np.ndarray,
     strokes: List[Stroke],
+    fractal_vis: np.ndarray = None,
 ) -> Dict[str, np.ndarray]:
     """
     二买 (B2) 检测 — 底部分型 + MACD背离确认.
@@ -2194,10 +2452,12 @@ def detect_second_buy_point(
         b1_price = close[b1_idx]
 
         # 反弹确认: B1后价格需有回升（>1%），否则未形成有效反弹
-        post_high_idx = min(b1_idx + 15, n)
-        post_high = np.max(high[b1_idx:post_high_idx])
-        if post_high <= b1_price * 1.01:
-            continue
+        # ⚠ 2026-10-18 铁律 #347: 原来是 `min(b1_idx+15, n)` —— 窗口按**序列末端**
+        #   夹断, 而 B2 搜索窗从 b1_idx+5 起 ⇒ i∈[b1_idx+5, b1_idx+15) 时
+        #   post_high 里**含 i 之后的 bar**。两个后果:
+        #     ① 对决策 bar i 是**真前视** (用未来 10 根的最高价判定"已回调");
+        #     ② 窗口上界依赖 n ⇒ f(t;T) 随 T 变 (实测 301082 bar1199 由 0→B2)。
+        #   因果版: 窗口只到**当前 bar i** 为止 (逐 i 重算, 见下方 i 循环内)。
 
         # B2搜索窗口: B1后5~50根bar
         search_start = b1_idx + 5
@@ -2209,6 +2469,12 @@ def detect_second_buy_point(
             if not bottom_fractals[i]:
                 continue
             if bottom_fractal_quality[i] < 0.30:
+                continue
+
+            # 反弹确认(因果): B1 到**当前 bar i** 为止的最高价须已回升 >1%。
+            # 窗口仍限 15 根 ⇒ i >= b1_idx+15 时与旧语义逐位相同。
+            post_high = np.max(high[b1_idx:min(b1_idx + 15, i + 1)])
+            if post_high <= b1_price * 1.01:
                 continue
 
             # 条件1: 不破前低 (B2核心要求)
@@ -2273,9 +2539,17 @@ def detect_second_buy_point(
             conf = min(conf, 0.95)
 
             if conf >= 0.35:
-                second_buy[i] = True
-                second_buy_conf[i] = conf
-                b1_ref_idx[i] = b1_idx
+                # ⚠ 2026-10-18 铁律 #347: 上面所有条件都按 bar i 计算(因果), 但
+                #   **底分型本身**要到 `fractal_vis[i]` 才被确认 —— 它由下一个分型
+                #   定稿, 而 i 若还是 filtered 的最后一个元素, 甚至可能被同类型更
+                #   极端者**替换**(此时分型整个消失)。标在 i 就是用未来信息, 且
+                #   在替换发生时表现为"历史格 2→0"(实测 301082 bar1199)。
+                #   修法: 标在确认 bar。fractal_vis[i] < 0 = 尚未定稿 ⇒ 此刻不可知。
+                _v = int(fractal_vis[i]) if fractal_vis is not None else i
+                if 0 <= _v < n and not second_buy[_v]:
+                    second_buy[_v] = True
+                    second_buy_conf[_v] = conf
+                    b1_ref_idx[_v] = b1_idx
                 break  # 每个B1只标记第一个符合条件的B2
 
     return {
@@ -2289,6 +2563,7 @@ def detect_second_sell_point(
     close, high, low,
     top_fractals, top_fractal_quality, macd_hist,
     sell_point, stroke_direction, strokes,
+    fractal_vis=None,
 ):
     """二卖 (S2) 检测 — 对称于 B2，顶部分型 + MACD 顶背离确认.
 
@@ -2343,9 +2618,9 @@ def detect_second_sell_point(
     # Step 3: 对每个S1 zone扫描S2
     for zone in sorted(s1_zones, key=lambda z: z['ref_idx']):
         s1_idx = zone['ref_idx']; s1_high = zone['high']
-        post_low_idx = min(s1_idx + 15, n)
-        post_low = np.min(low[s1_idx:post_low_idx])
-        if post_low >= close[s1_idx] * 0.98: continue
+        # ⚠ 2026-10-18 铁律 #347: 原 `min(s1_idx+15, n)` 窗口按序列末端夹断且
+        #   跨过决策 bar i ⇒ 前视 + T 依赖 (同 detect_second_buy_point.post_high)。
+        #   因果版逐 i 只看到 i 为止, 见下方 i 循环内。
 
         search_start = s1_idx + 5; search_end = min(s1_idx + 50, n)
         if search_start >= search_end: continue
@@ -2353,6 +2628,9 @@ def detect_second_sell_point(
         for i in range(search_start, search_end):
             if not top_fractals[i] or top_fractal_quality[i] < 0.30: continue
             if high[i] >= s1_high * 1.02: continue
+            # 回落确认(因果): S1 到**当前 bar i** 为止的最低价须已回落 >2%
+            post_low = np.min(low[s1_idx:min(s1_idx + 15, i + 1)])
+            if post_low >= close[s1_idx] * 0.98: continue
             if close[i] < post_low * 1.03: continue
 
             down_stroke_ok = any(
@@ -2390,7 +2668,11 @@ def detect_second_sell_point(
             conf = min(conf, 0.95)
 
             if conf >= 0.45:
-                second_sell[i] = True; second_sell_conf[i] = conf; s1_ref_idx[i] = s1_idx
+                # 铁律 #347: 同 detect_second_buy_point —— 标在分型**确认 bar**,
+                # 不是分型几何 bar (顶分型同样可能被同类型更极端者替换)。
+                _v = int(fractal_vis[i]) if fractal_vis is not None else i
+                if 0 <= _v < n and not second_sell[_v]:
+                    second_sell[_v] = True; second_sell_conf[_v] = conf; s1_ref_idx[_v] = s1_idx
                 break
 
     return {'second_sell_point': second_sell, 'second_sell_confidence': second_sell_conf, 'second_sell_s1_ref': s1_ref_idx}
@@ -2484,6 +2766,7 @@ def compute_enhanced_chan_output(
         base['buy_point'],
         base['stroke_direction'],
         strokes,
+        base['fractal_vis'],
     )
     base['second_buy_point'] = b2_info['second_buy_point']
     base['second_buy_confidence'] = b2_info['second_buy_confidence']
@@ -2529,6 +2812,7 @@ def compute_enhanced_chan_output(
         base['top_fractals'], top_fx_quality,
         macd_hist if macd_hist is not None else np.zeros(n),
         base['sell_point'], base['stroke_direction'], strokes,
+        base['fractal_vis'],
     )
     base['second_sell_point'] = s2_info['second_sell_point']
     base['second_sell_confidence'] = s2_info['second_sell_confidence']
