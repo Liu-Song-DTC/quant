@@ -1267,7 +1267,19 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                 # fixed模式(生产)仅需数组落盘 — 原3.2M条目dict不再在fixed模式构建
                 if _ml_codes_list:
                     _ml_codes_arr = np.concatenate(_ml_codes_list)
-                    _ml_dates_arr = np.concatenate(_ml_dates_list)
+                    # 2026-10-18 修: 两条路径写入的日期类型不同 —
+                    #   缓存命中(:1178) → np.asarray(..., dtype='datetime64[ns]')
+                    #   重训路径(:1244) → [date]*n, date 是 pd.Timestamp
+                    #                      ⇒ np.asarray 得 **object** dtype
+                    # 混装 concat ⇒ object 数组里 Timestamp 与 int 并存 ⇒ 下游
+                    # `sort_values(['code','date'])`(:1468) 建 Categorical 时
+                    # TypeError: '<' not supported between 'Timestamp' and 'int'。
+                    # 触发条件 = **部分 chunk 命中 + 部分重训** —— 正是 todate 平移
+                    # 不足一个 retrain_freq 的形状(每日流推进一天)。生产一直没崩
+                    # 只因它每次恰好全命中或全 miss(同质)。修法: 归一化到
+                    # datetime64[ns], 值不变(下游一律 pd.Timestamp(d) 取值)。
+                    _ml_dates_arr = np.concatenate(
+                        [np.asarray(_x, dtype='datetime64[ns]') for _x in _ml_dates_list])
                     _ml_preds_arr = np.concatenate(_ml_preds_list)
                     _ml_total_preds = len(_ml_codes_arr)
                     if factor_mode != 'fixed':
