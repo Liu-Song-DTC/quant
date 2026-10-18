@@ -90,27 +90,48 @@ def build_stock_file_map() -> Dict[str, str]:
 
 
 def build_st_filter(codes: List[str], target_date) -> Tuple[set, set]:
-    """ST排除 + 基本面新鲜度检查 (2026-08-31 ST漏判修复).
+    """ST排除 + 基本面新鲜度检查 (2026-08-31 ST漏判修复; 2026-10-18 铁律修复).
 
     出单路径的独立ST校验, 不依赖回测信号CSV的过滤:
-      - ST判定与回测一致: 数据可用日期<=target_date的最新报告期行, 股票简称含"ST" → 排除
+      - ST判定**逐字复用回测的消费逻辑**(bt_execution.py:2122-2133):
+        `get_st_timeline(code)` → `searchsorted(avail, target_date, 'right') - 1` → `stf[idx]`
       - 新鲜度: 最新数据可用日期早于 target_date-120天 → 数据陈旧, ST判定可能失效 → 告警
     返回 (st_codes, stale_codes)。
+
+    **2026-10-18 铁律修复**: 原实现自己**重推了一遍** ST 判定 —— 直读财务 CSV 的
+    `股票简称` **可变列**。而回测侧 a7ea977 已把该列换成**冻结文件**
+    `data/alternative_data/st_timeline_frozen.pkl`(理由见 core/st_timeline.py)。
+    两边从此**判据不同**: 下一次基本面刷新改写简称(新戴帽/摘帽)时, 实盘立刻换答案
+    而回测不变 ⇒ `f(t;T) ≠ f(t;t)`, 违反铁律。
+    (实测 2026-10-16 目标日两边 0 分叉 —— 冻结是按"逐位保持行为"铸的, 所以这是
+     **潜伏**分叉, 只在刷新后才现形。)
+
+    改为调用**同一个** `get_st_timeline` ⇒ 两侧按构造恒等, 不再靠"重推一遍"对齐。
+    ⚠ 冻结文件是**数据态**不是代码: 它不知道 2026-10-17 之后的新戴帽。要更新必须
+    显式**重新冻结 + 登记数据重锚**, 不能靠这里偷偷读可变列。
     """
     from core.fundamental import FundamentalData
     fd = FundamentalData(FUNDAMENTAL_DIR)
     st_codes, stale_codes = set(), set()
     td = pd.Timestamp(target_date)
     cutoff = td - pd.Timedelta(days=120)
+    key = td.strftime('%Y%m%d')
     for code in codes:
         df = fd._get_available_data(code, td)
         if df is None or df.empty:
             stale_codes.add(code)  # 无任何可用数据, 视为无法验证
             continue
-        name = str(df.iloc[0].get('股票简称', ''))
-        if 'ST' in name:
-            st_codes.add(code)
-            continue
+        # ST判定: 与 bt_execution.py:2122-2133 逐字同构(同一数据源 + 同一查表)
+        try:
+            tl = fd.get_st_timeline(code)
+            if tl is not None:
+                _av, _stf = tl
+                _idx = int(np.searchsorted(_av, key, side='right')) - 1
+                if _idx >= 0 and bool(_stf[_idx]):
+                    st_codes.add(code)
+                    continue
+        except Exception:
+            pass  # 与回测一致: 时间线取不到 ⇒ 视为非ST, 不阻断出单
         try:
             latest_avail = pd.Timestamp(df['数据可用日期'].astype(str).max())
             if latest_avail < cutoff:

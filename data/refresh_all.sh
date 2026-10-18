@@ -71,6 +71,11 @@ if ! mv "$BT_NEW" "$SD/backtrader_data"; then
   echo "!!! 换名失败, 回滚"; mv "$BT_OLD" "$SD/backtrader_data"; exit 1
 fi
 echo "  已换名; 上一版留在 $BT_OLD (下次刷新时清除)"
+# 表驱动生产哨兵 (2026-10-18): 遗留加性链路的守卫靠它判"这是生产库"。
+# 放在 $SD **而不是** backtrader_data/ 里 —— 目录每次刷新整体换名, 放里面会被换掉。
+# 与 qfq_anchor.json 并列(任一存在即触发守卫): 锚是业务文件(迁移可能正当删除),
+# 本哨兵是专用标记, 无其它删除理由 ⇒ 删锚不会让守卫静默失效。
+touch "$SD/.table_driven_prod"
 
 echo "=== 4/9 基本面 (最近3报告期) ==="
 $PY -u data/refresh_fundamental_recent.py 2>&1 | tail -5

@@ -852,11 +852,17 @@ class StockDataManager:
         tradable 闸(volume=0 ⇒ 整池不可交易 ⇒ 调仓日静默跳过)。
         见 memory: adjustment-method-affine-20261016 / artifact-path-dependence-20261017。
         """
-        _marker = self.data_dir / "qfq_anchor.json"
-        if _marker.exists() and os.environ.get("QUANT_ALLOW_LEGACY_BT") != "1":
+        # 2026-10-18: 判据改为**两个标记任一存在** —— 原来只认 qfq_anchor.json,
+        # 而它是**业务文件**(冻结合约), 迁移中可能被正当删除(3638f9d 当天就删过一次)
+        # ⇒ 守卫会静默退化成 no-op, 恰在最需要它的时候。.table_driven_prod 是**专用
+        # 哨兵**, 只由 refresh_all.sh 在原子换名后 touch, 无其它删除理由。
+        _marks = [self.data_dir / "qfq_anchor.json",
+                  self.data_dir / ".table_driven_prod"]
+        _hit = [m for m in _marks if m.exists()]
+        if _hit and os.environ.get("QUANT_ALLOW_LEGACY_BT") != "1":
             raise RuntimeError(
                 f"[遗留链路守卫] {self.data_dir} 是表驱动乘性复权生产库 "
-                f"(存在 {_marker.name}), 拒绝用旧加性链路写 backtrader_data/。\n"
+                f"(存在 {[m.name for m in _hit]}), 拒绝用旧加性链路写 backtrader_data/。\n"
                 f"  生产每日链路: bash strategy/run_daily_live.sh (内含 data/refresh_all.sh)\n"
                 f"  只重算 bt 产物: python data/rebuild_table_qfq.py --events "
                 f"data/alternative_data/events_table.pkl --anchor frozen --out <dir>\n"

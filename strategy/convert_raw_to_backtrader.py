@@ -88,6 +88,38 @@ def convert_stock(args):
         return (stock_name, False, str(e))
 
 
+def _refuse_if_production_bt(out_dir) -> None:
+    """遗留链路守卫 (2026-10-18) —— 与 data/data_manager.py 同款, 但这里**此前完全没有**。
+
+    ⚠ 本脚本直通东财**加性**前复权(raw_data/*/qfq.csv), 而生产 `backtrader_data/`
+    是 `data/rebuild_table_qfq.py` 的**表驱动乘性**产物。两者写同一批文件, 跑一次
+    就把乘性整体覆盖成加性(且 raw 的 qfq.csv 一直在被 akshare 下载器更新 ⇒ 不是陈旧
+    而是"另一种错"), 非除权日不保收益、事件日整条重锚 ⇒ 违反铁律。
+    见 memory: adjustment-method-affine-20261016 / artifact-path-dependence-20261017。
+
+    判据 = "目录是表驱动生产库", 用**两个标记任一存在**:
+      · qfq_anchor.json      —— 冻结合约(业务文件, 迁移中可能被正当删除)
+      · .table_driven_prod   —— **专用哨兵**, 只由 refresh_all.sh 换名后 touch
+    单用前者有静默失效风险(3638f9d 当天就删过一次锚文件 ⇒ 守卫退化成 no-op)。
+
+    可达路径: `strategy/run_live.py:48`(README 记载的实盘命令, dashboard_server.py
+    可触发)与 `strategy/run_live_daily.sh:18` —— 点一下就把数据层毁掉。
+    逃生门: QUANT_ALLOW_LEGACY_BT=1 (仅限一次性对比/临时目录)。
+    """
+    d = os.path.dirname(os.path.abspath(str(out_dir)))
+    _marks = [os.path.join(d, 'qfq_anchor.json'),
+              os.path.join(d, '.table_driven_prod')]
+    _hit = [m for m in _marks if os.path.exists(m)]
+    if _hit and os.environ.get('QUANT_ALLOW_LEGACY_BT') != '1':
+        raise SystemExit(
+            f"[遗留链路守卫] {d} 是表驱动乘性复权生产库 (存在 {[os.path.basename(m) for m in _hit]}),\n"
+            f"  拒绝用旧**加性**链路 convert_raw_to_backtrader.py 覆盖 backtrader_data/。\n"
+            f"  生产每日链路: bash strategy/run_daily_live.sh (内含 data/refresh_all.sh)\n"
+            f"  只重算 bt 产物: python data/rebuild_table_qfq.py --events "
+            f"data/alternative_data/events_table.pkl --anchor frozen --out <临时目录> (再原子换名)\n"
+            f"  确要跑遗留链路(仅限一次性对比/临时目录): QUANT_ALLOW_LEGACY_BT=1")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--start-year', type=int, default=START_YEAR)
@@ -98,6 +130,7 @@ def main():
     start_year = args.start_year
     end_year = args.end_year
 
+    _refuse_if_production_bt(OUTPUT_DIR)   # ← 必须在任何写盘之前
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Get all stock directories
