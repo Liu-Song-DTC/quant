@@ -54,6 +54,7 @@ class ConceptHeatCalculator:
         # 此前是"研究钩子默认空=关闭", 但生产与回测必须是同一个东西。
         self._cmap_versions: Optional[List[tuple]] = None  # [(date_str, map_dict), ...] 升序
         self._cmap_vcache: Dict[str, tuple] = {}           # date_str → (stock_concepts, concept_stocks)
+        self._cmap_ver_cache: Dict[str, str] = {}          # 决策日 → 版本号 (memo)
         self._cmap_cur: Optional[str] = None               # 当前已应用的版本日期
 
     def load(self, hist_path: str = None):
@@ -113,26 +114,35 @@ class ConceptHeatCalculator:
             self._compute_auto_edges()
         self._loaded = True
 
-    def _apply_map_asof(self, date):
-        """按决策日 τ 切换到"截止 τ 的最近版本"成分股名单 (版本化映射关闭时=no-op)
+    def _version_for(self, date) -> Optional[str]:
+        """决策日 date 对应的版本号 ("截止该日的最近版本"; 早于最早版本 ⇒ 最早版本)。
 
-        τ 早于最早版本 ⇒ 用最早版本(能拿到的最早名单, 恒定 ⇒ 可复现)。
-        切换只换两个属性的**引用**(构造结果按版本缓存), 所有下游消费者
-        (get_concept_heat / get_chain_lead_score / signal_engine 的 bom_chain)
-        读的都是属性, 无需改动。
+        版本化映射关闭 ⇒ None。结果按日期串 memo —— _get_bom_score 每个
+        (股票×bar) 都调一次(实测 ~7.4M 次), 不能每次构造 Timestamp。
         """
         if not self._cmap_versions:
-            return
-        d = str(pd.Timestamp(date).date())
-        # 截止 d 的最近版本; d 早于最早版本时取最早版本
+            return None
+        if isinstance(date, str):
+            d = date[:10]
+        else:
+            try:
+                d = date.strftime('%Y-%m-%d')       # datetime.date / pd.Timestamp
+            except AttributeError:
+                d = str(pd.Timestamp(date).date())
+        hit = self._cmap_ver_cache.get(d)
+        if hit is not None:
+            return hit
         ver = self._cmap_versions[0][0]
         for vd, _ in self._cmap_versions:
             if vd <= d:
                 ver = vd
             else:
                 break
-        if ver == self._cmap_cur:
-            return
+        self._cmap_ver_cache[d] = ver
+        return ver
+
+    def _version_payload(self, ver: str):
+        """版本号 → (stock_concepts, concept_stocks); 构造结果按版本缓存"""
         cached = self._cmap_vcache.get(ver)
         if cached is None:
             m = next(mm for vd, mm in self._cmap_versions if vd == ver)
@@ -142,7 +152,47 @@ class ConceptHeatCalculator:
                     cs.setdefault(c, []).append(code)
             cached = (m, cs)
             self._cmap_vcache[ver] = cached
-        self._stock_concepts, self._concept_stocks = cached
+        return cached
+
+    def stock_concepts_asof(self, date):
+        """纯查询: 决策日 date 的 (stock_concepts, concept_stocks)。**不改共享状态**。
+
+        2026-10-18 新增。与 _apply_map_asof 的唯一区别就是"不改状态" —— 这一点是
+        承重的:
+
+        `_apply_map_asof` 由 set_daily_data(bar_date) 在**题材热度那个循环**里推进,
+        所以 `self._stock_concepts` 的语义是"**最后一次 set_daily_data 那一版**",
+        而不是"当前这个 bar 的版本"。任何在别处读它的代码拿到的都是残留版本。
+
+        `signal_engine._get_bom_score` 正是这么读的 —— 它在**下一个循环**里按 bar
+        日期取 BOM 分, 却让整段历史共用那个残留名单 ⇒
+          (a) **前视**: 2021 年的 BOM 乘数用了 2026 年的概念名单;
+          (b) **铁律违反**: todate 推进一天 ⇒ 该股最后一根 bar 的版本跳一版 ⇒
+              整段历史的 BOM 乘数被重标。
+        实测(#344 扰动测试, todate 10-15 vs 10-16): 11,696 格改写 / 28 只票,
+        其中 11 只整段历史被**一个常数**缩放(ratio 变异系数 ~1e-4); 用两版名单
+        分别算 compute_stock_bom_score 可复现该常数 ✓。
+        """
+        ver = self._version_for(date)
+        if ver is None:
+            return self._stock_concepts, self._concept_stocks
+        return self._version_payload(ver)
+
+    def _apply_map_asof(self, date):
+        """按决策日 τ 切换到"截止 τ 的最近版本"成分股名单 (版本化映射关闭时=no-op)
+
+        τ 早于最早版本 ⇒ 用最早版本(能拿到的最早名单, 恒定 ⇒ 可复现)。
+        切换只换两个属性的**引用**(构造结果按版本缓存), 下游消费者
+        (get_concept_heat / get_chain_lead_score)读的都是属性。
+
+        ⚠ 只对"先 set_daily_data(τ) 再读"的消费者成立。**按 bar 日期取数、且与
+        set_daily_data 不在同一个循环**的消费者必须改用 stock_concepts_asof(τ),
+        否则拿到的是残留版本 —— 见该方法说明(2026-10-18 BOM 残留状态修复)。
+        """
+        ver = self._version_for(date)
+        if ver is None or ver == self._cmap_cur:
+            return
+        self._stock_concepts, self._concept_stocks = self._version_payload(ver)
         self._cmap_cur = ver
 
     def _compute_auto_edges(self):

@@ -1284,7 +1284,21 @@ class SignalEngine:
                             }
                     except Exception:
                         fund = None
-            scores = compute_stock_bom_score(code, calc._stock_concepts, fundamentals={code: fund} if fund else None)
+            # 2026-10-18 修 (铁律违反, 实测): 原为 `calc._stock_concepts` —— 那是
+            # ConceptHeatCalculator 的**共享可变状态**, 由 set_daily_data(bar_date)
+            # 在**题材热度那个循环**里推进到"该股最后一根 bar"的版本, 却被套用到
+            # **全部历史 bar** ⇒ (a) 前视: 2021 年的 BOM 乘数用了 2026 年的概念名单;
+            # (b) todate 推进一天 ⇒ 最后一根 bar 的版本跳一版 ⇒ 该股整段历史的
+            #     BOM 乘数被重标。
+            # 实测(#344 扰动测试, todate 10-15 vs 10-16): 11,696 格改写 / 28 只票,
+            # 其中 11 只整段历史被**一个常数**缩放(ratio 变异系数 ~1e-4), 用两版
+            # 名单分别算 compute_stock_bom_score 可复现该常数 ✓。
+            # 修法: 按本 bar 日期做纯 as-of 查询(不改状态)。
+            if date is not None:
+                _sc, _ = calc.stock_concepts_asof(date)
+            else:
+                _sc = calc._stock_concepts
+            scores = compute_stock_bom_score(code, _sc, fundamentals={code: fund} if fund else None)
             result = scores.get('bom_quality_score', 0.3)
             if result > 0.30:
                 d['hit'] += 1
