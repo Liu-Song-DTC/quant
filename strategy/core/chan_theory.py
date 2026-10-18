@@ -1927,6 +1927,23 @@ def detect_stroke_mmd(
         if _d >= 0:
             _dep_zones.append((_d, _s.end_idx))
 
+    def _bi_state_end(i, v):
+        """笔级买/卖点状态的**持续上界** (不含) —— #347 过度纠正的修正 (10-18 夜)。
+
+        状态在笔定稿时刻 vis_idx 才可知, 但**会持续**: 消费方
+        (portfolio.py bp_confirm / bi1_score_boost / bp0bi0_penalty) 读的是
+        "此刻是否处于笔级买/卖点状态"。
+        下一个状态生效的时刻 = **下一笔定稿** (= strokes[i+1].vis_idx) ——
+        那之后 "最近一笔已定稿的笔" 换人, 状态由新笔决定。
+        无下一笔 (或下一笔未定稿) ⇒ 持续到当下 n
+        (回测 n=该股末 bar; 实盘 n=今天 ⇒ 因果)。
+        """
+        if i + 1 < len(strokes):
+            _vn = getattr(strokes[i + 1], 'vis_idx', -1)
+            if _vn > v:
+                return _vn
+        return n
+
     for i in range(2, len(strokes)):
         s_prev2 = strokes[i - 2]  # 前前笔
         s_prev = strokes[i - 1]   # 前笔
@@ -1957,15 +1974,20 @@ def detect_stroke_mmd(
                 micro_div = seg1_delta < seg2_delta * 0.85 and seg1_delta > 0
             if td_present or force_decay or micro_div:
                 conf = 0.65 if (td_present and force_decay) else (0.60 if force_decay else 0.50)
-                # 2026-10-18 铁律 #347: 原版把标记回填到**整笔跨度**
-                # [start, E] —— 而笔要到 E 之后才由分型确认 ⇒ 每完成一笔,
-                # 它整段历史被一次性改写 0→1 (实测 2,019 格)。
-                # 因果版: 只标记笔的**结束点** (唯一在 bar E 处可知的位置)。
+                # 2026-10-18 铁律 #347 修正 (当晚复盘): 原版把标记回填到**整笔跨度**
+                # [start, E] —— 笔要到 E 之后才由分型确认 ⇒ 每完成一笔, 整段历史被
+                # 一次性改写 0→1 (实测 2,019 格) = **前视**。诊断正确 ✓
+                # 但当日改法 "只标 vis_idx 一根" 是**过度纠正**: 消费方按**状态**读
+                # (笔级买点是否仍在生效), 塌成单点后触发率 29.6%→1.9%, 入场硬闸
+                # bp_confirm_min=2 的第2确认源 94% 时间失效 (实测 NAV −60%)。
+                # 正解 = 两边都要: 锚点移到可知时刻 vis_idx, **保留持续性**。
+                # 状态语义: "截至 bar t, 最近一笔**已定稿**的笔是否构成笔1买"。
                 _v = getattr(s_curr, 'vis_idx', -1)
-                for idx in range(_v, min(_v + 1, n)):
-                    if idx >= 0 and bi_buy_point[idx] == 0:
-                        bi_buy_point[idx] = 1
-                        bi_buy_conf[idx] = conf
+                if _v >= 0:
+                    for idx in range(_v, _bi_state_end(i, _v)):
+                        if bi_buy_point[idx] == 0:
+                            bi_buy_point[idx] = 1
+                            bi_buy_conf[idx] = conf
 
         # === 笔1卖: 两个向上笔后，第二笔趋势耗尽 ===
         if (s_prev.direction == 1 and s_curr.direction == -1 and
@@ -1985,42 +2007,39 @@ def detect_stroke_mmd(
             force_decay = force_prev < force_prev2 * 0.85
             if td_present or force_decay:
                 conf = 0.65 if (td_present and force_decay) else 0.55
-                # 2026-10-18 铁律 #347: 原版把标记回填到**整笔跨度**
-                # [start, E] —— 而笔要到 E 之后才由分型确认 ⇒ 每完成一笔,
-                # 它整段历史被一次性改写 0→1 (实测 2,019 格)。
-                # 因果版: 只标记笔的**结束点** (唯一在 bar E 处可知的位置)。
+                # 2026-10-18 铁律 #347 修正 (当晚复盘): 同笔1买 —— 原版前视,
+                # 当日改法过度纠正 (塌成单点)。正解 = vis_idx 锚点 + 状态持续。
                 _v = getattr(s_curr, 'vis_idx', -1)
-                for idx in range(_v, min(_v + 1, n)):
-                    if idx >= 0 and bi_sell_point[idx] == 0:
-                        bi_sell_point[idx] = 1
-                        bi_sell_conf[idx] = conf
+                if _v >= 0:
+                    for idx in range(_v, _bi_state_end(i, _v)):
+                        if bi_sell_point[idx] == 0:
+                            bi_sell_point[idx] = 1
+                            bi_sell_conf[idx] = conf
 
         # === 笔2买: 1买之后回调不破前低 ===
         # 当前笔向上，前一笔向下但不创新低
         if s_curr.direction == 1 and s_prev.direction == -1:
             if s_prev.low > s_prev2.low:  # 不创新低 → 2买
-                # 2026-10-18 铁律 #347: 原版把标记回填到**整笔跨度**
-                # [start, E] —— 而笔要到 E 之后才由分型确认 ⇒ 每完成一笔,
-                # 它整段历史被一次性改写 0→1 (实测 2,019 格)。
-                # 因果版: 只标记笔的**结束点** (唯一在 bar E 处可知的位置)。
+                # 2026-10-18 铁律 #347 修正 (当晚复盘): 同笔1买 —— 原版前视,
+                # 当日改法过度纠正 (塌成单点)。正解 = vis_idx 锚点 + 状态持续。
                 _v = getattr(s_curr, 'vis_idx', -1)
-                for idx in range(_v, min(_v + 1, n)):
-                    if idx >= 0 and bi_buy_point[idx] == 0:
-                        bi_buy_point[idx] = 2
-                        bi_buy_conf[idx] = 0.5
+                if _v >= 0:
+                    for idx in range(_v, _bi_state_end(i, _v)):
+                        if bi_buy_point[idx] == 0:
+                            bi_buy_point[idx] = 2
+                            bi_buy_conf[idx] = 0.5
 
         # === 笔2卖: 1卖之后反弹不破前高 ===
         if s_curr.direction == -1 and s_prev.direction == 1:
             if s_prev.high < s_prev2.high:  # 不创新高 → 2卖
-                # 2026-10-18 铁律 #347: 原版把标记回填到**整笔跨度**
-                # [start, E] —— 而笔要到 E 之后才由分型确认 ⇒ 每完成一笔,
-                # 它整段历史被一次性改写 0→1 (实测 2,019 格)。
-                # 因果版: 只标记笔的**结束点** (唯一在 bar E 处可知的位置)。
+                # 2026-10-18 铁律 #347 修正 (当晚复盘): 同笔1买 —— 原版前视,
+                # 当日改法过度纠正 (塌成单点)。正解 = vis_idx 锚点 + 状态持续。
                 _v = getattr(s_curr, 'vis_idx', -1)
-                for idx in range(_v, min(_v + 1, n)):
-                    if idx >= 0 and bi_sell_point[idx] == 0:
-                        bi_sell_point[idx] = 2
-                        bi_sell_conf[idx] = 0.5
+                if _v >= 0:
+                    for idx in range(_v, _bi_state_end(i, _v)):
+                        if bi_sell_point[idx] == 0:
+                            bi_sell_point[idx] = 2
+                            bi_sell_conf[idx] = 0.5
 
     return {
         'bi_buy_point': bi_buy_point,
