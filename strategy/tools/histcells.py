@@ -60,7 +60,18 @@ LAYERS = [
     ('margin_daily', 'data/alternative_data/margin_daily.pkl', 'pkl_df', ['date'], None, 'append'),
     ('unlock_schedule', 'data/alternative_data/unlock_schedule.pkl', 'pkl_df', ['unlock_date'], ['code'], 'append'),
     ('holdernum', 'data/alternative_data/holdernum_det.pkl',   'pkl_df', ['end_date'], ['code'], 'append'),
-    ('northbound', 'data/alternative_data/northbound_daily.parquet', 'pq_df', ['date'], None, 'append'),
+    # ── 2026-10-18 补: 此前 4 层**完全不在受检范围**(哨兵盲区) ───────────────
+    #   前 3 层是"纯追加"语义的事件流; dragon_tiger 是**滚动 1 年快照**
+    #   (最近上榜日 2025-10-17→2026-10-16), 老日期会**滚出窗口** ⇒ 天生非追加,
+    #   标 'restate' 只记录不判违规(它已被 0g 裁决关闭, 不进回测)。
+    ('reduction_plans', 'data/alternative_data/reduction_plans.pkl', 'pkl_df', ['ann_date'], ['code'], 'append'),
+    ('reduction_records', 'data/alternative_data/reduction_records.pkl', 'pkl_df', ['end_date'], ['code'], 'append'),
+    ('yjyg_records', 'data/alternative_data/yjyg_records.pkl', 'pkl_df', ['notice_date'], ['code'], 'append'),
+    ('dragon_tiger', 'data/alternative_data/dragon_tiger.pkl', 'pkl_df', ['最近上榜日'], ['代码'], 'restate'),
+    # ⚠ 2026-10-18 修: 原来指向 `northbound_daily.parquet` —— 那是**死文件**
+    #   (mtime 停在 2026-07-05), 回测实际读的是 `northbound_daily.pkl`
+    #   (alternative_data.py:305)。哨兵盯错了文件 ⇒ 该层一直是假警报静默。
+    ('northbound', 'data/alternative_data/northbound_daily.pkl', 'pkl_df', ['date'], None, 'append'),
     # ── 已知会重述的层: 仅记录, 不判违规 ──────────────────────────────────
     ('raw_qfq',   'data/stock_data/raw_data/*/qfq.csv',       'csv', ['日期', 'date', 'datetime'], None, 'restate'),
     ('raw_hfq',   'data/stock_data/raw_data/*/hfq.csv',       'csv', ['日期', 'date', 'datetime'], None, 'restate'),
