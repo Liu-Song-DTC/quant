@@ -1927,27 +1927,60 @@ def detect_stroke_mmd(
         if _d >= 0:
             _dep_zones.append((_d, _s.end_idx))
 
-    def _bi_state_end(i, v):
-        """笔级买/卖点状态的**持续上界** (不含) —— #347 过度纠正的修正 (10-18 夜)。
+    # ── 虚拟"当前笔" (2026-10-19 语义归位 + 因果化的关键) ──────────────────
+    #
+    # `detect_strokes` **只输出已定稿的笔** —— 正在形成的那一根不在 strokes 里。
+    # 后果(实测 002801/T=300): 全样本笔13=[108,2124](向上, vis_idx=2128), 而截断
+    # 数据里笔13**根本不存在**(它要延伸到 2124 才成立) ⇒ 同一个 bar 在 F(300) 与
+    # F(full) 下落到不同的笔里 ⇒ bi_buy_point 63~88% 被截断改写。**这才是前视的根**,
+    # 调标记区间消不掉(.arms/probe/bi_marking_mech_1019.py 已排除笔结构/bi_td/回填)。
+    #
+    # 但在 bar t 处, "当前笔"是**当下可知**的: 它的起点 = 末根已定稿笔的终点,
+    # 方向 = 末根已定稿笔的反向 (笔必交替)。1买/2买的条件**只依赖 s_prev/s_prev2**
+    # (均已定稿) ⇒ 用这根虚拟笔作 s_curr 即可判定, 且完全因果。
+    # 虚拟笔只需 .direction 与 .end_idx; high/low 仅作占位(判定不读)。
+    _last = strokes[-1]
+    _cs = min(int(_last.end_idx), n - 1)
+    _cur = Stroke(
+        start_idx=_cs,
+        end_idx=n - 1,
+        direction=-int(_last.direction),
+        start_price=float(close[_cs]),
+        end_price=float(close[n - 1]),
+        high=float(np.max(high[_cs:])),
+        low=float(np.min(low[_cs:])),
+        vis_idx=-1,          # 未定稿: 它就是"当下"
+    )
 
-        状态在笔定稿时刻 vis_idx 才可知, 但**会持续**: 消费方
-        (portfolio.py bp_confirm / bi1_score_boost / bp0bi0_penalty) 读的是
-        "此刻是否处于笔级买/卖点状态"。
-        下一个状态生效的时刻 = **下一笔定稿** (= strokes[i+1].vis_idx) ——
-        那之后 "最近一笔已定稿的笔" 换人, 状态由新笔决定。
-        无下一笔 (或下一笔未定稿) ⇒ 持续到当下 n
-        (回测 n=该股末 bar; 实盘 n=今天 ⇒ 因果)。
+    def _bi_state_end(i, v):
+        """笔级买/卖点状态的**持续上界** (不含) —— 10-19 语义归位修正。
+
+        ⚠ 10-18 夜版 (93704e5) 写的是 `strokes[i+1].vis_idx`, 即
+          "状态 = 最近一笔**已定稿**的笔是1买" ⇒ 区间 [vis_idx(s_curr), vis_idx(s_curr+1))。
+          但消费方读的是**当下状态**: portfolio.py:1160 `bp_confirm` 判
+          `bi_buy_point > 0`, :1815 `bi1_score_boost` 判 `== 1` —— 都是
+          "**此刻**是否处于笔级买点状态"。93704e5 的语义把状态**整体挪后了一整根笔**,
+          读到的因此是"上一根笔曾是1买"。实测(5票×3截断点, 见 .arms/probe/
+          chan_causal_test_1019.py): 触发率 600519 0.5%→98.9%(退化成常数,
+          段长中位 1295 bar), 002801 83.5%→6.3%, 与旧版置位 bar 的 Jaccard=0.026。
+
+        正解: 状态 = "**当前正在形成的笔**是1买" ⇒ 区间
+        [vis_idx(s_prev), vis_idx(s_curr)) —— 与旧版几何跨度
+        [s_curr.start_idx, s_curr.end_idx] 几乎重合(实测触发率 29.8→27.3%,
+        83.5→83.4%, 事件数 2092→2088), 且**完全因果**。
+        上界 = s_curr 定稿那一刻 (那之后当前笔换人)。虚拟笔永不"定稿" ⇒ n。
         """
-        if i + 1 < len(strokes):
-            _vn = getattr(strokes[i + 1], 'vis_idx', -1)
-            if _vn > v:
-                return _vn
+        if i < len(strokes):
+            _vc = getattr(strokes[i], 'vis_idx', -1)
+            if _vc > v:
+                return _vc
         return n
 
-    for i in range(2, len(strokes)):
+    # i == len(strokes) 那一轮: s_curr = 虚拟"当前笔" (见上)。
+    for i in range(2, len(strokes) + 1):
         s_prev2 = strokes[i - 2]  # 前前笔
         s_prev = strokes[i - 1]   # 前笔
-        s_curr = strokes[i]       # 当前笔
+        s_curr = strokes[i] if i < len(strokes) else _cur   # 当前笔
 
         # === 笔1买: 两个向下笔后，第二笔趋势耗尽 ===
         # 笔级≈30分钟级别：捕捉小时间框架背驰结构
@@ -1982,7 +2015,7 @@ def detect_stroke_mmd(
                 # bp_confirm_min=2 的第2确认源 94% 时间失效 (实测 NAV −60%)。
                 # 正解 = 两边都要: 锚点移到可知时刻 vis_idx, **保留持续性**。
                 # 状态语义: "截至 bar t, 最近一笔**已定稿**的笔是否构成笔1买"。
-                _v = getattr(s_curr, 'vis_idx', -1)
+                _v = getattr(s_prev, 'vis_idx', -1)
                 if _v >= 0:
                     for idx in range(_v, _bi_state_end(i, _v)):
                         if bi_buy_point[idx] == 0:
@@ -2009,7 +2042,7 @@ def detect_stroke_mmd(
                 conf = 0.65 if (td_present and force_decay) else 0.55
                 # 2026-10-18 铁律 #347 修正 (当晚复盘): 同笔1买 —— 原版前视,
                 # 当日改法过度纠正 (塌成单点)。正解 = vis_idx 锚点 + 状态持续。
-                _v = getattr(s_curr, 'vis_idx', -1)
+                _v = getattr(s_prev, 'vis_idx', -1)
                 if _v >= 0:
                     for idx in range(_v, _bi_state_end(i, _v)):
                         if bi_sell_point[idx] == 0:
@@ -2022,7 +2055,7 @@ def detect_stroke_mmd(
             if s_prev.low > s_prev2.low:  # 不创新低 → 2买
                 # 2026-10-18 铁律 #347 修正 (当晚复盘): 同笔1买 —— 原版前视,
                 # 当日改法过度纠正 (塌成单点)。正解 = vis_idx 锚点 + 状态持续。
-                _v = getattr(s_curr, 'vis_idx', -1)
+                _v = getattr(s_prev, 'vis_idx', -1)
                 if _v >= 0:
                     for idx in range(_v, _bi_state_end(i, _v)):
                         if bi_buy_point[idx] == 0:
@@ -2034,7 +2067,7 @@ def detect_stroke_mmd(
             if s_prev.high < s_prev2.high:  # 不创新高 → 2卖
                 # 2026-10-18 铁律 #347 修正 (当晚复盘): 同笔1买 —— 原版前视,
                 # 当日改法过度纠正 (塌成单点)。正解 = vis_idx 锚点 + 状态持续。
-                _v = getattr(s_curr, 'vis_idx', -1)
+                _v = getattr(s_prev, 'vis_idx', -1)
                 if _v >= 0:
                     for idx in range(_v, _bi_state_end(i, _v)):
                         if bi_sell_point[idx] == 0:

@@ -237,10 +237,7 @@ class PortfolioConstructor:
 
         # === 波动率控制 ===
         self.vol_control_enabled = portfolio_config.get('volatility_control_enabled', True)
-        # tvol臂(2026-10-16): env门控默认空=逐位零改动 (同族 QUANT_VOL_FLOOR=1.0 可直接关闸)
-        self.target_volatility = float(os.environ.get('QUANT_TARGET_VOL', '') or (
-            target_volatility if target_volatility is not None
-            else portfolio_config.get('target_volatility', 0.15)))
+        self.target_volatility = target_volatility if target_volatility is not None else portfolio_config.get('target_volatility', 0.15)
         self.vol_lookback = portfolio_config.get('volatility_control_lookback', 20)
         self._daily_returns = deque(maxlen=self.vol_lookback * 2)  # store up to 2x for safety
 
@@ -408,13 +405,7 @@ class PortfolioConstructor:
 
         # === 组合可调参数（从YAML加载，替代硬编码魔数） ===
         pp = portfolio_config.get('params', {})
-        # 臂钩子(2026-10-16): QUANT_MAX_POSITIONS 覆写槽位上限, 默认空=逐位零改动.
-        # 动机 — mp4 于 10/14 在**旧结构**下采纳(fec1/ea2/slk180 三个槽位家族旋钮尚未落地):
-        #   面 {3,4,5,6,8}=1,223,502/**1,250,587**/1,173,806/… ⇒ 4 内部峰。
-        # 此后 fec1(FAST日压缩到1只) + slk180(nsel=1 单票天花板 0.375→0.45) 已改变槽位竞争格局,
-        # 而 max_positions 同时是 slack=(mp−n)/mp 的**分母** ⇒ 与 slk180 直接耦合。从未复扫。
-        self.max_positions = int(os.environ.get(
-            'QUANT_MAX_POSITIONS', '') or pp.get('max_positions', 8))
+        self.max_positions = pp.get('max_positions', 8)
         # E-G1: bp2专用通道(2026-09-05). 数据: bp2 10日+2.92% vs bp0 +0.85%, 6/6年为正
         # (2022/2023熊市年唯一正买点类), score对bp2五档平坦→综合分排序无信息却压制其入选
         self.bp2_channel_enabled = pp.get('bp2_channel_enabled', False)

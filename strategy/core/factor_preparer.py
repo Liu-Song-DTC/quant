@@ -299,7 +299,6 @@ _FACTOR_CODE_FILES = [
     'core/factor_preparer.py',
     'core/factor_calculator.py',
     'core/concept_heat.py',
-    'core/cmap_hist.py',  # 2026-10-17: 概念PIT钩子解析器 — 改它=改信号输入来源
     'core/industry_chain.py',
     'core/alternative_data.py',
     'core/fundamental.py',
@@ -685,21 +684,11 @@ def prepare_factor_data(stock_file_map: dict, fd,
     _n_dates = len(factor_dates)
     _data_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                               '..', '..', 'data'))
-    # 2026-10-17: 概念映射的**实际生效路径**必须进缓存键。旧版硬编码
-    # data/stock_concept_map.pkl, 对 QUANT_CONCEPT_MAP 覆盖与版本表
-    # (QUANT_CONCEPT_MAP_HIST)完全不可见 ⇒ 翻钩子会静默复用上一次的因子
-    # = 假臂(实测 pit_map0531 即此机理: 与 pit_ident 指纹相同, md5 逐位相同)。
-    from .cmap_hist import resolve_hist_path
-    _concept_inputs = [
-        os.environ.get('QUANT_CONCEPT_MAP')
-        or os.path.join(_data_root, 'stock_concept_map.pkl'),
+    _data_fp = _data_fingerprint(stock_file_map, fd, [
+        os.path.join(_data_root, 'stock_concept_map.pkl'),
         os.path.join(_data_root, 'concept_hist.pkl'),
         os.path.join(_data_root, 'concept_daily.csv'),
-    ]
-    _hist_eff = resolve_hist_path()
-    if _hist_eff:
-        _concept_inputs.append(_hist_eff)
-    _data_fp = _data_fingerprint(stock_file_map, fd, _concept_inputs)
+    ])
     # raw缓存键用_raw_code_fingerprint (0f-v3: 豁免stock_pool.py与yaml池节 —
     # 掩码/闸变化不重算raw); 打印两者便于取证
     _code_fp = _raw_code_fingerprint()
