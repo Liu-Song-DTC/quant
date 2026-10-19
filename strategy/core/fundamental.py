@@ -7,6 +7,27 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# 冻结 ST 时间线 (2026-10-17 铁律修复) — 见 FundamentalData.get_st_timeline docstring
+_ST_FROZEN_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'data', 'alternative_data', 'st_timeline_frozen.pkl')
+
+
+def _load_st_frozen():
+    """读冻结 ST 时间线; 缺失/损坏 ⇒ {} (回退旧逻辑, 不抛)。"""
+    if not os.path.exists(_ST_FROZEN_PATH):
+        return {}
+    try:
+        import pickle
+        with open(_ST_FROZEN_PATH, 'rb') as fh:
+            d = pickle.load(fh)
+        d.pop('__meta__', None)
+        logger.info('ST时间线: 载入冻结文件 %d 只 (%s)', len(d), _ST_FROZEN_PATH)
+        return d
+    except Exception as e:
+        logger.warning('ST冻结文件读取失败, 回退旧逻辑: %s', e)
+        return {}
+
 
 class FundamentalData:
     """基本面数据加载器 - 支持历史数据，防止信息泄露"""
@@ -28,6 +49,7 @@ class FundamentalData:
         self._avail_memo = None   # (code, date_key) -> DataFrame
         self._latest_memo = None  # (code, date_key) -> row dict
         self._nth_memo = None     # (code, (date_key, n)) -> row dict
+        self._ST_FROZEN = None    # 冻结ST时间线 {code: (avail, st)}; None=未载入, {}=无
         self._scan_stock_files(stock_codes)
 
     @staticmethod
@@ -292,7 +314,24 @@ class FundamentalData:
         st_after[k] = 按"数据可用日期<=avail[k]"口径过滤后的最新报告期行的ST状态,
         与逐日调用is_st(code, date)逐点等价(同报告期取文件序最前, 与stable排序+iloc[0]一致)。
         无数据或缺少必要列时返回None(恒非ST)。
+
+        **2026-10-17 铁律修复**: 优先读**冻结文件** `data/alternative_data/st_timeline_frozen.pkl`。
+        原实现从 `股票简称` 列推 ST, 而那一列是**文件构建态快照**(实测 000004 的 63 行
+        横跨 2010–2026 全部写 `*ST国华`, 它 2025 年才戴帽; 88 只"所有行都含ST"被整段
+        追溯排除), 且**基本面刷新会改写该列** ⇒ 一只股票今天戴帽, 全部历史被改写
+        ⇒ **f(t;T) ≠ f(t;t)**, 违反铁律。
+        冻结文件的内容 = 修复当日 get_st_timeline 的输出 ⇒ **逐位保持行为**(不需要新锚),
+        但刷新再也改不动它; 要改 = 显式**数据重锚**(见 data/freeze_st_timeline.py 文件头,
+        那里也记录了为什么"重建真PIT"三条路都不可行: 涨跌停状态机漏检 90% /
+        名称变更史无日期 / 创业板科创板原理上无判别力)。
+        文件缺失 ⇒ 回退旧逻辑(不报错)。
         """
+        if self._ST_FROZEN is None:
+            self._ST_FROZEN = _load_st_frozen()
+        if self._ST_FROZEN:
+            hit = self._ST_FROZEN.get(code)
+            if hit is not None:
+                return hit
         if code not in self.stock_data:
             self._load_stock(code)
         df = self.stock_data.get(code)
