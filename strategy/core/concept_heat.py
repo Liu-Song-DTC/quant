@@ -22,6 +22,25 @@ from .industry_chain import compute_chain_signals, get_chain_lead_score, discove
 from .cmap_hist import resolve_hist_path
 
 
+def _cal_month_end(date) -> Optional[str]:
+    """决策日 → **该日之前(含)最近的日历月末**, 返回 'YYYY-MM-DD'。
+
+    ⚠ 必须是**日历**月末, 不是"数据里该月最后一个交易日": 后者在当月会随新数据
+    推移(今天=10-19 ⇒ 十月末=10-19, 明天 ⇒ 10-20), 于是拟合窗口又依赖 T,
+    等于把铁律违反换个地方重新引入。日历月末对所有 T 恒定。
+    """
+    try:
+        ts = pd.Timestamp(date)
+    except Exception:
+        return None
+    if pd.isna(ts):
+        return None
+    me = ts + pd.offsets.MonthEnd(0)
+    if me > ts:
+        me = me - pd.offsets.MonthEnd(1)
+    return me.strftime('%Y-%m-%d')
+
+
 class ConceptHeatCalculator:
     """题材热度计算器 — 支持回测和实盘双模式"""
 
@@ -37,8 +56,11 @@ class ConceptHeatCalculator:
         self._concept_scores: Dict[str, float] = {}
         self._chain_signals: Dict[str, float] = {}
         self._concept_hist: Dict[str, pd.DataFrame] = {}
-        self._auto_edges: dict = {}  # 自动发现的产业链传导边
+        self._auto_edges: dict = {}  # 自动发现的产业链传导边 (仅 as-of 关闭时的全样本态)
         self._auto_edges_computed = False
+        # 2026-10-19 (铁律 #350): 传导边改为**按决策日 as-of 拟合**, 见 _edges_asof。
+        # key = 日历月末 'YYYY-MM-DD' → edges。单次拟合 0.266s, 全窗口 ~45 次 ≈ 12s。
+        self._edges_cache: Dict[str, dict] = {}
         self._scores_cache: Dict[str, tuple] = {}  # 日期→(concept_scores, chain_signals)
         self._ema_concept_scores: Dict[str, float] = {}  # EMA平滑后的概念分数 (仅实盘增量模式)
         self._hist_ema: Dict[str, pd.Series] = {}  # 回测: 概念→截至每日的EMA序列(确定性)
@@ -109,9 +131,9 @@ class ConceptHeatCalculator:
             except Exception:
                 pass
 
-        # 自动发现产业链传导关系（从历史数据中挖掘）
-        if len(self._concept_hist) >= 10:
-            self._compute_auto_edges()
+        # 2026-10-19 (铁律 #350): 此前这里调用 _compute_auto_edges() —— 用**当时全部**
+        # concept_hist 拟合一次并锁死, 于是 todate=T 与 T+1 得到不同的边, 同一历史日的
+        # chain_score 随 T 变。改为按决策日 as-of 拟合(见 _edges_asof), 此处不再预计算。
         self._loaded = True
 
     def _version_for(self, date) -> Optional[str]:
@@ -195,20 +217,60 @@ class ConceptHeatCalculator:
         self._stock_concepts, self._concept_stocks = self._version_payload(ver)
         self._cmap_cur = ver
 
-    def _compute_auto_edges(self):
-        """从历史概念数据自动发现传导关系
+    def _edges_asof(self, date):
+        """决策日 τ → **截止 τ 的最近日历月末**拟合出的产业链传导边。
+
+        2026-10-19 (铁律 #350)。原 `_compute_auto_edges` 在 load() 时用**当时全部**
+        concept_hist 拟合一次并锁死 ⇒ 边依赖序列末尾 T。实测
+        (`.arms/probe/autoedge_ironlaw_1019.py`, 复刻口径后按截断点拟合; 数字测于
+        同日修复首行脏数据**之前**, 但"边随 T 变"这一性质与数据无关):
+            T=2026-10-19: 30 边 / 12 个目标概念
+            T=2025-12-31: 30 边 /  1 个目标概念   ← 12 条边被换掉
+            T=2024-12-31: 30 边 /  1 个目标概念   ← 14 条边被换掉
+            T=2023-12-29:  0 边
+        ⇒ 11 个概念只在"进程跑到 2026-10-19"时才拿到那 +0.30 信号
+        (chain_score = tanh(0.30×1.5) = 0.4219 ⇒ 贡献 0.127, 是概念涨幅项典型值
+        0.035 的 3.6 倍, 且对这些股票**恒定**) ⇒ 更新今天的数据改写了历史选股。
+        实测影响 (`.arms/probe/edgeimpact_1019.py`, 1,500 股 × 12 日抽样):
+        改 as-of 后 **57.4%** 的 (股票,日期) 格 concept_heat 变, 改变量恒为
+        ±0.1266 —— 旧态下 13 个目标概念覆盖 **70.4%** 的股票池, 全体吃同一份加成。
+
+        修法: 每个**日历**月末用截至该月末的数据拟合一次, 决策日取 τ 之前最近的
+        那个月末。⇒ 边只依赖 ≤ τ 的数据, 与 T 无关。
+        ⚠ 必须用**日历**月末, 不能用"数据里该月最后一个交易日" —— 后者在当月会随
+        新数据推移, 又变回依赖 T。
+        ⚠ 起点受限: concept_hist 起于 2023-01-03, 首个可用拟合点 2023-01-31;
+        更早的决策日返回 {} (与"边还不存在"一致)。
+        成本: 单次拟合 0.266s, 全窗口 ~45 次 ≈ 12s, 按月末缓存。
+        """
+        if os.environ.get('QUANT_EDGE_ASOF', '').lower() in ('off', '0', 'false'):
+            return self._full_sample_edges()          # 仅对照臂用
+        key = _cal_month_end(date)
+        if key is None:
+            return {}
+        hit = self._edges_cache.get(key)
+        if hit is None:
+            hit = self._fit_edges_upto(key)
+            self._edges_cache[key] = hit
+        return hit
+
+    def _fit_edges_upto(self, cut: str) -> dict:
+        """用 concept_hist 中 date <= cut 的行拟合传导边 (口径与旧实现逐字一致)。
 
         使用3日滚动收益替代日频：单日噪音太大导致相关性不显著，
         3日聚合后信噪比提升，同时保留足够的时序分辨率。
         """
-        if self._auto_edges_computed or len(self._concept_hist) < 10:
-            return
+        if len(self._concept_hist) < 10:
+            return {}
         try:
             concept_3d_rets = {}
             for name, df in self._concept_hist.items():
-                if len(df) < 20 or 'return' not in df.columns:
+                if 'return' not in df.columns or 'date' not in df.columns:
                     continue
-                daily = df['return'].dropna().values
+                sub = df[df['date'] <= cut]
+                if len(sub) < 20:
+                    continue
+                daily = sub['return'].dropna().values
                 if len(daily) < 20:
                     continue
                 # 3日滚动累计收益: r[t-2]+r[t-1]+r[t] 的累积
@@ -219,20 +281,26 @@ class ConceptHeatCalculator:
                 if len(rolling_3d) >= 10:
                     concept_3d_rets[name] = rolling_3d
             if len(concept_3d_rets) < 10:
-                return
+                return {}
             names = list(concept_3d_rets.keys())
-            self._auto_edges = discover_chain_edges(
+            return discover_chain_edges(
                 concept_3d_rets, names,
                 min_correlation=0.35,  # 3日频阈值（日频0.55太高，周频0.30太低）
                 max_lag=3,             # 3日频滞后1~3期 ≈ 3~9个自然日
                 top_n=30,
             )
-            self._auto_edges_computed = True
-            total_edges = sum(len(v) for v in self._auto_edges.values())
-            print(f"[ConceptHeat] 自动发现 {total_edges} 条产业链传导边 (来自 {len(names)} 个概念, 3日频)")
         except Exception:
-            self._auto_edges = {}
-            self._auto_edges_computed = True
+            return {}
+
+    def _full_sample_edges(self) -> dict:
+        """旧行为(全样本拟合, 锁死) —— **仅供 QUANT_EDGE_ASOF=off 的对照臂**。"""
+        if self._auto_edges_computed:
+            return self._auto_edges
+        self._auto_edges = self._fit_edges_upto('9999-12-31')
+        self._auto_edges_computed = True
+        total_edges = sum(len(v) for v in self._auto_edges.values())
+        print(f"[ConceptHeat] ⚠ 对照臂: 全样本拟合 {total_edges} 条传导边 (非 PIT)")
+        return self._auto_edges
 
     def set_daily_data(self, date, concept_returns: Dict[str, float] = None):
         """设置当日概念涨跌幅并计算产业链传导
@@ -252,7 +320,7 @@ class ConceptHeatCalculator:
             self._concept_scores = concept_returns
             self._apply_heat_ema()
             self._chain_signals = compute_chain_signals(
-                self._concept_scores, auto_discovered_edges=self._auto_edges
+                self._concept_scores, auto_discovered_edges=self._edges_asof(date)
             )
             self._scores_cache[cache_key] = (self._concept_scores, self._chain_signals)
             return
@@ -287,7 +355,7 @@ class ConceptHeatCalculator:
         # 计算产业链传导信号 (基于EMA平滑后的分数)
         if self._concept_scores:
             self._chain_signals = compute_chain_signals(
-                self._concept_scores, auto_discovered_edges=self._auto_edges
+                self._concept_scores, auto_discovered_edges=self._edges_asof(date)
             )
         else:
             self._chain_signals = {}

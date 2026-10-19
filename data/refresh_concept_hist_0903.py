@@ -114,6 +114,8 @@ def fetch_hist(code, beg, end):
     if ((df['return'] - pct).abs().median() > 0.005):
         print(f'    [口径] {code} 涨跌幅与收盘pct不符, 改用 close.pct_change', flush=True)
         df['return'] = pct
+    # 首行守卫不在这里 —— 见文件尾部的**序列级**守卫。此处 df 只是**抓取窗口**
+    # (增量路径 beg = last_d - 3天), 它的 iloc[0] 是普通交易日, 在此判会误伤真实收益。
     return df[['date', 'return']]
 
 
@@ -237,6 +239,34 @@ for i, name in enumerate(names):
             print(f'  [{i+1}/{len(names)}] {name}: FAIL {str(e)[:70]}', flush=True)
             fail += 1
     time.sleep(2.0)
+
+# ── 序列首行守卫 (2026-10-18 首版, 2026-10-19 重写) ──────────────────────────
+# 东财**新建**板块的首日 f3 是"自基点累计涨幅"而非日收益。实例: 西部大开发
+# 2024-08-26 = +89.67% (该板块当日新建), 经 :111 `return=涨跌幅/100` 入库。
+#   ⚠ 首版把守卫放在 fetch_hist 里判 **df.iloc[0]** —— 但 df 只是**抓取窗口**
+#     (增量路径 beg = last_d - 3天), 其首行是普通交易日 ⇒ 会误伤真实收益。
+#   ⚠ 首版还漏了 `import numpy` ⇒ `np.isfinite` 抛 NameError, 被循环外的
+#     `except Exception` 吞掉 ⇒ 静默降级成 clist 兜底 (每格都"失败"但不报错)。
+#   本版: 判**装配后序列**的首行, 纯 Python 判据(不依赖 numpy), 写在原子写之前。
+# 判据: 概念板块是几十~几百只股票的加权, 单日 |涨跌幅| 实测上限 17.11%
+#   (创业板综 2025-04-07) ⇒ 序列首行 |r| > 0.30 几乎必然是累计值。
+#   序列首行没有前收盘 ⇒ 日收益无定义 ⇒ 取中性值 0.0。
+#   (用 0.0 而非 NaN: concept_heat.py 的 `ewm(adjust=False)` 以首值为起点, NaN 会毁掉整条 EMA)
+_GUARD_MAX = 0.30
+_n_guard = 0
+for _nm, _df in hist.items():
+    if not len(_df):
+        continue
+    try:
+        _r0 = float(_df['return'].iloc[0])
+    except (TypeError, ValueError):
+        _r0 = None
+    if _r0 is None or _r0 != _r0 or abs(_r0) > _GUARD_MAX:   # _r0 != _r0 ⇔ NaN
+        _df.loc[_df.index[0], 'return'] = 0.0
+        _n_guard += 1
+        print(f'  [首行守卫] {_nm}: 首行 return={_r0} 超出日收益可能范围, 置 0.0', flush=True)
+if _n_guard:
+    print(f'  [首行守卫] 共修正 {_n_guard} 个概念的首行', flush=True)
 
 # 2026-10-16: 原子写(tmp + os.replace) — 数据冻结快照层前置。
 # 原地 pickle.dump 会改到与硬链接快照共享的 inode ⇒ 静默污染历史快照;
