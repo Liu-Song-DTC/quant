@@ -2089,11 +2089,25 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         for c in stock_codes
     ])
     _gap_dbg = os.environ.get('QUANT_GAP_DEBUG') == '1'  # 逐笔跳空罚日志(调试)
-    _pct_chg = np.full_like(close_px, np.nan)
-    _pct_chg[1:] = close_px[1:] / close_px[:-1] - 1.0
-    _limit_up = _pct_chg >= (_limit_rate_arr[None, :] - 0.003)
-    _limit_down = _pct_chg <= -(_limit_rate_arr[None, :] - 0.003)
-    del _pct_chg
+    # 因果修复(2026-10-19): 下面两个矩阵**消费在"第 i 日开盘"成交处**(L2214/2248 卖、
+    # L2280/2356 买), 但判据此前是 close_px[i]/close_px[i-1] —— **开盘时不可知当日收盘**。
+    #
+    # 根因 = d28dc7e(2026-09-03) B3 的不完整重构: 执行价从"T日收盘成交"改成"T+1开盘成交",
+    # 这四个闸门被**原样搬过去**, 判据没跟着改。改之前它是对的(收盘时点已知当日收盘)。
+    # 后果: 实盘在 9:30 做不出回测的同一个决策 ⇒ 违反"实盘=回测, 标准/逻辑/数据全一样"。
+    #
+    # 实测(probe limitgate_causal_1019.py, 5380只/2021-2026): 现行 buy 闸共拦截 87,709 格,
+    #   其中 **87.3% (76,544 格) 是错的**(收盘涨停但**开盘未涨停** ⇒ 开盘本可买入);
+    #   真"开盘即涨停买不进"只占 12.7%。错误拦截那批按开盘买入的前瞻收益:
+    #   h=1 均值 +11.50% / 胜率 93.9%, h=10 +10.14% / 71.1%  (基线 h=10 +0.63% / 48.6%)。
+    #   ⇒ 该口径把回测**单向压成悲观**(只拒不放, 且拒掉的恰是当日走强的标的)。
+    #
+    # 改为按开盘价判(集合竞价结束即已知), 与执行价 open_px 同一时点:
+    _pct_open = np.full_like(close_px, np.nan)
+    _pct_open[1:] = open_px[1:] / close_px[:-1] - 1.0
+    _limit_up = _pct_open >= (_limit_rate_arr[None, :] - 0.003)
+    _limit_down = _pct_open <= -(_limit_rate_arr[None, :] - 0.003)
+    del _pct_open
 
     # 2. 预计算可交易矩阵（含流动性过滤：日均成交额>500万）
     # volume单位为手, ×100换算真实成交额(元); 2026-08-22修复: 此前漏乘100导致阈值实际为5亿
