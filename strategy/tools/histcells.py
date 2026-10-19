@@ -260,6 +260,8 @@ def cmd_diff(args):
     rest_rew = 0
     tot_add = tot_newf = 0
     for name, pat, kind, dc, kc, expect in LAYERS:
+        if getattr(args, 'layer', None) and name != args.layer:
+            continue
         of = old['layers'].get(name, {}).get('files', {})
         nf = new.get(name, {}).get('files', {})
         rew, add, gone, newf, gonef = [], 0, [], [], []
@@ -289,12 +291,16 @@ def cmd_diff(args):
         print(f'  {mark} {name:<18}{tag}  追加 {add:>6} 格 | 改写 {len(rew):>5} | '
               f'消失 {len(gone):>4} | 新实体 {len(newf):>4} | 丢文件 {len(gonef):>3}')
         if not clean:
-            for rel, d in rew[:5]:
+            full = getattr(args, 'full', False)
+            for rel, d in (rew if full else rew[:5]):
                 print(f'      {"⚠" if expect == "append" else "·"} 改写 {rel} @ {d}')
-            if len(rew) > 5:
+            if not full and len(rew) > 5:
                 print(f'      ... 另有 {len(rew)-5} 个格被改写')
-            for rel, d in gone[:3]:
+            for rel, d in (gone if full else gone[:3]):
                 print(f'      ⚠ 消失 {rel} @ {d}')
+            if full:
+                for rel in gonef:
+                    print(f'      ⚠ 丢文件 {rel}')
         tot_add += add
         tot_newf += len(newf)
         if expect == 'append':
@@ -346,6 +352,10 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     s = sub.add_parser('snap'); s.add_argument('label'); s.set_defaults(fn=cmd_snap)
     d = sub.add_parser('diff'); d.add_argument('label'); d.set_defaults(fn=cmd_diff)
+    # 2026-10-19 补: 只打前 5 个格时, "204 个改写"里的 199 个看不见 ⇒ 无法判读
+    # 是"历史被改写"还是"未来日程被刷新"。--full 全量打印; --layer 只查一层。
+    d.add_argument('--full', action='store_true', help='打印全部改写/消失格(不截断)')
+    d.add_argument('--layer', default=None, help='只检查该层 (名字同 LAYERS)')
     l = sub.add_parser('ls'); l.set_defaults(fn=cmd_ls)
     a = ap.parse_args()
     sys.exit(a.fn(a))
