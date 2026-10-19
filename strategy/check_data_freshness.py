@@ -333,7 +333,11 @@ def main():
     hard = [
         check_kline(exp),
         check_alt_pkl('margin_daily.pkl', 'date', prev_trading_day(exp)),
-        check_alt_pkl('northbound_daily.pkl', 'date', exp, slack_days=1),
+        # 北向: 东财源头**本身**滞后一个交易日 (2026-10-19 实测: 北向资金/沪股通/
+        # 深股通三个 symbol 在 20:15 查询, max 全部 = 2026-10-16 = 上一交易日;
+        # 我们的 pkl 2770 行与源逐行一致)。故期望值取上一交易日, 不是当日。
+        # 注意这仍是**下界**: 若某天抓取真失败, max 会停在更早 ⇒ 照样 FAIL。
+        check_alt_pkl('northbound_daily.pkl', 'date', prev_trading_day(exp)),
         check_concept_hist(exp),
         check_fundamental(exp),
         check_margin_sanity(),
