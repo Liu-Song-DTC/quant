@@ -8,9 +8,18 @@ set -o pipefail
 cd /mnt/d/quant
 PY=/mnt/d/quant/.venv/bin/python
 SD=/mnt/d/quant/data/stock_data
+# 每一步的**完整**输出落这里; 控制台仍只留尾部 N 行。
+# ⚠ 2026-10-19: 原来直接 `2>&1 | tail -N` ⇒ 只留最后 N 行, 而 `SystemExit` 的错误
+#   消息会被随后 atexit 的 6 条 resource_tracker 告警**挤出窗口** ⇒ **报错被吞**。
+#   实测把一个"退市股在东财无页 ⇒ 落盘拒绝"的**死锁**藏了整条链(排查 3 小时)。
+#   `tail` 只该用来**缩短控制台**, 不该用来**丢弃证据**; `set -o pipefail` 保证
+#   退出码仍如实传播(cmd 失败 ⇒ 整条管道非零)。
+mkdir -p /mnt/d/quant/logs
+REFRESH_LOG=/mnt/d/quant/logs/refresh_$(date +%Y%m%d_%H%M%S).log
+echo "完整日志: $REFRESH_LOG"
 
 echo "=== 1/9 K线增量 (akshare/efinance中继代理, EM侧复权变化自动全量重载) ==="
-QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/akshare_kline_downloader.py 2>&1 | tail -6
+QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/akshare_kline_downloader.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
 
 # ── 2/9 事件表 ────────────────────────────────────────────────────────────────
 # 复权口径 = **表驱动乘性**(2026-10-17 接入). 旧链路 `convert_raw_to_backtrader.py`
@@ -25,9 +34,9 @@ echo "=== 2/9 公司行动表 (东财 stock_fhps_detail_em) + 新浪乘性因子
 # 两者融合规则见 data/build_events_table.py 的 docstring(逐事件, 无自由阈值)。
 # ⚠ 每天都要拉: 事件**必须在除权日之前**进表, 否则事后补 = 改历史(锚漂移)。
 #   未到期的除权日在重建里被 `pos >= n ⇒ continue` 忽略 ⇒ 提前进表零副作用。
-$PY -u data/fetch_actions_table.py 2>&1 | tail -6
-$PY -u data/fetch_sina_factors.py 2>&1 | tail -6
-$PY -u data/build_events_table.py 2>&1 | tail -10
+$PY -u data/fetch_actions_table.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
+$PY -u data/fetch_sina_factors.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
+$PY -u data/build_events_table.py 2>&1 | tee -a "$REFRESH_LOG" | tail -10
 
 # ── 3/9 表驱动复权重建 ────────────────────────────────────────────────────────
 echo "=== 3/9 bt文件重建 (表驱动乘性复权, 建到临时目录后原子换名) ==="
@@ -36,7 +45,7 @@ BT_OLD=$SD/.bt_prev
 rm -rf "$BT_NEW"
 $PY -u data/rebuild_table_qfq.py \
     --events /mnt/d/quant/data/alternative_data/events_table.pkl \
-    --anchor frozen --out "$BT_NEW" 2>&1 | tail -12
+    --anchor frozen --out "$BT_NEW" 2>&1 | tee -a "$REFRESH_LOG" | tail -12
 # 落盘守卫: 新目录必须与生产**符号集完全相同**(缺一个 = 该股票从池子里消失)
 # ⚠ 2026-10-17: 守卫原来只查 `*_qfq.csv` **一个方向** ⇒ 生产目录里的**非 qfq 文件**
 #   会在 `mv` 换名时被**静默丢弃**(换名是整目录替换, 不是合并)。
@@ -78,17 +87,17 @@ echo "  已换名; 上一版留在 $BT_OLD (下次刷新时清除)"
 touch "$SD/.table_driven_prod"
 
 echo "=== 4/9 基本面 (最近3报告期) ==="
-$PY -u data/refresh_fundamental_recent.py 2>&1 | tail -5
+$PY -u data/refresh_fundamental_recent.py 2>&1 | tee -a "$REFRESH_LOG" | tail -5
 
 echo "=== 5/9 另类数据 (龙虎榜/融资融券/北向/减持/解禁/业绩预告) ==="
-$PY -u data/refresh_altdata_0902.py 2>&1 | tail -12
+$PY -u data/refresh_altdata_0902.py 2>&1 | tee -a "$REFRESH_LOG" | tail -12
 
 echo "=== 6/9 概念历史 (60板块日涨跌, 东财K线集群限流时自动轮换重试) ==="
 # 2026-10-12: push2his/push2delay直连被远端切断(同概念映射), 迁中继代理版
-$PY -u data/refresh_concept_hist_relay.py 2>&1 | tail -6
+$PY -u data/refresh_concept_hist_relay.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
 
 echo "=== 7/9 概念映射 (股票→概念, push2delay直连已断, 走中继代理) ==="
-$PY -u data/refresh_concept_map_relay.py 2>&1 | tail -6
+$PY -u data/refresh_concept_map_relay.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
 
 echo "=== 8/9 转债sleeve数据 (cb_daily/cb_value增量, 2026-10-07激活接线; 失败仅告警不阻塞股票链) ==="
 # 2026-10-15 门控: live_monitoring.cb_sleeve.enabled=false 时整步跳过.
@@ -105,7 +114,7 @@ except Exception:
     print('true')
 " 2>/dev/null || echo true)
 if [ "$CB_ENABLED" = "true" ]; then
-  QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/cb_sleeve_refresh.py 2>&1 | tail -6 || {
+  QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/cb_sleeve_refresh.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6 || {
     echo "!!! cb刷新失败(不影响股票出单; cb_sleeve选择器对陈旧券自动跳过)"
   }
 else
@@ -125,6 +134,6 @@ $PY strategy/check_data_freshness.py || {
 echo "=== 全部新鲜, 可以出单: cd strategy && $PY generate_trade_orders.py ==="
 
 echo "=== 9/9(附加) 打新提醒 (新股/新债今日申购清单→strategy/ipo_today.json, 仅信息块; 失败不阻塞) ==="
-QUANT_ALT_NO_AUTOREFRESH=1 $PY strategy/tools/ipo_reminder.py 2>&1 | tail -15 || {
+QUANT_ALT_NO_AUTOREFRESH=1 $PY strategy/tools/ipo_reminder.py 2>&1 | tee -a "$REFRESH_LOG" | tail -15 || {
   echo "!!! 打新提醒获取失败(不影响出单; 手动: $PY strategy/tools/ipo_reminder.py)"
 }
