@@ -79,6 +79,28 @@ def _load(label):
     return meta
 
 
+def _git_state():
+    """(HEAD, 脏文件列表) —— 存档必须能追到**是哪份代码**跑出来的。
+
+    2026-10-19 教训: `.arms/run_snap_c15.sh` 把整棵 strategy 树回退到旧 commit
+    跑了一臂, 产物**直接留在生产目录**里 (只额外拷了 .snap_c15 副本, 没恢复原件)。
+    结果那个 670,382 被当成了"当前生产净值"上报 —— **因为存档里没有任何字段
+    能区分"这次是 HEAD 跑的"还是"某条臂回退代码跑的"**。
+    净值哨兵的价值全在"这个数是谁产生的"; 记不上代码态, 它就在骗人。
+    """
+    import subprocess
+    def _g(*a):
+        try:
+            return subprocess.run(['git', '-C', ROOT, *a], capture_output=True,
+                                  text=True, timeout=20).stdout.strip()
+        except Exception:
+            return ''
+    head = _g('rev-parse', '--short', 'HEAD')
+    dirty = [l for l in _g('status', '--porcelain', '--', 'strategy/').splitlines()
+             if l.strip()]
+    return head, dirty
+
+
 # 判据容差: NAV 量级 ~1e6 ⇒ 1e-12 相对 = 1.4e-6 元, 远低于一分钱。
 # 任何真实的数据改动都远在这之上; 只有 CSV 往返的 float64 重序列化会落在下面。
 # (实测: 用 pandas 读→改一格→to_csv 往返, 会污染同列其他行的**文本**,
@@ -134,7 +156,9 @@ def cmd_snap(args):
             print(f'· 存档 {label} 已存在且 md5 未变 (加 --force 覆盖)')
             return 0
     os.makedirs(d, exist_ok=True)
+    _head, _dirty = _git_state()
     meta = {'label': label, 'ts': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'git_head': _head, 'git_dirty': _dirty,
             'files': {}, 'src': RVD}
     for f in FILES:
         src = os.path.join(RVD, f)
@@ -150,7 +174,13 @@ def cmd_snap(args):
         meta['nav_end'] = float(eq['nav'].iloc[-1])
     json.dump(meta, open(os.path.join(d, 'meta.json'), 'w'), indent=1)
     print(f'✓ snap {label}: {meta.get("first_date")}→{meta.get("last_date")} '
-          f'({meta.get("n_days")} 日) NAV={meta.get("nav_end", 0):,.2f}')
+          f'({meta.get("n_days")} 日) NAV={meta.get("nav_end", 0):,.2f}'
+          f'  [git {_head or "?"}{"+" + str(len(_dirty)) if _dirty else ""}]')
+    if _dirty:
+        print(f'  ⚠ 工作区有 {len(_dirty)} 个未提交改动: '
+              f'{", ".join(os.path.basename(l.split()[-1]) for l in _dirty[:6])}')
+        print('    ⇒ 该存档不是干净 HEAD 跑出来的; 若这是**臂**的产物, '
+              'label 必须标明 (参 2026-10-19 run_snap_c15 误报事故)')
     return 0
 
 
@@ -171,14 +201,19 @@ def cmd_ls(args):
         print('(无存档)')
         return 0
     w = max(16, max(len(n) for n in ls) + 2)
-    print(f'{"label":<{w}}{"存档时间":<21}{"区间":<26}{"日数":>6}{"NAV":>16}  md5(eq)')
-    print('-' * (w + 72))
+    print(f'{"label":<{w}}{"存档时间":<21}{"区间":<26}{"日数":>6}{"NAV":>16}'
+          f'  {"md5(eq)":<9}{"代码态":<12}')
+    print('-' * (w + 92))
     for n in ls:
         m = _load(n)
         eq = m['files'].get('equity_curve.csv', {}).get('md5', '')[:8]
+        gh = m.get('git_head') or '—'
+        if m.get('git_dirty'):
+            gh += f'+{len(m["git_dirty"])}'
         print(f'{n:<{w}}{m["ts"]:<21}'
               f'{m.get("first_date","?")}→{m.get("last_date","?"):<14}'
-              f'{m.get("n_days",0):>6}{m.get("nav_end",0):>16,.0f}  {eq}')
+              f'{m.get("n_days",0):>6}{m.get("nav_end",0):>16,.0f}'
+              f'  {eq:<9}{gh:<12}')
     return 0
 
 
