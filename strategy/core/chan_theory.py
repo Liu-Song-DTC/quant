@@ -436,28 +436,7 @@ def detect_strokes(
                 # 间隔不够，跳过当前f2，继续找下一个
                 j += 1
             else:
-                # 同类型分型: 若 f2 比 f1 更极端 → 锚点前移到 f2 + 上一笔延伸到 f2
-                # (铁律 #365, 2026-10-20)。原实现只 j+=1 跳过、锚点从不前移 ⇒
-                # 一旦行情离开锚点区域(单边大趋势), 相反分型的价格关系永不满足
-                # ⇒ 外层 break ⇒ 该股此后全史笔检测冻结 (实测 59.11% 股票冻结,
-                # 中位冻结点在股票史 75% 处, bug 自 0bdb3fb 2026-05-16)。
-                # 延伸保持交替链无缝; vis_idx 用新终点分型的可见时刻 (铁律 #347)。
-                # 原型验证: .arms/probe/chan_fix365_causal_1020.py — 因果 0 违反
-                # (18股×4截断 + 3股×每25bar 密集256点), 冻结 59%→0%,
-                # bi_buy 触发率从卡死极值(0%/99%)归一到 34~48%。
-                if (f1.f_type == 1 and f2.price > f1.price) or \
-                        (f1.f_type == -1 and f2.price < f1.price):
-                    if strokes and strokes[-1].end_idx == f1.idx \
-                            and strokes[-1].direction == -f1.f_type:
-                        _s = strokes[-1]
-                        _s.end_idx = f2.idx
-                        _s.end_price = f2.price
-                        _s.high = max(_s.high, f2.high)
-                        _s.low = min(_s.low, f2.low)
-                        # 笔的可见时刻 = (新)终点分型的可见时刻 (铁律 #347)
-                        _s.vis_idx = f2.conf
-                    i = j
-                    f1 = fractal_list[i]
+                # 同类型分型，取更极端的
                 j += 1
 
         if j >= len(fractal_list):
