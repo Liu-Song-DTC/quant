@@ -460,6 +460,13 @@ def _signal_code_fingerprint() -> str:
             h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
         except OSError:
             h.update(f"{rel}|MISSING;".encode('utf-8'))
+    # 2026-10-20: 行为钩子必须计入指纹 — QUANT_EDGE_ASOF=off(全样本边, 对照臂)
+    # 改变 concept_heat 因子值, 但代码/mtime 不变 ⇒ 门禁不可见 ⇒ 静默复用生产信号
+    # = 假臂。同款先例: pit_map0531(QUANT_CONCEPT_MAP 不可见)、E-B1v2(warmup 走
+    # sidecar)。只在 env **非空**时混入: 生产态(未设)指纹不变, 零扰动。
+    _ea = os.environ.get('QUANT_EDGE_ASOF', '')
+    if _ea:
+        h.update(f"env.QUANT_EDGE_ASOF|{_ea};".encode('utf-8'))
     return h.hexdigest()[:8]
 
 
@@ -706,6 +713,13 @@ def prepare_factor_data(stock_file_map: dict, fd,
     _cache_key_str = ','.join(sorted(stock_file_map.keys())[:100]) + str(_n_stocks) + \
                      str(factor_dates[0]) + str(factor_dates[-1]) + str(date_step) + str(lookback) + \
                      '_fp' + _data_fp + '_cfp' + _code_fp
+    # 2026-10-20: QUANT_EDGE_ASOF 改变 concept_heat 边的拟合口径(as-of月末 vs
+    # 全样本) ⇒ 改变因子值, 但对上面的数据/代码指纹均不可见 ⇒ 因子缓存命中
+    # ⇒ 假臂。仅 env 非空时附加(生产态零扰动)。同款先例: QUANT_CONCEPT_MAP
+    # 走 _concept_inputs 路径进 _data_fp (2026-10-17)。
+    _edge_asof_env = os.environ.get('QUANT_EDGE_ASOF', '')
+    if _edge_asof_env:
+        _cache_key_str += '_ea' + _edge_asof_env
     _cache_hash = hashlib.md5(_cache_key_str.encode()).hexdigest()[:8]
     print(f"数据指纹: {_data_fp} (K线{len(stock_file_map)}文件 + 基本面 + 题材输入); "
           f"代码指纹(raw): {_code_fp}; 信号代码指纹: {_signal_code_fingerprint()}")
