@@ -305,8 +305,14 @@ def _signals_stale(signals_csv):
         except Exception as _e:
             print(f"信号CSV日期读取失败({_e}), 重新生成信号")
             return True
-        if _sig_max < _expected:
-            print(f"信号CSV止于 {_sig_max} < 应覆盖 {_expected} (todate/K线最新日), 重新生成信号")
+        # 2026-10-20 #357: `<` → `!=`。单向检查的盲区 (navappend_1020 臂差点踩到,
+        # 靠 armguard 搬走 CSV 才绕开): ①往回调 todate (QUANT_TODATE=10-16) 时
+        # CSV 仍覆盖到 10-19 — 现行不触发重生成, 臂复用"见过更多未来"的信号
+        # = 变相越过截断语义 (假臂温床); ②K线被截断重建后 CSV 仍覆盖旧末端
+        # — 同样是数据集外信息。等式判据两个方向都对: 生产每日流
+        # sig_max==expected 恒成立, 行为不变。
+        if _sig_max != _expected:
+            print(f"信号CSV止于 {_sig_max} ≠ 应覆盖 {_expected} (todate/K线最新日), 重新生成信号")
             return True
     # 2026-09-12 收窄(#54): 信号层仅消费4个另类文件 — 经消费路径核验, signal_engine
     # 只调get_northbound_signal(northbound_daily)/get_margin_signal(margin_daily)/
