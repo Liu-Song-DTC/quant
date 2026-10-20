@@ -463,7 +463,12 @@ class PortfolioConstructor:
         # entry_chan_gate:hard单独+248k但bs不显著(p=0.25)+实盘窗MDD加深4pp,
         # 且min2下hard=no-op(CMB5与A3b逐位恒等=无缠细胞过min2全在FAST被bearhard已拒)。
         # bp_c3/bp_c4保留dormant(0.0=关闭)。portfolio节豁免指纹。
-        self.bp_confirm_min = int(pp.get('bp_confirm_min', 0))
+        # 臂钩子(2026-10-20夜普查): QUANT_BP_CONFIRM_MIN 覆写确认闸, 默认空=逐位零改动.
+        # 动机 — min=2 于 10/10 在**冻结bug态**采纳(bi_buy在59%股票上卡死1 ⇒ bp_confirm
+        # 恒+1 ⇒ 闸被bug中和≈min=1); cb245b3 修复后 bi_buy 活化, 闸首次以设计语义运行,
+        # 且 buy=True −10.6% ⇒ 闸面 0→1→2→3 的旧峰(791k→977k→1,000k→669k)全部作废须复扫.
+        self.bp_confirm_min = int(os.environ.get(
+            'QUANT_BP_CONFIRM_MIN', '') or pp.get('bp_confirm_min', 0))
         self.bp_c3_boost = float(pp.get('bp_c3_boost', 0.0))
         self.bp_c4_penalty = float(pp.get('bp_c4_penalty', 0.0))
         # H-cd(2026-10-10): 追涨日推迟入场 — 入场日涨幅>阈值当天不买(次日信号仍在可再试).
