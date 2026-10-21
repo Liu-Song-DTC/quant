@@ -441,7 +441,10 @@ class PortfolioConstructor:
         # FAST入场数上限(2026-10-15采纳): 默认2 = 原硬编码 max(2, n//3) 逐位等价.
         # portfolio节豁免信号指纹 → 改此键不触发信号重生成.
         self.fast_entry_cap = int(pp.get('fast_entry_cap', 2))
-        self.bp2_score_boost = float(pp.get('bp2_score_boost', 0.0))
+        # 臂钩子(2026-10-21): 修复态复验旧采纳 yaml 旋钮, 默认空=逐位零改动.
+        # bp2_score_boost 于 9/6 在加性+前视时代采纳, 从未在修复态复验.
+        self.bp2_score_boost = float(os.environ.get(
+            'QUANT_BP2_BOOST', '') or pp.get('bp2_score_boost', 0.0))
         # H-bi(2026-10-10): 笔级一买确认加成 — 探针bp0×bi1 6/6年+3.4~16.0pp胜率
         # (55.9% vs 47.7%), bp0=最大买点桶; bp交互仅bp0稳定(bp1/bp4×bi1负或噪声)
         # → 限定bp==0。0=关闭(anchor态)。portfolio节豁免指纹。
@@ -450,7 +453,9 @@ class PortfolioConstructor:
         # 中位-0.16% vs 其余58.7%/+4.04%; 供给50.5%已被评分回避至29.9%选中。
         # 罚仅新入场(keep-alive豁免), 叠在既有no_chan_penalty上。0=关闭(anchor态)。
         # portfolio节豁免指纹。
-        self.bp0bi0_penalty = float(pp.get('bp0bi0_penalty', 0.0))
+        # 臂钩子(2026-10-21): 默认空=读取yaml(生产0.05), 逐位零改动.
+        self.bp0bi0_penalty = float(os.environ.get(
+            'QUANT_BP0BI0_PEN', '') or pp.get('bp0bi0_penalty', 0.0))
         # H-bpG(2026-10-10): 买点硬拒闸(剔除臂) — bp_reject全期硬拒新入场,
         # bp_reject_fast仅FAST期。[] = 关闭(anchor态)。portfolio节豁免指纹。
         self.bp_reject = [int(x) for x in pp.get('bp_reject', [])]
@@ -481,8 +486,11 @@ class PortfolioConstructor:
         # E-N5(2026-09-08): 入场结构闸 — 短期准确率证据(bp0占入场57%/hit1 49%,
         # 短持桶52%/2022年65%; score五档对5日收益无区分度) → 无结构新入场控制
         # off=基线软罚(no_chan_penalty) / hard=直接拒绝。portfolio节豁免指纹。
-        self.entry_chan_gate = str(pp.get('entry_chan_gate', 'off'))
-        self.no_chan_penalty = float(pp.get('no_chan_penalty', -0.20))
+        # 臂钩子(2026-10-21): 默认空=读取yaml(bearhard/-0.20), 逐位零改动.
+        self.entry_chan_gate = str(os.environ.get(
+            'QUANT_ENTRY_CHAN_GATE', '') or pp.get('entry_chan_gate', 'off'))
+        self.no_chan_penalty = float(os.environ.get(
+            'QUANT_NO_CHAN_PEN', '') or pp.get('no_chan_penalty', -0.20))
         self.bp2_fade_stop_dd = float(pp.get('bp2_fade_stop_dd', 0.08))
         # E-K2.5(2026-09-11): 回购类级加成 — 评分系统低估第2例(E-K1模式)。
         # 证据: 事件研究小回购<1亿桶6/6年正(fwd20a +3.22%); 信号日叠加
@@ -493,8 +501,10 @@ class PortfolioConstructor:
         self._repo_dates = None  # 惰性: {code: np.array(datetime64 asc)} 小回购
         # H4: FAST预警期敞口上限(0=关闭)
         self.fast_exposure_cap = float(pp.get('fast_exposure_cap', 0.0))
-        self.rp_min_weight_ratio = pp.get('risk_parity_min_weight_ratio', 0.5)
-        self.rank_decay = pp.get('rank_decay', 0.3)
+        self.rp_min_weight_ratio = float(os.environ.get(
+            'QUANT_RP_MIN_RATIO', '') or pp.get('risk_parity_min_weight_ratio', 0.5))
+        self.rank_decay = float(os.environ.get(
+            'QUANT_RANK_DECAY', '') or pp.get('rank_decay', 0.3))
         self.chan_bonus_sl2 = pp.get('chan_bonus_sl2', 0.04)  # 已归档9/22审计§1B: 死旋钮(全库零消费者)
         self.chan_bonus_buy_point = pp.get('chan_bonus_buy_point', 0.02)  # 已归档9/22审计§1B: 死旋钮(全库零消费者)
         self.chan_bonus_trend2 = pp.get('chan_bonus_trend2', 0.01)

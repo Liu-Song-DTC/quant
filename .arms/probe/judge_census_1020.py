@@ -28,8 +28,10 @@ import numpy as np
 import pandas as pd
 
 RVD = 'rolling_validation_results'
-TAGS = ['bp1', 'bp3', 'mp3', 'mp5', 'fec0', 'fec2', 'slk15', 'ea2old']
-BASE = 'base1020fix'
+# 第二段普查复用: JUDGE_BASE=base1020bp3 JUDGE_TAGS="zg0 mlg0 ..."
+TAGS = os.environ.get(
+    'JUDGE_TAGS', 'bp1 bp3 mp3 mp5 fec0 fec2 slk15 ea2old').split()
+BASE = os.environ.get('JUDGE_BASE', 'base1020fix')
 PROD_FROZEN = 615042.97   # 生产冻结态(10-19, 旧bug) 参考
 FIX365 = 363724.62        # fix365臂(todate 10-19, 同代码) 参考
 BT = '../data/stock_data/backtrader_data/{}_qfq.csv'
