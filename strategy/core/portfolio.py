@@ -481,6 +481,13 @@ class PortfolioConstructor:
         # 追涨×mom>30%组合: fwd5 30.3%/均-1.46%. 0.0=关闭(anchor态)。portfolio节豁免指纹。
         self.entry_chase_defer = float(pp.get('entry_chase_defer', 0.0))
         self.bp2_boost_norm_only = bool(pp.get('bp2_boost_norm_only', False))
+        # 臂钩子(2026-10-21): QUANT_BP2_NORM_ONLY 覆写E-K2 — FAST期抑制bp2加成.
+        # 默认空=读取yaml(false), 逐位零改动. 动机: 修复态复扫发现 boost=0.45 是
+        # 平台(0/0.15/0.30≈712-717k)之外的断崖(586k); E-K2 是 9/6 预置的
+        # "FAST拥挤抑制"旋钮, 本次首次启用检验 2022/2026 劣势是否来自FAST期.
+        _bp2no = os.environ.get('QUANT_BP2_NORM_ONLY', '')
+        if _bp2no != '':
+            self.bp2_boost_norm_only = _bp2no.strip().lower() in ('1', 'true', 'yes', 'on')
         self.bp2_fade_stop_enabled = bool(pp.get('bp2_fade_stop_enabled', False))
         self.bp2_fade_stop_days = int(pp.get('bp2_fade_stop_days', 15))
         # E-N5(2026-09-08): 入场结构闸 — 短期准确率证据(bp0占入场57%/hit1 49%,
