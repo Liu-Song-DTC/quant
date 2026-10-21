@@ -1,0 +1,5 @@
+rc=0
+env=QUANT_INDUSTRY_PIT=1
+pre=94bca0cc69be9f708e76364976c3957f  /mnt/d/quant/strategy/rolling_validation_results/backtest_signals.csv.pre352
+post=36683d4c604ca95610a7af622dede2a2  /mnt/d/quant/strategy/rolling_validation_results/backtest_signals.csv
+finished=2026-10-22 06:22:19

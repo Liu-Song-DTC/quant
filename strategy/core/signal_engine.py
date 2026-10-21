@@ -1476,6 +1476,13 @@ class SignalEngine:
             _mid_date = dates[min(n-1, max(60, n//2))]
             _ind_cat = self._get_industry_category(code, _mid_date)
             _spec_ind = self._get_specific_industry(code, _mid_date) if code else ''
+            # #352 行业归属 PIT 钩子 (默认关闭, 逐位零改动)。开启后每个 bar 用
+            # current_date 查行业名/具体行业, 消除"整段历史锚在中点日期"的前视;
+            # 默认路径仍用中点值, 保持生产逐位不变。
+            _use_pit_ind = os.environ.get('QUANT_INDUSTRY_PIT', '0') == '1'
+            if _use_pit_ind and not getattr(self, '_ind_pit_logged', False):
+                print('[hook] QUANT_INDUSTRY_PIT=1: 行业归属逐bar PIT (替代中点锚)')
+                self._ind_pit_logged = True
 
             _mi_simple = {'style_score': 0.0, 'confidence': 0.0, 'regime': 0,
                           'is_extreme': False, 'style_regime': 'balanced',
@@ -1493,9 +1500,15 @@ class SignalEngine:
                 _mkt_regime_i = int(_mkt_regime_arr[i])
                 _trend_i = float(regimes['trend_score'][i]) if regimes and 'trend_score' in regimes else 0.0
                 _vol_i = float(regimes['volatility'][i]) if regimes and 'volatility' in regimes else 0.15
+                if _use_pit_ind:
+                    _ind_cat_i = self._get_industry_category(code, dates[i])
+                    _spec_ind_i = self._get_specific_industry(code, dates[i]) if code else ''
+                else:
+                    _ind_cat_i = _ind_cat
+                    _spec_ind_i = _spec_ind
                 factor_result = self._select_factor(
-                    ind, i, _mkt_regime_i, _ind_cat, code=code, current_date=dates[i],
-                    trend_score=_trend_i, volatility=_vol_i, specific_industry=_spec_ind
+                    ind, i, _mkt_regime_i, _ind_cat_i, code=code, current_date=dates[i],
+                    trend_score=_trend_i, volatility=_vol_i, specific_industry=_spec_ind_i
                 )
                 if factor_result is None:
                     continue
@@ -1508,7 +1521,7 @@ class SignalEngine:
                 mkt_style_score[i] = _mkt_style_score_arr[i]
                 mkt_style_conf[i] = _mkt_style_conf_arr[i]
                 mkt_conf[i] = _mkt_conf_arr[i]
-                ind_cat[i] = _ind_cat
+                ind_cat[i] = _ind_cat_i
                 # BP8: 60日动量反相关(IC=-0.092), 高动量突破=力竭 (E-E2消融可关)
                 if _bp_arr[i] == 8 and self.bp8_rev60_override:
                     fname[i] = 'REV60'
@@ -1536,7 +1549,7 @@ class SignalEngine:
                 _mi_simple['style_confidence'] = _mkt_style_conf_arr[i]
                 style_score[i] = self._get_style_score(ind, i, _mi_simple)
 
-                spec_ind[i] = _spec_ind
+                spec_ind[i] = _spec_ind_i
                 # _get_chan_boost 已由 gate_scorer Gate 1 替代
 
         return {
