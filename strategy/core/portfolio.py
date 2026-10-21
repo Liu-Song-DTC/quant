@@ -474,6 +474,26 @@ class PortfolioConstructor:
         # 且 buy=True −10.6% ⇒ 闸面 0→1→2→3 的旧峰(791k→977k→1,000k→669k)全部作废须复扫.
         self.bp_confirm_min = int(os.environ.get(
             'QUANT_BP_CONFIRM_MIN', '') or pp.get('bp_confirm_min', 0))
+        # 臂钩子(2026-10-22): 源权重 + 必需源. 探针(bp_deep_1021)显示 k=3 在信号层
+        # ex10 −0.06% / 组合层 1110 成交 +1.48%, 而 S4(底背离) 存在时 ex10 +0.80%
+        # ⇒ 计数 k 是代理, 真实信息在源. 默认空 = 等权/无必需源, 逐位零改动.
+        #   QUANT_BP_WEIGHTS='1,1,1,2'  按 S1,S2,S3,S4 加权确认数(配合 bp_confirm_min)
+        #   QUANT_BP_REQUIRE_S4=1       强制第四源(底背离)存在
+        _bpw = os.environ.get('QUANT_BP_WEIGHTS', '').strip()
+        if _bpw:
+            _bpw_v = [float(x) for x in _bpw.split(',')]
+            if len(_bpw_v) != 4:
+                raise ValueError(f"QUANT_BP_WEIGHTS 需要4个逗号分隔权重, 收到: {_bpw}")
+            self.bp_weights = _bpw_v
+        else:
+            self.bp_weights = [1.0, 1.0, 1.0, 1.0]
+        self.bp_require_s4 = os.environ.get(
+            'QUANT_BP_REQUIRE_S4', '').strip().lower() in ('1', 'true', 'yes', 'on')
+        # 臂钩子(2026-10-22): S4(底背离)软加成 — 探针显示 S4 是唯一有截面α的源,
+        # 但硬闸(REQUIRE_S4)会大幅缩减入场. 软加成保留 min=3 的入场宽度, 只把
+        # S4 候选在排序中提前. 默认0=逐位零改动.
+        self.bp_s4_boost = float(os.environ.get(
+            'QUANT_BP_S4_BOOST', '') or pp.get('bp_s4_boost', 0.0))
         self.bp_c3_boost = float(pp.get('bp_c3_boost', 0.0))
         self.bp_c4_penalty = float(pp.get('bp_c4_penalty', 0.0))
         # H-cd(2026-10-10): 追涨日推迟入场 — 入场日涨幅>阈值当天不买(次日信号仍在可再试).
@@ -1178,10 +1198,17 @@ class PortfolioConstructor:
                 div_type = getattr(sig, 'chan_divergence_type', '')
                 div_strength = getattr(sig, 'chan_divergence_strength', 0.0)
                 # H-bpC(2026-10-10): 纯买点确认数(4源, bp5排除—唯一负信息非零买点)
-                _bp_confirm = (int(chan_buy > 0 and chan_buy != 5)
-                               + int(int(self._nan_safe(getattr(sig, 'bi_buy_point', 0))) > 0)
-                               + int(sl >= 1)
-                               + int(div_type in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2')))
+                _bp_s1 = int(chan_buy > 0 and chan_buy != 5)
+                _bp_s2 = int(int(self._nan_safe(getattr(sig, 'bi_buy_point', 0))) > 0)
+                _bp_s3 = int(sl >= 1)
+                _bp_s4 = int(div_type in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2'))
+                _bp_confirm = (self.bp_weights[0] * _bp_s1 + self.bp_weights[1] * _bp_s2
+                               + self.bp_weights[2] * _bp_s3 + self.bp_weights[3] * _bp_s4)
+                # 2026-10-22: 必需源闸(探针 S4=唯一α源) — 默认关闭
+                if self.bp_require_s4 and not _bp_s4:
+                    _rej.setdefault('bp_require_s4', 0)
+                    _rej['bp_require_s4'] += 1
+                    continue
                 # H-bpC闸: 确认数不足直接拒绝(仅新入场, 旧持仓不受影响)
                 if self.bp_confirm_min > 0 and _bp_confirm < self.bp_confirm_min:
                     _rej.setdefault('bp_confirm', 0)
@@ -1831,6 +1858,11 @@ class PortfolioConstructor:
             if self.bp2_score_boost > 0 and bp == 2 and c.get('chan_sell_point', 0) == 0 \
                     and not (self.bp2_boost_norm_only and bear_risk_fast):
                 additive += self.bp2_score_boost
+
+            # 2026-10-22: S4 底背离软加成 (默认0) — 与硬闸互斥使用
+            if self.bp_s4_boost > 0 and getattr(sig_ref, 'chan_divergence_type', '') \
+                    in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2'):
+                additive += self.bp_s4_boost
 
             # H-bi: bp0笔级一买确认加成 (部分抵消no_chan_penalty -0.20)
             if self.bi1_score_boost > 0 and bp == 0 \

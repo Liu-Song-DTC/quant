@@ -25,6 +25,23 @@ DOW=$(date +%u)
 echo "===== 1/4 数据刷新 + 新鲜度门禁 (失败即停) ====="
 bash data/refresh_all.sh
 
+# 1.5/4 熊市空仓免算前置闸 (2026-10-22)
+# 熊市双确认(trend<0 且 bear_risk) + 持仓为空 ⇒ build() 在调仓闸前早退,
+# desired_value={} 且无仓可卖 ⇒ 0 单**确定**。跳过 ~80min 信号生成/回测,
+# 写空 trade_orders.json 并追加 0 收益净值行。新鲜度门禁已在上一步跑过。
+# 退出码: 0=跳过 / 1=继续完整管线 / 其他=错误即停。
+echo "===== 1.5/4 熊市空仓免算前置闸 ====="
+set +e
+$PY strategy/live_no_trade_precheck.py --date "$TODAY" \
+  | tee "strategy/logs/precheck_${TODAY//-/}.log"
+_pre_rc=${PIPESTATUS[0]}
+set -e
+case $_pre_rc in
+  0) echo "熊市+空仓: 已跳过信号生成/回测, 空订单已写入"; exit 0 ;;
+  1) echo "前置闸不触发: 继续完整管线" ;;
+  *) echo "前置闸错误 rc=$_pre_rc"; exit $_pre_rc ;;
+esac
+
 echo "===== 2/4 更新 yaml todate → $TODAY ====="
 sed -i "s/^  todate: .*/  todate: '$TODAY'/" strategy/config/factor_config.yaml
 grep -q "^  todate: '$TODAY'" strategy/config/factor_config.yaml \
