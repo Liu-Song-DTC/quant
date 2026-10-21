@@ -118,13 +118,19 @@ def yearly_rets(nav):
     return out
 
 
+def nav_metrics(nav):
+    """从equity_curve直接算 — ⚠产物链缺陷(10-21发现): backtest_report.json.$tag
+    全是10-17旧值(bt_execution不写该文件), 不能用作判读。"""
+    r = nav.pct_change().dropna()
+    sharpe = r.mean() / r.std() * np.sqrt(242) if len(r) > 2 and r.std() > 0 else float('nan')
+    mdd = (nav / nav.cummax() - 1).min()
+    return sharpe, mdd
+
+
 def main():
     base = load_nav(BASE)
-    jb = load_json(BASE) or {}
-    mb = jb.get('metrics', {})
-    print(f"基线 {BASE}: NAV {base.iloc[-1]:,.0f}  "
-          f"sharpe {mb.get('sharpe', float('nan')):.3f}  "
-          f"mdd {mb.get('mdd', float('nan')):.2%}")
+    sb, mdb = nav_metrics(base)
+    print(f"基线 {BASE}: NAV {base.iloc[-1]:,.0f}  sharpe {sb:.3f}  mdd {mdb:.2%}")
     print(f"参考: 生产冻结态 {PROD_FROZEN:,.0f} | fix365臂(10-19) {FIX365:,.0f}\n")
 
     base_yr = yearly_rets(base)
@@ -135,15 +141,13 @@ def main():
         if not os.path.exists(f'{RVD}/equity_curve.csv.{t}'):
             continue
         nav = load_nav(t)
-        j = load_json(t) or {}
-        m = j.get('metrics', {})
+        st, mdt = nav_metrics(nav)
         lo, hi = block_bootstrap_ratio(base, nav)
         pk = load_picks(t) or set()
         jac = len(pk & base_picks) / max(1, len(pk | base_picks))
         d = nav.iloc[-1] - base.iloc[-1]
         print(f"── {t}: NAV {nav.iloc[-1]:,.0f}  Δ {d:+,.0f}  "
-              f"sharpe {m.get('sharpe', float('nan')):.3f}  "
-              f"mdd {m.get('mdd', float('nan')):.2%}  "
+              f"sharpe {st:.3f}  mdd {mdt:.2%}  "
               f"Jacc {jac:.2f}  CI比[{lo:.2f},{hi:.2f}]")
         # (a) 效应量
         ok_a = d >= ADOPT_DELTA
