@@ -286,8 +286,19 @@ class PortfolioConstructor:
         # →保护留存多→换手少; 放宽则反之. 9/21 census 在 mp6 下判 0.3 平坦区, mp4 后未重扫.
         self.min_rank_pct = float(os.environ.get(
             'QUANT_MIN_RANK_PCT', sel_config.get('min_rank_pct', 0.5)))
-        self.min_absolute_score = sel_config.get('min_absolute_score', 0.15)
+        # 臂钩子(2026-10-22): QUANT_MIN_SCORE 覆写分数地板, 默认空=逐位零改动.
+        # 胜率诊断: score<=0.45 的入选 tW 44.4% vs 其余 54.7% (winrate_diag2_1022).
+        self.min_absolute_score = float(os.environ.get(
+            'QUANT_MIN_SCORE', '') or sel_config.get('min_absolute_score', 0.15))
         self.min_confidence = sel_config.get('min_confidence', 0.80)
+        # 2026-10-22 选股胜率轴: 每调仓日最多 N 个**新入场** (0=不限). 只限新买入,
+        # 持仓保留/加仓不受影响. 剂量面 (同信号, portfolio-only 指纹豁免):
+        # 不限 984,331 / cap2 1,098,169 / cap1 720,299 ⇒ 内部峰在 2.
+        # 机制: 池内非持仓行序第3名是坏桶 (已实现 tW 34.7% vs 前2名 57.6%), 第2名反而
+        # 是最强短周期桶 (w5 53.7% vs R1 40.6%/R3 38.5%) ⇒ 保留 {R1,R2}, 砍 R3.
+        # QUANT_NEW_CAP 环境变量优先 (臂用), 空则读 yaml.
+        self.new_entry_cap = int(os.environ.get(
+            'QUANT_NEW_CAP', '') or sel_config.get('new_entries_cap', 0))
         # 2026-08-25: 股东减持期过滤(用户硬约束) - 减持期内股票不入选
         self.exclude_reduction = sel_config.get('exclude_reduction_periods', False)
         self.reduction_recent_days = sel_config.get('reduction_recent_days', 30)
@@ -1241,6 +1252,17 @@ class PortfolioConstructor:
             _bp_confirm = 0
             bp_c4_pen = 0.0
             if code not in current_positions:
+                # 臂钩子(2026-10-22): 选股胜率诊断的硬跳过 (仅新入场, 持仓不受影响).
+                # AH股 24笔 tW 20.8%/w20 20.8%/r20 -7.88% (6/6年劣, winrate_stab2.log).
+                if os.environ.get('QUANT_AH_SKIP') == '1' and \
+                        str(getattr(sig, 'industry', '') or '') == 'AH股':
+                    _rej['ah_skip'] = _rej.get('ah_skip', 0) + 1
+                    continue
+                # trend_type=2(上涨趋势) 119笔 tW 42.9% vs 其余 62.2% (覆盖52%, 高胜率低覆盖版).
+                if os.environ.get('QUANT_TT_SKIP') == '1' and \
+                        int(self._nan_safe(getattr(sig, 'trend_type', 0))) == 2:
+                    _rej['tt_skip'] = _rej.get('tt_skip', 0) + 1
+                    continue
                 div_type = getattr(sig, 'chan_divergence_type', '')
                 div_strength = getattr(sig, 'chan_divergence_strength', 0.0)
                 # H-bpC(2026-10-10): 纯买点确认数(4源, bp5排除—唯一负信息非零买点)
@@ -2024,6 +2046,11 @@ class PortfolioConstructor:
             self._dbg[key] = self._dbg.get(key, 0) + 1
         if _bp2_slot_n > 0:
             self._dbg['bp2_channel']['selected'] += _bp2_slot_n
+        # 新入场数上限 (2026-10-22 采纳 self.new_entry_cap; 0/缺省=不限).
+        # 胜率诊断: 当日第3个新入场(名次3) tW 33.3% (n=45) vs 前2名 57.2%;
+        # 5/6年同向. 只限新买入, 持仓保留/加仓不受影响.
+        _new_cap = self.new_entry_cap if self.new_entry_cap > 0 else 10 ** 9
+        _new_n = sum(1 for c in selected if not c.get('is_held'))
         for c in qualified:
             if len(selected) >= n_positions:
                 break
@@ -2031,11 +2058,15 @@ class PortfolioConstructor:
                 continue
             if c['code'] in _bp2_selected_codes:
                 continue
+            if (not c.get('is_held')) and _new_n >= _new_cap:
+                continue
             _ind = c.get('industry', '') or 'default'
             if self.max_per_industry and _ind_count.get(_ind, 0) >= self.max_per_industry:
                 continue
             _ind_count[_ind] = _ind_count.get(_ind, 0) + 1
             selected.append(c)
+            if not c.get('is_held'):
+                _new_n += 1
             # DEBUG: 统计买入结构
             bp = c.get('chan_buy_point', 0)
             key = f'buy_point_{_regime}_{bp}'
