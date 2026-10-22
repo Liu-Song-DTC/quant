@@ -2019,6 +2019,21 @@ class PortfolioConstructor:
         # 排序：按有效得分降序（已持仓有换手加分, 锁仓排最前）
         qualified.sort(key=lambda x: (-x['_locked'], -x['effective_score']))
 
+        # 臂钩子(2026-10-22): AH日型跳过 — 当日非持仓前2名含 industry=='AH股' 时,
+        # 跳过全部新入场 (持仓保留/加仓不受影响). 默认关闭, 仅 QUANT_AH_DAY_SKIP=1 启用.
+        # 依据: new2 实际入场落在「top2含AH」的32个调仓日共38笔, w5 28.9%/w20 34.2%/
+        #       r20 -5.17%, 其余165笔 50.3%/64.8%/+4.56%, 6/6年 w20 同向.
+        #       个股级 QUANT_AH_SKIP 臂失败(补位同坏, new2ah NAV -70k) ⇒ 信号是日型非个股.
+        _ah_day = False
+        if os.environ.get('QUANT_AH_DAY_SKIP') == '1':
+            _nh = [c for c in qualified if not c.get('is_held')]
+            _ah_day = any(str(c.get('industry', '') or '') == 'AH股' for c in _nh[:2])
+            if _ah_day:
+                self._dbg.setdefault('ah_day_skip', 0)
+                self._dbg['ah_day_skip'] += 1
+                print(f" [AH-Day] {date.date() if hasattr(date, 'date') else date} "
+                      f"top2含AH股 → 跳过当日新入场")
+
         # === 纯score排序选股 ===
         # E-G1: bp2专用通道保底槽 — 先于常规排序占位。score对bp2无区分度,
         # 内部按score排≈随机但稳定; 槽数受bp2_channel_slots与n_positions双限
@@ -2027,6 +2042,8 @@ class PortfolioConstructor:
         _bp2_reserved.sort(key=lambda x: -x['score'])
         _bp2_slot_n = min(len(_bp2_reserved), self.bp2_channel_slots, n_positions)
         if target_exposure < 0.50:
+            _bp2_slot_n = 0
+        if _ah_day:
             _bp2_slot_n = 0
         selected = list(_bp2_reserved[:_bp2_slot_n])
         _bp2_selected_codes = {c['code'] for c in selected}
@@ -2050,6 +2067,8 @@ class PortfolioConstructor:
         # 胜率诊断: 当日第3个新入场(名次3) tW 33.3% (n=45) vs 前2名 57.2%;
         # 5/6年同向. 只限新买入, 持仓保留/加仓不受影响.
         _new_cap = self.new_entry_cap if self.new_entry_cap > 0 else 10 ** 9
+        if _ah_day:
+            _new_cap = 0
         _new_n = sum(1 for c in selected if not c.get('is_held'))
         for c in qualified:
             if len(selected) >= n_positions:
