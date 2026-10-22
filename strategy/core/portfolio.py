@@ -19,6 +19,12 @@ from .pipeline_logger import plog
 from scipy.special import erfinv, erf
 import yaml
 import os
+import csv
+
+# 池级调试落盘 (2026-10-22, 只读研究): QUANT_DBG_POOL=<path.csv> 时在每次选股后
+# 导出全部 qualified 候选及其评分分量/特征, 用于离线重排反事实 (改 portfolio.py
+# 不触发信号指纹重生成). 默认空=零行为.
+_POOL_DBG_PATH = os.environ.get('QUANT_DBG_POOL', '')
 
 # F-G 流动性倾斜定注 (2026-09-23, 实验臂): 探针②给定score分位内amt<0.2仍优
 # (Q1 +8.58% vs +3.51%), ③weight与amt_ratio正交(+0.023) → 定注未利用流动性梯度.
@@ -1902,6 +1908,15 @@ class PortfolioConstructor:
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
             c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0) + c.get('ah_penalty', 0.0) + c.get('bp_c4_penalty', 0.0) + c.get('lowsh_penalty', 0.0)
+            if _POOL_DBG_PATH:
+                # 分量快照(只写内存, 不参与任何计算)
+                c['_dbg_score'] = {
+                    'rank_term': rank, 'multiplier': multiplier, 'additive': additive,
+                    'turnover': turnover, 'repl_buffer': repl_buffer, 'mom_adj': mom_adj,
+                    'is_held_scored': c['is_held'],
+                    # 打分时刻的值(多策略后处理 ms_mult 之前), 离线重排用这个
+                    'eff_scored': c['effective_score'],
+                }
 
         # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
@@ -2357,7 +2372,82 @@ class PortfolioConstructor:
             self._dbg.setdefault(f'score_dist_{_regime}', [])
             self._dbg[f'score_dist_{_regime}'].extend(scores)
 
+        if _POOL_DBG_PATH:
+            self._dump_pool_debug(date, _regime, qualified, desired_value,
+                                  target_exposure)
+
         return desired_value
+
+    def _dump_pool_debug(self, date, regime, qualified, desired_value, target_exposure):
+        """QUANT_DBG_POOL: 导出当日 qualified 池 + 评分分量 + 特征 (研究用, 只读)."""
+        fields = ['date', 'regime', 'code', 'industry', 'score', 'rank_pct',
+                  'eff_score', 'eff_scored', 'rank_term', 'multiplier', 'additive', 'turnover',
+                  'repl_buffer', 'mom_adj', 'no_chan_penalty', 'chase_penalty',
+                  'ml_gate_penalty', 'divnone_penalty', 'tt1chase_penalty',
+                  'ah_penalty', 'bp_c4_penalty', 'lowsh_penalty',
+                  'selected', 'weight', 'is_held', 'bp', 'sl', 'bp_confirm',
+                  'chan_sell', 'mom_60d', 'dist_ma60', 'volume_ratio', 'daily_ret',
+                  'trend_type', 'stroke_phase', 'exhaustion', 'div_type',
+                  'div_strength', 'gap_breakout', 'profit_declining', 'bom',
+                  'bi_buy_point', 'pivot_zg', 'price', 'n_target', 'target_exposure']
+        new = not os.path.exists(_POOL_DBG_PATH)
+        try:
+            with open(_POOL_DBG_PATH, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fields)
+                if new:
+                    w.writeheader()
+                for c in qualified:
+                    sig = c.get('sig')
+                    comp = c.get('_dbg_score', {})
+                    if sig is None:
+                        continue
+                    w.writerow({
+                        'date': date, 'regime': regime, 'code': c.get('code', ''),
+                        'industry': c.get('industry', ''),
+                        'score': c.get('score', 0.0), 'rank_pct': c.get('rank_pct', 0.0),
+                        'eff_score': c.get('effective_score', np.nan),
+                        'eff_scored': comp.get('eff_scored', np.nan),
+                        'rank_term': comp.get('rank_term', np.nan),
+                        'multiplier': comp.get('multiplier', np.nan),
+                        'additive': comp.get('additive', np.nan),
+                        'turnover': comp.get('turnover', np.nan),
+                        'repl_buffer': comp.get('repl_buffer', np.nan),
+                        'mom_adj': comp.get('mom_adj', np.nan),
+                        'no_chan_penalty': c.get('no_chan_penalty', 0.0),
+                        'chase_penalty': c.get('chase_penalty', 0.0),
+                        'ml_gate_penalty': c.get('ml_gate_penalty', 0.0),
+                        'divnone_penalty': c.get('divnone_penalty', 0.0),
+                        'tt1chase_penalty': c.get('tt1chase_penalty', 0.0),
+                        'ah_penalty': c.get('ah_penalty', 0.0),
+                        'bp_c4_penalty': c.get('bp_c4_penalty', 0.0),
+                        'lowsh_penalty': c.get('lowsh_penalty', 0.0),
+                        'selected': int(c.get('code', '') in desired_value),
+                        'weight': c.get('weight', 0.0),
+                        'is_held': int(comp.get('is_held_scored', c.get('is_held', False))),
+                        'bp': c.get('chan_buy_point', 0),
+                        'sl': c.get('signal_level', 0),
+                        'bp_confirm': c.get('_bp_confirm', 0),
+                        'chan_sell': c.get('chan_sell_point', 0),
+                        'mom_60d': self._nan_safe(getattr(sig, 'mom_60d', 0.0)),
+                        'dist_ma60': self._nan_safe(getattr(sig, 'dist_ma60', 0.0)),
+                        'volume_ratio': self._nan_safe(getattr(sig, 'volume_ratio', 0.0)),
+                        'daily_ret': self._nan_safe(getattr(sig, 'daily_return', 0.0)),
+                        'trend_type': int(self._nan_safe(getattr(sig, 'trend_type', 0))),
+                        'stroke_phase': self._nan_safe(getattr(sig, 'stroke_phase', 0.0)),
+                        'exhaustion': self._nan_safe(getattr(sig, 'exhaustion_risk', 0.0)),
+                        'div_type': str(getattr(sig, 'chan_divergence_type', '') or ''),
+                        'div_strength': self._nan_safe(getattr(sig, 'chan_divergence_strength', 0.0)),
+                        'gap_breakout': self._nan_safe(getattr(sig, 'gap_breakout_confirm', 0.0)),
+                        'profit_declining': int(bool(getattr(sig, 'profit_declining', False))),
+                        'bom': self._nan_safe(getattr(sig, 'bom_quality_score', 0.3)),
+                        'bi_buy_point': int(self._nan_safe(getattr(sig, 'bi_buy_point', 0))),
+                        'pivot_zg': self._nan_safe(getattr(sig, 'chan_pivot_zg', np.nan), np.nan),
+                        'price': c.get('price', 0.0),
+                        'n_target': len(desired_value),
+                        'target_exposure': round(float(target_exposure), 4),
+                    })
+        except Exception as e:
+            print(f' [dbg_pool] 写失败: {e}')
 
     def build(
         self,
