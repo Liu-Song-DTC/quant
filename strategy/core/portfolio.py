@@ -37,15 +37,17 @@ _LIQ_DATA_DIR = os.environ.get('QUANT_LIQ_DATA_DIR',
                                '/mnt/d/quant/data/stock_data/backtrader_data')
 # 胜率日型臂 (2026-10-22, 默认关闭): 低换手/ATR压缩日型跳过的特征源.
 # 惰性读 qfq (与 _LIQ_AMT_CACHE 同模式): turnover_rate 当日值 +
-# atr_z20 = ATR14(Wilder)/close 对自身20日的z. 查值取 <=date 最后一行=严格因果;
-# 模块级缓存每码只读一次. 仅臂钩子调用, 生产默认零行为.
-_QFEAT_CACHE = {}  # code -> (dates np.datetime64[], turnover float[], atr_z20 float[]) / None
+# atr_z20 = ATR14(Wilder)/close 对自身20日的z; mf5 = 资金流代理
+# (成交额加权(收盘位置−0.5)的5日累计, min_periods=3, 口径与 altfeat_1022 探针
+# 逐字一致). 查值取 <=date 最后一行=严格因果; 模块级缓存每码只读一次.
+# 仅臂钩子调用, 生产默认零行为.
+_QFEAT_CACHE = {}  # code -> (dates, turnover, atr_z20, mf5) / None
 _QFEAT_DATA_DIR = os.environ.get('QUANT_QFEAT_DATA_DIR',
                                  '/mnt/d/quant/data/stock_data/backtrader_data')
 
 
 def _qfeat_lookup(code, date, feat):
-    """qfq 日频特征查值: feat='turnover_rate'|'atr_z20'; 无数据/越界/NaN → None."""
+    """qfq 日频特征查值: feat='turnover_rate'|'atr_z20'|'mf5'; 无数据/越界/NaN → None."""
     c = _QFEAT_CACHE.get(code, False)
     if c is False:
         f = os.path.join(_QFEAT_DATA_DIR, f'{code}_qfq.csv')
@@ -53,7 +55,7 @@ def _qfeat_lookup(code, date, feat):
             _QFEAT_CACHE[code] = None
             return None
         d = pd.read_csv(f, usecols=['datetime', 'high', 'low', 'close',
-                                    'turnover_rate'])
+                                    'turnover_rate', 'amount'])
         d['datetime'] = pd.to_datetime(d['datetime'])
         d = d.sort_values('datetime').reset_index(drop=True)
         h = d['high'].values.astype(float)
@@ -72,17 +74,27 @@ def _qfeat_lookup(code, date, feat):
         m = ratio.rolling(20, min_periods=10).mean()
         sd = ratio.rolling(20, min_periods=10).std()
         az = ((ratio - m) / (sd + 1e-12)).values
+        amt = pd.to_numeric(d['amount'], errors='coerce').fillna(0.0).values
+        cp = (cl - l) / np.maximum(h - l, 1e-12)
+        s5 = pd.Series((cp - 0.5) * amt).rolling(5, min_periods=3).sum()
+        a5 = pd.Series(amt).rolling(5, min_periods=3).sum()
+        mf5 = (s5 / (a5 + 1e-12)).values
         c = (d['datetime'].values,
              pd.to_numeric(d['turnover_rate'], errors='coerce').values.astype(float),
-             az)
+             az, mf5)
         _QFEAT_CACHE[code] = c
     if c is None:
         return None
-    dts, trs, azs = c
+    dts, trs, azs, m5s = c
     j = np.searchsorted(dts, np.datetime64(pd.Timestamp(date)), side='right') - 1
     if j < 0:
         return None
-    v = float(trs[j]) if feat == 'turnover_rate' else float(azs[j])
+    if feat == 'turnover_rate':
+        v = float(trs[j])
+    elif feat == 'mf5':
+        v = float(m5s[j])
+    else:
+        v = float(azs[j])
     return None if np.isnan(v) else v
 
 
@@ -2165,6 +2177,39 @@ class PortfolioConstructor:
                           f"换手max {max(_trs):.2f}% 且 atr_z20均值 {np.mean(_azs):+.2f} "
                           f"→ 死水日, 跳过当日新入场")
 
+        # 不追涨臂钩子(2026-10-22夜, 默认关闭, env门控): QUANT_MF_SKIP=1 —
+        # 个股级 mf5(资金流代理=成交额加权(收盘位置−0.5)5日累计) > QUANT_MF_MAX(默认0)
+        # 的非持仓候选不入新场, 座位随之收缩不深补 (与日型跳过的砍全日不同,
+        # 这是个股级"不追放量冲高腿"). 持仓保留/加仓不受影响; bp2 保留通道不受影响.
+        # 依据 (altfeat_1022, nr≤2池304行/155日, 日簇bootstrap 5000):
+        #   mf5>0 w5 37.2% vs ≤0 52.9% (Δ−20.6pp q=0.000), nr内z稳健 −19.6,
+        #   w20 −16.9 同向, 5/6年同向(2021平), 与 score 正交 (spearman +0.044),
+        #   与 ret5 仅 +0.443 = 非纯动量复读; 同日配对(nr1+ vs nr2−) 21日差 +28.6pp.
+        #   锚点入口 46/161 (28.6%) 为 mf5>0, 其 w5 39.1% vs 其余 53.9%.
+        # ⚠ 臂已否决 (§15, 2026-10-22夜): NAV 1,207,177 (−114.5k), tW 持平, w20 −1.1pp,
+        #   笔/年 22.1<25, MDD −24.7% — 率升量跌第4例 (右尾+95pp被砍). 钩子保留复现用.
+        #
+        # §15b 条件补位臂 (同夜预注册, 默认关闭): QUANT_MF_SWAP=1 — "前排要安静, 深处要放量".
+        #   深池(nr≥3)方向反转: mf5+ w5 52.2/w20 50.5/r20 +1.61% vs mf5− 46.2/42.7/+0.21%
+        #   (Δw20 +7.8pp p=.021, 5/6年); 边际换位 三指标全面占优 vs 砍腿. 前cap名非持仓
+        #   mf5>thr 不入(座位不收缩), 名次>cap 的深候选仅 mf5>thr 可补位 ⇒ 笔数不降.
+        #   与 QUANT_MF_SKIP 互斥 (SWAP 优先). 持仓/bp2 不受影响.
+        _mf_skip_codes = set()
+        _mf_vals = {}
+        _mf_swap_on = os.environ.get('QUANT_MF_SWAP') == '1'
+        _mf_thr = float(os.environ.get('QUANT_MF_MAX', '0.0') or 0.0)
+        if _mf_swap_on or os.environ.get('QUANT_MF_SKIP') == '1':
+            for c in qualified:
+                if c.get('is_held'):
+                    continue
+                v = _qfeat_lookup(c['code'], date, 'mf5')
+                if v is not None:
+                    _mf_vals[c['code']] = v
+                    if not _mf_swap_on and v > _mf_thr:
+                        _mf_skip_codes.add(c['code'])
+            if _mf_skip_codes:
+                self._dbg['mf_skip_marked'] = self._dbg.get('mf_skip_marked', 0) + len(_mf_skip_codes)
+
         # === 纯score排序选股 ===
         # E-G1: bp2专用通道保底槽 — 先于常规排序占位。score对bp2无区分度,
         # 内部按score排≈随机但稳定; 槽数受bp2_channel_slots与n_positions双限
@@ -2201,19 +2246,49 @@ class PortfolioConstructor:
         if _ah_day or _temom_day or _lowto_day or _atrz_day or _deadw_day:
             _new_cap = 0
         _new_n = sum(1 for c in selected if not c.get('is_held'))
+        _mf_orig_cap = _new_cap
+        _nh_seen = 0
         for c in qualified:
             if len(selected) >= n_positions:
                 break
+            if not c.get('is_held'):
+                _nh_seen += 1
             if c in selected:
                 continue
             if c['code'] in _bp2_selected_codes:
                 continue
+            if _mf_swap_on and not c.get('is_held'):
+                # §15b 前排要安静, 深处要放量 (名次按非持仓候选顺序, 与池nr同口径)
+                _v = _mf_vals.get(c['code'])
+                if _nh_seen <= _mf_orig_cap:
+                    if _v is not None and _v > _mf_thr:
+                        self._dbg['mf_swap_front_skip'] = self._dbg.get('mf_swap_front_skip', 0) + 1
+                        print(f" [MF-Swap] {date.date() if hasattr(date, 'date') else date} "
+                              f"{c['code']} 前排mf5={_v:+.3f}>{_mf_thr:+.2f} 不追")
+                        continue
+                else:
+                    if not (_v is not None and _v > _mf_thr):
+                        continue
+                    if _new_n >= _mf_orig_cap:
+                        continue
+                    self._dbg['mf_swap_deep_add'] = self._dbg.get('mf_swap_deep_add', 0) + 1
+                    print(f" [MF-Swap] {date.date() if hasattr(date, 'date') else date} "
+                          f"{c['code']} 深处mf5={_v:+.3f} 放量补位 (第{_nh_seen}名)")
             if (not c.get('is_held')) and _new_n >= _new_cap:
                 continue
             _ind = c.get('industry', '') or 'default'
             if self.max_per_industry and _ind_count.get(_ind, 0) >= self.max_per_industry:
                 continue
             _ind_count[_ind] = _ind_count.get(_ind, 0) + 1
+            # 不追涨 (QUANT_MF_SKIP): 此候选已过全部闸门本会入选, 但 mf5>thr →
+            # 让出座位且 cap 同步收缩 (走到这里必有 _new_n < _new_cap), 不深补.
+            if (not c.get('is_held')) and c['code'] in _mf_skip_codes:
+                _new_cap -= 1
+                self._dbg['mf_skip_seat'] = self._dbg.get('mf_skip_seat', 0) + 1
+                print(f" [MF-Skip] {date.date() if hasattr(date, 'date') else date} "
+                      f"{c['code']} mf5>{_mf_thr:+.2f} → 不追涨, 座位收缩 "
+                      f"(cap→{_new_cap})")
+                continue
             selected.append(c)
             if not c.get('is_held'):
                 _new_n += 1
