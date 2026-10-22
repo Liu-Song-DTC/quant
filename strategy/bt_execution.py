@@ -2072,9 +2072,19 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     gap_penalty_enabled = cm_config.get('gap_fill_penalty_enabled', True)
     # 分段建仓(实验, 2026-10-10): 新入场拆首段开盘成交+第二段限价单(坑底加仓),
     # 未成交余量在下个调仓日开盘回补(现金自动循环). 默认关=生产锚点不变.
-    tranche_enabled = config.get('backtest', {}).get('tranche_enabled', False)
-    tranche_ratio = float(config.get('backtest', {}).get('tranche_ratio', 0.5))
-    tranche_discount = float(config.get('backtest', {}).get('tranche_discount', 0.05))
+    # 执行层env钩子(2026-10-22): 避免改 yaml backtest 节(会进信号指纹 ⇒ 每臂
+    # 80min 重生成). env 为空 ⇒ 与 yaml 默认逐位一致 (默认关=生产锚点不变).
+    #   QUANT_TRANCHE=1/0            开/关分段建仓
+    #   QUANT_TRANCHE_RATIO=0.5      首段比例
+    #   QUANT_TRANCHE_DISCOUNT=0.05  第二段限价折价
+    tranche_enabled = bool(config.get('backtest', {}).get('tranche_enabled', False))
+    _tr_env = os.environ.get('QUANT_TRANCHE')
+    if _tr_env not in (None, ''):
+        tranche_enabled = _tr_env not in ('0', 'false', 'False')
+    tranche_ratio = float(os.environ.get('QUANT_TRANCHE_RATIO', '')
+                          or config.get('backtest', {}).get('tranche_ratio', 0.5))
+    tranche_discount = float(os.environ.get('QUANT_TRANCHE_DISCOUNT', '')
+                             or config.get('backtest', {}).get('tranche_discount', 0.05))
 
     def _impact(adv, size, price):
         if not impact_enabled or adv <= 0:
