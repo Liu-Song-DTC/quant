@@ -72,6 +72,14 @@ if extra:
           f"{' …' if len(extra) > 8 else ''}")
 print(f"  符号集核对: {len(t)} 只, 与生产完全一致")
 EOF
+# ── 3b/9 退化价格守卫 (#356, 2026-10-23) ──────────────────────────────────────
+# 换名前内容级 fail-closed: 负价/零价/NaN/高低倒挂/负量额/重复日期/丢行。
+# 零容忍依据: 10-23 普查 5380 文件全零 (表驱动乘性管线不可能从正 raw 产出非正价)
+# ⇒ 任何命中 = 上游源损坏/管线 bug, 该拒绝换名而不是静默进生产。
+# 行数单调性: raw 只 append ⇒ 产物行数只增不减 (沿用分支逐字节相等) — 丢行=改写历史。
+echo "=== 3b/9 退化价格守卫 (负价/零价/NaN/倒挂/负量额/重复日期/丢行) ==="
+$PY -u data/guard_degenerate_prices.py "$BT_NEW" --prod "$SD/backtrader_data" \
+    2>&1 | tee -a "$REFRESH_LOG" | tail -20
 # 原子换名: mv 是原子的 ⇒ 任何时刻 backtrader_data 都指向完整目录。
 # 快照(datastate.py)是**硬链接**, 换名不影响其 inode ⇒ 历史快照不被污染。
 rm -rf "$BT_OLD"
