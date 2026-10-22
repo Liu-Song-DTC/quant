@@ -600,6 +600,13 @@ class PortfolioConstructor:
         self.current_ranking = {}
         self.current_n_positions = 0
         self.current_exposure = 1.0
+        # 架构臂(2026-10-22): 敞口平滑系数 bracket (默认 w=0.7 = 生产逐位零改动).
+        # E_t = (1-w)*E_{t-1} + w*target. 生产为 0.3*prev+0.7*target ⇒ w=0.7;
+        # w=1 ⇒ 不平滑 (E_t=target); w=0 ⇒ 冻结在上次敞口.
+        # 来源: f0e5692 (2026-05-02 大重构) 把 0.5→0.3, 注释"更快响应";
+        # 从未在当前锚/当前信号集上 bracket — 本次首次系统性扫面.
+        self._exp_smooth = float(np.clip(
+            float(os.environ.get('QUANT_EXP_SMOOTH', '') or 0.7), 0.0, 1.0))
         self._stop_loss_triggered = False
         self._stop_loss_recovery_days = 0
         self._stop_loss_trigger_date = None  # 熔断触发日(自然日), A批修复: 恢复期按自然日计时
@@ -802,6 +809,16 @@ class PortfolioConstructor:
             "prev_equity": self._prev_equity,
             # 波动率控制
             "daily_returns": [x for x in self._daily_returns if not (x != x)],
+            # 入场日期/min_hold/rank_decay (2026-10-22 补): 旧版漏掉, 实盘恢复后
+            # _position_entry_dates 为空 ⇒ min_hold 锁与 rank decay 与回测不同构.
+            "position_entry_dates": {k: v.isoformat() if hasattr(v, 'isoformat') else str(v)
+                                     for k, v in self._position_entry_dates.items()},
+            "selection_history": dict(self._selection_history),
+            # V反再入场状态 (影响执行层挂单豁免 + _v_recovery_active 路径)
+            "v_recovery_active": bool(self._v_recovery_active),
+            "v_nonbear_streak": int(self._v_nonbear_streak),
+            "v_recovery_dates": sorted(d.isoformat() if hasattr(d, 'isoformat') else str(d)
+                                       for d in self._v_recovery_dates),
         }
         with open(filepath, 'w', encoding='utf-8') as f:
             _json.dump(state, f, ensure_ascii=False, indent=2, default=_serialize)
@@ -863,6 +880,24 @@ class PortfolioConstructor:
         if dr:
             from collections import deque
             self._daily_returns = deque(dr, maxlen=self.vol_lookback * 2)
+
+        # ── 2026-10-22 补: 入场日期/选股历史/V反状态 (旧版未持久化) ──
+        self._position_entry_dates = {}
+        for code, ds in state.get("position_entry_dates", {}).items():
+            try:
+                self._position_entry_dates[code] = _date.fromisoformat(ds)
+            except (ValueError, TypeError):
+                pass
+        self._selection_history = {k: int(v)
+                                   for k, v in state.get("selection_history", {}).items()}
+        self._v_recovery_active = bool(state.get("v_recovery_active", False))
+        self._v_nonbear_streak = int(state.get("v_nonbear_streak", 0))
+        self._v_recovery_dates = set()
+        for ds in state.get("v_recovery_dates", []):
+            try:
+                self._v_recovery_dates.add(_date.fromisoformat(ds))
+            except (ValueError, TypeError):
+                pass
 
     def set_fundamental_provider(self, fd):
         """注入基本面数据提供者 (实验#27 硬伤过滤用). 未注入时过滤自动不生效."""
@@ -1649,7 +1684,13 @@ class PortfolioConstructor:
             self._exp_tel_row['eq'] = round(float(total_equity), 2)
 
         # 滞后平滑: 避免仓位突变（降低平滑系数，更快响应）
-        self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure
+        # 架构臂(2026-10-22): w 由 QUANT_EXP_SMOOTH 覆盖 (默认0.7=生产逐位零改动).
+        _es_w = self._exp_smooth
+        if _es_w == 0.7:
+            # 生产原式逐字保留 ⇒ 浮点结果逐位一致 (identity 臂必须复现基线)
+            self.current_exposure = 0.3 * self.current_exposure + 0.7 * target_exposure
+        else:
+            self.current_exposure = (1.0 - _es_w) * self.current_exposure + _es_w * target_exposure
 
         # === 选股: 绝对质量门槛 + 截面排名 ===
         # 两步过滤：1) 绝对分数门槛 2) 截面排名门槛
@@ -2449,6 +2490,44 @@ class PortfolioConstructor:
         except Exception as e:
             print(f' [dbg_pool] 写失败: {e}')
 
+    def _reset_live_state(self):
+        """架构诊断臂(2026-10-22, QUANT_LIVE_STATELESS=1): 模拟实盘每日新建实例.
+
+        generate_trade_orders.py 每次进程都 `portfolio = PortfolioConstructor(...)`,
+        且从不调用 save/restore_tracking_state (类里两个方法存在但全仓库无调用方;
+        只有旧 live 路径 export_selection.py 调). 因此实盘中:
+          current_exposure 每日回 1.0 / peak_equity 每日重置 / _daily_returns 空 /
+          _prev_equity None / 止损/CLB 标志归零 / 入场日期等追踪全空.
+        本方法把这些属性还原为 __init__ 初值; **不重置 _last_rebalance_date**
+        (实盘由 live_rebuild_state.json 持久化, 调仓节奏是唯一被刻意保留的状态).
+        默认不调用 ⇒ 生产逐位零改动.
+        """
+        self.current_exposure = 1.0
+        self.peak_equity = None
+        self._stop_loss_triggered = False
+        self._stop_loss_recovery_days = 0
+        self._stop_loss_trigger_date = None
+        self._hds_triggered = False
+        self._hds_close_day = 0
+        self._hds_peak_ref = None
+        self._clb_losses = 0
+        self._clb_wins = 0
+        self._clb_triggered = False
+        self._prev_equity = None
+        if hasattr(self, '_daily_returns'):
+            self._daily_returns.clear()
+        for _name in ('_entry_dates', '_peak_prices', '_entry_reasons', '_bp2_entry',
+                      '_mr_exit_cooldown', '_entry_reason_lost_count',
+                      '_post_sell_tracking', '_sell_delay_deadline',
+                      '_position_entry_dates', '_selection_history'):
+            _d = getattr(self, _name, None)
+            if hasattr(_d, 'clear'):
+                _d.clear()
+        self._v_recovery_active = False
+        self._v_nonbear_streak = 0
+        if hasattr(self, '_v_recovery_dates'):
+            self._v_recovery_dates.clear()
+
     def build(
         self,
         date,
@@ -2474,6 +2553,12 @@ class PortfolioConstructor:
 
         关键设计: 非再平衡日只做个股成本止损, 不做信号止损
         """
+        if os.environ.get('QUANT_LIVE_STATELESS') == '1':
+            self._reset_live_state()
+        elif os.environ.get('QUANT_LIVE_SMOOTH_RESET') == '1':
+            # 诊断臂: 只复现实盘的平滑重置 (每进程 current_exposure 从1.0起步),
+            # 其余状态控制 (vol/止损/CLB/入场日期) 保持回测连续语义.
+            self.current_exposure = 1.0
         stop_loss_sells = {}
         _exit_tags = {}  # 追踪退出原因 (code -> reason)
         profit_reduce = {}  # 止盈减仓 (code -> target_pct_of_current)

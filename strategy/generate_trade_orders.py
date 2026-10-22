@@ -37,6 +37,8 @@ from core.market_regime_detector import MarketRegimeDetector
 from core.repo_sweep import compute_repo_sweep, sweep_guidance
 from core.cb_sleeve import (compute_cb_sleeve, load_snapshot as cb_load_snapshot,
                             load_state as cb_load_state, save_state as cb_save_state)
+from core.live_account import (load_account, save_account, mark_to_market,
+                               last_nav, record_nav, apply_orders_to_cash)
 
 config = load_config()
 
@@ -55,6 +57,8 @@ SIGNALS_CSV = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'backtes
 POSITIONS_FILE = os.path.join(_PROJECT_DIR, 'current_positions.json')
 ORDERS_FILE = os.path.join(_PROJECT_DIR, 'trade_orders.json')
 REBUILD_STATE_FILE = os.path.join(_PROJECT_DIR, 'live_rebuild_state.json')
+# 跨日组合状态(平滑/波动率降仓/组合止损/连亏熔断/入场日期) + 账户台账(现金/净值史)
+PORTFOLIO_STATE_FILE = os.path.join(_PROJECT_DIR, 'live_portfolio_state.json')
 
 # 实盘调仓周期 = 回测同一旋钮(单一真源, 禁止两处各写一个数).
 # 2026-10-14: 实盘此前硬编码 rebalance_interval=1(每日全重建), 而回测生产=10日历日.
@@ -680,6 +684,8 @@ def main():
                         help='跳过数据新鲜度门禁 (仅调试用, 实盘勿用)')
     parser.add_argument('--force-reset', action='store_true',
                         help='确认持仓全清重选 (仅当核对后确认账户无真实持仓时使用)')
+    parser.add_argument('--force-rerun', action='store_true',
+                        help='同日重跑: 允许覆盖当日台账记录 (默认拒绝, 防止状态/现金二次记账)')
     args = parser.parse_args()
 
     # ── 数据新鲜度门禁 (fail-closed) ──────────────────────────
@@ -832,6 +838,20 @@ def main():
     # 否则 _last_rebalance_date=None 会让 build() 每天都走完整重建(即 interval=1 行为).
     _rebuild_state = load_rebuild_state()
     portfolio = PortfolioConstructor(rebalance_interval=REBALANCE_INTERVAL)
+    # 跨日组合状态 (2026-10-22 架构修复): 旧路径每次进程只注入 _last_rebalance_date,
+    # 其余状态全部归零 ⇒ 实盘丢失 ①敞口平滑 current_exposure ②波动率降仓(20日收益窗)
+    # ③组合止损(peak/drawdown) ④连亏熔断 ⑤入场日期/min_hold. 回测实例跨全史存活,
+    # 状态连续. 这里用类里已有但此前无人调用的 save/restore_tracking_state 落地.
+    _state_restored = False
+    if os.path.exists(PORTFOLIO_STATE_FILE):
+        portfolio.restore_tracking_state(PORTFOLIO_STATE_FILE)
+        _state_restored = True
+        print(f"组合状态: 已恢复 (E={portfolio.current_exposure:.3f}, "
+              f"peak={portfolio.peak_equity}, stop={int(portfolio._stop_loss_triggered)}, "
+              f"clb={int(portfolio._clb_triggered)}, "
+              f"收益窗={len(portfolio._daily_returns)}/{portfolio.vol_lookback})")
+    else:
+        print("组合状态: 无记录 → 初始状态起步 (与回测首日语义一致)")
     if _rebuild_state is not None:
         portfolio._last_rebalance_date = _rebuild_state
         print(f"调仓状态: 上次完整重建 {_rebuild_state} (间隔={REBALANCE_INTERVAL}日历日)")
@@ -851,28 +871,79 @@ def main():
 
     # (科创板权限已确认, 9/14的幻影持仓清理撤销 — 688/689持仓按真实持仓对待)
 
-    # 账户资金=总可部署资金; 持仓市值含浮盈可合理略超名义资金,
-    # 只有显著超出(>1.5倍)才判脏数据重置 — 修复(2026-08-30 review P0):
-    # 旧阈值1.0倍导致8/28实盘误触发(305,420>300,000), 清空真实持仓重选
+    # ── 账户台账 (2026-10-22 架构修复): nav = 现金 + Σshares×收盘, 实盘复利 ──
+    # 旧口径 total_equity ≡ 静态 --cash, 持仓 amount 是下单时市值且从不更新 ⇒
+    # 浮盈浮亏不进净值、已实现盈亏永久丢失、账户增长后系统性低配. 详见 core/live_account.py.
+    # 历史回放写保护 (2026-10-22): 台账/持仓是真实账户状态, 只有"目标日=信号最新日"
+    # 才是实盘决策. 历史 --date 写文件会把历史订单记进今天的账户, 必须显式 --dry-run.
+    _sig_latest = str(signal_store.max_date() or '')[:10]
+    if not args.dry_run and _sig_latest != str(target_date)[:10]:
+        print(f"\n[拒绝写入] 目标日 {target_date} ≠ 信号最新日 {_sig_latest}")
+        print(f"  历史回放会污染 live_account.json / current_positions.json; 请加 --dry-run.")
+        sys.exit(1)
+
     account_capital = args.cash
-    _pos_sum = sum(info['amount'] for info in prev_positions.values())
-    if _pos_sum > account_capital * 1.5:
-        # 0h (2026-09-17): 自动全清重选是危险动作 — 持仓文件与真实账户漂移时,
-        # "全清"不发卖出(文件内持仓被清空)却按满仓重买 → 与真实持仓叠加重复买入。
-        # 实锤: 晨流自动写入6只新开仓 → 文件21只/993,544越过阈值, 若照旧自动重置,
-        # 今晚出单=按50万重买25只。改为显式确认。
+    account = load_account(account_capital, prev_positions)
+
+    # amount 统一为"最新收盘市值" (旧值=下单时市值): build_orders 的 1% 调整阈值、
+    # 卖出回款估算、监控盈亏都读 amount — 陈旧值会让"该调不调/不该调乱调".
+    for _code, _info in prev_positions.items():
+        _sh = float(_info.get('shares', 0) or 0)
+        if _sh <= 0:
+            _ep = float(_info.get('entry_price', 0) or 0)
+            if _ep > 0:
+                _sh = float(_info.get('amount', 0) or 0) / _ep
+                _info['shares'] = _sh
+        _px = float(prices.get(_code, 0) or _info.get('entry_price', 0) or 0)
+        if _sh > 0 and _px > 0:
+            _info['amount'] = int(round(_sh * _px))
+
+    _pos_value, _n_missing = mark_to_market(prev_positions, prices)
+    _nav = float(account['cash']) + _pos_value
+    _last_nav = last_nav(account)
+    _last_date = account.get('last_date')
+    _same_day = bool(_last_date) and str(_last_date)[:10] == str(target_date)[:10]
+    print(f"账户台账: 现金{account['cash']:,.0f} + 持仓市值{_pos_value:,.0f} = NAV {_nav:,.0f}"
+          + (f" | 上期NAV {_last_nav:,.0f} ({_last_date})" if _last_nav else " | 首日"))
+    if _n_missing:
+        print(f"  [WARN] {_n_missing} 只持仓无当日行情, 按 entry_price 估值")
+    if _same_day and not args.dry_run and not args.force_rerun:
+        print(f"\n[拒绝出单] 台账已有 {target_date} 记录: 同日重跑会二次记账(收益窗/现金/状态).")
+        print(f"  若首次运行在中途失败, 请先核对/还原 live_account.json、"
+              f"{os.path.basename(PORTFOLIO_STATE_FILE)}、current_positions.json; "
+              f"确认无误后加 --force-rerun (仅重生成订单, 不再改台账/状态).")
+        sys.exit(1)
+
+    # 脏数据守卫(2026-08-30 P0 + 2026-10-22 台账口径): 持仓市值 > 1.5×上期NAV
+    # 只可能是持仓文件漂移/大额入金. 自动全清是危险动作(0h 2026-09-17), 必须显式确认.
+    _ref_nav = _last_nav if _last_nav else float(account_capital)
+    if _pos_value > _ref_nav * 1.5:
         if not args.force_reset:
-            print(f"\n[拒绝出单] 持仓成本合计{_pos_sum:,.0f} > 1.5×账户资金{account_capital:,.0f},"
+            print(f"\n[拒绝出单] 持仓市值{_pos_value:,.0f} > 1.5×上期NAV{_ref_nav:,.0f},"
                   f" 持仓文件与真实账户可能已漂移, 自动全清重选会与真实持仓叠加重复买入。")
             print(f"  请核对真实持仓后二选一: 手动修正 {POSITIONS_FILE}; "
-                  f"或确认账户无真实持仓后加 --force-reset 全清重选。")
+                  f"或确认账户无真实持仓/已入金后加 --force-reset 全清重选。")
             sys.exit(1)
-        print(f"  [WARN] 持仓市值{_pos_sum:,.0f} > 1.5×账户资金{account_capital:,.0f}, "
-              f"--force-reset 已确认: 重置为无持仓按满仓资金{account_capital:,.0f}重新选股")
+        print(f"  [WARN] 持仓市值{_pos_value:,.0f} > 1.5×上期NAV{_ref_nav:,.0f}, "
+              f"--force-reset 已确认: 清空持仓, 现金重置为初始资金{account_capital:,.0f}")
         prev_positions = {}
-        _pos_sum = 0.0
+        _pos_value = 0.0
+        _nav = float(account_capital)
+        account['cash'] = float(account_capital)
+        account['initial_capital'] = float(account_capital)
+
+    # 日收益喂给波动率降仓窗口 (回测 bt_execution:2413 每日 update_returns 的同构).
+    if _last_nav and _last_nav > 0 and not _same_day:
+        _dret = _nav / _last_nav - 1.0
+        portfolio.update_returns(_dret)
+        print(f"日收益: {_dret:+.4%} | 波动率窗口 {len(portfolio._daily_returns)}/"
+              f"{portfolio.vol_lookback}")
+    elif _same_day:
+        print(f"  [WARN] 同日重跑({target_date}): 不重复计入日收益; "
+              f"台账/状态写入将被跳过")
+
     current_positions = {
-        code: info['amount'] for code, info in prev_positions.items()
+        code: float(info['amount']) for code, info in prev_positions.items()
     }
 
     # 构建成本信息
@@ -880,9 +951,9 @@ def main():
     for code, info in prev_positions.items():
         cost[code] = [info['entry_price'], info['entry_price']]  # [avg_cost, current_cost]
 
-    # 排仓尺度=账户资金(非 现金+持仓 双重放大); 可用现金=账户-已占用
-    total_equity = account_capital
-    cash = max(account_capital - _pos_sum, 0)
+    # 排仓尺度=账户NAV(与回测同构); 可用现金=台账现金
+    total_equity = _nav
+    cash = max(float(account['cash']), 0.0)
 
     adjusted = portfolio.build(
         date=target_date,
@@ -921,7 +992,15 @@ def main():
         print(f"  [WARN] 持仓基本面数据陈旧, ST状态无法验证: {held_stale}")
 
     # ── 6. 生成订单 ──────────────────────────────────────────
-    # 选股明细映射 (code → sel): 订单附评分/组合权重
+    # 0.98 目标敞口闸 (2026-10-22, 与回测 bt_execution.py:2459-2469 同构):
+    # 回测把**目标持仓总市值**压到 98%×(现金+持仓市值), 实盘旧路径只在买单层
+    # 用 100% 可用现金兜底 ⇒ 满仓时实盘比回测多 2pp 敞口且无视目标总市值.
+    _target_total = float(sum(v for v in adjusted.values() if v > 0))
+    if _target_total > _nav * 0.98:
+        _tscale = (_nav * 0.98) / max(_target_total, 1.0)
+        adjusted = {c: v * _tscale for c, v in adjusted.items()}
+        print(f"  [0.98闸] 目标市值{_target_total:,.0f} > 98%×NAV{_nav*0.98:,.0f}"
+              f" → 等比缩放 {_tscale:.4f}")
     selection_map = {}
     if hasattr(portfolio, 'last_selection') and portfolio.last_selection:
         for sel in portfolio.last_selection:
@@ -953,11 +1032,11 @@ def main():
                 _buy_total += _delta
             else:
                 _sell_proceeds += -_delta
-    _avail = max(account_capital - _pos_sum, 0.0) + _sell_proceeds
+    _avail = max(float(account['cash']), 0.0) + _sell_proceeds
     if _buy_total > _avail + 1:
         _scale = (_avail / _buy_total) if _buy_total > 0 else 0.0
         print(f"\n[现金闸] 买单总额{_buy_total:,.0f} > 可用资金{_avail:,.0f} "
-              f"(现金{max(account_capital - _pos_sum, 0):,.0f} + 卖出回款{_sell_proceeds:,.0f})")
+              f"(台账现金{max(float(account['cash']), 0):,.0f} + 卖出回款{_sell_proceeds:,.0f})")
         _drop = []
         for o in orders:
             if o['action'] not in ('open', 'adjust'):
@@ -991,8 +1070,8 @@ def main():
             _amt = int(_shares * _price)
             o['amount'] = _amt
             o['shares'] = _shares  # 2026-10-13: 现金闸缩放后同步shares/weight_pct(否则打印与金额失同步)
-            if account_capital:
-                o['weight_pct'] = round(_amt / account_capital, 4)
+            if total_equity:
+                o['weight_pct'] = round(_amt / total_equity, 4)
             new_positions[_code]['amount'] = _amt
             new_positions[_code]['shares'] = _shares
             print(f"  [现金闸] {o['stock_code']} {_amt:>8,} ({_shares}股×{_price:.2f}, 原{_orig:,})")
@@ -1012,7 +1091,7 @@ def main():
             _buy_final += o['amount']
         elif o['amount'] > _prev_amt:
             _buy_final += o['amount'] - _prev_amt
-    _post_order_cash = max(account_capital - _pos_sum, 0.0) + _sell_proceeds - _buy_final
+    _post_order_cash = max(float(account['cash']), 0.0) + _sell_proceeds - _buy_final
 
     # ── 转债hybrid10 sleeve建议块 (2026-10-01, 实盘路径预备, yaml默认关闭) ──
     # 月频全换仓差分; 出资来自闲置现金(与repo_sweep共享池: 转债先, sweep扫余量)。
@@ -1138,8 +1217,24 @@ def main():
         json.dump(output, f, ensure_ascii=False, indent=2)
     print(f"\n订单已写入: {ORDERS_FILE}")
 
-    # 更新持仓状态
-    save_current_positions(new_positions)
+    # ── 台账 + 组合状态落盘 (2026-10-22 架构修复) ──────────────
+    # 顺序: 订单 → 持仓 → 台账 → 组合状态. 台账 last_date 是"今日已记账"提交标记;
+    # 同日重跑(--force-rerun)只重写订单, 绝不二次记账/二次推进状态.
+    if _same_day:
+        print("  [台账] 同日重跑(--force-rerun): 跳过持仓/净值/现金/状态写入 "
+              "(请人工核对持仓与现金)")
+    else:
+        save_current_positions(new_positions)
+        _pre_cash = float(account['cash'])
+        record_nav(account, str(target_date), _nav, _pre_cash, _pos_value)
+        _sm = apply_orders_to_cash(account, orders, prev_positions, prices)
+        save_account(account)
+        print(f"  [台账] 成交估算: 买{_sm['buy_amt']:,.0f} 卖{_sm['sell_amt']:,.0f} "
+              f"费用{_sm['fees']:,.0f} → 现金{account['cash']:,.0f}")
+        if _sm['skipped']:
+            print(f"  [WARN] 无价跳过记账: {_sm['skipped']}")
+        portfolio.save_tracking_state(PORTFOLIO_STATE_FILE)
+        print(f"组合状态已保存: {PORTFOLIO_STATE_FILE}")
 
     # 转债sleeve状态落盘 (月度节奏跟踪, 独立于股票持仓文件)
     if _cb_result and _cb_result.get('rebalanced'):
