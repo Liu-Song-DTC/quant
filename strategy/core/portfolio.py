@@ -764,8 +764,12 @@ class PortfolioConstructor:
             _MS_BUF.append(float(ms))
             _MS_LAST_DATE = date
 
-    def save_tracking_state(self, filepath: str):
-        """持久化持仓跟踪状态到 JSON 文件（实盘跨日状态保持）"""
+    def save_tracking_state(self, filepath: str, as_of=None):
+        """持久化持仓跟踪状态到 JSON 文件（实盘跨日状态保持）
+
+        as_of: 决策日 (YYYY-MM-DD). 实盘用于判断状态是否已推进到今日;
+               回测/旧调用不传 ⇒ None (向后兼容).
+        """
         import json as _json
         from datetime import date as _date
 
@@ -819,6 +823,7 @@ class PortfolioConstructor:
             "v_nonbear_streak": int(self._v_nonbear_streak),
             "v_recovery_dates": sorted(d.isoformat() if hasattr(d, 'isoformat') else str(d)
                                        for d in self._v_recovery_dates),
+            "as_of": str(as_of)[:10] if as_of is not None else None,
         }
         with open(filepath, 'w', encoding='utf-8') as f:
             _json.dump(state, f, ensure_ascii=False, indent=2, default=_serialize)

@@ -1233,7 +1233,7 @@ def main():
               f"费用{_sm['fees']:,.0f} → 现金{account['cash']:,.0f}")
         if _sm['skipped']:
             print(f"  [WARN] 无价跳过记账: {_sm['skipped']}")
-        portfolio.save_tracking_state(PORTFOLIO_STATE_FILE)
+        portfolio.save_tracking_state(PORTFOLIO_STATE_FILE, as_of=target_date)
         print(f"组合状态已保存: {PORTFOLIO_STATE_FILE}")
 
     # 转债sleeve状态落盘 (月度节奏跟踪, 独立于股票持仓文件)

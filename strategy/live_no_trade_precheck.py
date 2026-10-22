@@ -30,7 +30,8 @@ if _STRATEGY_DIR not in sys.path:
 import pandas as pd
 
 from core.config_loader import load_config
-from generate_trade_orders import get_index_regime, INDEX_DATA_PATH, ORDERS_FILE
+from generate_trade_orders import (get_index_regime, INDEX_DATA_PATH, ORDERS_FILE,
+                                   PORTFOLIO_STATE_FILE, DEFAULT_CASH)
 POSITIONS_FILE = os.path.join(_PROJECT_DIR, 'current_positions.json')
 
 EQUITY_FILE = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'equity_curve.csv')
@@ -77,6 +78,47 @@ def _append_flat_nav(target, prev_trading_day):
             f.write(b'\n')
         f.write(f'{target},{nav_str},0.0\n'.encode('utf-8'))
     return True, '已追加 0 收益行'
+
+
+def _append_flat_state(target):
+    """跳过日: 把平盘净值(0收益)记入实盘台账 + 组合状态.
+
+    与回测 bt_execution:2413 每日 update_returns(0) 同构. 空仓日 NAV 不变,
+    但波动率降仓窗口需要连续的日收益序列 — 缺一天会让恢复交易后的窗口
+    混入更早的非零收益, 与实盘自身历史不同构.
+    幂等: 以 live_account.last_date / 状态文件 as_of 为提交标记, 同日重跑不重复.
+    """
+    from core.live_account import load_account, last_nav, record_nav, save_account
+    acct = load_account(DEFAULT_CASH, {})
+    if str(acct.get('last_date') or '')[:10] != target:
+        _nav = last_nav(acct)
+        _cash = float(acct.get('cash', DEFAULT_CASH))
+        if _nav is None:
+            _nav = _cash
+        record_nav(acct, target, _nav, _cash, 0.0)
+        save_account(acct)
+        print(f'[no-trade] 台账: 平盘记账 NAV {_nav:,.0f} ({target})')
+    else:
+        print(f'[no-trade] 台账: {target} 已记账, 跳过')
+
+    if not os.path.exists(PORTFOLIO_STATE_FILE):
+        print('[no-trade] 组合状态: 尚无状态文件 (首次完整管线后才会生成)')
+        return
+    try:
+        with open(PORTFOLIO_STATE_FILE, 'r', encoding='utf-8') as f:
+            _asof = str(json.load(f).get('as_of') or '')
+        if _asof[:10] == target:
+            print(f'[no-trade] 组合状态: as_of={_asof}, 已推进, 跳过')
+            return
+        from core.portfolio import PortfolioConstructor
+        p = PortfolioConstructor()
+        p.restore_tracking_state(PORTFOLIO_STATE_FILE)
+        p.update_returns(0.0)
+        p.save_tracking_state(PORTFOLIO_STATE_FILE, as_of=target)
+        print(f'[no-trade] 组合状态: 追加 0 收益 (as_of {_asof or "?"} → {target}, '
+              f'窗口 {len(p._daily_returns)}/{p.vol_lookback})')
+    except Exception as e:
+        print(f'[no-trade] WARN 组合状态平盘推进失败: {e}')
 
 
 def main():
@@ -139,6 +181,12 @@ def main():
     print(f'[no-trade] equity_curve: {msg}')
     if not ok:
         print('[no-trade] WARN: 净值未追加; 订单已写空, 下一完整管线会补齐')
+
+    # 实盘台账/组合状态连续性 (2026-10-22): 跳过日 = 0 单+平盘, 但状态必须推进.
+    try:
+        _append_flat_state(target)
+    except Exception as e:
+        print(f'[no-trade] WARN 台账/状态平盘推进失败: {e}')
 
     os.makedirs(LOG_DIR, exist_ok=True)
     ledger = {
