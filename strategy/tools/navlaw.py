@@ -34,9 +34,16 @@
     navlaw.py snap [label]      # 存档当前产物 (默认 label = 产物末日期)
     navlaw.py diff [A] [B]      # 比两个存档; 省略 = 最近两个
     navlaw.py ls                # 列出存档
-    navlaw.py watch             # snap + diff 最近两个 (日常流用; 只报不拦)
+    navlaw.py watch             # snap + diff 最近两个 (默认只报不拦)
+    navlaw.py watch --strict    # 真闸 (#346, 2026-10-23): 铁律违反 rc=2
+                                # ⇒ run_daily_live 拦截出单。两档显式放行:
+      NAVLAW_OVERRIDE="<原因>"     放行今日出单; 今日存档标记 __SUSPECT 摘出
+                                  参照链 (基线保持上一干净存档 ⇒ 违反明日复报)
+      NAVLAW_REBASELINE="<原因>"   正当重锚/已登记修复: 今日存档立为新基线,
+                                  不再逐日复报 (原因须人工记账 datastate.py)
 
 存档放 `.arms/navlaw/<label>/`, **不放 /tmp** (tmpfs, 已实际 OOM 掉一次回测)。
+测试用 `NAVLAW_STORE=<dir>` 重定向存档目录 (不污染生产参照链)。
 """
 import argparse
 import hashlib
@@ -50,7 +57,7 @@ import pandas as pd
 
 ROOT = '/mnt/d/quant'
 RVD = os.path.join(ROOT, 'strategy', 'rolling_validation_results')
-STORE = os.path.join(ROOT, '.arms', 'navlaw')
+STORE = os.environ.get('NAVLAW_STORE', os.path.join(ROOT, '.arms', 'navlaw'))
 
 # 存档哪些产物。equity=净值(连续) / selections=选股集合(离散) / realized=已实现笔
 FILES = ['equity_curve.csv', 'portfolio_selections.csv',
@@ -154,7 +161,9 @@ def cmd_snap(args):
             d = _snapdir(label)
         else:
             print(f'· 存档 {label} 已存在且 md5 未变 (加 --force 覆盖)')
+            args.label = label
             return 0
+    args.label = label  # out-param: watch 要用 (SUSPECT 重命名)
     os.makedirs(d, exist_ok=True)
     _head, _dirty = _git_state()
     meta = {'label': label, 'ts': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -189,6 +198,8 @@ def _labels_sorted():
         return []
     out = []
     for n in os.listdir(STORE):
+        if '__SUSPECT' in n:
+            continue  # #346: 违反日存档已摘出参照链 (否则污染日成基线 ⇒ 哨兵失明)
         m = _load(n)
         if m and m.get('last_date'):
             out.append((m['last_date'], m.get('ts', ''), n))
@@ -336,16 +347,46 @@ def cmd_diff(args):
 
 
 def cmd_watch(args):
-    """日常流用: snap 当前 + diff 最近两个。只报不拦 (返回码恒 0)。"""
-    rc = cmd_snap(argparse.Namespace(label=None, force=False))
+    """日常流用: snap 当前 + diff 最近两个。默认只报不拦; --strict 时 (#346):
+    铁律违反 rc=2 ⇒ run_daily_live 拦截出单。两档显式放行 (都须写明原因):
+      NAVLAW_OVERRIDE   放行今日; 今日存档标记 __SUSPECT 摘出参照链
+                        (基线=上一干净存档 ⇒ 违反明日继续报, 查清前不复明)
+      NAVLAW_REBASELINE 正当重锚/已登记修复: 今日存档立为新基线 (不再逐日复报)
+    """
+    ns = argparse.Namespace(label=None, force=False)
+    rc = cmd_snap(ns)
     if rc != 0:
-        print('[navlaw] snap 失败, 跳过 diff')
-        return 0
+        print('[navlaw] snap 失败 (产物缺失) — 无法验证铁律')
+        return 2 if args.strict else 0
     print()
     rc = cmd_diff(argparse.Namespace(a=None, b=None, tail=args.tail))
-    if rc == 2:
+    if rc != 2:
+        return 0
+    if not args.strict:
         print('\n[navlaw] ⚠ 上面是铁律违反 —— 不拦出单, 但必须当天查清并记账。')
-    return 0
+        return 0
+    ov = os.environ.get('NAVLAW_OVERRIDE', '').strip()
+    rb = os.environ.get('NAVLAW_REBASELINE', '').strip()
+    if rb:
+        print(f'\n[navlaw] 铁律违反, NAVLAW_REBASELINE 登记放行: {rb}')
+        print('  ⇒ 今日存档立为新基线 (违反不再逐日复报); 请人工记账 (datastate.py rec).')
+        return 0
+    # 违反 ⇒ 今日存档摘出参照链, 否则明天拿污染快照当基线, 持续改写不再报 (哨兵失明)
+    _d = _snapdir(ns.label)
+    if os.path.isdir(_d):
+        os.rename(_d, _snapdir(f'{ns.label}__SUSPECT'))
+        print(f'\n[navlaw] 今日存档已标记 __SUSPECT 并摘出参照链 '
+              f'(基线保持上一干净存档, 违反明日继续报).')
+    if ov:
+        print(f'[navlaw] ⛔ 铁律违反, NAVLAW_OVERRIDE 放行出单: {ov}')
+        print('  ⇒ 排查责任保留; 查清或重锚前每日复报。')
+        return 0
+    print('\n[navlaw] ⛔ 铁律违反 (--strict): 拦截出单 — 对不上=其中一个错了, 不带病出单。')
+    print('  排查: 1) 上方两段(净值/选股)定位改写日期  2) 数据层 histcells diff')
+    print('        3) datastate.py ls 看数据态')
+    print('  放行: NAVLAW_OVERRIDE="<原因>" bash strategy/run_daily_live.sh  (放行今日, 明日续报)')
+    print('  重锚: NAVLAW_REBASELINE="<原因>" bash strategy/run_daily_live.sh (立新基线)')
+    return 2
 
 
 def main():
@@ -363,6 +404,8 @@ def main():
     l = sub.add_parser('ls'); l.set_defaults(fn=cmd_ls)
 
     w = sub.add_parser('watch'); w.add_argument('--tail', type=int, default=10)
+    w.add_argument('--strict', action='store_true',
+                   help='铁律违反时 rc=2 (run_daily_live 拦出单); 放行见环境变量')
     w.set_defaults(fn=cmd_watch)
 
     a = ap.parse_args()

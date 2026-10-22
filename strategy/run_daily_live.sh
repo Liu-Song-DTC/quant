@@ -6,8 +6,8 @@
 #     1. data/refresh_all.sh — 另类数据/概念/基本面/qfq修复 + 数据新鲜度门禁 (失败即停)
 #     2. yaml todate → 今天
 #     3. bt_execution.py — 信号重生成 (~80分钟, 数据/配置未变时自动跳过)
-#     3.6 tools/navlaw.py — 净值铁律哨兵: 存档今天的产物, 与上次比"共有历史段"
-#          是否逐位不变 (判据 f(t;T)≡f(t;t))。只报不拦。
+#     3.6 tools/navlaw.py — 净值铁律哨兵(真闸): 存档今天的产物, 与上次比"共有
+#          历史段"是否逐位不变 (判据 f(t;T)≡f(t;t))。违反⇒拦截出单 (可显式放行)。
 #     4. generate_trade_orders.py — 出单 (自带门禁复检, 输出 trade_orders.json)
 #
 #   用法: bash strategy/run_daily_live.sh
@@ -57,13 +57,23 @@ echo "===== 3.5/4 回测富报告 ====="
 ../.venv/bin/python -u analysis/backtest_report.py \
   | tee "logs/report_${TODAY//-/}.log"
 
-echo "===== 3.6/4 净值铁律哨兵 (回测收益能不能复现) ====="
+echo "===== 3.6/4 净值铁律哨兵 — 真闸 (#346, 2026-10-23) ====="
 # 每天推进 todate 一天 + 重跑回测 = 天然的铁律实验。但 equity_curve.csv 是原地
 # 覆盖的, 不存档就等于**从来没测过**。这里存一份, 再与上一次比:
 # 共有日期区间的**历史段**上, 净值(连续)与选股集合(离散)是否逐位不变。
-# 只报不拦 —— 拦了就没单出, 代价更大; 但违反必须当天查清并记账。
-../.venv/bin/python -u tools/navlaw.py watch --tail 10 \
-  | tee "logs/navlaw_${TODAY//-/}.log" || true
+# 违反 ⇒ 拦截出单 (对不上=其中一个错了, 不带病出单)。正当重锚/已登记修复
+# 用环境变量显式放行 (原因记入当日 navlaw 日志):
+#   NAVLAW_OVERRIDE="<原因>"    放行今日, 明日继续报
+#   NAVLAW_REBASELINE="<原因>"  重锚: 立新基线, 不再复报
+set +e
+../.venv/bin/python -u tools/navlaw.py watch --tail 10 --strict \
+  | tee "logs/navlaw_${TODAY//-/}.log"
+_navlaw_rc=${PIPESTATUS[0]}
+set -e
+if [ "$_navlaw_rc" -ne 0 ]; then
+  echo "⛔ 净值铁律违反 (rc=$_navlaw_rc), 已拦截出单。排查/放行方式见上方 navlaw 输出。"
+  exit "$_navlaw_rc"
+fi
 
 echo "===== 4/4 出单 ====="
 ../.venv/bin/python -u generate_trade_orders.py --date "$TODAY" \
