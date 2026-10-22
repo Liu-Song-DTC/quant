@@ -2032,6 +2032,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     amount_m = np.zeros_like(close_px)  # 真实成交额(元) — 文件自带列, 宇宙闸用(2026-10-17)
     tradable = np.zeros_like(close_px, dtype=bool)
 
+    from core.stock_pool import _is_non_stock_series
+    _nonstock = []  # #349: 非个股序列(指数/海外股)死列清单
     for j, code in enumerate(tqdm(stock_codes, desc="loading")):
         fp = os.path.join(DATA_PATH, f'{code}_qfq.csv')
         if not os.path.exists(fp):
@@ -2042,6 +2044,13 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         df = df.set_index('datetime')
         df = df[df.index >= pd.Timestamp(fromdate)]
         df = df[df.index <= pd.Timestamp(todate)]
+        # #349 (2026-10-23): 矩阵宇宙此前只按文件名排 sh000001 — sh000852/399006 +
+        # 27个裸代码指数/海外股仍以死列进矩阵 (实测 signals/selections/trade_realized
+        # ∩ 非个股 = 0; 池层 Fix#44 已拦). 装载时用 stock_pool._is_non_stock_series
+        # 同源 VWAP 恒等式判别, 整列剔除. 恒等证明 = iso 臂逐位复现 anchor.
+        if _is_non_stock_series(df):
+            _nonstock.append(code)
+            continue
         df = df.reindex(calendar)
         close_px[:, j] = df['close'].ffill().values.astype(np.float32)
         open_px[:, j] = df['open'].ffill().values.astype(np.float32)
@@ -2049,6 +2058,15 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         volume_m[:, j] = df['volume'].fillna(0).values.astype(np.float32)
         amount_m[:, j] = pd.to_numeric(df['amount'], errors='coerce').fillna(0).values.astype(np.float32)
     del df
+    if _nonstock:  # #349: 死列剔除 — 逐列矩阵无跨列消费, 索引重编号自洽
+        _keep = [j for j, c in enumerate(stock_codes) if c not in set(_nonstock)]
+        stock_codes = [stock_codes[j] for j in _keep]
+        close_px, open_px, low_px = close_px[:, _keep], open_px[:, _keep], low_px[:, _keep]
+        volume_m, amount_m = volume_m[:, _keep], amount_m[:, _keep]
+        code_to_idx = {c: i for i, c in enumerate(stock_codes)}
+        idx_to_code = {i: c for i, c in enumerate(stock_codes)}
+        print(f"矩阵宇宙: 剔除非个股序列 {len(_nonstock)} 个 (Fix#44 同源判别, #349) "
+              f"-> {len(stock_codes)} 列")
 
     # 预计算滚动ADV矩阵（20日回溯，shift(1)排除当日，无前视偏差）
     # volume单位为手, ×100转股数(与下单股数同口径, 否则participation高估100x)
