@@ -38,7 +38,8 @@ from core.repo_sweep import compute_repo_sweep, sweep_guidance
 from core.cb_sleeve import (compute_cb_sleeve, load_snapshot as cb_load_snapshot,
                             load_state as cb_load_state, save_state as cb_save_state)
 from core.live_account import (load_account, save_account, mark_to_market,
-                               last_nav, record_nav, apply_orders_to_cash)
+                               last_nav, record_nav, apply_orders_to_cash,
+                               settle_pending, est_fill_price)
 
 config = load_config()
 
@@ -220,6 +221,36 @@ def load_prices_for_date(raw_map: Dict[str, str], target_date) -> Dict[str, floa
             continue
     print(f"价格数据: {len(prices)} 只股票有 {target_date} 的真实价")
     return prices
+
+
+def load_open_prices_for_date(raw_map: Dict[str, str], codes, target_date) -> Dict[str, float]:
+    """读取 codes 在 target_date 的**真实开盘价**(裸价) — 次日开盘 true-up 用.
+
+    只读需要的票 (持仓通常 ≤ 4 只), 不扫全市场.
+    """
+    out = {}
+    dt = pd.Timestamp(target_date)
+    for code in codes:
+        df = read_raw_prices(code, raw_map, ('datetime', 'open'))
+        if df is None:
+            continue
+        row = df.loc[df['datetime'] == dt, 'open']
+        if not row.empty:
+            v = float(row.iloc[0])
+            if v > 0:
+                out[code] = v
+    return out
+
+
+def next_index_date_after(date_str):
+    """决策日之后的下一个交易日 (指数文件日历); 无则 None."""
+    try:
+        df = pd.read_csv(INDEX_DATA_PATH, usecols=['datetime'])
+        dates = pd.to_datetime(df['datetime'])
+        after = dates[dates > pd.Timestamp(date_str)]
+        return str(after.min().date()) if len(after) else None
+    except Exception:
+        return None
 
 
 def get_latest_price_date():
@@ -884,6 +915,34 @@ def main():
 
     account_capital = args.cash
     account = load_account(account_capital, prev_positions)
+    if args.dry_run:
+        # dry-run 也演示开盘对账后的真实 NAV, 但绝不在磁盘上留下改动
+        import copy as _copy
+        account = _copy.deepcopy(account)
+
+    # ── 次日开盘 true-up (2026-10-22): 决策日按收盘估算 → 执行日开盘实际 ──
+    # 回测 bt_execution 在 T+1 开盘成交; 夜间出单时开盘未知, apply_orders_to_cash
+    # 先用决策日收盘估算. 次日拿执行日**真实开盘价**重算, 只把差额补进现金,
+    # 并把新开仓 entry_price 改成开盘成交价(含滑点) — 与回测 buy_px 同口径.
+    # 幂等: 结算后清空 acct['pending']; 无开盘价(停牌)的票保留, 下次重试.
+    _pending = account.get('pending') or {}
+    if _pending.get('fills'):
+        _pdec = str(_pending.get('decision_date') or '')[:10]
+        _pexec = next_index_date_after(_pdec) if _pdec else None
+        if _pexec and _pexec <= str(target_date)[:10]:
+            _pcodes = sorted({f['code'] for f in _pending['fills']})
+            _popen = load_open_prices_for_date(raw_map, _pcodes, _pexec)
+            _tu = settle_pending(account, _popen, _pexec)
+            print(f"  [台账] 开盘对账 {_pdec}→{_pexec}: {_tu['n']} 笔, "
+                  f"现金调整 {_tu['delta_cash']:+,.2f}"
+                  + (f", 无开盘价保留 {_tu['skipped']}" if _tu['skipped'] else ''))
+            for _f in _pending['fills']:
+                if (_f['side'] == 'buy' and _f.get('action') == 'open'
+                        and _f['code'] in _popen and _f['code'] in prev_positions):
+                    prev_positions[_f['code']]['entry_price'] = round(
+                        est_fill_price(_f['code'], _popen[_f['code']], 'buy'), 4)
+        elif _pexec:
+            print(f"  [台账] 有待对账成交(决策日 {_pdec}), 执行日 {_pexec} 未到 ⇒ 保留")
 
     # amount 统一为"最新收盘市值" (旧值=下单时市值): build_orders 的 1% 调整阈值、
     # 卖出回款估算、监控盈亏都读 amount — 陈旧值会让"该调不调/不该调乱调".
@@ -1228,6 +1287,11 @@ def main():
         _pre_cash = float(account['cash'])
         record_nav(account, str(target_date), _nav, _pre_cash, _pos_value)
         _sm = apply_orders_to_cash(account, orders, prev_positions, prices)
+        # 今日成交按收盘估算; 把明细挂到台账, 下一交易日用开盘价 true-up.
+        account['pending'] = ({'decision_date': str(target_date)[:10],
+                               'price_date': str(pd.Timestamp(price_date).date()),
+                               'fills': _sm['fills']}
+                              if _sm['fills'] else None)
         save_account(account)
         print(f"  [台账] 成交估算: 买{_sm['buy_amt']:,.0f} 卖{_sm['sell_amt']:,.0f} "
               f"费用{_sm['fees']:,.0f} → 现金{account['cash']:,.0f}")

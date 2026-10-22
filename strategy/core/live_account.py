@@ -57,6 +57,8 @@ def load_account(initial_capital: float, positions: dict = None) -> dict:
                 acct = json.load(f)
             acct.setdefault('nav_history', [])
             acct.setdefault('last_date', None)
+            acct.setdefault('pending', None)   # 待次日开盘对账的成交
+            acct.setdefault('trueups', [])     # 开盘对账审计流水
             if float(acct.get('initial_capital', 0)) <= 0:
                 acct['initial_capital'] = float(initial_capital)
             if not isinstance(acct.get('cash'), (int, float)):
@@ -70,6 +72,8 @@ def load_account(initial_capital: float, positions: dict = None) -> dict:
         'cash': float(initial_capital),
         'nav_history': [],
         'last_date': None,
+        'pending': None,
+        'trueups': [],
         'created': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
     if positions:
@@ -150,8 +154,14 @@ def apply_orders_to_cash(acct: dict, orders: list, prev_positions: dict,
     无价格的订单跳过并计入 skipped (不猜价格).
     """
     _comm, _stamp, _slip = _cost_params()
-    summary = {'buy_amt': 0.0, 'sell_amt': 0.0, 'fees': 0.0, 'skipped': []}
+    summary = {'buy_amt': 0.0, 'sell_amt': 0.0, 'fees': 0.0, 'skipped': [],
+               'fills': []}  # fills: 供次日开盘 true-up 对账
     cash = float(acct.get('cash', 0.0))
+
+    def _rec_fill(code, side, sh, fill_px, act):
+        summary['fills'].append({'code': code, 'side': side, 'shares': float(sh),
+                                 'est_px': float(fill_px), 'action': act})
+
     for o in orders:
         code = str(o.get('stock_code', '')).split('.')[0].zfill(6)
         act = o.get('action')
@@ -171,6 +181,7 @@ def apply_orders_to_cash(acct: dict, orders: list, prev_positions: dict,
             cash += gross - fee
             summary['sell_amt'] += gross
             summary['fees'] += fee
+            _rec_fill(code, 'sell', sh, sell_px, act)
         elif act == 'open':
             sh = float(o.get('shares', 0) or 0)
             if sh <= 0:
@@ -181,6 +192,7 @@ def apply_orders_to_cash(acct: dict, orders: list, prev_positions: dict,
             cash -= gross + fee
             summary['buy_amt'] += gross
             summary['fees'] += fee
+            _rec_fill(code, 'buy', sh, buy_px, act)
         elif act == 'adjust':
             new_sh = float(o.get('shares', 0) or 0)
             old_sh = float(o.get('prev_shares', prev.get('shares', 0)) or 0)
@@ -193,16 +205,77 @@ def apply_orders_to_cash(acct: dict, orders: list, prev_positions: dict,
                 cash -= gross + fee
                 summary['buy_amt'] += gross
                 summary['fees'] += fee
+                _rec_fill(code, 'buy', delta, buy_px, act)
             else:
                 gross = (-delta) * sell_px
                 fee = gross * (_comm + _stamp)
                 cash += gross - fee
                 summary['sell_amt'] += gross
                 summary['fees'] += fee
+                _rec_fill(code, 'sell', -delta, sell_px, act)
     if not dry_run:
         acct['cash'] = cash
     summary['cash_after'] = cash
     return summary
+
+
+def settle_pending(acct: dict, open_prices: dict, exec_date: str,
+                   dry_run: bool = False) -> dict:
+    """次日开盘 true-up (2026-10-22): 把决策日收盘估算成交校正为执行日开盘成交.
+
+    回测 bt_execution 与实盘真实成交都在 **T+1 开盘**, 但夜间出单时 T+1 开盘
+    未知 ⇒ apply_orders_to_cash 先用决策日收盘估算记账. 次日用执行日开盘价
+    重算成交价并只调整**差额**:
+      buy : Δcash = 股数 × (est_px − act_px) × (1+佣金)
+      sell: Δcash = 股数 × (act_px − est_px) × (1−佣金−印花)
+    plan 存于 acct['pending'] = {decision_date, fills:[...]}; 幂等: decision_date
+    < exec_date 才结算, 结算后清空. 无开盘价的票保留在 pending 次日重试.
+
+    这是估算对账, 不是券商成交回报: 若实际成交价/数量不同, 以真实账户为准手工修
+    live_account.json.
+    """
+    pending = acct.get('pending') or {}
+    fills = list(pending.get('fills') or [])
+    if not fills:
+        return {'delta_cash': 0.0, 'n': 0, 'skipped': [], 'pending_left': 0,
+                'not_due': False}
+    _pdec = str(pending.get('decision_date') or '')[:10]
+    if _pdec and str(exec_date)[:10] <= _pdec:
+        # 自我保护: 执行日必须晚于决策日, 否则不结算
+        return {'delta_cash': 0.0, 'n': 0, 'skipped': [], 'pending_left': len(fills),
+                'not_due': True}
+    _comm, _stamp, _slip = _cost_params()
+    delta_cash = 0.0
+    done, left = [], []
+    for f in fills:
+        px = float(open_prices.get(f['code'], 0) or 0)
+        if px <= 0:
+            left.append(f)
+            continue
+        sh = float(f['shares'])
+        est = float(f['est_px'])
+        if f['side'] == 'buy':
+            act = px * (1.0 + _slip)
+            delta_cash += sh * (est - act) * (1.0 + _comm)
+        else:
+            act = px * (1.0 - _slip)
+            delta_cash += sh * (act - est) * (1.0 - _comm - _stamp)
+        done.append(f)
+    if not dry_run:
+        acct['cash'] = float(acct.get('cash', 0.0)) + delta_cash
+        if left:
+            acct['pending'] = {'decision_date': pending.get('decision_date'),
+                               'exec_date': exec_date, 'fills': left}
+        else:
+            acct['pending'] = None
+        if done:
+            acct.setdefault('trueups', []).append({
+                'settled_on': str(exec_date)[:10],
+                'decision_date': str(pending.get('decision_date'))[:10],
+                'delta_cash': round(delta_cash, 6), 'n': len(done)})
+    return {'delta_cash': delta_cash, 'n': len(done),
+            'skipped': [f['code'] for f in left], 'pending_left': len(left),
+            'not_due': False}
 
 
 def est_fill_price(code: str, px: float, side: str) -> float:
@@ -240,4 +313,32 @@ if __name__ == '__main__':
     assert _s2['skipped'] == []
     # close 11000*0.999*(1-0.001)=10978.9 ; adjust sell 1000*18.981*(0.9985)
     assert _s2['sell_amt'] > 0 and _s2['buy_amt'] == 0
+
+    # ── 次日开盘 true-up ──
+    # 决策日收盘估算买 10000@10.0 → est 10.01; 执行日开盘 9.80 → act 9.8098.
+    _a3 = {'cash': 400000.0, 'trueups': [],
+           'pending': {'decision_date': '2026-10-22', 'fills': [
+               {'code': '600000', 'side': 'buy', 'shares': 10000,
+                'est_px': 10.01, 'action': 'open'}]}}
+    _tu = settle_pending(_a3, {'600000': 9.80}, '2026-10-23')
+    _delta_exp = 10000 * (10.01 - 9.80 * 1.001) * 1.0005
+    assert abs(_tu['delta_cash'] - _delta_exp) < 1e-6, _tu
+    assert abs(_a3['cash'] - (400000 + _delta_exp)) < 1e-6
+    assert _a3['pending'] is None and len(_a3['trueups']) == 1
+    # 幂等: 再结算无变化
+    _tu2 = settle_pending(_a3, {'600000': 9.80}, '2026-10-23')
+    assert _tu2['n'] == 0 and abs(_a3['cash'] - (400000 + _delta_exp)) < 1e-6
+    # 无开盘价 ⇒ 保留 pending 供下次重试, 现金不动
+    _a4 = {'cash': 100000.0, 'trueups': [], 'pending': {'decision_date': '2026-10-22',
+          'fills': [{'code': '000001', 'side': 'sell', 'shares': 100,
+                     'est_px': 19.98, 'action': 'close'}]}}
+    _tu3 = settle_pending(_a4, {}, '2026-10-23')
+    assert _tu3['n'] == 0 and _tu3['pending_left'] == 1 and _a4['cash'] == 100000.0
+    assert _a4['pending'] and _a4['pending']['fills']
+    # 执行日 <= 决策日 ⇒ 不结算 (防同日/历史误调)
+    _a5 = {'cash': 1.0, 'trueups': [], 'pending': {'decision_date': '2026-10-23',
+          'fills': [{'code': '600000', 'side': 'buy', 'shares': 1,
+                     'est_px': 10.0, 'action': 'open'}]}}
+    assert settle_pending(_a5, {'600000': 8.0}, '2026-10-23')['not_due'] is True
+    assert _a5['cash'] == 1.0 and _a5['pending']
     print('self-test OK')
