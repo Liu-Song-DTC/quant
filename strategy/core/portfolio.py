@@ -299,6 +299,16 @@ class PortfolioConstructor:
         # QUANT_NEW_CAP 环境变量优先 (臂用), 空则读 yaml.
         self.new_entry_cap = int(os.environ.get(
             'QUANT_NEW_CAP', '') or sel_config.get('new_entries_cap', 0))
+        # 2026-10-22 采纳(anchor_1022): AH日型跳过 — 排序后非持仓前2名含AH股 ⇒ 当日
+        # 全部新入场跳过 (持仓保留/加仓不受影响). 臂: new2 1,098,169 → 1,321,718
+        # (+20.4%), tW 57.35→62.65, w5 46.08→49.40, w20 58.71→64.42, Sharpe
+        # 1.3882→1.5437, MDD −19.77→−19.78 (不变). 归因: 被跳41笔 win 36.6%/
+        # mean −5.56%/sum −228.1pp, 共享163笔逐字相同 ⇒ 增益=丢坏桶, 非新选到好股.
+        # 注意: 与 te×动量日型叠加过度砍仓 (ahtemom NAV 1,002,752, 敞口0.463) ⇒ 只开AH.
+        self.ah_day_skip = bool(sel_config.get('ah_day_skip', False))
+        _env_ah_day = os.environ.get('QUANT_AH_DAY_SKIP')
+        if _env_ah_day not in (None, ''):
+            self.ah_day_skip = _env_ah_day.strip() == '1'
         # 2026-08-25: 股东减持期过滤(用户硬约束) - 减持期内股票不入选
         self.exclude_reduction = sel_config.get('exclude_reduction_periods', False)
         self.reduction_recent_days = sel_config.get('reduction_recent_days', 30)
@@ -2019,13 +2029,14 @@ class PortfolioConstructor:
         # 排序：按有效得分降序（已持仓有换手加分, 锁仓排最前）
         qualified.sort(key=lambda x: (-x['_locked'], -x['effective_score']))
 
-        # 臂钩子(2026-10-22): AH日型跳过 — 当日非持仓前2名含 industry=='AH股' 时,
-        # 跳过全部新入场 (持仓保留/加仓不受影响). 默认关闭, 仅 QUANT_AH_DAY_SKIP=1 启用.
+        # 已采纳(2026-10-22, anchor_1022): AH日型跳过 — 当日非持仓前2名含
+        # industry=='AH股' 时, 跳过全部新入场 (持仓保留/加仓不受影响).
         # 依据: new2 实际入场落在「top2含AH」的32个调仓日共38笔, w5 28.9%/w20 34.2%/
         #       r20 -5.17%, 其余165笔 50.3%/64.8%/+4.56%, 6/6年 w20 同向.
         #       个股级 QUANT_AH_SKIP 臂失败(补位同坏, new2ah NAV -70k) ⇒ 信号是日型非个股.
+        # 开关: yaml portfolio.selection.ah_day_skip (默认 true); QUANT_AH_DAY_SKIP 覆盖.
         _ah_day = False
-        if os.environ.get('QUANT_AH_DAY_SKIP') == '1':
+        if self.ah_day_skip:
             _nh = [c for c in qualified if not c.get('is_held')]
             _ah_day = any(str(c.get('industry', '') or '') == 'AH股' for c in _nh[:2])
             if _ah_day:
@@ -2033,6 +2044,32 @@ class PortfolioConstructor:
                 self._dbg['ah_day_skip'] += 1
                 print(f" [AH-Day] {date.date() if hasattr(date, 'date') else date} "
                       f"top2含AH股 → 跳过当日新入场")
+
+        # 臂钩子(2026-10-22): te×动量日型跳过 — 高敞口日 (target_exposure>=TE) 且当日
+        # 非持仓前2名的 mom_60d 均值 > MOM 时, 跳过全部新入场 (持仓保留/加仓不受影响).
+        # 默认关闭, 仅 QUANT_TEMOM_SKIP=1 启用; 阈值 env 可调.
+        # 依据: new2 实际入场 203 笔中, te>=0.85 且 top2 动量>0.10 的 45 笔 (22%) w5 26.7%/
+        #       w20 46.7%/r20 +0.34%, 其余 158 笔 w5≈51.9%; te 与动量两维独立于 AH
+        #       (非AH内 45.3 vs 55.7; te_hi内 AH 21.4 vs 非AH 45.3). te 单变量跳过砍 56%
+        #       入场太粗, 故只做组合日型.
+        # 单臂 temom (vs new2): NAV 1,129,114 (+31k), tW 61.08 (+3.72pp), w5 53.29
+        # (+7.21pp), w20 62.80, Sharpe 1.4155 — 单用可过判据; 但与已采纳 AH日型叠加
+        # (ahtemom) NAV 1,002,752 (−24% vs ahday) 过度砍仓 ⇒ **不采纳, 默认关闭**.
+        _temom_day = False
+        if os.environ.get('QUANT_TEMOM_SKIP') == '1':
+            _te_thr = float(os.environ.get('QUANT_TEMOM_TE', '0.85') or 0.85)
+            _mom_thr = float(os.environ.get('QUANT_TEMOM_MOM', '0.10') or 0.10)
+            if target_exposure >= _te_thr:
+                _nh = [c for c in qualified if not c.get('is_held')]
+                _moms = [self._nan_safe(getattr(c.get('sig'), 'mom_60d', 0.0))
+                         for c in _nh[:2]]
+                if _moms and float(np.mean(_moms)) > _mom_thr:
+                    _temom_day = True
+                    self._dbg.setdefault('temom_day_skip', 0)
+                    self._dbg['temom_day_skip'] += 1
+                    print(f" [TEMOM-Day] {date.date() if hasattr(date, 'date') else date} "
+                          f"te={target_exposure:.2f} top2 mom={np.mean(_moms):+.3f} "
+                          f"> {_mom_thr:.2f} → 跳过当日新入场")
 
         # === 纯score排序选股 ===
         # E-G1: bp2专用通道保底槽 — 先于常规排序占位。score对bp2无区分度,
@@ -2043,7 +2080,7 @@ class PortfolioConstructor:
         _bp2_slot_n = min(len(_bp2_reserved), self.bp2_channel_slots, n_positions)
         if target_exposure < 0.50:
             _bp2_slot_n = 0
-        if _ah_day:
+        if _ah_day or _temom_day:
             _bp2_slot_n = 0
         selected = list(_bp2_reserved[:_bp2_slot_n])
         _bp2_selected_codes = {c['code'] for c in selected}
@@ -2067,7 +2104,7 @@ class PortfolioConstructor:
         # 胜率诊断: 当日第3个新入场(名次3) tW 33.3% (n=45) vs 前2名 57.2%;
         # 5/6年同向. 只限新买入, 持仓保留/加仓不受影响.
         _new_cap = self.new_entry_cap if self.new_entry_cap > 0 else 10 ** 9
-        if _ah_day:
+        if _ah_day or _temom_day:
             _new_cap = 0
         _new_n = sum(1 for c in selected if not c.get('is_held'))
         for c in qualified:
