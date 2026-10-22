@@ -35,6 +35,57 @@ _LIQ_TILT = float(os.environ.get('QUANT_LIQ_TILT', '0.0'))
 _LIQ_AMT_CACHE = {}  # code -> (dates np.datetime64[], amt20 float[]) 或 None(无数据)
 _LIQ_DATA_DIR = os.environ.get('QUANT_LIQ_DATA_DIR',
                                '/mnt/d/quant/data/stock_data/backtrader_data')
+# 胜率日型臂 (2026-10-22, 默认关闭): 低换手/ATR压缩日型跳过的特征源.
+# 惰性读 qfq (与 _LIQ_AMT_CACHE 同模式): turnover_rate 当日值 +
+# atr_z20 = ATR14(Wilder)/close 对自身20日的z. 查值取 <=date 最后一行=严格因果;
+# 模块级缓存每码只读一次. 仅臂钩子调用, 生产默认零行为.
+_QFEAT_CACHE = {}  # code -> (dates np.datetime64[], turnover float[], atr_z20 float[]) / None
+_QFEAT_DATA_DIR = os.environ.get('QUANT_QFEAT_DATA_DIR',
+                                 '/mnt/d/quant/data/stock_data/backtrader_data')
+
+
+def _qfeat_lookup(code, date, feat):
+    """qfq 日频特征查值: feat='turnover_rate'|'atr_z20'; 无数据/越界/NaN → None."""
+    c = _QFEAT_CACHE.get(code, False)
+    if c is False:
+        f = os.path.join(_QFEAT_DATA_DIR, f'{code}_qfq.csv')
+        if not os.path.exists(f):
+            _QFEAT_CACHE[code] = None
+            return None
+        d = pd.read_csv(f, usecols=['datetime', 'high', 'low', 'close',
+                                    'turnover_rate'])
+        d['datetime'] = pd.to_datetime(d['datetime'])
+        d = d.sort_values('datetime').reset_index(drop=True)
+        h = d['high'].values.astype(float)
+        l = d['low'].values.astype(float)
+        cl = d['close'].values.astype(float)
+        pc = np.r_[np.nan, cl[:-1]]
+        tr_ = np.maximum.reduce([h - l, np.abs(h - pc), np.abs(l - pc)])
+        tr_[0] = h[0] - l[0]
+        atr = np.full(len(cl), np.nan)
+        _n = 14
+        if len(cl) > _n:
+            atr[_n] = np.nanmean(tr_[1:_n + 1])
+            for i in range(_n + 1, len(cl)):
+                atr[i] = (atr[i - 1] * (_n - 1) + tr_[i]) / _n
+        ratio = pd.Series(atr / (cl + 1e-12))
+        m = ratio.rolling(20, min_periods=10).mean()
+        sd = ratio.rolling(20, min_periods=10).std()
+        az = ((ratio - m) / (sd + 1e-12)).values
+        c = (d['datetime'].values,
+             pd.to_numeric(d['turnover_rate'], errors='coerce').values.astype(float),
+             az)
+        _QFEAT_CACHE[code] = c
+    if c is None:
+        return None
+    dts, trs, azs = c
+    j = np.searchsorted(dts, np.datetime64(pd.Timestamp(date)), side='right') - 1
+    if j < 0:
+        return None
+    v = float(trs[j]) if feat == 'turnover_rate' else float(azs[j])
+    return None if np.isnan(v) else v
+
+
 # F-G2 回撤门控 (2026-09-23): bracket证实裸倾斜MDD单调恶化(15.46→15.99),
 # 年分解6/6年正 → 方向真但需风险预算. dd≤LO全倾斜, LO~HI线性衰减, ≥HI零倾斜
 # (回撤期回到锚点行为). env QUANT_LIQ_TILT=0时门控无关=零行为.
@@ -2071,6 +2122,49 @@ class PortfolioConstructor:
                           f"te={target_exposure:.2f} top2 mom={np.mean(_moms):+.3f} "
                           f"> {_mom_thr:.2f} → 跳过当日新入场")
 
+        # 胜率日型臂 (2026-10-22, 默认关闭, env门控): 换手率/ATR压缩日型跳过.
+        # ⚠ 已测全否 (run_deadfest_1022, 身份闸裸跑逐位=anchor_1022 先过), 勿默认开启:
+        #   lowto  873,958 (−448k, Sharpe1.15) / atrz 1,355,117 (+33k=彩票, Sharpe1.42,
+        #   笔/年22.8) / deadw 1,042,505 (−279k, Sharpe1.31) — 全部低于预注册判据
+        #   (winrate_PLAN.md §14). 砍桶前瞻均值对NAV无预测力 (deadw砍桶均值负仍−279k),
+        #   NAV由砍桶右尾+路径新增尾部彩票主导; 日型砍仓必降资金利用率 (笔/年29.8→22.8).
+        #   日型跳过家族在AH之后关闭; 钩子保留仅供复现. 离线依据 (161笔入场, 日簇bootstrap):
+        #   lowto Δw5 +12.2 p=.020 / atrz Δw5 +19.5 p=.001 / deadw Δw5 +14.6 p=.037
+        #   (前瞻胜率分离真实存在, 但组合层转换失败).
+        # top2=引擎顺序非持仓前2 (与AH日型同口径), 持仓/加仓不受影响.
+        _lowto_day = _atrz_day = _deadw_day = False
+        if (os.environ.get('QUANT_LOWTO_SKIP') == '1' or
+                os.environ.get('QUANT_ATRZ_SKIP') == '1' or
+                os.environ.get('QUANT_DEADW_SKIP') == '1'):
+            _nh2 = [c for c in qualified if not c.get('is_held')][:2]
+            _trs = [v for v in (_qfeat_lookup(c['code'], date, 'turnover_rate')
+                                for c in _nh2) if v is not None]
+            _azs = [v for v in (_qfeat_lookup(c['code'], date, 'atr_z20')
+                                for c in _nh2) if v is not None]
+            if os.environ.get('QUANT_LOWTO_SKIP') == '1' and _trs:
+                _thr = float(os.environ.get('QUANT_LOWTO_MAXTR', '1.5') or 1.5)
+                if max(_trs) < _thr:
+                    _lowto_day = True
+                    self._dbg['lowto_day_skip'] = self._dbg.get('lowto_day_skip', 0) + 1
+                    print(f" [LOWTO-Day] {date.date() if hasattr(date, 'date') else date} "
+                          f"top2最高换手 {max(_trs):.2f}% < {_thr:.1f}% → 跳过当日新入场")
+            if os.environ.get('QUANT_ATRZ_SKIP') == '1' and _azs:
+                _thr = float(os.environ.get('QUANT_ATRZ_MEAN', '-1.0') or -1.0)
+                if float(np.mean(_azs)) < _thr:
+                    _atrz_day = True
+                    self._dbg['atrz_day_skip'] = self._dbg.get('atrz_day_skip', 0) + 1
+                    print(f" [ATRZ-Day] {date.date() if hasattr(date, 'date') else date} "
+                          f"top2均值atr_z20 {np.mean(_azs):+.2f} < {_thr:+.1f} → 跳过当日新入场")
+            if os.environ.get('QUANT_DEADW_SKIP') == '1' and _trs and _azs:
+                _tr_thr = float(os.environ.get('QUANT_DEADW_MAXTR', '1.5') or 1.5)
+                _az_thr = float(os.environ.get('QUANT_DEADW_ATRZ', '0.0') or 0.0)
+                if max(_trs) < _tr_thr and float(np.mean(_azs)) < _az_thr:
+                    _deadw_day = True
+                    self._dbg['deadw_day_skip'] = self._dbg.get('deadw_day_skip', 0) + 1
+                    print(f" [DEADW-Day] {date.date() if hasattr(date, 'date') else date} "
+                          f"换手max {max(_trs):.2f}% 且 atr_z20均值 {np.mean(_azs):+.2f} "
+                          f"→ 死水日, 跳过当日新入场")
+
         # === 纯score排序选股 ===
         # E-G1: bp2专用通道保底槽 — 先于常规排序占位。score对bp2无区分度,
         # 内部按score排≈随机但稳定; 槽数受bp2_channel_slots与n_positions双限
@@ -2080,7 +2174,7 @@ class PortfolioConstructor:
         _bp2_slot_n = min(len(_bp2_reserved), self.bp2_channel_slots, n_positions)
         if target_exposure < 0.50:
             _bp2_slot_n = 0
-        if _ah_day or _temom_day:
+        if _ah_day or _temom_day or _lowto_day or _atrz_day or _deadw_day:
             _bp2_slot_n = 0
         selected = list(_bp2_reserved[:_bp2_slot_n])
         _bp2_selected_codes = {c['code'] for c in selected}
@@ -2104,7 +2198,7 @@ class PortfolioConstructor:
         # 胜率诊断: 当日第3个新入场(名次3) tW 33.3% (n=45) vs 前2名 57.2%;
         # 5/6年同向. 只限新买入, 持仓保留/加仓不受影响.
         _new_cap = self.new_entry_cap if self.new_entry_cap > 0 else 10 ** 9
-        if _ah_day or _temom_day:
+        if _ah_day or _temom_day or _lowto_day or _atrz_day or _deadw_day:
             _new_cap = 0
         _new_n = sum(1 for c in selected if not c.get('is_held'))
         for c in qualified:
