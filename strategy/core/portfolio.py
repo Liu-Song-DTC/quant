@@ -98,6 +98,62 @@ def _qfeat_lookup(code, date, feat):
     return None if np.isnan(v) else v
 
 
+# 臂钩子(2026-10-23): 个股融资拥挤 — margin_detail.pkl 个股级两融明细
+# (4.61M行/4569只/2021-01→2026-10, 研究态: 不在信号指纹4 alt文件, 不在refresh链).
+# mchg_win = 融资余额 win 交易日变化% (按股内序列位置); 严格 <date (盘后披露,
+# T-1滞后, 与生产 margin_daily 口径一致); 末次披露>10自然日=过期(冻结段不外推).
+# 依据 (margind_1023 realized-first, anchor_1022 166笔账簿):
+#   入场时 mchg5>=+3% 的 33笔 tW 75.8%/均ret +6.35% vs 其余 59.4%/+3.90%;
+#   入场日簇bootstrap ΔtW +16.4pp CI[-3.3,+34.2] p=.10; 池级 w20 Δ+17.5 p=0.0000.
+#   corr(mchg5, ret5b)=-0.10 = 非动量重编码 (动量分层内边际±23pp 同向).
+#   ⚠ 未入选候选拥挤桶 w5 34.5% < 其余 46.5% ⇒ 拥挤是**已入选腿的确认信号**
+#   (调节变量), 只做新仓相对加权 (选择集合不变, Jaccard≡1), 不做score加成/拉新.
+# 仅臂钩子调用, 生产默认 (_MRG_TILT=0) 零行为, 不加载任何数据.
+_MRG_MAP = None
+_MRG_TILT = float(os.environ.get('QUANT_MRG_TILT', '0') or 0)
+_MRG_THR = float(os.environ.get('QUANT_MRG_THR', '3.0') or 3.0)
+_MRG_WIN = int(os.environ.get('QUANT_MRG_WIN', '5') or 5)
+_MRG_AGE = int(os.environ.get('QUANT_MRG_AGE', '10') or 10)
+
+
+def _mrg_load():
+    global _MRG_MAP
+    if _MRG_MAP is not None:
+        return _MRG_MAP
+    try:
+        df = pd.read_pickle('/mnt/d/quant/data/alternative_data/margin_detail.pkl')
+        df = df[pd.to_numeric(df['rzye'], errors='coerce') > 0]
+        df['date'] = pd.to_datetime(df['date'])
+        df['code'] = df['code'].astype(str).str.zfill(6)
+        df = df.sort_values(['code', 'date']).drop_duplicates(['code', 'date'],
+                                                              keep='last')
+        _MRG_MAP = {c: (g['date'].values,
+                        pd.to_numeric(g['rzye'], errors='coerce').values.astype(float))
+                    for c, g in df.groupby('code')}
+    except Exception:
+        _MRG_MAP = {}
+    return _MRG_MAP
+
+
+def _mrg_crowded(code, date):
+    """入场决策日融资拥挤? mchg_win >= thr (percent). 无数据/过期/窗口不足 → False."""
+    if _MRG_MAP is None:
+        _mrg_load()
+    arr = _MRG_MAP.get(str(code).zfill(6))
+    if arr is None:
+        return False
+    d, rz = arr
+    i = int(np.searchsorted(d, np.datetime64(pd.Timestamp(date)), side='left')) - 1
+    if i < _MRG_WIN:
+        return False
+    if (pd.Timestamp(date) - pd.Timestamp(d[i])).days > _MRG_AGE:
+        return False
+    base = rz[i - _MRG_WIN]
+    if not (base == base) or base <= 0:   # NaN守卫
+        return False
+    return (rz[i] / base - 1.0) * 100.0 >= _MRG_THR
+
+
 # F-G2 回撤门控 (2026-09-23): bracket证实裸倾斜MDD单调恶化(15.46→15.99),
 # 年分解6/6年正 → 方向真但需风险预算. dd≤LO全倾斜, LO~HI线性衰减, ≥HI零倾斜
 # (回撤期回到锚点行为). env QUANT_LIQ_TILT=0时门控无关=零行为.
@@ -2541,6 +2597,13 @@ class PortfolioConstructor:
                     _dd_boosted_codes.add(c['code'])  # J-2b加性: 归一化后现金出资追加
                 else:
                     w = w * _DD_BOOST  # J-2旋转: 归一化稀释(实测传输≈0)
+            # 臂钩子(2026-10-23, QUANT_MRG_TILT=0零行为): 融资拥挤新仓相对加权 —
+            # 已入选腿确认信号(依据见 _mrg_crowded 注释), w×(1+tilt) 后续归一化
+            # 保持相对再分配(总敞口不变, 非杠杆), 选择集合不变. 仅新仓(非持仓).
+            if _MRG_TILT > 0.0 and current_positions.get(c['code'], 0.0) <= 0 \
+                    and _mrg_crowded(c['code'], date):
+                w = w * (1.0 + _MRG_TILT)
+                self._dbg['mrg_tilt'] = self._dbg.get('mrg_tilt', 0) + 1
             val = w * total_equity
             min_lot = c['price'] * 100
             if val < min_lot:
@@ -3680,6 +3743,9 @@ class PortfolioConstructor:
             print(f"  行业上限(industry_max_weight={self.industry_max_weight}): "
                   f"{_ic['hits']}/{_ic['days']} 次选股触发 "
                   f"({_ic['hits']/_ic['days']*100:.0f}%), 累计削减权重={_ic['cut']:.2f}")
+        if d.get('mrg_tilt'):
+            print(f"  融资拥挤加权(MRG_TILT={_MRG_TILT:.2f} thr={_MRG_THR:.1f}): "
+                  f"{d['mrg_tilt']} 次新仓加权")
         _m = d.get('mhd')
         if _m and _m.get('days'):
             _avg = _m['held_days_sum'] / max(_m['eligible'], 1)
