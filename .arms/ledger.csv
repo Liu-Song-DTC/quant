@@ -144,3 +144,4 @@ ts,data_label,tag,nav,md5,env
 2026-10-23 18:20:45,mrg_1023,mrgT030,1320883.1785770333,6c25a16ab4b0c6fef94a6693253c0a8d,QUANT_MRG_TILT=0.30 thr3 win5; 触发=33; vs anchor_1022
 2026-10-23 18:26:24,mrg_1023,VERDICT,,,不采纳 全族闭合: tW纯仓位结构不动(62.65=62.65 166笔 Jacc1); |ΔNAV|≤1.8k非单调; margin_detail=有信号不可变现家族第7例
 2026-10-23T20:45,anchor_1022,wrslice4_decay_EXIT,REJECTED+CLOSED,na,na,.venv
+2026-10-23T21:20,anchor_1022,jgdy_realized_first,CLOSED_FAM8,na,na,.venv
