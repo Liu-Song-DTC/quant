@@ -21,7 +21,7 @@ def load(tag):
 
 
 def yearly(eq):
-    e = eq.set_index('date')['equity']
+    e = eq.set_index('date')['nav']
     out = {}
     for y, g in e.groupby(e.index.year):
         out[y] = g.iloc[-1] / g.iloc[0] - 1
@@ -40,17 +40,17 @@ def main():
         print('⛔ 无锚')
         return
     a_eq, a_tr, a_sel = data['anchor_1022']
-    a_nav = a_eq['equity'].iloc[-1]
-    a_ret = a_eq.set_index('date')['equity'].pct_change()
-    a_dd = (a_eq['equity'] / a_eq['equity'].cummax() - 1).min()
+    a_nav = a_eq['nav'].iloc[-1]
+    a_ret = a_eq.set_index('date')['nav'].pct_change()
+    a_dd = (a_eq['nav'] / a_eq['nav'].cummax() - 1).min()
     print(f'anchor_1022: NAV {a_nav:,.0f} | 交易 {len(a_tr)} 笔 tW '
           f'{(a_tr.ret > 0).mean()*100:.2f}% | MDD {a_dd*100:.2f}%')
     yy = yearly(a_eq)
     for t in tags[1:]:
         eq, tr, sel = data[t]
-        nav = eq['equity'].iloc[-1]
-        ret = eq.set_index('date')['equity'].pct_change()
-        dd = (eq['equity'] / eq['equity'].cummax() - 1).min()
+        nav = eq['nav'].iloc[-1]
+        ret = eq.set_index('date')['nav'].pct_change()
+        dd = (eq['nav'] / eq['nav'].cummax() - 1).min()
         sr = np.sqrt(252) * ret.mean() / ret.std()
         tw = (tr.ret > 0).mean() * 100
         d = nav - a_nav

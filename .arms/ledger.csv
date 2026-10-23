@@ -139,3 +139,7 @@ ts,data_label,tag,nav,md5,env
 2026-10-23 07:43:34,fix348_iso,fix348_iso,1321718.0546206068,cf222d55d4a81fcdf9d84fab2e531fc2,2元闸真实收盘对齐实盘 iso 逐位=锚 (零影响)
 2026-10-23 12:34:05,dragon_tiger_inst_backfill,research_data,,,"新文件 47093股日/5588只/2021-01~2026-10 机构席位明细; 不在指纹4alt文件, 研究态不进refresh链; §19 无可变现信号"
 2026-10-23 17:41:33,mrg_probe,arm,,,"margin_detail回补4614371行/4569只/→10-20; mchg5>=3% realized 33笔 tW75.8 vs 59.4 (+16.4pp) 首个真分离; 非动量重编码(corr-0.10); 调节变量(未入选拥挤34.5%<46.5%) ⇒ 相对加权臂#395; 探针margind{,2,3,4}_1023"
+2026-10-23 18:00:56,mrg_1023,mrgT010,1323541.9012555117,3a0c576002b0b688c941bc63db1b84d9,QUANT_MRG_TILT=0.10 thr3 win5; 触发=33; vs anchor_1022
+2026-10-23 18:10:47,mrg_1023,mrgT020,1323384.2405847334,8026ddc6d56cd64f6fb7f613ac166946,QUANT_MRG_TILT=0.20 thr3 win5; 触发=33; vs anchor_1022
+2026-10-23 18:20:45,mrg_1023,mrgT030,1320883.1785770333,6c25a16ab4b0c6fef94a6693253c0a8d,QUANT_MRG_TILT=0.30 thr3 win5; 触发=33; vs anchor_1022
+2026-10-23 18:26:24,mrg_1023,VERDICT,,,不采纳 全族闭合: tW纯仓位结构不动(62.65=62.65 166笔 Jacc1); |ΔNAV|≤1.8k非单调; margin_detail=有信号不可变现家族第7例
