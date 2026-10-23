@@ -57,6 +57,16 @@ def _dump(f, obj):
     os.replace(tmp, f)
 
 
+def _part_has_rows(f):
+    """缓存part文件是否已有事件行 (来源撤回守卫的判据)。"""
+    if not os.path.exists(f):
+        return False
+    try:
+        return len(pickle.load(open(f, 'rb'))) > 0
+    except Exception:
+        return False
+
+
 def _api_says_empty(code, timeout=15):
     """东财**明确答复**"该码无分红送配记录" ⇒ True; 其余(含无法判定) ⇒ False。
 
@@ -114,10 +124,22 @@ def fetch_one(code):
         time.sleep(0.4 * (attempt + 1))
     if d is None:
         if _api_says_empty(code):
+            # ⚠ 2026-10-24 修 (navlaw −27% 事故): **来源撤回守卫** — 本地曾有条事件而
+            #   东财现答复9201 ⇒ 不是"本就无事件", 是源把记录撤了(实测 000016 24条
+            #   1993-2021 分红一夜蒸发 ⇒ 复权序列历史改写 ⇒ ML 全量重训 ⇒ NAV −27%)。
+            #   铁律: 数据只 append, 源撤回不授权改写历史 ⇒ 保留旧值 + 大声报警。
+            if _part_has_rows(f):
+                print(f'[来源撤回守卫] {code}: 东财现答复9201 但本地曾有事件 '
+                      f'⇒ 保留旧值不覆写, 请人工核查!', flush=True)
+                return 'keep_old'
             _dump(f, [])
             return 'nodata'                # 东财明确答复"无此数据", 不是抓取失败
         return 'FAIL'                      # 真接口失败 ⇒ 不写缓存, 下次重试
     if not len(d):
+        if _part_has_rows(f):              # 同上: 空表覆写有历史事件的码 = 来源撤回
+            print(f'[来源撤回守卫] {code}: 东财现返回空表 但本地曾有事件 '
+                  f'⇒ 保留旧值不覆写, 请人工核查!', flush=True)
+            return 'keep_old'
         _dump(f, [])
         return 0
     d = d[d['除权除息日'].notna()].copy()

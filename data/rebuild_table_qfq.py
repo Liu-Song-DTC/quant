@@ -330,6 +330,18 @@ def main():
         if _lost_a.any():
             out.loc[_lost_a, 'amount'] = _ra_out[_lost_a].values
         out['volume'] = out['volume'].fillna(0)
+        # ⚠ 2026-10-24 修 (navlaw −27% 事故): volume 的 int/float **文本格式**必须跟随
+        #   旧 bt 文件 — merge 引入 NaN(新交易日行)会把整列升成 float64 ⇒ to_csv 全列
+        #   写 '17521.0' ⇒ **数值零变化但逐字节历史改写** ⇒ ML chunk 字节级指纹全失效
+        #   ⇒ 全量重训 (实测 2026-10-23: 002731/002388 格式噪声 × 000016 事件撤回
+        #   ⇒ 24选股日翻转 ⇒ NAV 1,321,718→965,332)。
+        #   规则: 旧 bt volume 是整型 dtype 且本列全整值 ⇒ 回写 int64 (旧文件本就是
+        #   float 格式的股如 002673 不动, 保持其既有格式)。
+        if pd.api.types.is_integer_dtype(b2['volume']) \
+                and out['volume'].notna().all() \
+                and float(np.abs(out['volume'].values
+                                 - np.round(out['volume'].values)).max(initial=0.0)) == 0.0:
+            out['volume'] = out['volume'].astype('int64')
         out['openinterest'] = out['openinterest'].fillna(0.0)
         out['amount'] = out['amount'].fillna(np.nan)
         if _lost_v.any() or _lost_a.any():

@@ -309,6 +309,36 @@ def main():
 
     m = pd.DataFrame(rows, columns=['code', 'ex_date', 's', 'D', 'mult', 'src'])
     m = m.sort_values(['code', 'ex_date']).reset_index(drop=True)
+
+    # ── 冻结事件pin (2026-10-24, navlaw −27% 事故修复) ─────────────────────────
+    # 锚态已登记的事件乘数, 不随源漂移/撤回而改写 (铁律: 数据只append)。
+    # 来源: .arms/fix_restore_mult_1023.py 从锚态 bt 字节反解 (逐字节复现验证)。
+    # 融合值与pin差>0.5% ⇒ 大声报警(可能是真修正), 但仍按pin执行, 请人工核查。
+    _FROZEN = f'{ALT}/events_frozen.pkl'
+    if os.path.exists(_FROZEN):
+        fz = pd.read_pickle(_FROZEN)
+        n_pin = n_ins = 0
+        for r in fz.itertuples():
+            _ex = pd.Timestamp(r.ex_date)
+            sel = (m['code'] == str(r.code).zfill(6)) & (m['ex_date'] == _ex)
+            if sel.any():
+                old = m.loc[sel, 'mult'].iloc[0]
+                if isinstance(old, float) and np.isfinite(old) \
+                        and abs(old / r.mult - 1) > 0.005:
+                    print(f'  ⚠ [事件pin] {r.code}@{r.ex_date}: 融合值 {old:.6f} 与冻结值 '
+                          f'{r.mult:.6f} 差>0.5% — 可能是真修正, 请人工核查 events_frozen.pkl!',
+                          flush=True)
+                m.loc[sel, ['s', 'D', 'mult', 'src']] = [r.s, r.D, r.mult, 'frozen']
+                n_pin += 1
+            else:
+                m = pd.concat([m, pd.DataFrame([{
+                    'code': str(r.code).zfill(6), 'ex_date': _ex, 's': r.s,
+                    'D': r.D, 'mult': r.mult, 'src': 'frozen'}])],
+                    ignore_index=True)
+                n_ins += 1
+        m = m.sort_values(['code', 'ex_date']).reset_index(drop=True)
+        print(f'  [事件pin] 冻结 {len(fz)} 条: 覆写 {n_pin} / 补插 {n_ins}')
+
     _backdate_guard(m, a.out)
     m.to_pickle(a.out)
     print(f'\n=== 落盘 {a.out} ===')
