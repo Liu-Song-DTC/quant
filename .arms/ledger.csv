@@ -145,3 +145,4 @@ ts,data_label,tag,nav,md5,env
 2026-10-23 18:26:24,mrg_1023,VERDICT,,,不采纳 全族闭合: tW纯仓位结构不动(62.65=62.65 166笔 Jacc1); |ΔNAV|≤1.8k非单调; margin_detail=有信号不可变现家族第7例
 2026-10-23T20:45,anchor_1022,wrslice4_decay_EXIT,REJECTED+CLOSED,na,na,.venv
 2026-10-23T21:20,anchor_1022,jgdy_realized_first,CLOSED_FAM8,na,na,.venv
+2026-10-23T19:55,anchor_1022,usnight_4layer,CLOSED_FAM9,na,na,.venv
