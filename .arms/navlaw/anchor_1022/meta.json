@@ -1,0 +1,30 @@
+{
+ "label": "anchor_1022",
+ "ts": "2026-10-22 23:00:00",
+ "git_head": null,
+ "git_dirty": null,
+ "files": {
+  "equity_curve.csv": {
+   "md5": "cf222d55d4a81fcdf9d84fab2e531fc2",
+   "size": 63814
+  },
+  "portfolio_selections.csv": {
+   "md5": "d0ac44c5ef15b66d81b6ae255dc2c91f",
+   "size": 8916
+  },
+  "trade_realized.csv": {
+   "md5": "c991fac7282ea3b6b37de3a1a19f5057",
+   "size": 14774
+  },
+  "backtest_report.json": {
+   "md5": "80637def28466380c9cd85472e586dea",
+   "size": 6578
+  }
+ },
+ "src": "reconstructed from *.anchor_1022 artifacts",
+ "note": "anchor_1022 \u751f\u4ea7\u951a (todate=2026-10-22, cap2+AH+temom \u91c7\u7eb3\u540e) \u56de\u6eaf\u94f8\u4e3a navlaw \u57fa\u7ebf; 2026-10-23 \u8865\u94f8 \u2014 \u539f\u94f8\u9020\u665a\u672a\u8dd1 navlaw snap, 10-21 \u57fa\u7ebf\u5c5e mp3 \u65f6\u4ee3, \u76f4\u63a5\u5bf9\u6bd4\u4f1a\u8bef\u62a5",
+ "last_date": "2026-10-21",
+ "first_date": "2021-01-04",
+ "n_days": 1403,
+ "nav_end": 1321718.0546206068
+}
