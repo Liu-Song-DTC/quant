@@ -1100,6 +1100,13 @@ class PortfolioConstructor:
             self._repo_dates = {
                 c: pd.to_datetime(g['NOTICEDATE']).values.astype('datetime64[ns]')
                 for c, g in plans.groupby('code')}
+            # #353: 惰性重开告警 — flag只回看30天, 文件停更时新公告静默漏flag.
+            _mx = pd.to_datetime(plans['NOTICEDATE']).max()
+            _lag = (pd.Timestamp.now().normalize() - _mx).days
+            if _lag > 30:
+                print(f"[Portfolio] ⚠ repurchase_plans 数据末 {_mx.date()} 落后 {_lag} 天 — "
+                      f"回购flag只回看30天, 新公告缺失将静默漏flag; 请更新 "
+                      f"data/alternative_data/repurchase_plans.pkl")
         arr = self._repo_dates.get(code)
         if arr is None:
             return False

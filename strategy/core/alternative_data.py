@@ -776,6 +776,15 @@ class AlternativeDataProvider:
         df['code'] = df['code'].astype(str).str.zfill(6)
         for c in ('rzye', 'rzmre', 'rqyl'):
             df[c] = pd.to_numeric(df[c], errors='coerce')
+        # #353: 惰性重开告警 — 本文件被 margin_features.enabled 门控消费(默认关),
+        # 停更时特征面静默用旧截面; 落后>10天即报, 别等数值异样才发现.
+        try:
+            _lag = (pd.Timestamp.now().normalize() - pd.Timestamp(df['date'].max())).days
+            if _lag > 10:
+                print(f"[AltData] ⚠ margin_detail 数据末 {df['date'].max()} 落后 {_lag} 天 — "
+                      f"两融特征将用过期截面; 请回填 data/margin_detail_backfill.py")
+        except Exception:
+            pass
         return df
 
     def get_margin_feature_frame(self) -> pd.DataFrame:

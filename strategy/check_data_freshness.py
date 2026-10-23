@@ -11,6 +11,8 @@
     北向 northbound_daily:        同上
     概念历史 concept_hist:        各板块最大日期 ≥ 预期交易日 (白名单: 东财下架板块)
     基本面 fundamental_data:      最大报告期 ≥ 应披露的最新报告期
+    龙虎榜上榜史 dragon_tiger_history: 最新上榜日 ≥ 上一交易日 (信号层输入, #353)
+    复权事件表 events_table:  事件数/覆盖股数 ≥ 结构性地板 (塌陷=复权面损坏, #353)
   软警告 (事件驱动型, 不阻断):
     龙虎榜/减持记录/减持计划/业绩预告/解禁: 仅报告最后日期
     概念映射 stock_concept_map:   mtime 超过14天提醒
@@ -321,6 +323,57 @@ def check_concept_map():
     return ok, f'概念映射: mtime {age.days}天前 (软警告, 阈值14天)'
 
 
+def check_events_table():
+    """#353: events_table.pkl (表驱动复权的事件表) 注册门禁。
+    结构性塌陷(n_events/n_codes 骤减) ⇒ 硬失败 — 全史事件表只增不减,
+    37k 事件跌到 <1k = 复权面静默损坏(新事件全部不复权), 必须拦。
+    data_end 落后 ⇒ 仅在消息里报告(事件稀疏, 滞后1-2天无害, 阻断会误伤)。"""
+    import json
+    meta_p = ALT_DIR / '.events_table_meta.json'
+    pkl_p = ALT_DIR / 'events_table.pkl'
+    if not meta_p.exists() or not pkl_p.exists():
+        return False, 'events_table: 表或meta不存在 (data/build_events_table.py 未跑?)'
+    try:
+        with open(meta_p) as fh:
+            meta = json.load(fh)
+        n_ev, n_cd = int(meta['n_events']), int(meta['n_codes'])
+        de = meta.get('data_end') or '?'
+    except Exception as e:
+        return False, f'events_table: meta 读取失败 {str(e)[:50]}'
+    ok = n_ev >= 1000 and n_cd >= 3000
+    return ok, f'events_table(复权事件表): {n_ev:,}事件/{n_cd:,}只, data_end={de}'
+
+
+def check_dragon_tiger_history(exp):
+    """#353: dragon_tiger_history.pkl 是信号层四文件之一 (bt_execution._SIGNAL_ALT_FILES,
+    get_dragon_tiger_signal 直接消费), 但此前不在门禁 — 若重建步静默失败而
+    dragon_tiger.pkl 本体新鲜, 信号层会持续用旧上榜史而无任何告警。
+    schema = {code: set(datetime.date)} (check_alt_pkl 只认 DataFrame, 需专用检查)。
+    期望 ≥ 上一交易日 (同 margin/northbound: T+1 晨发布口径的下界, 真抓取失败
+    max 会停在更早 ⇒ 照样 FAIL)。"""
+    name = 'dragon_tiger_history.pkl'
+    p = ALT_DIR / name
+    if not os.path.exists(p):
+        return False, f'{name}: 文件不存在!'
+    try:
+        obj = pd.read_pickle(p)
+        if not isinstance(obj, dict) or not obj:
+            return False, f'{name}: 非 dict 或全空!'
+        mx = None
+        for v in obj.values():
+            if v:
+                m = max(v)
+                if mx is None or m > mx:
+                    mx = m
+        if mx is None:
+            return False, f'{name}: 所有股票上榜集合全空!'
+        exp_d = prev_trading_day(exp)
+        ok = pd.Timestamp(mx).date() >= exp_d
+        return ok, f'{name}(信号层): 最新上榜 {mx} (期望≥{exp_d})'
+    except Exception as e:
+        return False, f'{name}: 读取失败 {str(e)[:50]}'
+
+
 def main():
     ap = argparse.ArgumentParser(description='实盘选股数据新鲜度门禁')
     ap.add_argument('--expected', type=str, default=None,
@@ -343,6 +396,8 @@ def main():
         check_margin_sanity(),
         check_northbound_sanity(),
         check_concept_sanity(),
+        check_dragon_tiger_history(exp),
+        check_events_table(),
     ]
     soft = [
         check_alt_pkl('dragon_tiger.pkl', '最近上榜日', exp),

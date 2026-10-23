@@ -172,3 +172,49 @@
   none.csv 无行 + 少数无 raw 码), 读取失败 0。
 - 状态: 生产已打补丁并提交 (c432557); 下次每日流再付一次再生
   (27e6fc54→新态, 信号逐格不变已证 ⇒ 决策不变, 代价纯时间)。
+
+## §8 数据层全量审计 (#353, 2026-10-23)
+
+用户 10/18 裁定"数据是根本" ⇒ 全量盘点 alternative_data + 数据链新鲜度覆盖。
+逐文件消费链普查 (谁在生产读它 / 冻结与否 / 门禁是否覆盖):
+
+| 文件 | 消费层 | 生产态 | 冻结日 | 门禁 | 判定 |
+|---|---|---|---|---|---|
+| margin_daily.pkl | 信号层(ML特征+闸) | 活跃 | — | 硬+sanity | ✅已覆盖 |
+| northbound_daily.pkl | 信号层 | 活跃 | — | 硬+sanity | ✅已覆盖 |
+| dragon_tiger_history.pkl | 信号层(_SIGNAL_ALT_FILES) | 活跃 | — | **硬(#353补)** | G1修复 |
+| dragon_tiger.pkl | 组合层 | 活跃 | — | 软(最近上榜日) | ✅合理(事件驱动) |
+| yjyg/unlock/reduction×2 | 组合层 | 活跃 | — | 软 | ✅合理(事件驱动) |
+| **margin_detail.pkl** | 信号层ML特征 | **惰性** | 8-26 | 无 | G2告警已补 |
+| **repurchase_plans.pkl** | 组合层(E-K2.5) | **惰性** | 9-11 | 无 | G2告警已补 |
+| holdernum_det/increase_records | — | 休眠(无生产消费者) | — | 无 | 登记即可 |
+| research_reports/blocktrades | — | 休眠 | — | 无 | 登记即可 |
+| **events_table.pkl** | 数据层(复权表) | 活跃 | — | **硬地板(#353补)** | G3修复 |
+| concept_hist/map | 信号层 | 活跃 | — | 硬+软 | ✅已覆盖 |
+| fundamental_data | 信号层 | 活跃 | — | 硬+sanity | ✅已覆盖 |
+
+**G1 (已修)**: dragon_tiger_history 是信号层四文件之一, 却不在门禁 — 重建步
+静默失败而 tiger.pkl 本体新鲜时, 信号层持续用旧上榜史无告警。补 dict 感知
+硬检查 (max上榜日 ≥ 上一交易日, 同 margin/northbound 下界口径)。实测 PASS
+(2026-10-21)。
+
+**G2 (已修)**: 惰性文件的失明风险 — margin_detail(8-26冻结)/repurchase_plans
+(9-11冻结) 被开关门控 (margin_features.enabled=false / repo_score_boost=0),
+停更无人知晓。在 load_margin_detail / _repo_flag 加载数打印落后告警 (>10天 /
+>30天) — 关着时不打印(零噪声), 一旦重开立即自曝。实测均如实触发。
+
+**G3 (已修)**: events_table 无独立门禁 — 依赖链内 set -e + _backdate_guard。
+补硬地板 (n_events≥1000 且 n_codes≥3000; 现值 37,279/5,097): 全史事件表
+只增不减, 骤减=复权面静默损坏; data_end 落后仅报告(事件稀疏, 滞后无害)。
+
+**结论**: 数据层新鲜度覆盖闭合 — 7 活跃 alt 文件 + 事件表 + 概念 + 基本面 +
+K线 全部有门禁或告警; 2 休眠文件登记; 无失明缝隙。
+
+**⚠指纹核对 (审计中自查出断言错误并修正)**: 初稿写"三次编辑均不触信号指纹"
+是**错的** — `core/alternative_data.py` 在 `_FACTOR_CODE_FILES` 清单里
+(factor_preparer.py:298), G2 对它的编辑触了信号代码指纹 (27e6fc54→974190bf)。
+边际成本=0: #348 生产落地 (c432557) 已注定下次运行付一次 ~85min 再生,
+本编辑合并进同一次再生 (每运行只再生一次, 非累计)。且再生内容已证逐格不变
+(#348 phase2: 0/6,847,747) ⇒ 决策不变, 纯时间。portfolio.py /
+check_data_freshness.py 确实不在指纹 (清单=13因子文件+signal_engine+
+ml_predictor+bt_execution+yaml+季度权重+概念映射+alt四文件)。
