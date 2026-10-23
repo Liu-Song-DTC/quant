@@ -18,10 +18,10 @@ mkdir -p /mnt/d/quant/logs
 REFRESH_LOG=/mnt/d/quant/logs/refresh_$(date +%Y%m%d_%H%M%S).log
 echo "完整日志: $REFRESH_LOG"
 
-echo "=== 1/9 K线增量 (akshare/efinance中继代理, EM侧复权变化自动全量重载) ==="
+echo "=== 1/10 K线增量 (akshare/efinance中继代理, EM侧复权变化自动全量重载) ==="
 QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/akshare_kline_downloader.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
 
-# ── 2/9 事件表 ────────────────────────────────────────────────────────────────
+# ── 2/10 事件表 ────────────────────────────────────────────────────────────────
 # 复权口径 = **表驱动乘性**(2026-10-17 接入). 旧链路 `convert_raw_to_backtrader.py`
 # 直通东财**加性**前复权(qfq=(raw−C)/Π), 在非除权日不保收益:
 #   实测失真 `ret_q/ret_n = raw·Π/qfq` 随累计分红单调增 ⇒ amp>1.10 占 13.9%, 尾部 7.2×;
@@ -29,7 +29,7 @@ QUANT_ALT_NO_AUTOREFRESH=1 $PY -u data/akshare_kline_downloader.py 2>&1 | tee -a
 #   ⇒ 违反铁律"更新今天不得改写历史"。
 # 新口径: W(0)=raw(0); 事件日 W(t)=W(t−1)·((1+s)·raw(t)+D)/raw(t−1); 否则 W(t−1)·raw(t)/raw(t−1)。
 #   非事件日 ⇒ 复权收益 ≡ 裸收益(**恒等式**, 零自由参数)。
-echo "=== 2/9 公司行动表 (东财 stock_fhps_detail_em) + 新浪乘性因子 → 融合事件表 ==="
+echo "=== 2/10 公司行动表 (东财 stock_fhps_detail_em) + 新浪乘性因子 → 融合事件表 ==="
 # 东财表**不是完备事件源**(结构性不覆盖配股/重整转增; 漏"特别股息"), 新浪乘性因子补洞。
 # 两者融合规则见 data/build_events_table.py 的 docstring(逐事件, 无自由阈值)。
 # ⚠ 每天都要拉: 事件**必须在除权日之前**进表, 否则事后补 = 改历史(锚漂移)。
@@ -38,8 +38,8 @@ $PY -u data/fetch_actions_table.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
 $PY -u data/fetch_sina_factors.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
 $PY -u data/build_events_table.py 2>&1 | tee -a "$REFRESH_LOG" | tail -10
 
-# ── 3/9 表驱动复权重建 ────────────────────────────────────────────────────────
-echo "=== 3/9 bt文件重建 (表驱动乘性复权, 建到临时目录后原子换名) ==="
+# ── 3/10 表驱动复权重建 ────────────────────────────────────────────────────────
+echo "=== 3/10 bt文件重建 (表驱动乘性复权, 建到临时目录后原子换名) ==="
 BT_NEW=$SD/.bt_new
 BT_OLD=$SD/.bt_prev
 rm -rf "$BT_NEW"
@@ -72,12 +72,12 @@ if extra:
           f"{' …' if len(extra) > 8 else ''}")
 print(f"  符号集核对: {len(t)} 只, 与生产完全一致")
 EOF
-# ── 3b/9 退化价格守卫 (#356, 2026-10-23) ──────────────────────────────────────
+# ── 3b/10 退化价格守卫 (#356, 2026-10-23) ──────────────────────────────────────
 # 换名前内容级 fail-closed: 负价/零价/NaN/高低倒挂/负量额/重复日期/丢行。
 # 零容忍依据: 10-23 普查 5380 文件全零 (表驱动乘性管线不可能从正 raw 产出非正价)
 # ⇒ 任何命中 = 上游源损坏/管线 bug, 该拒绝换名而不是静默进生产。
 # 行数单调性: raw 只 append ⇒ 产物行数只增不减 (沿用分支逐字节相等) — 丢行=改写历史。
-echo "=== 3b/9 退化价格守卫 (负价/零价/NaN/倒挂/负量额/重复日期/丢行) ==="
+echo "=== 3b/10 退化价格守卫 (负价/零价/NaN/倒挂/负量额/重复日期/丢行) ==="
 $PY -u data/guard_degenerate_prices.py "$BT_NEW" --prod "$SD/backtrader_data" \
     2>&1 | tee -a "$REFRESH_LOG" | tail -20
 # 原子换名: mv 是原子的 ⇒ 任何时刻 backtrader_data 都指向完整目录。
@@ -94,20 +94,20 @@ echo "  已换名; 上一版留在 $BT_OLD (下次刷新时清除)"
 # 本哨兵是专用标记, 无其它删除理由 ⇒ 删锚不会让守卫静默失效。
 touch "$SD/.table_driven_prod"
 
-echo "=== 4/9 基本面 (最近3报告期) ==="
+echo "=== 4/10 基本面 (最近3报告期) ==="
 $PY -u data/refresh_fundamental_recent.py 2>&1 | tee -a "$REFRESH_LOG" | tail -5
 
-echo "=== 5/9 另类数据 (龙虎榜/融资融券/北向/减持/解禁/业绩预告) ==="
+echo "=== 5/10 另类数据 (龙虎榜/融资融券/北向/减持/解禁/业绩预告) ==="
 $PY -u data/refresh_altdata_0902.py 2>&1 | tee -a "$REFRESH_LOG" | tail -12
 
-echo "=== 6/9 概念历史 (60板块日涨跌, 东财K线集群限流时自动轮换重试) ==="
+echo "=== 6/10 概念历史 (60板块日涨跌, 东财K线集群限流时自动轮换重试) ==="
 # 2026-10-12: push2his/push2delay直连被远端切断(同概念映射), 迁中继代理版
 $PY -u data/refresh_concept_hist_relay.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
 
-echo "=== 7/9 概念映射 (股票→概念, push2delay直连已断, 走中继代理) ==="
+echo "=== 7/10 概念映射 (股票→概念, push2delay直连已断, 走中继代理) ==="
 $PY -u data/refresh_concept_map_relay.py 2>&1 | tee -a "$REFRESH_LOG" | tail -6
 
-echo "=== 8/9 转债sleeve数据 (cb_daily/cb_value增量, 2026-10-07激活接线; 失败仅告警不阻塞股票链) ==="
+echo "=== 8/10 转债sleeve数据 (cb_daily/cb_value增量, 2026-10-07激活接线; 失败仅告警不阻塞股票链) ==="
 # 2026-10-15 门控: live_monitoring.cb_sleeve.enabled=false 时整步跳过.
 # 依据: 回测/信号链对 cb_daily/cb_value/cb_sleeve 零读取(grep core/*.py + bt_execution.py = 0 命中),
 #       关闭态下 compute_cb_sleeve() 返回空块; 本步实测耗时 ~22分钟/天(1043只券×2端点+SLEEP=0.3).
@@ -139,9 +139,34 @@ $PY strategy/check_data_freshness.py || {
   echo "!!! 门禁未通过, 请检查上面输出 (K线增量/bt重建失败?)"
   exit 1
 }
+
+echo "=== 9/10 历史格哨兵 (append层零改写验证, #344 常驻化 2026-10-23) ==="
+# 刷新后立即 diff 最近快照: append 层任何历史格改写/消失 ⇒ rc=2 大声报警+旗标落盘。
+# 不拦链: 供应商重述属数据现实(需登记台账), 本管线bug由 navlaw 真闸在出单前拦 NAV 级。
+# 干净与否都滚基线(违反日旗标已立, 新基线=今日事实), 明日 diff 对今日。
+_SNAP_DIR=/mnt/d/quant/.arms/histcells
+_LATEST=$(ls -t $_SNAP_DIR/*.pkl 2>/dev/null | head -1)
+if [ -n "$_LATEST" ]; then
+  _LBL=$(basename "$_LATEST" .pkl)
+  set +e
+  $PY -u strategy/tools/histcells.py diff "$_LBL" 2>&1 | tee -a "$REFRESH_LOG"
+  _HRC=${PIPESTATUS[0]}
+  set -e
+  if [ "$_HRC" -eq 2 ]; then
+    touch "$_SNAP_DIR/VIOLATION_$(date +%Y%m%d_%H%M%S)"
+    echo "!!! 历史格哨兵: append 层出现改写/消失 (上方分层明细 + 登记台账 .arms/ledger.csv)"
+    echo "    处置: 供应商重述→登记台账+照常出单; 本管线bug→停链排查后再出单"
+  fi
+  $PY -u strategy/tools/histcells.py snap "roll_$(date +%Y%m%d)" 2>&1 | tee -a "$REFRESH_LOG" | tail -3 \
+    || echo "!!! 哨兵基线滚存失败(不阻塞出单; 检查磁盘/权限, 明日 diff 将对旧基线)"
+  ls -t $_SNAP_DIR/roll_*.pkl 2>/dev/null | tail -n +3 | xargs -r rm -f
+else
+  echo "  [跳过] 无基线快照 (首次基线: $PY strategy/tools/histcells.py snap base_<date>)"
+fi
+
 echo "=== 全部新鲜, 可以出单: cd strategy && $PY generate_trade_orders.py ==="
 
-echo "=== 9/9(附加) 打新提醒 (新股/新债今日申购清单→strategy/ipo_today.json, 仅信息块; 失败不阻塞) ==="
+echo "=== 10/10(附加) 打新提醒 (新股/新债今日申购清单→strategy/ipo_today.json, 仅信息块; 失败不阻塞) ==="
 QUANT_ALT_NO_AUTOREFRESH=1 $PY strategy/tools/ipo_reminder.py 2>&1 | tee -a "$REFRESH_LOG" | tail -15 || {
   echo "!!! 打新提醒获取失败(不影响出单; 手动: $PY strategy/tools/ipo_reminder.py)"
 }
