@@ -149,3 +149,4 @@ ts,data_label,tag,nav,md5,env
 2026-10-23T20:50,anchor_1022,ussec_4layer,CLOSED_FAM9b,na,na,.venv
 2026-10-23T20:47,anchor_1022,histcells_first_auto,SUPPLIER_RESTATE_JUDGED,na,"raw_none改写=12日重叠窗口 keep=last (设计机制); 样本OHLCV/amount与10-21构建逐位同, 仅换手率差±0.02pp; bt旧日改写=公司行动重述(#369类, 000016 close±0.32% 370日); NAV影响待navlaw",.venv
 2026-10-23T20:50,anchor_1022,breadth_4feat,CLOSED_DAYTYPE2,na,"池级Q5尖峰非单调 w5 CI含0 (156信号日); 指数>MA20共线; realized反向 (b20高60.7 vs 低64.6; r5pos高59.0 vs 低66.3) ⇒ 不接",.venv
+2026-10-23T20:57,anchor_1022,board_4,CLOSED_BOARD,na,"池级科创−沪主板 w5 −1.67pp CI含0; realized科创tW 72.2%(n=36)最高/均+8.88% ⇒ 跳过会砍最好一批; 板块维度闭合",.venv
