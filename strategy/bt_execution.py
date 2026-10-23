@@ -546,12 +546,19 @@ def _ml_chunk_save(_key: str, _idx: int, _outcome: str, _val_ic, _model,
     _ent = {'idx': _idx, 'outcome': _outcome, 'val_ic': _val_ic, 'model': None}
     try:
         os.makedirs(_ML_CHUNK_CACHE_DIR, exist_ok=True)
-        _pfile = f'chunk_{_idx}_preds.parquet'
+        # ⚠ 2026-10-24 修 (navlaw −27% 事故二次地雷): 文件名必须用**缓存键**而不是
+        #   chunk 序号 — 旧实现 `chunk_{idx}_*` 让不同数据态的键**碰撞覆写同一批
+        #   文件**: 数据回退/重锚后, 锚期键在 manifest 里命中却读到**新数据态训练的
+        #   模型**(load 只查 manifest 不验文件身份) = 静默错误模型进入信号生成。
+        #   实测 2026-10-23: 000016 事件撤回 ⇒ 全 chunk 重训覆写 ⇒ 字节恢复后锚键
+        #   全部命中错误模型, 被迫整目录隔离+全量重训。键命名后不同数据态各存各的,
+        #   旧 idx 命名条目经 manifest 引用仍可加载(向后兼容)。
+        _pfile = f'chunk_{_key}_preds.parquet'
         _pdf = pd.DataFrame({'code': _codes_arr, 'date': _dates_arr, 'ml_pred': _preds_arr})
         _pdf.to_parquet(os.path.join(_ML_CHUNK_CACHE_DIR, _pfile), index=False)
         _ent['preds'] = _pfile
         if _model is not None:
-            _mfile = f'chunk_{_idx}_model.json'
+            _mfile = f'chunk_{_key}_model.json'
             _model.save_model(os.path.join(_ML_CHUNK_CACHE_DIR, _mfile))
             _ent['model'] = _mfile
         _m[_key] = _ent
