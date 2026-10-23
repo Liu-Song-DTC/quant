@@ -167,6 +167,9 @@ DATA_PATH = os.path.normpath(os.environ.get('QUANT_DATA_PATH') or config.get(
     'paths.data', os.path.join(_PROJECT_DIR, 'data/stock_data/backtrader_data/'))
 ).rstrip(os.sep) + os.sep
 FUNDAMENTAL_PATH = config.get('paths.fundamental', os.path.join(_PROJECT_DIR, 'data/stock_data/fundamental_data/'))
+# #348 (2026-10-23): 2元闸真实收盘来源 — 与实盘 generate_trade_orders.RAW_DATA_DIR 同源
+# (实盘 prices[code] < 2.0 读 none.csv 裸价; 回测此前用 VWAP, 口径不一致违反"实盘=回测").
+RAW_DATA_PATH = os.path.join(_PROJECT_DIR, 'data/stock_data/raw_data')
 
 
 def _signal_code_fingerprint() -> str:
@@ -2030,6 +2033,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     low_px = np.full_like(close_px, np.nan)  # 分段建仓(2026-10-10): 限价单触发用当日最低价
     volume_m = np.zeros_like(close_px)
     amount_m = np.zeros_like(close_px)  # 真实成交额(元) — 文件自带列, 宇宙闸用(2026-10-17)
+    raw_close_m = np.full_like(close_px, np.nan)  # #348: none.csv 真实收盘, 2元闸用
     tradable = np.zeros_like(close_px, dtype=bool)
 
     from core.stock_pool import _is_non_stock_series
@@ -2051,6 +2055,24 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         if _is_non_stock_series(df):
             _nonstock.append(code)
             continue
+        # #348: 读 none.csv 真实收盘 (窗口过滤, 重复日期去重, 无 ffill — 停牌日 NaN
+        # ⇒ 该日不可交易, 与实盘"无价行⇒排除"一致). 失败/缺文件 ⇒ 全 NaN ⇒ 兜底 VWAP.
+        _rp = os.path.join(RAW_DATA_PATH, code, 'none.csv')
+        if os.path.exists(_rp):
+            try:
+                _rd = pd.read_csv(_rp, encoding='utf-8-sig')
+                _rd.columns = [str(c).strip().lstrip('\ufeff') for c in _rd.columns]
+                if '日期' in _rd.columns and '收盘' in _rd.columns:
+                    _rc = pd.Series(pd.to_numeric(_rd['收盘'], errors='coerce').values,
+                                    index=pd.DatetimeIndex(
+                                        pd.to_datetime(_rd['日期'], errors='coerce')))
+                    _rc = _rc[_rc.index.notna()]
+                    _rc = _rc[~_rc.index.duplicated()]
+                    _rc = _rc[(_rc.index >= pd.Timestamp(fromdate)) &
+                              (_rc.index <= pd.Timestamp(todate))]
+                    raw_close_m[:, j] = _rc.reindex(calendar).values.astype(np.float32)
+            except Exception as _e:
+                print(f"  [raw收盘读取失败] {code}: {type(_e).__name__} {_e}")
         df = df.reindex(calendar)
         close_px[:, j] = df['close'].ffill().values.astype(np.float32)
         open_px[:, j] = df['open'].ffill().values.astype(np.float32)
@@ -2063,6 +2085,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         stock_codes = [stock_codes[j] for j in _keep]
         close_px, open_px, low_px = close_px[:, _keep], open_px[:, _keep], low_px[:, _keep]
         volume_m, amount_m = volume_m[:, _keep], amount_m[:, _keep]
+        raw_close_m = raw_close_m[:, _keep]
         code_to_idx = {c: i for i, c in enumerate(stock_codes)}
         idx_to_code = {i: c for i, c in enumerate(stock_codes)}
         print(f"矩阵宇宙: 剔除非个股序列 {len(_nonstock)} 个 (Fix#44 同源判别, #349) "
@@ -2161,9 +2184,16 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     # 20日滚动均值: 用 pandas rolling (沿 time axis=0)
     dv = pd.DataFrame(daily_value, index=calendar, columns=stock_codes)
     avg_daily_value = dv.rolling(20, min_periods=5).mean().shift(1).values
-    _raw_px = np.where((amount_m > 0) & (volume_m > 0),
-                       amount_m / np.maximum(volume_m * 100.0, 1.0),
-                       close_px).astype(np.float32)
+    _vwap_px = np.where((amount_m > 0) & (volume_m > 0),
+                        amount_m / np.maximum(volume_m * 100.0, 1.0),
+                        close_px).astype(np.float32)
+    # #348 (2026-10-23): 2元闸与实盘对齐 — 实盘读 none.csv 真实收盘
+    # (generate_trade_orders.py:840); 回测此前用 VWAP, 全期翻转 2,157/6.88M 格
+    # (0.03%, probe gate2_flip_1023), 锚点决策日交集 0. 真实收盘缺失逐格退回
+    # VWAP 口径 (9d18716 兜底), 不退复权价.
+    _raw_px = np.where(np.isnan(raw_close_m), _vwap_px, raw_close_m)
+    _n_rc = int((~np.isnan(raw_close_m)).sum())
+    print(f"2元闸口径(#348): 真实收盘 {_n_rc:,} 格 / 兜底VWAP {raw_close_m.size - _n_rc:,} 格")
     tradable = (~np.isnan(close_px)) & (_raw_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
     # ST 过滤: 预计算每只股票ST状态时间线后向量化匹配交易日
     # 2026-08-22性能优化: 原双重循环约250万次is_st调用(每次含过滤+排序)耗时~42min
