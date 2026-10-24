@@ -352,7 +352,11 @@ class SignalEngine:
         # Fix#4: 动态阈值百分位 — 从YAML正确读取 (self.config可能为{})
         self._buy_threshold_pct = signal_config.get('buy_threshold_pct', 0.45)
 
-        # === 三系统共振阈值 ===
+        # === 价量确认计数阈值 (⚠§36审计 2026-10-24 改标注: 并非"三系统共振") ===
+        #   sys1=score, sys2=capital_flow, sys3=news_sentiment — 后两者均为**同一K线OHLCV的
+        #   价量代理**, 不构成独立信息源确认。n_buy 只用于 factor_tag 'R{n}' 展示,
+        #   不进 score/闸门。⚠已知交互: R{n} 尾缀参与 fqg 标签串匹配, 使共振股脱离
+        #   premium 名单 (_FLA+R2='_FLAR2' 不在名单) — 改动它=行为变更, 需臂验证 (登记于PLAN)。
         resonance_cfg = signal_config.get('resonance', {})
         self.resonance_sys1_buy_mult = resonance_cfg.get('sys1_buy_threshold_mult', 0.7)
         self.resonance_sys2_cf_threshold = resonance_cfg.get('sys2_cf_score_threshold', 0.5)
@@ -1364,105 +1368,10 @@ class SignalEngine:
         spec_ind = np.full(n, '', dtype=object)
 
         # 始终使用逐bar完整因子选择, 回测和实盘逻辑一致
-        if False:  # 原 latest_only 快速路径已禁用, 保留代码供参考
-            r = regimes['regime']
-            idx = slice(60, n)
-            r_idx = r[idx].astype(int)
-            valid[idx] = True
-            mkt_regime[idx] = r_idx
-
-            sl_arr = _safe_get_arr(ind, 'signal_level', n, 0).astype(int)
-            tt_arr = _safe_get_arr(ind, 'trend_type', n, 0).astype(int)
-            bp_arr = _safe_get_arr(ind, 'buy_point', n, 0).astype(int)
-
-            # 纯因子评分: SL/趋势仅做门控, 分数由因子IC驱动
-            _industry = ''
-            try:
-                if code and hasattr(self, 'dynamic_factor_selector') and \
-                   self.dynamic_factor_selector is not None and \
-                   self.dynamic_factor_selector.factor_library is not None:
-                    lib = self.dynamic_factor_selector.factor_library
-                    _mid_date = dates[min(n-1, max(60, n//2))]
-                    _industry = self._get_specific_industry(code, _mid_date) if code else ''
-                    _scoring = lib.get_scoring_factors(
-                        _industry or '', as_of_date=_mid_date,
-                        fallback_config=_resolve_factor_config(current_date))
-                else:
-                    raise Exception("no lib")
-            except Exception:
-                _scoring = [
-                    ('trend_lowvol', 0.30), ('relative_strength', 0.25),
-                    ('low_downside', 0.25), ('momentum_reversal', 0.20),
-                ]
-
-            factor_contribution = np.zeros(n)
-            bull = r_idx == 1
-            bear = r_idx == -1
-            for fn, w in _scoring[:5]:
-                farr = _safe_get_arr(ind, fn, n, 0.0)
-                if fn == 'momentum_reversal':
-                    contrib_bear = -farr[idx] * w
-                    contrib_other = farr[idx] * w
-                    factor_contribution[idx] += contrib_bear * bear.astype(np.float64)
-                    factor_contribution[idx] += contrib_other * (~bear).astype(np.float64)
-                else:
-                    factor_contribution[idx] += farr[idx] * w
-
-            fval[idx] = factor_contribution
-
-            # Layer 5: 因子名
-            fname[idx][bull] = 'MOM'
-            fname[idx][bear] = 'REV'
-            fname[idx][neutral] = 'REV'
-            # BP8: 横盘突破, 保持专用因子名 (E-E2消融: rev60_override=false时不覆盖)
-            bp_raw2 = _safe_get_arr(ind, 'buy_point', n, 0).astype(int)
-            bp8 = (bp_raw2[idx] == 8)
-            if self.bp8_rev60_override:
-                fname[idx][bp8] = 'REV60'
-
-            # 最新 bar：完整链覆盖
-            last = n - 1
-            current_date = dates[last]
-            market_info = self._get_market_info(current_date)
-            industry_category = self._get_industry_category(code, current_date)
-
-            factor_result = self._select_factor(
-                ind, last, market_info['regime'], industry_category,
-                code=code, current_date=current_date,
-                trend_score=market_info.get('trend_score', 0.0),
-                volatility=market_info.get('volatility', 0.15)
-            )
-            if factor_result is not None:
-                fn, fv, risk_info, is_ind_f = factor_result
-                # 覆盖快速路径的值
-                mkt_regime[last] = market_info['regime']
-                mkt_extreme[last] = market_info['is_extreme']
-                mkt_style_regime[last] = market_info.get('style_regime', 'balanced')
-                mkt_style_score[last] = market_info.get('style_score', 0.0)
-                mkt_style_conf[last] = market_info.get('style_confidence', 0.0)
-                mkt_conf[last] = market_info.get('confidence', 0.0)
-                ind_cat[last] = industry_category
-                # BP8: 横盘突破用 REV60 (均值回归方向, E-E2消融可关)
-                if bp_raw2[last] == 8 and self.bp8_rev60_override:
-                    fname[last] = 'REV60'
-                    _mom60 = _safe_get_arr(ind, 'mom_60d', n, 0.0)[last]
-                    fval[last] = np.tanh(-_mom60 * 2)
-                else:
-                    fname[last] = fn
-                    fval[last] = fv
-                risk_qual[last] = risk_info.get('dyn_quality', 0.0) if risk_info else 0.0
-                risk_hvol[last] = risk_info.get('is_high_vol', False) if risk_info else False
-                is_ind[last] = is_ind_f
-
-                if self.fundamental_enabled and code:
-                    fs = self._get_fundamental_score(code, current_date)
-                    fund_score[last] = fs
-                    has_fund[last] = fs > 0
-                    profit_dec[last] = self._check_profit_decline(code, current_date)
-
-                style_score[last] = self._get_style_score(ind, last, market_info)
-                spec_ind[last] = self._get_specific_industry(code, current_date) if code else ''
-                # _get_chan_boost 输出已被 gate_scorer Gate 1 替代
+        if False:  # 旧 latest_only 快速路径 — 已删除 (§36审计 2026-10-24)
+            # 旧 latest_only 快速路径已删除 (2026-10-24 §36审计: 引用未定义变量 current_date/neutral,
+            #   从未执行; 保留 if False: 骨架避免 ~100 行 else 块重缩进风险)
+            pass
         else:
             # ── 回测路径：预计算数组 + 因子缓存（避免每bar做DataFrame查找）──
             _mkt_regime_arr = regimes['regime'] if regimes is not None else np.zeros(n, dtype=int)

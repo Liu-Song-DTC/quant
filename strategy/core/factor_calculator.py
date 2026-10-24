@@ -323,8 +323,12 @@ def calculate_indicators(
         alignment_score * 0.4 + spread_score * 0.3 + slope_score * 0.3
     )
 
-    # === 趋势强度 ===
-    result['trend_strength'] = (result['ema20'] - result['ema60']) / (result['ema60'] + 1e-10)
+    # === 趋势强度 (EMA版) ===
+    # ⚠ 2026-10-24 §36审计修复: 原名 'trend_strength' 会在下方 L~645 被缠论版**覆写**
+    #   (同 key 两义: EMA版=均线乖离, 缠论版=笔斜率回归)。改名 _ema 消除语义分裂;
+    #   trend_lowvol 只消费 EMA 版 (本行在其覆写之前), factor_df/下游拿到的
+    #   'trend_strength' 列仍是缠论版 → 列值零变化。
+    result['trend_strength_ema'] = (result['ema20'] - result['ema60']) / (result['ema60'] + 1e-10)
 
     # === 斜率 ===
     result['ema20_slope'] = ema20_slope
@@ -381,8 +385,8 @@ def calculate_indicators(
     # 波动率因子 - 使用tanh压缩（与compute_composite_factors一致）
     result['volatility'] = np.tanh(-result['volatility_20'] * 20)
 
-    # 趋势低波动因子: 强趋势+低波动=稳定上涨
-    trend_str = result.get('trend_strength', np.zeros(n))
+    # 趋势低波动因子: 强趋势+低波动=稳定上涨 (消费 EMA 版 trend_strength_ema)
+    trend_str = result.get('trend_strength_ema', np.zeros(n))
     atr_ratio = result.get('atr_ratio', np.zeros(n))
     result['trend_lowvol'] = np.tanh(trend_str * (-atr_ratio) * 50)
 
@@ -641,6 +645,9 @@ def calculate_indicators(
     result['structure_complete'] = chan_result['structure_complete'].astype(float)
     result['alignment_score'] = chan_result['alignment_score']
     result['trend_type'] = chan_result['trend_type']
+    # ⚠ 缠论版覆写 (§36审计定稿): 此后 'trend_strength' = 缠论版; EMA 版存于
+    #   'trend_strength_ema' (上方), 仅 trend_lowvol 消费。下游/factor_df/ML白名单
+    #   拿到的 'trend_strength' 一律为缠论版 (ml feature_whitelist 不含两者)。
     result['trend_strength'] = chan_result['trend_strength']
 
     # === 分型/笔/线段 ===

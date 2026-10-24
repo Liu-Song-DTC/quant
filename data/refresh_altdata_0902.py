@@ -28,7 +28,10 @@ REFRESH_PKLS = [
     ('reduction_records.pkl', 'load_reduction'),
     ('reduction_plans.pkl', 'load_reduction_plans'),
     ('unlock_schedule.pkl', 'load_unlock'),
-    ('yjyg_records.pkl', 'load_yjyg'),
+    # 2026-10-24 §36审计修复: 业绩预告**零生产消费**(仅analysis探针读) + 每日重拉
+    #   还改写历史格(实测2443格/次, 供应商对旧预告持续重述) — 徒劳触发哨兵。停刷;
+    #   yjyg_records.pkl 冻结在最后状态, 若未来接入生产需恢复本行。
+    # ('yjyg_records.pkl', 'load_yjyg'),
 ]
 
 
