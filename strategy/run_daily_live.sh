@@ -31,7 +31,11 @@ chain_alert() {  # $1=标题 $2=内容
 }
 trap 'chain_alert "实盘链失败" "run_daily_live.sh 第 $LINENO 行附近失败 (rc=$?), $(date "+%F %T")。日志: strategy/logs/ $(tail -2 $QLOGS/alert_${TODAY//-/}.log 2>/dev/null)"' ERR
 
-[ "$DOW" -le 5 ] || { echo "今天周$DOW 不是交易日, 退出"; exit 1; }
+if [ "$1" = "--allow-weekend" ]; then
+  echo "[weekend 放行] 官方周末重跑/冻结确认模式 — 新鲜度门禁照常, 不减配"
+else
+  [ "$DOW" -le 5 ] || { echo "今天周$DOW 不是交易日, 退出 (官方周末重跑用 --allow-weekend)"; exit 1; }
+fi
 [ "$(date +%H%M)" -ge 1730 ] || { echo "请在 17:30 后运行 (当日K线/融资融券等数据尚未齐)"; exit 1; }
 
 echo "===== 1/4 数据刷新 + 新鲜度门禁 (失败即停) ====="
@@ -41,6 +45,12 @@ bash data/refresh_all.sh
 # 供应商重述时按日期回到任意一天对比。失败不拦链但日志报警 (set +e)。
 set +e
 $PY strategy/snapshot_data.py 2>&1 | tee "logs/snapshot_${TODAY//-/}.log"
+set -e
+
+# 1.3/4 生产目录白名单审计 (#364 制度化, 2026-10-24): 未跟踪文件出现在生产目录
+# = 研究产物误留。报告不拦链, 清单见 logs/isolation_*.md。
+set +e
+$PY strategy/tools/prod_isolation.py 2>&1 | tee "logs/isolation_${TODAY//-/}.log"
 set -e
 
 # 1.5/4 熊市空仓免算前置闸 (2026-10-22)
@@ -97,6 +107,15 @@ fi
 echo "===== 4/4 出单 ====="
 ../.venv/bin/python -u generate_trade_orders.py --date "$TODAY" \
   | tee "logs/orders_${TODAY//-/}.log"
+
+echo "===== 4.5/5 风险画像 (周日生成, 三层裁定: 只报实盘台账净值) ====="
+if [ "$(date +%a)" = "Sun" ]; then
+  set +e
+  ../.venv/bin/python -u risk_profile.py 2>&1 | tee "logs/riskprofile_${TODAY//-/}.log"
+  set -e
+else
+  echo "(非周日跳过)"
+fi
 
 echo "===== 5/5 微信推送 ====="
 # 出单结果→微信 (P0, 2026-10-24)。未配置密钥=跳过; 发送失败不拦链但日志报警。

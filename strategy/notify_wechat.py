@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -47,15 +48,21 @@ def load_secrets():
 
 
 def render_orders(path: Path) -> tuple:
-    """trade_orders.json → (title, markdown)。"""
+    """trade_orders.json → (title, markdown)。含实盘状态区 (arch_1022 台账) + 守卫灯。"""
     data = json.loads(path.read_text(encoding='utf-8'))
     orders = data.get('orders', [])
     date = data.get('date', data.get('trade_date', ''))
     nav_line = ''
     try:
-        last = EQUITY_FILE.read_text(encoding='utf-8').strip().splitlines()[-1]
-        nav = float(last.split(',')[1])
-        nav_line = f"\n> 实盘账簿 NAV: **{nav:,.0f}**\n"
+        acct = json.loads((BASE / 'live_account.json').read_text(encoding='utf-8'))
+        h = sorted(acct.get('nav_history') or [], key=lambda r: str(r['date']))
+        if h:
+            last = h[-1]
+            nav = float(last['nav'])
+            pv = float(last.get('pos_value', 0))
+            expo = pv / nav * 100 if nav > 0 else 0.0
+            nav_line = (f"\n> 台账 NAV: **{nav:,.0f}** ({last['date']}) | "
+                        f"现金 {float(last.get('cash', 0)):,.0f} | 敞口 {expo:.0f}%\n")
     except Exception:
         pass
 
@@ -91,7 +98,36 @@ def render_orders(path: Path) -> tuple:
             md.append(f"\n## ⚠️ 持仓警示 {len(warn)}条\n")
             for m in warn[:5]:
                 md.append(f"- {m.get('stock_code', '?')} {m.get('warning', m.get('warn', ''))}")
+    lights = guard_lights()
+    if lights:
+        md.append(f"\n---\n{lights}")
     return title, '\n'.join(md)
+
+
+def guard_lights() -> str:
+    """守卫灯: 当日链各环节状态 (纯已落地数据重组, 缺=灰—)。
+    路径: 快照/报警日志在项目根 logs/, navlaw/出单日志在 strategy/logs/。"""
+    today = time.strftime('%Y%m%d')
+    root_logs = Path('/mnt/d/quant/logs')
+    strat_logs = BASE / 'logs'  # strategy/logs
+    out = []
+    for name, p, flag in [
+        ('快照', root_logs / f'snapshot_{today}.log', None),
+        ('navlaw', strat_logs / f'navlaw_{today}.log', 'violation'),
+        ('出单', strat_logs / f'orders_{today}.log', None),
+    ]:
+        if not p.exists():
+            out.append(f'{name}—')
+        elif flag == 'violation':
+            txt = p.read_text(encoding='utf-8', errors='ignore')
+            bad = ('违反' in txt or '拦截' in txt) and 'REBASELINE' not in txt
+            out.append(f'{"🔴" if bad else "🟢"}{name}')
+        else:
+            out.append(f'🟢{name}')
+    alert_log = root_logs / f'alert_{today}.log'
+    if alert_log.exists() and alert_log.stat().st_size > 0:
+        out.append('🔴报警')
+    return '守卫灯: ' + ' '.join(out)
 
 
 def send(channel: str, key: str, title: str, md: str) -> None:
