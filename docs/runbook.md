@@ -66,8 +66,8 @@
 ## 3. 每日节奏 (交易日)
 
 ```
-16:00   Windows 计划任务更新 K 线 (QMT 客户端需登录) — 接入后生效
-17:30+  run_daily_live.sh: 刷新→快照→前置闸→todate→bt(~80min)→报告→navlaw→出单→微信推送
+17:30+  run_daily_live.sh: K线(akshare中继, 无外部前置)→快照→前置闸→todate→bt(~80min)→报告→navlaw→出单→微信推送
+        (K线自 2026-09-30 走 akshare/efinance 中继; QMT 无数据角色, 仅下单执行)
 次日早  微信推送即早报; 开盘按单执行 (09:25-09:26 撮合价, T+1, 不追价)
 收盘后  positions_snapshot → true-up (桥接入后实测, 之前=估算)
 ```

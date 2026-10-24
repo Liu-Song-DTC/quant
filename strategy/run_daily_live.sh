@@ -1,7 +1,8 @@
 #!/bin/bash
 # 每日实盘出单一键流程 (交易日晚间运行, 建议 17:30 后)
 #
-#   前置: Windows侧 16:00 计划任务 "xtquant_bt_daily" 自动更新K线 (需 QMT 客户端登录)
+#   数据前置: 无 — K线由第1步 akshare/efinance 中继下载 (2026-09-30 起;
+#   QMT 无数据角色, 仅按 PROTOCOL.md 做下单执行器/回报器)
 #   本脚本:
 #     1. data/refresh_all.sh — 另类数据/概念/基本面/qfq修复 + 数据新鲜度门禁 (失败即停)
 #     2. yaml todate → 今天
