@@ -31,7 +31,15 @@ chain_alert() {  # $1=标题 $2=内容
 }
 trap 'chain_alert "实盘链失败" "run_daily_live.sh 第 $LINENO 行附近失败 (rc=$?), $(date "+%F %T")。日志: strategy/logs/ $(tail -2 $QLOGS/alert_${TODAY//-/}.log 2>/dev/null)"' ERR
 
-if [ "$1" = "--allow-weekend" ]; then
+ALLOW_WEEKEND=0; FORCE_FULL=0
+for _a in "$@"; do
+  case "$_a" in
+    --allow-weekend) ALLOW_WEEKEND=1 ;;
+    --force-full) FORCE_FULL=1 ;;
+    *) echo "未知参数: $_a (支持 --allow-weekend --force-full)"; exit 1 ;;
+  esac
+done
+if [ "$ALLOW_WEEKEND" = "1" ]; then
   echo "[weekend 放行] 官方周末重跑/冻结确认模式 — 新鲜度门禁照常, 不减配"
 else
   [ "$DOW" -le 5 ] || { echo "今天周$DOW 不是交易日, 退出 (官方周末重跑用 --allow-weekend)"; exit 1; }
@@ -59,16 +67,26 @@ set -e
 # 写空 trade_orders.json 并追加 0 收益净值行。新鲜度门禁已在上一步跑过。
 # 退出码: 0=跳过 / 1=继续完整管线 / 其他=错误即停。
 echo "===== 1.5/4 熊市空仓免算前置闸 ====="
+if [ "$FORCE_FULL" = "1" ]; then
+  echo "[--force-full] 跳过前置闸, 完整管线照跑 (注意: 熊市+空仓时订单仍将为空, 策略本身不进场)"
+else
 set +e
 $PY strategy/live_no_trade_precheck.py --date "$TODAY" \
   | tee "strategy/logs/precheck_${TODAY//-/}.log"
 _pre_rc=${PIPESTATUS[0]}
 set -e
 case $_pre_rc in
-  0) echo "熊市+空仓: 已跳过信号生成/回测, 空订单已写入"; exit 0 ;;
+  0) echo "熊市+空仓: 已跳过信号生成/回测, 空订单+熊市观察名单已写入"
+     # 跳过日也推送 (2026-10-24, 用户裁定"供自行判断"): 空单+观察名单+守卫灯
+     set +e
+     $PY strategy/notify_wechat.py --file strategy/trade_orders.json \
+       2>&1 | tee "logs/notify_${TODAY//-/}.log"
+     set -e
+     exit 0 ;;
   1) echo "前置闸不触发: 继续完整管线" ;;
   *) chain_alert "熊市前置闸错误" "live_no_trade_precheck.py rc=$_pre_rc, 出单链中止"; echo "前置闸错误 rc=$_pre_rc"; exit $_pre_rc ;;
 esac
+fi
 
 echo "===== 2/4 更新 yaml todate → $TODAY ====="
 sed -i "s/^  todate: .*/  todate: '$TODAY'/" strategy/config/factor_config.yaml

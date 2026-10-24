@@ -13,6 +13,10 @@
 满足时: 信号生成/回测**确定**不会产生任何订单 (desired_value={}; 无持仓 ⇒ 无卖单),
 直接写空 trade_orders.json, 并把今日 0 收益追加到 equity_curve (历史记录不中断).
 
+熊市观察名单 (2026-10-24, 用户裁定"供自行判断"): 跳过日订单为空但**不是黑箱** —
+附最后信号日的 buy=True 高分候选 (top8, 单遍扫描 ~1min), 显式标注信号日期与
+"策略不进场、非订单"。供用户自行判断是否手动参与; `--force-full` 可绕过本闸跑完整管线。
+
 退出码: 0=已跳过 (免算) / 1=不能跳过, 继续完整管线 / 2+=错误.
 绝不使用 --skip-freshness: 本脚本只应放在 refresh_all.sh 的新鲜度门禁**之后**.
 """
@@ -35,7 +39,43 @@ from generate_trade_orders import (get_index_regime, INDEX_DATA_PATH, ORDERS_FIL
 POSITIONS_FILE = os.path.join(_PROJECT_DIR, 'current_positions.json')
 
 EQUITY_FILE = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'equity_curve.csv')
+SIGNALS_FILE = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'backtest_signals.csv')
 LOG_DIR = os.path.join(_PROJECT_DIR, '.arms', 'logs')
+
+
+def _watchlist(top_n=8):
+    """熊市观察名单: 最后信号日 buy=True 的 score top-N (跳过日不重算, 标注日期).
+
+    列位: code=1,date=2,buy=3(True/False),score=5,industry=9,adjusted_score=41(末列).
+    3.2GB code-major 单遍 awk 扫描 ~1min (NTFS IO 为主); buy 列是 True/False 字符串.
+    """
+    if not os.path.exists(SIGNALS_FILE):
+        return '', []
+    try:
+        import subprocess
+        tail = subprocess.run(['tail', '-1', SIGNALS_FILE],
+                              capture_output=True, text=True, timeout=60).stdout.strip()
+        last_date = tail.split(',')[1] if ',' in tail else ''
+        if not last_date:
+            return '', []
+        r = subprocess.run(
+            ['awk', '-F,', '-v', f'd={last_date}',
+             'NR>1 && $2==d && $3=="True" && NF>=41 {print $1","$5","$41","$9}',
+             SIGNALS_FILE],
+            capture_output=True, text=True, timeout=300)
+        rows = [ln.split(',') for ln in (r.stdout or '').strip().splitlines() if ln]
+        rows.sort(key=lambda x: float(x[1]) if len(x) > 1 and x[1] not in ('', 'nan')
+                  else -9e9, reverse=True)
+        wl = []
+        for x in rows[:top_n]:
+            wl.append({'code': x[0],
+                       'score': float(x[1]) if x[1] not in ('', 'nan') else None,
+                       'adjusted_score': float(x[2]) if x[2] not in ('', 'nan') else None,
+                       'industry': x[3] if len(x) > 3 else ''})
+        return last_date, wl
+    except Exception as e:  # noqa: BLE001 — 观察名单失败不拦跳过
+        print(f'[no-trade] WARN 观察名单提取失败: {e}')
+        return '', []
 
 
 def _index_last_date():
@@ -171,6 +211,18 @@ def main():
         return 0
 
     orders = {'date': target, 'price_date': target, 'orders': [], 'monitor': []}
+
+    # 熊市观察名单 (2026-10-24): 空单≠黑箱, 附最后信号日高分候选供用户自行判断
+    sig_date, watchlist = _watchlist()
+    if watchlist:
+        orders['watchlist'] = watchlist
+        orders['watchlist_signal_date'] = sig_date
+        orders['watchlist_note'] = (f'熊市双确认+空仓: 策略不进场(回测同款), 空单确定。'
+                                    f'以下为最后信号日 {sig_date} 的 buy=True 高分候选, '
+                                    f'仅供自行判断, 非订单。')
+        print(f'[no-trade] 观察名单: 信号日 {sig_date}, top{len(watchlist)}:')
+        for w in watchlist:
+            print(f'  {w["code"]} score={w["score"]} ind={w["industry"]}')
     tmp = ORDERS_FILE + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(orders, f, ensure_ascii=False, indent=2)
@@ -194,6 +246,7 @@ def main():
         'momentum': momentum, 'trend_score': trend,
         'bear_risk': bear_risk, 'bear_risk_fast': bear_risk_fast,
         'positions_empty': True, 'orders': [],
+        'watchlist_signal_date': sig_date, 'watchlist': watchlist,
         'equity_appended': ok, 'equity_msg': msg,
     }
     lp = os.path.join(LOG_DIR, f'no_trade_skip_{target}.json')

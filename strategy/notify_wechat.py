@@ -98,6 +98,19 @@ def render_orders(path: Path) -> tuple:
             md.append(f"\n## ⚠️ 持仓警示 {len(warn)}条\n")
             for m in warn[:5]:
                 md.append(f"- {m.get('stock_code', '?')} {m.get('warning', m.get('warn', ''))}")
+    wl = data.get('watchlist') or []
+    if wl:
+        sig_d = data.get('watchlist_signal_date', '?')
+        md.append(f"\n## 🐻 熊市观察名单 {len(wl)}只 (非订单)\n")
+        md.append(f"> {data.get('watchlist_note', '策略熊市不进场, 仅供自行判断')}\n")
+        md.append("\n| 代码 | 评分 | 调整分 | 行业 |")
+        md.append("|---|---|---|---|")
+        for w in wl:
+            adj = w.get('adjusted_score')
+            md.append(f"| {w.get('code', '?')} | {w.get('score', '-')} "
+                      f"| {round(adj, 3) if isinstance(adj, (int, float)) else '-'} "
+                      f"| {w.get('industry', '')} |")
+        md.append(f"\n> ⚠️ 信号日期 **{sig_d}** — 跳过日不重算信号, 请自行判断陈旧度\n")
     lights = guard_lights()
     if lights:
         md.append(f"\n---\n{lights}")

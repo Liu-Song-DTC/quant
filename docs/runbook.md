@@ -35,6 +35,12 @@
 ### 熊市前置闸错误 (rc≥2)
 1. `strategy/logs/precheck_YYYYMMDD.log`; 多为 regime 查表失败 — 检查指数数据新鲜度。
 
+### 熊市空仓跳过日 (rc=0, 空单)
+- 出的是**空单文件 + 🐻熊市观察名单** (最后信号日 buy=True 高分 top8, 标注信号日期, 非订单)。
+- 空单=回测同款策略行为 (build() 熊市双确认不进场), 不是闸截断 — 完整跑也是 0 单。
+- 想强制跑完整管线: `bash strategy/run_daily_live.sh --force-full` (订单仍将为空)。
+- 官方周末重跑: `--allow-weekend` (新鲜度门禁照常, 不减配)。
+
 ## 2. 变更流程 checklist (模板, 以 cat25 采纳 2026-10-24 为工作样例)
 
 ```
