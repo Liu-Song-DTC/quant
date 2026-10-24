@@ -19,11 +19,29 @@ PY=.venv/bin/python
 TODAY=$(date +%F)
 DOW=$(date +%u)
 
+# 守卫报警外发 (P0, 2026-10-24): 链内任何非预期失败 → 微信报警。
+# 未配置密钥时 notify_wechat.py 自行跳过(rc0), 陷阱常驻无副作用。
+QPY=/mnt/d/quant/.venv/bin/python
+QLOGS=/mnt/d/quant/logs
+chain_alert() {  # $1=标题 $2=内容
+  set +e
+  "$QPY" -u /mnt/d/quant/strategy/notify_wechat.py --alert "$1" "$2" \
+    >> "$QLOGS/alert_${TODAY//-/}.log" 2>&1
+  set -e
+}
+trap 'chain_alert "实盘链失败" "run_daily_live.sh 第 $LINENO 行附近失败 (rc=$?), $(date "+%F %T")。日志: strategy/logs/ $(tail -2 $QLOGS/alert_${TODAY//-/}.log 2>/dev/null)"' ERR
+
 [ "$DOW" -le 5 ] || { echo "今天周$DOW 不是交易日, 退出"; exit 1; }
 [ "$(date +%H%M)" -ge 1730 ] || { echo "请在 17:30 后运行 (当日K线/融资融券等数据尚未齐)"; exit 1; }
 
 echo "===== 1/4 数据刷新 + 新鲜度门禁 (失败即停) ====="
 bash data/refresh_all.sh
+
+# 1.2/4 数据每日快照 (P0, 2026-10-24): refresh 后的当日最终态 → snapshots/daily/
+# 供应商重述时按日期回到任意一天对比。失败不拦链但日志报警 (set +e)。
+set +e
+$PY strategy/snapshot_data.py 2>&1 | tee "logs/snapshot_${TODAY//-/}.log"
+set -e
 
 # 1.5/4 熊市空仓免算前置闸 (2026-10-22)
 # 熊市双确认(trend<0 且 bear_risk) + 持仓为空 ⇒ build() 在调仓闸前早退,
@@ -39,13 +57,13 @@ set -e
 case $_pre_rc in
   0) echo "熊市+空仓: 已跳过信号生成/回测, 空订单已写入"; exit 0 ;;
   1) echo "前置闸不触发: 继续完整管线" ;;
-  *) echo "前置闸错误 rc=$_pre_rc"; exit $_pre_rc ;;
+  *) chain_alert "熊市前置闸错误" "live_no_trade_precheck.py rc=$_pre_rc, 出单链中止"; echo "前置闸错误 rc=$_pre_rc"; exit $_pre_rc ;;
 esac
 
 echo "===== 2/4 更新 yaml todate → $TODAY ====="
 sed -i "s/^  todate: .*/  todate: '$TODAY'/" strategy/config/factor_config.yaml
 grep -q "^  todate: '$TODAY'" strategy/config/factor_config.yaml \
-  || { echo "todate 更新失败!"; exit 1; }
+  || { chain_alert "todate更新失败" "factor_config.yaml todate 未能更新到 $TODAY, 出单链中止"; echo "todate 更新失败!"; exit 1; }
 grep -n "^  todate" strategy/config/factor_config.yaml
 
 echo "===== 3/4 信号重生成 (bt_execution, ~80分钟) ====="
@@ -72,6 +90,7 @@ _navlaw_rc=${PIPESTATUS[0]}
 set -e
 if [ "$_navlaw_rc" -ne 0 ]; then
   echo "⛔ 净值铁律违反 (rc=$_navlaw_rc), 已拦截出单。排查/放行方式见上方 navlaw 输出。"
+  chain_alert "navlaw净值铁律违反" "rc=$_navlaw_rc, 已拦截出单。处置: docs/runbook.md §navlaw。日志: strategy/logs/navlaw_${TODAY//-/}.log"
   exit "$_navlaw_rc"
 fi
 
