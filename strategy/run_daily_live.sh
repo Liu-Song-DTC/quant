@@ -78,5 +78,12 @@ fi
 echo "===== 4/4 出单 ====="
 ../.venv/bin/python -u generate_trade_orders.py --date "$TODAY" \
   | tee "logs/orders_${TODAY//-/}.log"
+
+echo "===== 5/5 微信推送 ====="
+# 出单结果→微信 (P0, 2026-10-24)。未配置密钥=跳过; 发送失败不拦链但日志报警。
+set +e
+../.venv/bin/python -u notify_wechat.py --file trade_orders.json \
+  2>&1 | tee "logs/notify_${TODAY//-/}.log"
+set -e
 echo ""
 echo "=== 完成: 查看 strategy/trade_orders.json, 次日开盘按单执行 ==="

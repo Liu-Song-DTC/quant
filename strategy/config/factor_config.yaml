@@ -7301,7 +7301,9 @@ portfolio:
   target_volatility: 0.28
   entry_speed: 0.8
   exit_speed: 0.8
-  position_stop_loss: 0.08
+  # cat25采纳(2026-10-24): 0.08→0.25=左尾灾难止损(须配enhanced_stop_loss.max_adaptive_stop_mult=1.0
+  #   否则自适应公式0.25×(1+5vol)被cap 0.375支配实际~34%)。8%紧剂量见stock_stop_loss节否决史。
+  position_stop_loss: 0.25
   portfolio_stop_loss: 0.1
   selection:
     # 2026-08-24: 0.4->0.3. 池门槛曲线(8/22快照, blend04+mp6, 同数据A/B):
@@ -7539,9 +7541,11 @@ portfolio_stop_loss:
   emergency_exposure: 0.65
   recovery_days: 10
 stock_stop_loss:
-  # 个股成本止损A/B(2026-08-20): 开启后用执行层cost_tracker的avg_cost, 阈值=portfolio.position_stop_loss(0.08)
-  # 实验C结论: 开启后收益270->235%, Sharpe 1.21->1.16, MDD 33%->43%, 106笔被砍, 2022胜率20.8% -> 已否决
-  enabled: false
+  # 个股成本止损: 执行层cost_tracker的avg_cost, 阈值=portfolio.position_stop_loss
+  # 实验C(2026-08-20): 8%紧剂量已否决(106笔被砍, MDD 33->43%)
+  # cat25采纳(2026-10-24用户裁定): 25%宽剂量=左尾保险。全史仅3腿触发, NAV 1,351,542(+29,824),
+  #   MDD/tW/nTr不变(谷底计时定理: 止损T+1只截谷后尾巴, 688063 −47%→−27.7%)。
+  enabled: true
   peak_trail_enabled: false  # 分级峰值回撤追踪止损, 默认关(与右尾持有冲突)
 hard_drawdown_stop:
   enabled: false
@@ -7568,7 +7572,7 @@ enhanced_stop_loss:
   time_stop_min_return: -0.03
   trailing_stop_enabled: true
   volatility_adaptive_mult: 0.5
-  max_adaptive_stop_mult: 1.5
+  max_adaptive_stop_mult: 1.0  # cat25采纳(10-24): 1.0=中和自适应放宽, 成本止损严格=position_stop_loss; 1.5会使实际止损漂到~34-37%
   tiered_trailing_stop:
     0.15: 0.1
     0.3: 0.07
