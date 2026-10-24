@@ -96,10 +96,19 @@ def render_orders(path: Path) -> tuple:
 
 def send(channel: str, key: str, title: str, md: str) -> None:
     """POST 一条 markdown 消息, 非2xx或业务错误码 → RuntimeError。"""
-    if channel == 'serverchan':
-        url = f'https://sctapi.ftqq.com/{key}.send'
+    if channel in ('serverchan', 'serverchan3'):
+        # key 自动分代: sctp开头=Server酱³ (https://{uid}.push.ft07.com), 其余=Turbo (sctapi.ftqq.com)
+        # 教训(10/24): sctp key 打 ftqq 老端点也返回 code:0 但不投递, 必须用 push.ft07.com
+        if key.startswith('sctp'):
+            uid = key[4:].split('t', 1)[0]          # sctp{uid}t{token} → uid 全数字
+            url = f'https://{uid}.push.ft07.com/send/{key}.send'
+        else:
+            url = f'https://sctapi.ftqq.com/{key}.send'
         body = urllib.parse.urlencode({'title': title[:32], 'desp': md}).encode()
-        resp = urllib.request.urlopen(urllib.request.Request(url, data=body), timeout=15)
+        req = urllib.request.Request(
+            url, data=body,
+            headers={'User-Agent': 'quant-notify/1.0'})  # 裸 urllib UA 被 ft07 WAF 403
+        resp = urllib.request.urlopen(req, timeout=15)
         out = json.loads(resp.read())
         if out.get('code') != 0:
             raise RuntimeError(f'serverchan: {out}')
