@@ -32,13 +32,90 @@ EQUITY_FILE = BASE / 'rolling_validation_results' / 'equity_curve.csv'
 SIGNALS_FILE = BASE / 'rolling_validation_results' / 'backtest_signals.csv'
 
 
-def _top_candidates(top_n=10):
+def _config_top_n() -> int:
+    """名单长度 = 系统设定的持仓槽位数 (portfolio.params.max_positions), 不硬编码。
+
+    2026-10-24 用户裁定: 名单数与系统配置一致 (当前 mp3=3), 不要 8/10 这类拍脑袋数;
+    名单还须给出评分排名与合成因子权重。mp 未来若调, 名单自动跟随。
+    """
+    try:
+        if str(BASE) not in sys.path:
+            sys.path.insert(0, str(BASE))
+        from core.config_loader import load_config
+        return max(1, int(load_config().get('portfolio.params.max_positions', 3) or 3))
+    except Exception as e:  # noqa: BLE001 — 回退不拦推送
+        print(f'[notify] WARN 名单长度读配置失败, 回退3: {e}')
+        return 3
+
+
+_WEIGHTS_CACHE = {}
+
+
+def _factor_weights(factor_name, signal_date=''):
+    """组合因子名 → (口径, [(因子名, 权重)])。唯一命中才返回, 否则 None。
+
+    生产评分链 (signal_engine._multi_factor_score): 固定行业块 P0 路径 —
+    INDUSTRY_FACTOR_CONFIG[specific_industry] (熊市先查季度表 config/quarterly_factors/
+    {qid}.yaml 的 bear_factors) 按块内顺序加权, factor_name = 实际用到的因子按序
+    '+' 拼接 (末成分可能带 FQG 质量后缀如 _FBA)。IC 库在 bt 链未启用、ic_cache 为空
+    ⇒ P0 是唯一来源。注意 CSV 的 industry 列≠评分用的 specific_industry,
+    所以按成分列表(含顺序)跨 全局表+当季表 的 factors/bull_/bear_ 全部反查;
+    命中 0 个或 >1 个都不显示 (不猜)。
+    """
+    parts = [p for p in str(factor_name or '').split('+') if p]
+    if not parts:
+        return None
+    if 'sources' not in _WEIGHTS_CACHE:
+        import yaml
+        srcs = []
+        try:
+            cfg = yaml.safe_load(
+                (BASE / 'config' / 'factor_config.yaml').read_text(encoding='utf-8'))
+            srcs.append(cfg.get('industry_factors') or {})
+        except Exception as e:  # noqa: BLE001
+            print(f'[notify] WARN 全局权重表读取失败: {e}')
+        try:
+            qdir = BASE / 'config' / 'quarterly_factors'
+            qid = f"{str(signal_date)[:4]}Q{(int(str(signal_date)[5:7]) - 1) // 3 + 1:02d}" \
+                if len(str(signal_date)) >= 7 else ''
+            for qf in sorted(qdir.glob(f'{qid}.yaml')) if qid else []:
+                qc = yaml.safe_load(qf.read_text(encoding='utf-8')) or {}
+                srcs.append(qc.get('industry_factors') or {})
+        except Exception as e:  # noqa: BLE001
+            print(f'[notify] WARN 季度权重表读取失败: {e}')
+        _WEIGHTS_CACHE['sources'] = srcs
+    variants = [parts]
+    if len(parts) > 1:
+        variants.append(parts[:-1] + [parts[-1].rsplit('_', 1)[0]])  # 去 FQG 后缀重试
+    hits = []
+    for table in _WEIGHTS_CACHE['sources']:
+        for blk in table.values():
+            if not isinstance(blk, dict):
+                continue
+            for kind, kf, kw in (('基准', 'factors', 'weights'),
+                                 ('牛市', 'bull_factors', 'bull_weights'),
+                                 ('熊市', 'bear_factors', 'bear_weights')):
+                fs = [str(f) for f in (blk.get(kf) or [])]
+                if not fs or len(fs) != len(blk.get(kw) or []):
+                    continue
+                if any(fs == v for v in variants):
+                    hits.append((kind, list(zip(fs, [float(w) for w in blk[kw]]))))
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        print(f'[notify] WARN 权重成分命中 {len(hits)} 个块, 跳过权重显示 (不猜)')
+    return None
+
+
+def _top_candidates(top_n=None):
     """每日选股名单: 最后信号日 buy=True 的 score top-N (与熊市观察名单同源).
 
-    列位: code=1,date=2,buy=3(True/False 字符串),score=5,industry=9,
+    列位: code=1,date=2,buy=3(True/False 字符串),score=5,factor_name=8,industry=9,
     adjusted_score=41(末列)。3.2GB code-major 单遍 awk ~1min (NTFS IO 为主)。
     熊市跳过日由 precheck 预先嵌入 watchlist (避免双扫); 正常日在推送时现提。
     """
+    if top_n is None:
+        top_n = _config_top_n()
     if not SIGNALS_FILE.exists():
         return '', []
     try:
@@ -50,7 +127,7 @@ def _top_candidates(top_n=10):
             return '', []
         r = subprocess.run(
             ['awk', '-F,', '-v', f'd={last_date}',
-             'NR>1 && $2==d && $3=="True" && NF>=41 {print $1","$5","$41","$9}',
+             'NR>1 && $2==d && $3=="True" && NF>=41 {print $1","$5","$41","$9","$8}',
              str(SIGNALS_FILE)],
             capture_output=True, text=True, timeout=300)
         rows = [ln.split(',') for ln in (r.stdout or '').strip().splitlines() if ln]
@@ -62,7 +139,8 @@ def _top_candidates(top_n=10):
                         'score': float(x[1]) if x[1] not in ('', 'nan') else None,
                         'adjusted_score': float(x[2]) if len(x) > 2 and x[2] not in ('', 'nan')
                         else None,
-                        'industry': x[3] if len(x) > 3 else ''})
+                        'industry': x[3] if len(x) > 3 else '',
+                        'factor_name': x[4] if len(x) > 4 else ''})
         return last_date, sel
     except Exception as e:  # noqa: BLE001 — 名单失败不拦推送
         print(f'[notify] WARN 选股名单提取失败: {e}')
@@ -108,8 +186,9 @@ def render_orders(path: Path) -> tuple:
     adj = [o for o in orders if o.get('action') == 'adjust']
     closes = [o for o in orders if o.get('action') == 'close']
 
-    # 每日选股名单 (2026-10-24 用户裁定: 不管什么状态, 操作建议之外必须附名单):
-    # 熊市跳过日用 precheck 预嵌的 watchlist; 正常日推送时从最新信号现提 top10。
+    # 每日选股名单 (2026-10-24 用户裁定: 不管什么状态, 操作建议之外必须附名单;
+    # 名单长度=系统设定 max_positions, 带评分排名+合成因子权重):
+    # 熊市跳过日用 precheck 预嵌的 watchlist; 正常日推送时从最新信号现提。
     wl = data.get('watchlist') or []
     if wl:
         sel_date, sel = data.get('watchlist_signal_date', '?'), wl
@@ -147,22 +226,29 @@ def render_orders(path: Path) -> tuple:
             md.append(f"\n## ⚠️ 持仓警示 {len(warn)}条\n")
             for m in warn[:5]:
                 md.append(f"- {m.get('stock_code', '?')} {m.get('warning', m.get('warn', ''))}")
-    wl = data.get('watchlist') or []
     if sel:
         if bear_mode:
             md.append(f"\n## 🐻 熊市观察名单 {len(sel)}只 (非订单)\n")
             md.append(f"> {data.get('watchlist_note', '策略熊市不进场, 仅供自行判断')}\n")
         else:
             md.append(f"\n## 📋 每日选股名单 {len(sel)}只 (非订单)\n")
-            md.append("> buy=True 按评分排序; 是否实际买入以订单区为准 "
-                      "(组合层闸/仓位/敞口会筛掉部分候选)\n")
-        md.append("\n| 代码 | 评分 | 调整分 | 行业 |")
-        md.append("|---|---|---|---|")
-        for w in sel:
-            sc, adj = w.get('score'), w.get('adjusted_score')
-            fmt = lambda v: round(v, 3) if isinstance(v, (int, float)) else '-'  # noqa: E731
-            md.append(f"| {w.get('code', '?')} | {fmt(sc)} | {fmt(adj)} "
-                      f"| {w.get('industry', '')} |")
+            md.append("> buy=True 按评分排序, 名单数=系统持仓设定; "
+                      "是否实际买入以订单区为准 (组合层闸/仓位/敞口会筛掉部分候选)\n")
+        fmt = lambda v: round(v, 3) if isinstance(v, (int, float)) else '-'  # noqa: E731
+        for i, w in enumerate(sel, 1):          # 排名=1..N (2026-10-24 用户裁定)
+            fw = _factor_weights(w.get('factor_name'), str(sel_date))
+            line = f"{i}. **{w.get('code', '?')}** 评分 {fmt(w.get('score'))}"
+            adj_v = fmt(w.get('adjusted_score'))
+            if adj_v != '-' and adj_v != fmt(w.get('score')):
+                line += f" (调整 {adj_v})"
+            line += f" | {w.get('industry', '')}"
+            if fw is None and w.get('factor_name'):
+                line += f" | {w['factor_name']}"   # 权重表没配上, 至少给出成分构成
+            md.append(line)
+            if fw:
+                kind, pairs = fw
+                md.append(f"   {kind}权重: "
+                          + ' · '.join(f"{k} {v * 100:.0f}%" for k, v in pairs))
         md.append(f"\n> ⚠️ 信号日期 **{sel_date}** — 请自行判断陈旧度\n")
     lights = guard_lights()
     if lights:

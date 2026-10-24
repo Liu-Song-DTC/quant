@@ -31,6 +31,10 @@
 ### 微信推送失败 (notify rc=2)
 1. 出单不受影响 (订单文件已落盘); 当天人工看 `strategy/trade_orders.json`。
 2. 检查 `strategy/config/secrets.env` 密钥 / 网络; Server酱 免费额度限额 (5条/日)。
+3. **已知网络事实 (10-24 实测)**: Server酱³ (push.ft07.com, Cloudflare 边缘) 在本机
+   WSL/Windows 双侧均 TLS 超时不可达; sctapi.ftqq.com / pushplus.plus (国内 CDN) 秒通。
+   ⇒ 通道用 **Server酱Turbo (SCT 开头 key, sct.ftqq.com 扫码获取)** 或 **PushPlus**,
+   二者代码已支持, 换 secrets.env 的 QUANT_NOTIFY_KEY/CHANNEL 即可, 无需改码。
 
 ### 熊市前置闸错误 (rc≥2)
 1. `strategy/logs/precheck_YYYYMMDD.log`; 多为 regime 查表失败 — 检查指数数据新鲜度。
