@@ -76,3 +76,27 @@
 
 - 周六: 链被 weekday guard 拒 (正常, 非故障)。
 - 周日: 官方全链重跑 + 冻结确认 (10-25 起); 快照 weekly 层自动追加。
+
+## 5. 研究区 / 出单区物理隔离 (2026-10-24)
+
+```
+/mnt/d/quant    出单区 (生产): main 检出 + 85G 数据 + 全部出单产物/实盘态。
+                每日链、定时任务、navlaw 存档、快照都在这里 — 原地未动。
+/mnt/d/quant-r  研究区 (git worktree, sparse 排除 data/): 一切臂/探针/实验在这里跑。
+                data -> /mnt/d/quant/data (符号链接, 只读使用);
+                .arms -> /mnt/d/quant/.arms (臂报告/哨兵文件共用一处);
+                无 .venv ⇒ run_daily_live.sh 在研究区物理跑不起来。
+```
+
+规则:
+1. **臂/探针一律在研究区跑** (`cd /mnt/d/quant-r/...`, 解释器用 `/mnt/d/quant/.venv/bin/python`)。
+   臂写 rolling_validation_results/reports/logs 落在 quant-r, 生产产物零接触。
+2. **进生产的唯一路径 = 出单区 main 提交** (晋升): 改动重放到 /mnt/d/quant, 提交,
+   然后 `git -C /mnt/d/quant-r checkout --detach main` 同步研究区。
+3. **出单区洁净闸** (run_daily_live.sh 第0步): 工作区白名单外未提交改动 (含 yaml 非
+   todate 行) ⇒ rc=3 拒绝出单 + 微信报警。白名单 = data/** 刷新产物 | .arms/** 研究台账。
+4. 研究区 `git status` 显示 ` D data/...` 与 `?? data` = **预期** (data 在出单区, 链接只读)。
+5. ⚠ 研究区**不要跑** `git reset --hard` / `git clean -fd` / `checkout <paths>`;
+   同步一律用 `checkout --detach main`。git 的 "not up to date" 守卫实测会拒绝穿过
+   data 符号链接改写生产数据 (10-24 验证), 但不要依赖它做危险操作。
+6. 数据层共享读 ⇒ 数据改写风险与以前同级, 由 histcells/sigcells/navlaw 哨兵把守 (不变)。

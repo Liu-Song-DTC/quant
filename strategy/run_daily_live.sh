@@ -46,6 +46,33 @@ else
 fi
 [ "$(date +%H%M)" -ge 1730 ] || { echo "请在 17:30 后运行 (当日K线/融资融券等数据尚未齐)"; exit 1; }
 
+# ===== 0/4 出单区洁净闸 (研究/出单物理隔离, 2026-10-24) =====
+# 研究区 = /mnt/d/quant-r (git worktree, data 共享只读): 一切臂/探针/实验在那里跑。
+# 出单区唯一变更入口 = git main 提交 (晋升)。此处校验工作区只带白名单脏:
+#   data/** (刷新产物) | .arms/** (研究台账) | factor_config.yaml 仅 todate 行。
+# 白名单外任何未提交改动 ⇒ 拒绝出单 (不带病出单: 研究残码混进生产=静默口径漂移)。
+_gdirty=$(git status --porcelain | grep -vE '^\?\?' \
+  | grep -vE '^.. (data/|\.arms/)' || true)
+_yd=$(git diff -- strategy/config/factor_config.yaml \
+  | grep -E '^[+-][^+-]' | grep -vE '^[+-][[:space:]]*todate:' || true)
+if [ -n "$_yd" ]; then
+  _gdirty="${_gdirty}
+strategy/config/factor_config.yaml 含非 todate 改动: $(echo "$_yd" | head -3)"
+fi
+if [ -n "$_gdirty" ]; then
+  echo "⛔ 出单区工作区携带白名单外未提交改动 — 拒绝出单:"
+  echo "$_gdirty" | head -10
+  echo "   研究改动请在 /mnt/d/quant-r (研究区) 跑; 进生产 = main 提交 (docs/runbook.md §隔离)"
+  chain_alert "出单区洁净闸拦截" "白名单外未提交改动, 已拒绝出单。晋升=main 提交; 研究跑 /mnt/d/quant-r。改动: $(echo "$_gdirty" | head -3 | tr '\n' ';')"
+  exit 3
+fi
+_gunk=$(git status --porcelain | grep -E '^\?\?' \
+  | grep -vE '^\?\? (\.arms/|logs/|strategy/logs/|strategy/reports/|data/snapshots/|docs/|\.claude/)' || true)
+if [ -n "$_gunk" ]; then
+  echo "[洁净闸][WARN] 白名单外未跟踪文件 $(echo "$_gunk" | wc -l) 个 (不拦链, 清单见隔离审计): $(echo "$_gunk" | head -3 | tr '\n' ' ')"
+fi
+echo "[洁净闸] 工作区干净 (白名单外零改动) ✓"
+
 echo "===== 1/4 数据刷新 + 新鲜度门禁 (失败即停) ====="
 bash data/refresh_all.sh
 
