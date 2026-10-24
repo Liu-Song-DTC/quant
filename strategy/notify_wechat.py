@@ -29,6 +29,44 @@ BASE = Path(__file__).resolve().parent
 SECRETS = BASE / 'config' / 'secrets.env'
 ORDERS_FILE = BASE / 'trade_orders.json'
 EQUITY_FILE = BASE / 'rolling_validation_results' / 'equity_curve.csv'
+SIGNALS_FILE = BASE / 'rolling_validation_results' / 'backtest_signals.csv'
+
+
+def _top_candidates(top_n=10):
+    """每日选股名单: 最后信号日 buy=True 的 score top-N (与熊市观察名单同源).
+
+    列位: code=1,date=2,buy=3(True/False 字符串),score=5,industry=9,
+    adjusted_score=41(末列)。3.2GB code-major 单遍 awk ~1min (NTFS IO 为主)。
+    熊市跳过日由 precheck 预先嵌入 watchlist (避免双扫); 正常日在推送时现提。
+    """
+    if not SIGNALS_FILE.exists():
+        return '', []
+    try:
+        import subprocess
+        tail = subprocess.run(['tail', '-1', str(SIGNALS_FILE)],
+                              capture_output=True, text=True, timeout=60).stdout.strip()
+        last_date = tail.split(',')[1] if ',' in tail else ''
+        if not last_date:
+            return '', []
+        r = subprocess.run(
+            ['awk', '-F,', '-v', f'd={last_date}',
+             'NR>1 && $2==d && $3=="True" && NF>=41 {print $1","$5","$41","$9}',
+             str(SIGNALS_FILE)],
+            capture_output=True, text=True, timeout=300)
+        rows = [ln.split(',') for ln in (r.stdout or '').strip().splitlines() if ln]
+        rows.sort(key=lambda x: float(x[1]) if len(x) > 1 and x[1] not in ('', 'nan')
+                  else -9e9, reverse=True)
+        sel = []
+        for x in rows[:top_n]:
+            sel.append({'code': x[0],
+                        'score': float(x[1]) if x[1] not in ('', 'nan') else None,
+                        'adjusted_score': float(x[2]) if len(x) > 2 and x[2] not in ('', 'nan')
+                        else None,
+                        'industry': x[3] if len(x) > 3 else ''})
+        return last_date, sel
+    except Exception as e:  # noqa: BLE001 — 名单失败不拦推送
+        print(f'[notify] WARN 选股名单提取失败: {e}')
+        return '', []
 
 
 def load_secrets():
@@ -70,7 +108,18 @@ def render_orders(path: Path) -> tuple:
     adj = [o for o in orders if o.get('action') == 'adjust']
     closes = [o for o in orders if o.get('action') == 'close']
 
-    title = f"选股出单 {date}: 买{len(buys)} 调{len(adj)} 卖{len(closes)}"
+    # 每日选股名单 (2026-10-24 用户裁定: 不管什么状态, 操作建议之外必须附名单):
+    # 熊市跳过日用 precheck 预嵌的 watchlist; 正常日推送时从最新信号现提 top10。
+    wl = data.get('watchlist') or []
+    if wl:
+        sel_date, sel = data.get('watchlist_signal_date', '?'), wl
+        bear_mode = True
+    else:
+        sel_date, sel = _top_candidates()
+        bear_mode = False
+
+    title = (f"选股出单 {date}: 买{len(buys)} 调{len(adj)} 卖{len(closes)}"
+             + (f" | 名单{len(sel)}" if sel else ""))
     md = [f"# {title}", nav_line]
     if not orders:
         md.append("\n**今日无调仓单** (空仓或无新信号)\n")
@@ -99,18 +148,22 @@ def render_orders(path: Path) -> tuple:
             for m in warn[:5]:
                 md.append(f"- {m.get('stock_code', '?')} {m.get('warning', m.get('warn', ''))}")
     wl = data.get('watchlist') or []
-    if wl:
-        sig_d = data.get('watchlist_signal_date', '?')
-        md.append(f"\n## 🐻 熊市观察名单 {len(wl)}只 (非订单)\n")
-        md.append(f"> {data.get('watchlist_note', '策略熊市不进场, 仅供自行判断')}\n")
+    if sel:
+        if bear_mode:
+            md.append(f"\n## 🐻 熊市观察名单 {len(sel)}只 (非订单)\n")
+            md.append(f"> {data.get('watchlist_note', '策略熊市不进场, 仅供自行判断')}\n")
+        else:
+            md.append(f"\n## 📋 每日选股名单 {len(sel)}只 (非订单)\n")
+            md.append("> buy=True 按评分排序; 是否实际买入以订单区为准 "
+                      "(组合层闸/仓位/敞口会筛掉部分候选)\n")
         md.append("\n| 代码 | 评分 | 调整分 | 行业 |")
         md.append("|---|---|---|---|")
-        for w in wl:
-            adj = w.get('adjusted_score')
-            md.append(f"| {w.get('code', '?')} | {w.get('score', '-')} "
-                      f"| {round(adj, 3) if isinstance(adj, (int, float)) else '-'} "
+        for w in sel:
+            sc, adj = w.get('score'), w.get('adjusted_score')
+            fmt = lambda v: round(v, 3) if isinstance(v, (int, float)) else '-'  # noqa: E731
+            md.append(f"| {w.get('code', '?')} | {fmt(sc)} | {fmt(adj)} "
                       f"| {w.get('industry', '')} |")
-        md.append(f"\n> ⚠️ 信号日期 **{sig_d}** — 跳过日不重算信号, 请自行判断陈旧度\n")
+        md.append(f"\n> ⚠️ 信号日期 **{sel_date}** — 请自行判断陈旧度\n")
     lights = guard_lights()
     if lights:
         md.append(f"\n---\n{lights}")
