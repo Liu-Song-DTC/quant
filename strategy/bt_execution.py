@@ -208,12 +208,12 @@ def _signal_code_fingerprint() -> str:
     _yaml_digest = _yaml_stripped_digest(os.path.join(base, 'config', 'factor_config.yaml'))
     h.update(f"config/factor_config.yaml|{_yaml_digest};".encode('utf-8'))
     # 季度标定权重: 信号权重强绑定 (E-D2教训), 全部23个季度文件计入
+    # 内容寻址 (mtime 口径会让跨树比较必然失败: 同内容文件在研究区的 mtime 全不同)
     _qdir = os.path.join(base, 'config', 'quarterly_factors')
     try:
         for _qn in sorted(os.listdir(_qdir)):
             _qp = os.path.join(_qdir, _qn)
-            _st = os.stat(_qp)
-            h.update(f"config/quarterly_factors/{_qn}|{_st.st_mtime_ns}|{_st.st_size};".encode('utf-8'))
+            h.update(f"config/quarterly_factors/{_qn}|{_file_content_digest(_qp)};".encode('utf-8'))
     except OSError:
         h.update('config/quarterly_factors|MISSING;'.encode('utf-8'))
     # 2026-10-16: 概念映射计入指纹(**内容级**, 非 mtime)。
@@ -225,14 +225,16 @@ def _signal_code_fingerprint() -> str:
     # 用**内容 md5** 而非 mtime: 概念映射是信号输入(concept_heat 的成分股归属),
     # 内容相同 ⇒ 信号必然相同(复用正确, 顺带省一次 78min 重生成),
     # 内容不同 ⇒ 必须重生成。两个方向都对。
+    # ★路径用 realpath 归一 (2026-10-25): 研究区是软链到同一份 data ⇒ realpath
+    #   相同 ⇒ 指纹跨树可比; 换真实数据源时 realpath 仍不同 ⇒ 守门的原意保留。
     _cmap_p = os.environ.get('QUANT_CONCEPT_MAP') or os.path.join(
         _PROJECT_DIR, 'data', 'stock_concept_map.pkl')
     try:
         with open(_cmap_p, 'rb') as _cf:
             _cmap_digest = hashlib.md5(_cf.read()).hexdigest()
-        h.update(f"concept_map|{_cmap_p}|{_cmap_digest};".encode('utf-8'))
+        h.update(f"concept_map|{os.path.realpath(_cmap_p)}|{_cmap_digest};".encode('utf-8'))
     except OSError:
-        h.update(f"concept_map|{_cmap_p}|MISSING;".encode('utf-8'))
+        h.update(f"concept_map|{os.path.realpath(_cmap_p)}|MISSING;".encode('utf-8'))
 
     # 2026-10-16: 版本化概念映射(QUANT_CONCEPT_MAP_HIST)也计入指纹 — 同上, 内容级。
     # 版本化模式下 concept_heat 的成分股名单来自该文件而**不是** stock_concept_map.pkl,
@@ -242,14 +244,15 @@ def _signal_code_fingerprint() -> str:
         try:
             with open(_cmap_hist_p, 'rb') as _hf:
                 _hh = hashlib.md5(_hf.read()).hexdigest()
-            h.update(f"cmap_hist|{_cmap_hist_p}|{_hh};".encode('utf-8'))
+            h.update(f"cmap_hist|{os.path.realpath(_cmap_hist_p)}|{_hh};".encode('utf-8'))
         except OSError:
-            h.update(f"cmap_hist|{_cmap_hist_p}|MISSING;".encode('utf-8'))
+            h.update(f"cmap_hist|{os.path.realpath(_cmap_hist_p)}|MISSING;".encode('utf-8'))
 
     # 2026-10-16: **数据源路径**也计入指纹 (复权口径臂引入 QUANT_DATA_PATH 钩子)。
     # 同类假臂防线: 换 DATA_PATH 而指纹不变 ⇒ 因子仍从**旧数据源**算出 ⇒
     # 信号被静默复用 ⇒ 臂只换了成交价不换选股 = 半假臂。路径变了必须重生成。
-    h.update(f"data_path|{DATA_PATH};".encode('utf-8'))
+    # ★realpath 归一 (2026-10-25): 研究区软链 ⇒ 同一份数据 ⇒ 同一指纹 (跨树可比)。
+    h.update(f"data_path|{os.path.realpath(DATA_PATH)};".encode('utf-8'))
     return h.hexdigest()[:8]
 
 
