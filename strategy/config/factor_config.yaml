@@ -7530,6 +7530,13 @@ portfolio:
     sector_momentum_weight: 0.4
     sector_signal_density_weight: 0.6
 base_exposure: 0.85  # 2026-09-09实测: 1.0三胜一败(MDD 13.64%>12.63%)铁律否决; 0.85=已验证基线值
+account_risk_limits:
+  # 最终账户层限额，覆盖旧仓。研究开关 QUANT_ACCOUNT_LIMITS=1；独立验证前不改变策略。
+  enabled: false
+  max_gross: 0.98
+  max_single_weight: 0.35
+  max_industry_weight: 0.50
+  max_holdings: 12
 portfolio_stop_loss:
   # 组合回撤熔断(2026-08-20实验C2): 回撤>10%时敞口压到0.65并10日渐进恢复
   # 诚实成本下 270.6%->305.8%, Sharpe 1.213->1.263, MDD持平 -> 保留开启
@@ -7718,6 +7725,9 @@ stock_pool:
   pool_relax_momentum: null
 ml:
   enabled: true
+  # 研究臂 net_short_3_5：只改ML标签，按次日开盘入场后的3/5日净收益训练。
+  # 完整配对验证通过前保留既有目标；原始因子缓存与 ML 标签/参数解耦。
+  target_mode: legacy_10d
   model_dir: strategy/models
   # 2026-08-24: 0.5->0.4. 同数据确定性A/B(mp6, 8/22快照, 全量信号再生):
   # 0.6=125.6/0.79, 0.5=163.6/0.90, 0.4=248.3/1.16/MDD19.7, 0.3=234.7/1.12, 0.25=156.8/0.88
@@ -7839,6 +7849,7 @@ backtest:
   slippage: 0.001
   stamp_tax: 0.0005
   rebalance_days: 10
+  rebalance_unit: calendar  # calendar=原策略自然日；trading=交易日，须独立回测
   num_workers: 8
   fromdate: '2021-01-01'
   todate: '2026-10-23'
@@ -7856,7 +7867,7 @@ cost_model:
   limit_fill_block_enabled: true
   # 0b(2026-09-09): 跳空>9.5%再折让开关 — true=现行×1.03/×0.97(会产生超涨跌停价
   # 的不可能成交价), false=仅开盘±滑点(总是可成交价)。A/B臂经此切换(豁免节)。
-  gap_fill_penalty_enabled: true
+  gap_fill_penalty_enabled: false  # 2026-10-24 review: 禁止额外3%生成超涨跌停的虚构成交价
 live_monitoring:
   enabled: true
   reference_path: strategy/rolling_validation_results/backtest_reference.csv

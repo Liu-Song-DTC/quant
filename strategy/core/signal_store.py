@@ -19,6 +19,9 @@ class SignalStore:
         self._cache = OrderedDict()  # Phase 2: LRU cache for constructed Signals
         self._cache_max = 512
         self._dates = None  # Phase 2: 惰性日期集合, has_date() 用
+        self._date_positions = None
+        self._buy_day = None
+        self._buy_day_values = {}
 
     def set(self, code, date, signal):
         """写入信号（仅 Phase 1 可用）"""
@@ -71,13 +74,51 @@ class SignalStore:
         # 只读取CSV中存在的列（向后兼容旧格式，缺少新字段时用默认值）
         available_cols = pd.read_csv(csv_path, nrows=0).columns.tolist()
         effective_dtypes = {k: v for k, v in dtypes.items() if k in available_cols}
-        use_cols = [c for c in list(effective_dtypes.keys()) + ['date'] if c in available_cols]
-        self._df = pd.read_csv(
-            csv_path, dtype=effective_dtypes, usecols=use_cols,
-        )
+        use_cols = [c for c in available_cols if c in effective_dtypes or c == 'date']
+        # 缓存的是 CSV 解析后的 float64 原值，不直接缓存生成期浮点数，避免
+        # CSV解析末位舍入差异改变排名。membership 掩码在读取后每次重施。
+        import json
+        import os
+        from pathlib import Path
+        import tempfile
+        source = Path(csv_path)
+        cache = Path(str(source) + '.store.parquet')
+        meta = Path(str(source) + '.store.json')
+        stat = source.stat()
+        identity = {'version': 1, 'csv_stat': [stat.st_size, stat.st_mtime_ns], 'columns': use_cols}
+        frame = None
+        if cache.exists() and meta.exists():
+            try:
+                if json.loads(meta.read_text()) == identity:
+                    frame = pd.read_parquet(cache, columns=use_cols).astype(effective_dtypes)
+            except (OSError, ValueError, KeyError, TypeError):
+                frame = None
+        if frame is None:
+            frame = pd.read_csv(csv_path, dtype=effective_dtypes, usecols=use_cols)
+            after = source.stat()
+            if (after.st_size, after.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+                raise RuntimeError('信号CSV在读取过程中变化，拒绝混合快照')
+            temp = None
+            try:
+                fd, temp = tempfile.mkstemp(dir=source.parent, prefix=cache.name + '.', suffix='.tmp')
+                os.close(fd)
+                frame.to_parquet(temp, index=False, compression='zstd')
+                os.replace(temp, cache)
+                from .live_state import atomic_json
+                atomic_json(meta, identity)
+            except (OSError, ValueError, TypeError) as exc:
+                print(f'[SignalStore] 列式缓存写入失败，沿用CSV解析结果: {exc}')
+            finally:
+                if temp and os.path.exists(temp):
+                    os.unlink(temp)
+        final_stat = source.stat()
+        if (final_stat.st_size, final_stat.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+            raise RuntimeError('信号CSV在缓存读取过程中变化，拒绝混合快照')
+        self._df = frame
         # 用字符串索引避免 datetime.date vs pd.Timestamp 类型不匹配
         self._df.set_index(['code', 'date'], inplace=True)
         self._df.sort_index(inplace=True)
+        self._cache_max = max(512, 2 * len(self._df.index.levels[0]))
 
         # 0f日历池membership闸 (2026-09-17): 非成员日期信号行丢弃。
         # 磁盘CSV保持未过滤全量(闸在消费时每次重施), 故闸代码变更无需信号重生成。
@@ -111,6 +152,37 @@ class SignalStore:
 
         print(f"SignalStore finalized: {len(self._df):,} rows in DataFrame "
               f"({self._df.memory_usage(deep=True).sum() / 1024**2:.0f} MB)")
+
+    def buy_signals_for_date(self, date, universe):
+        """Only buy/industry are needed for sector density, not thousands of Signals.
+
+        Preserve universe order and the same first-row semantics as get(). Date
+        positions are indexed once; only one day's small buy map is retained.
+        """
+        if self._df is None:
+            values = [(code, self.get(code, date)) for code in universe]
+            return [(code, sig.industry) for code, sig in values if sig and sig.buy]
+        day = (date.strftime('%Y-%m-%d') if hasattr(date, 'strftime')
+               else str(date)[:10])
+        if self._buy_day != day:
+            if self._date_positions is None:
+                # 键统一取前10位, 与 has_date 同口径: 上游日期格式一变
+                # (带时分秒) 时不能静默返回空 (板块信号密度归零)。
+                self._date_positions = {}
+                for _k, _pos in self._df.groupby(level='date', sort=False).indices.items():
+                    self._date_positions.setdefault(str(_k)[:10], []).extend(_pos)
+            positions = self._date_positions.get(day)
+            available = {}
+            if positions is not None and 'buy' in self._df.columns:
+                columns = [c for c in ('buy', 'industry') if c in self._df.columns]
+                group = self._df[columns].iloc[positions]
+                group = group.loc[~group.index.duplicated(keep='first')]
+                group = group.loc[group['buy'].fillna(False)]
+                industries = (group['industry'].fillna('').values if 'industry' in group
+                              else [''] * len(group))
+                available = dict(zip(group.index.get_level_values('code'), industries))
+            self._buy_day, self._buy_day_values = day, available
+        return [(code, self._buy_day_values[code]) for code in universe if code in self._buy_day_values]
 
     def max_date(self):
         """信号数据中的最新日期 ('YYYY-MM-DD'), 空→None. 出单层信号新鲜度闸用."""

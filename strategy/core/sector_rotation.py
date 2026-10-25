@@ -36,6 +36,17 @@ class SectorRotation:
         # vs 假触发日0.18-0.26, 0.30门槛精准区隔
         self.market_signal_density: float = 0.0
 
+    def tracking_state(self):
+        return {name: getattr(self, name) for name in (
+            '_sector_momentum', '_sector_rank', '_sector_tilt', '_signal_density',
+            '_signal_density_rank', '_computed', '_top_sectors_history',
+            '_rotation_speed', '_last_compute_date', 'market_signal_density')}
+
+    def restore_tracking_state(self, state):
+        for name in self.tracking_state():
+            if name in state:
+                setattr(self, name, state[name])
+
     # ── 公共接口 ──
 
     def compute(

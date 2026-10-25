@@ -29,7 +29,7 @@
 2. 快照缺失当天 → 供应商重述时无"回到过去"能力, 手工补: `python strategy/snapshot_data.py`。
 
 ### 微信推送失败 (notify rc=2)
-1. 出单不受影响 (订单文件已落盘); 当天人工看 `strategy/trade_orders.json`。
+1. 出单不受影响 (订单文件已落盘); 当天人工看项目根目录 `trade_orders.json`。
 2. 检查 `strategy/config/secrets.env` 密钥 / 网络; Server酱 免费额度限额 (5条/日)。
 3. **已知网络事实 (10-24 实测)**: Server酱³ (push.ft07.com, Cloudflare 边缘) 在本机
    WSL/Windows 双侧均 TLS 超时不可达; sctapi.ftqq.com / pushplus.plus (国内 CDN) 秒通。
@@ -69,8 +69,27 @@
 17:30+  run_daily_live.sh: K线(akshare中继, 无外部前置)→快照→前置闸→todate→bt(~80min)→报告→navlaw→出单→微信推送
         (K线自 2026-09-30 走 akshare/efinance 中继; QMT 无数据角色, 仅下单执行)
 次日早  微信推送即早报; 开盘按单执行 (09:25-09:26 撮合价, T+1, 不追价)
-收盘后  positions_snapshot → true-up (桥接入后实测, 之前=估算)
+收盘后  券商增量成交回报 → reconcile_live_account.py → 实际现金/持仓
 ```
+
+### 2026-10-25 账户与回报口径
+
+`trade_orders.json` 只表示计划，`live_account.json`、`current_positions.json` 只按实际成交更新。
+没有回报时不推定成交或撤单；上一批计划尚未终结时不覆盖出新计划。
+重复执行相同决策日重放原订单，不重复推进组合状态。
+
+导入回报（只记账，不发委托）：
+
+```bash
+.venv/bin/python strategy/reconcile_live_account.py --fills strategy/qmt_bridge/fills_today.csv
+```
+
+输入列、部分成交及终结状态见 [审查记录](review_20261025.md#券商回报接口)。
+`volume` 必须是本条增量成交量；`fill_id` 唯一且重发内容不变。
+旧账本存在估算 pending 时，先按券商实际现金和持仓核对；程序拒绝静默迁移。
+实际状态文件通过 `.live_state_journal.json` 恢复提交，勿手工删除该日志。
+熊市免算日不向历史回测曲线补平盘；无法证明策略状态等价时回到完整计算路径。
+`backtest.rebalance_unit=calendar` 保留10自然日重选，`trading` 是独立实验参数。
 
 ## 4. 周末
 

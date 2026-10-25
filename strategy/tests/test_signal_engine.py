@@ -31,8 +31,12 @@ def _make_sample_data(n: int = 250) -> pd.DataFrame:
 def test_signal_engine_init():
     """SignalEngine 初始化基本属性"""
     engine = SignalEngine()
-    assert engine.buy_threshold > 0
-    assert engine.sell_threshold < 0
+    # 标准化截面得分允许负买入阈值，检查配置透传而非固定符号。
+    from core.config_loader import load_config
+    cfg = load_config()
+    assert engine.buy_threshold == cfg.get('signal.buy_threshold', 0.12)
+    assert engine.sell_threshold == cfg.get('signal.sell_threshold', -0.35)
+    assert np.isfinite(engine.buy_threshold) and np.isfinite(engine.sell_threshold)
     assert engine.mtf_analyzer is not None
     assert engine.dynamic_factor_selector is not None
     assert hasattr(engine, 'mtf_blend_strength')

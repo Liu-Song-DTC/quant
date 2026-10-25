@@ -14,9 +14,9 @@ import sys
 import time
 from pathlib import Path
 
-BASE = Path('/mnt/d/quant')
+BASE = Path(__file__).resolve().parents[1]
 STRAT = BASE / 'strategy'
-ACCOUNT = STRAT / 'live_account.json'
+ACCOUNT = BASE / 'live_account.json'
 ANCHOR = STRAT / 'rolling_validation_results' / 'anchor.json'
 LOGS = STRAT / 'logs'
 MIN_DAYS = 10

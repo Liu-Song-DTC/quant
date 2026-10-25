@@ -230,6 +230,8 @@ strategy/rolling_validation_results/backtest_signals.csv.bak
 strategy/rolling_validation_results/backtest_signals.csv.bak
 
 # Live trading runtime state (不提交)
+live_account.json
+live_portfolio_state.json
 current_positions.json
 trade_orders.json
 live_rebuild_state.json
@@ -278,3 +280,8 @@ strategy/ipo_today.json
 
 # 本地凭据 (微信推送key等)
 strategy/config/secrets.env
+# Isolated source snapshots and research outputs (production outputs stay separate).
+.review_runs/
+.live_run.lock
+.daily_chain.lock
+.live_state_journal.json

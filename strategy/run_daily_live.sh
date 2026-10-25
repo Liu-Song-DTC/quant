@@ -13,9 +13,11 @@
 #
 #   用法: bash strategy/run_daily_live.sh
 #   周末/节假日: 门禁预期交易日≠今天会拦, 届时用 --expected 手动分步跑
-#   出单产物: strategy/trade_orders.json (给 miniqmt 做盘中高抛低吸)
-set -e
+#   出单产物: /mnt/d/quant/trade_orders.json (计划；实际持仓只按券商回报更新)
+set -eE -o pipefail
 cd /mnt/d/quant
+exec 9>.daily_chain.lock
+flock -n 9 || { echo '已有每日链正在运行，拒绝并发刷新/回测/出单'; exit 3; }
 PY=.venv/bin/python
 TODAY=$(date +%F)
 DOW=$(date +%u)
@@ -53,8 +55,8 @@ fi
 #   data/** (刷新产物) | .arms/** (研究台账) | factor_config.yaml 仅 todate 行。
 # 白名单外任何未提交改动 ⇒ 拒绝出单 (不带病出单: 研究残码混进生产=静默口径漂移)。
 _gdirty=$(git status --porcelain | grep -vE '^\?\?' \
-  | grep -vE '^.. (data/|\.arms/)' || true)
-_yd=$(git diff -- strategy/config/factor_config.yaml \
+  | grep -vE '^.. (data/|\.arms/|strategy/config/factor_config\.yaml$)' || true)
+_yd=$(git diff HEAD -- strategy/config/factor_config.yaml \
   | grep -E '^[+-][^+-]' | grep -vE '^[+-][[:space:]]*todate:' || true)
 if [ -n "$_yd" ]; then
   _gdirty="${_gdirty}
@@ -92,7 +94,7 @@ set -e
 # 1.5/4 熊市空仓免算前置闸 (2026-10-22)
 # 熊市双确认(trend<0 且 bear_risk) + 持仓为空 ⇒ build() 在调仓闸前早退,
 # desired_value={} 且无仓可卖 ⇒ 0 单**确定**。跳过 ~80min 信号生成/回测,
-# 写空 trade_orders.json 并追加 0 收益净值行。新鲜度门禁已在上一步跑过。
+# 写空 trade_orders.json 并推进实际账户状态；不改历史回测净值。新鲜度门禁已在上一步跑过。
 # 退出码: 0=跳过 / 1=继续完整管线 / 其他=错误即停。
 echo "===== 1.5/4 熊市空仓免算前置闸 ====="
 if [ "$FORCE_FULL" = "1" ]; then
@@ -107,7 +109,7 @@ case $_pre_rc in
   0) echo "熊市+空仓: 已跳过信号生成/回测, 空订单+熊市观察名单已写入"
      # 跳过日也推送 (2026-10-24, 用户裁定"供自行判断"): 空单+观察名单+守卫灯
      set +e
-     $PY strategy/notify_wechat.py --file strategy/trade_orders.json \
+     $PY strategy/notify_wechat.py --file /mnt/d/quant/trade_orders.json \
        2>&1 | tee "logs/notify_${TODAY//-/}.log"
      set -e
      exit 0 ;;
@@ -166,7 +168,7 @@ fi
 echo "===== 5/5 微信推送 ====="
 # 出单结果→微信 (P0, 2026-10-24)。未配置密钥=跳过; 发送失败不拦链但日志报警。
 set +e
-../.venv/bin/python -u notify_wechat.py --file trade_orders.json \
+../.venv/bin/python -u notify_wechat.py --file /mnt/d/quant/trade_orders.json \
   2>&1 | tee "logs/notify_${TODAY//-/}.log"
 set -e
 echo ""

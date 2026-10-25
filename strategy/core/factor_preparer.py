@@ -53,6 +53,9 @@ def _preload_fundamental_cache(fd, code, dates):
     df = df.copy()
     df['数据可用日期_str'] = df['数据可用日期'].astype(str)
     df = df.sort_values('数据可用日期_str').reset_index(drop=True)
+    # 逐日期 iloc 会反复构造含上百列的 Series；一次转换即可保持同样的 as-of 语义。
+    reports = df.to_dict('records')
+    availability = df['数据可用日期_str'].tolist()
 
     sorted_dates = sorted(dates)
     report_idx = -1
@@ -63,11 +66,11 @@ def _preload_fundamental_cache(fd, code, dates):
         d_ts = pd.Timestamp(d)
         d_str = d_ts.strftime('%Y%m%d')
 
-        while report_idx + 1 < n_reports and df.iloc[report_idx + 1]['数据可用日期_str'] <= d_str:
+        while report_idx + 1 < n_reports and availability[report_idx + 1] <= d_str:
             report_idx += 1
 
         if report_idx >= 0:
-            row = df.iloc[report_idx]
+            row = reports[report_idx]
             cache_key = d
             if cache_key not in cache:
                 # 提取基本面值
@@ -115,7 +118,7 @@ def _preload_fundamental_cache(fd, code, dates):
                 }
 
         if stock_industry is None and report_idx >= 0:
-            stock_industry = df.iloc[report_idx].get('所处行业')
+            stock_industry = reports[report_idx].get('所处行业')
 
     return cache, stock_industry
 
@@ -140,6 +143,7 @@ def _compute_stock_factors_worker(args):
     # 从文件读取数据（每个worker只持有一只股票的数据，内存可控）
     try:
         df = pd.read_csv(filepath, parse_dates=['datetime'])
+        df = df.sort_values('datetime', kind='stable').drop_duplicates('datetime', keep='last')
     except Exception:
         return []
 
@@ -160,6 +164,7 @@ def _compute_stock_factors_worker(args):
     vol_arr = df['volume'].values.astype(np.float64, copy=False) if 'volume' in df.columns else np.ones(n)
     open_arr = df['open'].values.astype(np.float64, copy=False) if 'open' in df.columns else close_arr
     turnover_arr = df['turnover_rate'].values.astype(np.float64, copy=False) if 'turnover_rate' in df.columns else None
+    amount_arr = df['amount'].values.astype(np.float64, copy=False) if 'amount' in df.columns else None
     del df  # 释放DataFrame，仅保留numpy数组
 
     # === 使用统一的因子计算器计算所有基础指标 ===
@@ -198,6 +203,7 @@ def _compute_stock_factors_worker(args):
         # 行键模板: 条件添加的键(fund_*/concept_heat/ln_cap)先占位None,
         # 保证每行键集完全一致 -> 任何批次切分下列序恒等, 不会丢列/错位
         row = {'code': code, 'date': sample_date, 'industry': stock_industry or '',
+               'label_end_date': pd.NaT,
                'ln_cap': None, 'concept_heat': None,
                'fund_roe': None, 'fund_profit_growth': None, 'fund_revenue_growth': None,
                'fund_score': None, 'fund_gross_margin': None, 'fund_cf_to_profit': None,
@@ -206,8 +212,8 @@ def _compute_stock_factors_worker(args):
 
         # 市值因子 (size): A股小盘效应, 流通市值≈成交额/换手率
         if idx < n:
-            amt = float(ind['amount'][idx]) if 'amount' in ind and idx < len(ind['amount']) else 0
-            to_rate = float(ind['turnover_rate'][idx]) if 'turnover_rate' in ind and idx < len(ind['turnover_rate']) else 0
+            amt = float(amount_arr[idx]) if amount_arr is not None else 0
+            to_rate = float(turnover_arr[idx]) if turnover_arr is not None else 0
             if amt > 0 and to_rate > 0.001:
                 est_circ_mv = amt / (to_rate / 100.0)
                 row['ln_cap'] = float(np.tanh(np.log(max(est_circ_mv, 1e6)) / 10.0 - 0.5))
@@ -251,6 +257,7 @@ def _compute_stock_factors_worker(args):
         # (ML预测/实盘信号需要最新交易日的截面因子值)
         row['future_ret'] = np.nan
         if idx + forward_period < n:
+            row['label_end_date'] = pd.Timestamp(stock_dates[idx + forward_period])
             future_price = close_arr[idx + forward_period]
             current_price = close_arr[idx]
             if current_price > 0:
@@ -298,6 +305,8 @@ def _data_fingerprint(stock_file_map: dict, fd, extra_paths: list) -> str:
 _FACTOR_CODE_FILES = [
     'core/factor_preparer.py',
     'core/factor_calculator.py',
+    'core/factor_neutralizer.py',
+    'core/multi_timeframe.py',
     'core/concept_heat.py',
     'core/cmap_hist.py',  # 2026-10-17: 概念PIT钩子解析器 — 改它=改信号输入来源
     'core/industry_chain.py',
@@ -315,7 +324,12 @@ _FACTOR_CODE_FILES = [
 # raw计算(掩码按每次运行的membership_map应用), 故raw因子缓存键豁免stock_pool.py
 # 与yaml的stock_pool节: granularity/floor-relax臂切换只换掩码不重算raw(~3h→秒级)。
 # 信号代码指纹(_SIGNAL_CODE_FILES)不含豁免 — 池模式变化必须重生成信号。
-_RAW_FACTOR_CODE_FILES = [f for f in _FACTOR_CODE_FILES if f != 'core/stock_pool.py']
+_RAW_FACTOR_CODE_FILES = [f for f in _FACTOR_CODE_FILES
+                          if f not in ('core/stock_pool.py',
+                                       # 中性化在raw缓存之后跑, 不参与raw因子计算
+                                       'core/factor_neutralizer.py',
+                                       # MTF只被signal_engine import, 不参与raw因子计算
+                                       'core/multi_timeframe.py')]
 
 
 # 组合/执行层yaml节: 不参与因子计算也不参与信号生成, 因子缓存键与信号指纹均豁免
@@ -326,11 +340,14 @@ _PORTFOLIO_LAYER_YAML_SECTIONS = {
     'portfolio', 'base_exposure', 'portfolio_stop_loss', 'stock_stop_loss',
     'hard_drawdown_stop', 'consecutive_loss_breaker', 'volatility_control',
     'risk_parity', 'dynamic_rebalance', 'enhanced_stop_loss',
-    'mean_reversion_exit', 'cost_model', 'live_monitoring',
+    'mean_reversion_exit', 'cost_model', 'live_monitoring', 'account_risk_limits',
 }
 
 # raw因子缓存键专用豁免节 (0f-v3): 组合/执行层 + stock_pool (池节不参与raw计算)
-_RAW_YAML_SKIP_SECTIONS = _PORTFOLIO_LAYER_YAML_SECTIONS | {'stock_pool'}
+# + ml (标签/特征集不参与raw因子值) + factor_neutralization (中性化在缓存之后跑,
+#   改它只需要重算中性化/排名, 不需要重算全市场因子 —— 原先会白白触发~2h全量重算)
+_RAW_YAML_SKIP_SECTIONS = _PORTFOLIO_LAYER_YAML_SECTIONS | {'stock_pool', 'ml',
+                                                           'factor_neutralization'}
 
 
 def _yaml_stripped_digest(yaml_path: str) -> str:
@@ -381,8 +398,23 @@ def _yaml_raw_digest(yaml_path: str) -> str:
     return h.hexdigest()[:8]
 
 
+def _file_content_digest(path: str) -> str:
+    """文件内容 md5[:16] (内容寻址, 不用 mtime)。
+
+    mtime 口径的三个问题: ①touch 一个文件就 bust 缓存 (45min~2h 白烧);
+    ②跨树不可比 (研究 worktree 里 mtime 全变 ⇒ 指纹不同 ⇒ 身份闸只能走 iso 副本);
+    ③指纹不是代码内容的纯函数, 与"同代码态同结果"的可复现要求冲突。
+    """
+    import hashlib
+    try:
+        with open(path, 'rb') as stream:
+            return hashlib.md5(stream.read()).hexdigest()[:16]
+    except OSError:
+        return 'MISSING'
+
+
 def _code_fingerprint() -> str:
-    """代码指纹: 因子计算逻辑/配置的 (mtime_ns+size)。
+    """代码指纹: 因子计算逻辑/配置的**内容**摘要。
 
     数据指纹只覆盖输入文件; 代码改动(如 concept_heat EMA污染修复)后缓存键
     若不变, 旧因子值会被静默复用 — 与344陷阱同款。代码指纹杜绝此类复用。
@@ -397,11 +429,7 @@ def _code_fingerprint() -> str:
         if rel == 'config/factor_config.yaml':
             h.update(f"{rel}|{_yaml_stripped_digest(p)};".encode('utf-8'))
             continue
-        try:
-            st = os.stat(p)
-            h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
-        except OSError:
-            h.update(f"{rel}|MISSING;".encode('utf-8'))
+        h.update(f"{rel}|{_file_content_digest(p)};".encode('utf-8'))
     return h.hexdigest()[:8]
 
 
@@ -420,11 +448,7 @@ def _raw_code_fingerprint() -> str:
         if rel == 'config/factor_config.yaml':
             h.update(f"{rel}|{_yaml_raw_digest(p)};".encode('utf-8'))
             continue
-        try:
-            st = os.stat(p)
-            h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
-        except OSError:
-            h.update(f"{rel}|MISSING;".encode('utf-8'))
+        h.update(f"{rel}|{_file_content_digest(p)};".encode('utf-8'))
     return h.hexdigest()[:8]
 
 
@@ -437,6 +461,7 @@ def _raw_code_fingerprint() -> str:
 _SIGNAL_CODE_FILES = _FACTOR_CODE_FILES + [
     'core/signal_engine.py',
     'core/ml_predictor.py',
+    'core/forward_targets.py',
     'bt_execution.py',
 ]
 
@@ -742,15 +767,8 @@ def prepare_factor_data(stock_file_map: dict, fd,
     # 中性化/rank截面依赖掩码结果, 必须同路径每次重算。
     # =========================================================================
 
-    # 数据清洗：过滤极端未来收益 (NaN=尾部无标签日期, 保留)
-    if 'future_ret' in factor_data.columns:
-        original_len = len(factor_data)
-        factor_data = factor_data[
-            ((factor_data['future_ret'] > -0.5) &
-             (factor_data['future_ret'] < 0.5)) |
-            factor_data['future_ret'].isna()
-        ]
-        print(f"因子数据: {original_len} 条 -> {len(factor_data)} 条 (过滤极端值 {original_len - len(factor_data)} 条)")
+    # 预测截面不能按未来标签删行。异常标签仅可在各自训练窗口内处理。
+    # 极端涨跌也是真实左/右尾；当前采用截面排名标签，无需按收益阈值删除。
 
     # 保存raw缓存 (掩码/中性化/rank前) — 仅fresh计算时; 写入失败不影响主流程
     if _fresh:
@@ -770,7 +788,7 @@ def prepare_factor_data(stock_file_map: dict, fd,
         _dates = pd.to_datetime(factor_data['date'])
         _b_idx = np.searchsorted(_b_arr.values, _dates.values, side='right') - 1
         _mask_cols = [c for c in factor_data.columns
-                      if c not in ('code', 'date', 'industry', 'future_ret')]
+                      if c not in ('code', 'date', 'industry', 'future_ret', 'label_end_date')]
         _masked_cells = 0
         for _bi, _b in enumerate(_boundaries):
             _rows = _b_idx == _bi
@@ -844,7 +862,7 @@ def prepare_factor_data(stock_file_map: dict, fd,
             print(f"删除噪声因子: {len(dropped_noise)} 个 (|IC|<0.01)")
 
         factor_cols = [c for c in factor_data.columns
-                       if c not in ('code', 'date', 'future_ret', 'industry')
+                       if c not in ('code', 'date', 'future_ret', 'industry', 'label_end_date')
                        and c not in _CHAN_STRUCTURAL_FIELDS]
         skipped_chan = len([c for c in factor_data.columns if c in _CHAN_STRUCTURAL_FIELDS])
         print(f"因子中性化: {len(factor_cols)} 个因子列 (跳过{skipped_chan}个缠论/结构字段), "
@@ -852,7 +870,10 @@ def prepare_factor_data(stock_file_map: dict, fd,
               f"市值={'✓' if neu_config.get('neutralize_market_cap') else '✗'}")
         factor_data = neutralize_factor_df(
             factor_data, factor_cols, industry_col='industry',
-            market_cap_col=None, date_col='date',
+            market_cap_col='ln_cap' if neu_config.get('neutralize_market_cap', False) else None,
+            market_cap_transform='compressed_log', date_col='date',
+            neutralize_industry=neu_config.get('neutralize_industry', True),
+            min_samples_per_industry=neu_config.get('min_samples_per_industry', 3),
         )
         # 用中性化后的列替换原始列
         for fc in factor_cols:
@@ -867,7 +888,7 @@ def prepare_factor_data(stock_file_map: dict, fd,
     # 参考 Qlib/WorldQuant: cross-sectional ranking before factor combination
     if len(factor_data) > 0:
         _RANK_FACTORS = [c for c in factor_data.columns
-                         if c not in ('code', 'date', 'future_ret', 'industry')
+                         if c not in ('code', 'date', 'future_ret', 'industry', 'label_end_date')
                          and c not in _CHAN_STRUCTURAL_FIELDS
                          and not c.endswith('_rank')]
         _rank_cols = [f'{fc}_rank' for fc in _RANK_FACTORS]

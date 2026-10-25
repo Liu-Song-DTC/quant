@@ -43,11 +43,47 @@ def _build_time(path: str) -> str:
         return '?'
 
 
+def prune_factor_caches(keep: int = 3, pattern: str = 'factor_df_*.parquet'):
+    """删除旧的因子缓存 (每个 ~700MB)。指纹一变就新增一份, 从不清理 ⇒
+    2026-10-25 实测 93 份 / 62GB, 磁盘已用 73%。满盘那天就是每日链失败的那天。
+
+    只按 mtime 保留最新 keep 份; 删除失败 (Windows 占用等) 不影响主流程。
+    """
+    cache_dir = _get_cache_dir()
+    try:
+        candidates = [Path(cache_dir) / p.name for p in Path(cache_dir).glob(pattern)]
+    except OSError:
+        return 0
+    if len(candidates) <= keep:
+        return 0
+    try:
+        candidates.sort(key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return 0
+    removed, freed = 0, 0
+    for path in candidates[:-keep] if keep > 0 else candidates:
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            removed += 1
+            freed += size
+        except OSError:
+            continue
+    if removed:
+        print(f"因子缓存清理: 删除 {removed} 份旧缓存, 释放 {freed / 1024**3:.1f}GB "
+              f"(保留最近 {keep} 份)")
+    return removed
+
+
 def save_factor_cache(factor_df: pd.DataFrame, stock_count: int, date_count: int, cache_hash: str = ''):
     """保存factor_df缓存"""
     path = get_factor_cache_path(stock_count, date_count, cache_hash)
     factor_df.to_parquet(path, index=False)
     print(f"因子缓存已保存: {path} ({len(factor_df)} 行, 构建于 {_build_time(path)})")
+    try:
+        prune_factor_caches(keep=int(os.environ.get('QUANT_CACHE_KEEP', '3')))
+    except Exception as exc:  # 清理失败不影响主流程
+        print(f"因子缓存清理跳过: {exc}")
 
 
 def load_factor_cache(stock_count: int, date_count: int, cache_hash: str = '') -> pd.DataFrame:

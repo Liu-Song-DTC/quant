@@ -37,6 +37,7 @@ import pandas as pd
 from core.config_loader import load_config
 from generate_trade_orders import (get_index_regime, INDEX_DATA_PATH, ORDERS_FILE,
                                    PORTFOLIO_STATE_FILE, DEFAULT_CASH)
+from core.live_state import live_run_lock, commit_json_files
 POSITIONS_FILE = os.path.join(_PROJECT_DIR, 'current_positions.json')
 
 EQUITY_FILE = os.path.join(_STRATEGY_DIR, 'rolling_validation_results', 'equity_curve.csv')
@@ -105,37 +106,22 @@ def _append_flat_state(target):
     混入更早的非零收益, 与实盘自身历史不同构.
     幂等: 以 live_account.last_date / 状态文件 as_of 为提交标记, 同日重跑不重复.
     """
-    from core.live_account import load_account, last_nav, record_nav, save_account
+    from core.live_account import load_account, record_nav, last_nav, ACCOUNT_FILE
     acct = load_account(DEFAULT_CASH, {})
+    from core.portfolio import PortfolioConstructor
+    p = PortfolioConstructor()
+    p.restore_tracking_state(PORTFOLIO_STATE_FILE)
     if str(acct.get('last_date') or '')[:10] != target:
-        _nav = last_nav(acct)
         _cash = float(acct.get('cash', DEFAULT_CASH))
-        if _nav is None:
-            _nav = _cash
-        record_nav(acct, target, _nav, _cash, 0.0)
-        save_account(acct)
-        print(f'[no-trade] 台账: 平盘记账 NAV {_nav:,.0f} ({target})')
-    else:
-        print(f'[no-trade] 台账: {target} 已记账, 跳过')
-
-    if not os.path.exists(PORTFOLIO_STATE_FILE):
-        print('[no-trade] 组合状态: 尚无状态文件 (首次完整管线后才会生成)')
-        return
-    try:
-        with open(PORTFOLIO_STATE_FILE, 'r', encoding='utf-8') as f:
-            _asof = str(json.load(f).get('as_of') or '')
-        if _asof[:10] == target:
-            print(f'[no-trade] 组合状态: as_of={_asof}, 已推进, 跳过')
-            return
-        from core.portfolio import PortfolioConstructor
-        p = PortfolioConstructor()
-        p.restore_tracking_state(PORTFOLIO_STATE_FILE)
-        p.update_returns(0.0)
-        p.save_tracking_state(PORTFOLIO_STATE_FILE, as_of=target)
-        print(f'[no-trade] 组合状态: 追加 0 收益 (as_of {_asof or "?"} → {target}, '
-              f'窗口 {len(p._daily_returns)}/{p.vol_lookback})')
-    except Exception as e:
-        print(f'[no-trade] WARN 组合状态平盘推进失败: {e}')
+        _previous_nav = last_nav(acct)
+        record_nav(acct, target, _cash, _cash, 0.0)
+        p.update_returns(_cash / _previous_nav - 1 if _previous_nav and _previous_nav > 0 else 0.0)
+    targets = p.build(date=pd.Timestamp(target).date(), universe=[], current_positions={},
+                      signal_store=None, cash=float(acct['cash']), prices={},
+                      bear_risk=True, trend_score=-1.0)
+    if any(targets.values()):
+        raise RuntimeError('免算路径出现非空目标，禁止跳过完整决策')
+    return acct, p.tracking_state(as_of=target), ACCOUNT_FILE
 
 
 def main():
@@ -171,6 +157,25 @@ def main():
         print('[no-trade] 非 (trend<0 且 bear_risk) ⇒ 不跳, 继续完整管线')
         return 1
 
+    # 连熊计数与完整 build 同源；第61日必须恢复完整计算，不能永远跳过。
+    from core.portfolio import PortfolioConstructor
+    from core.live_account import load_account
+    from core.execution_ledger import unresolved_orders
+    _p = PortfolioConstructor()
+    _p.restore_tracking_state(PORTFOLIO_STATE_FILE)
+    if _p._sector_rotation is not None:
+        print('[no-trade] 板块历史状态依赖当日信号，需完整计算以免跨日状态漂移')
+        return 1
+    if _p.v_recovery_enabled or not _p.advance_market_state(pd.Timestamp(target).date(), True):
+        print('[no-trade] 熊市降级/V反需完整决策，不跳过')
+        return 1
+    _acct = load_account(DEFAULT_CASH, {})
+    if unresolved_orders(_acct):
+        print('[no-trade] 有未完成订单，必须先处理券商回报')
+        return 1
+    if _acct.get('last_date') and str(_acct['last_date'])[:10] > target:
+        raise RuntimeError('禁止向过去推进实盘状态')
+
     existing = _existing_orders(target)
     if existing and existing.get('orders'):
         print(f'[no-trade] 今日已有 {len(existing["orders"])} 条订单 ⇒ 不覆盖, 不跳')
@@ -187,7 +192,8 @@ def main():
         print(f'[no-trade] CHECK-ONLY: 条件满足, 将跳过 (prev_nav_date={prev_day})')
         return 0
 
-    orders = {'date': target, 'price_date': target, 'orders': [], 'monitor': []}
+    orders = {'date': target, 'price_date': target, 'orders': [], 'monitor': [],
+              'run_id': target.replace('-', ''), 'accounting_mode': 'actual_fills'}
 
     # 熊市观察名单 (2026-10-24): 空单≠黑箱, 附最后信号日高分候选供用户自行判断
     sig_date, watchlist = _watchlist()
@@ -200,22 +206,12 @@ def main():
         print(f'[no-trade] 观察名单: 信号日 {sig_date}, top{len(watchlist)}:')
         for w in watchlist:
             print(f'  {w["code"]} score={w["score"]} ind={w["industry"]}')
-    tmp = ORDERS_FILE + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(orders, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, ORDERS_FILE)
-    print(f'[no-trade] 已写空订单: {ORDERS_FILE}')
-
-    ok, msg = _append_flat_nav(target, prev_day)
-    print(f'[no-trade] equity_curve: {msg}')
-    if not ok:
-        print('[no-trade] WARN: 净值未追加; 订单已写空, 下一完整管线会补齐')
-
-    # 实盘台账/组合状态连续性 (2026-10-22): 跳过日 = 0 单+平盘, 但状态必须推进.
-    try:
-        _append_flat_state(target)
-    except Exception as e:
-        print(f'[no-trade] WARN 台账/状态平盘推进失败: {e}')
+    # 实盘空仓不能证明历史回测也空仓；禁止人工向回测净值追加平盘行。
+    ok, msg = False, '回测产物保持独立，跳过日仅提交实际账户与策略状态'
+    acct, state, account_file = _append_flat_state(target)
+    commit_json_files({account_file: acct, PORTFOLIO_STATE_FILE: state, ORDERS_FILE: orders},
+                      os.path.join(_PROJECT_DIR, '.live_state_journal.json'))
+    print(f'[no-trade] 空订单和状态已一起提交: {ORDERS_FILE}')
 
     os.makedirs(LOG_DIR, exist_ok=True)
     ledger = {
@@ -235,4 +231,5 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    with live_run_lock(_PROJECT_DIR):
+        sys.exit(main())

@@ -344,7 +344,14 @@ class PortfolioConstructor:
             self.entry_speed = float(_es_env)
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 0.5)
         self.exit_mode = portfolio_config.get('exit_mode', 'simple')  # simple=仅成本止损让利润奔跑; 其他值启用完整退出栈
-        self._rebalance_interval = rebalance_interval  # 实盘=1每日, 回测=10
+        self._rebalance_interval = rebalance_interval
+        # 原策略以自然日控制完整重选。交易日是独立策略参数，不能隐式替换。
+        self._rebalance_unit = config.get('backtest.rebalance_unit', 'calendar')
+        if self._rebalance_unit not in ('calendar', 'trading'):
+            raise ValueError('backtest.rebalance_unit must be calendar or trading')
+        self._trading_calendar = None
+        self._market_state_date = None
+        self._bear_streak = 0
         # A-cadence臂(2026-10-14): 实盘每日全重建从未被回测 — env覆盖臂(默认None=零改动).
         # 用法: QUANT_REBAL_INTERVAL=1 python bt_execution.py
         _rb_env = os.environ.get('QUANT_REBAL_INTERVAL')
@@ -904,7 +911,13 @@ class PortfolioConstructor:
             _MS_BUF.append(float(ms))
             _MS_LAST_DATE = date
 
-    def save_tracking_state(self, filepath: str, as_of=None):
+    def _rebalance_elapsed(self, start, end):
+        if self._rebalance_unit == 'calendar':
+            return (pd.Timestamp(end) - pd.Timestamp(start)).days
+        from .trading_calendar import sessions_elapsed
+        return sessions_elapsed(start, end, self._trading_calendar)
+
+    def tracking_state(self, as_of=None):
         """持久化持仓跟踪状态到 JSON 文件（实盘跨日状态保持）
 
         as_of: 决策日 (YYYY-MM-DD). 实盘用于判断状态是否已推进到今日;
@@ -924,6 +937,17 @@ class PortfolioConstructor:
                 return bool(obj)
             raise TypeError(f"Unserializable type: {type(obj)}")
 
+        def _finite(obj):
+            """NaN/Inf → None: 状态里一个坏浮点不该让整个提交失败 (订单/账本都不落盘)。"""
+            if isinstance(obj, dict):
+                return {k: _finite(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_finite(v) for v in obj]
+            if isinstance(obj, (float, np.floating)):
+                f = float(obj)
+                return f if np.isfinite(f) else None
+            return obj
+
         state = {
             "entry_dates": {k: v.isoformat() if hasattr(v, 'isoformat') else str(v)
                           for k, v in self._entry_dates.items()},
@@ -938,6 +962,9 @@ class PortfolioConstructor:
             "sell_delay_deadline": {k: v.isoformat() if hasattr(v, 'isoformat') else str(v)
                                     for k, v in self._sell_delay_deadline.items()},
             "current_exposure": self.current_exposure,
+            "bear_streak": self._bear_streak,
+            "market_state_date": str(self._market_state_date)[:10] if self._market_state_date else None,
+            "last_rebalance_date": str(self._last_rebalance_date)[:10] if getattr(self, '_last_rebalance_date', None) else None,
             "stop_loss_triggered": self._stop_loss_triggered,
             "stop_loss_recovery_days": self._stop_loss_recovery_days,
             "stop_loss_trigger_date": self._stop_loss_trigger_date.isoformat() if self._stop_loss_trigger_date else None,
@@ -964,9 +991,13 @@ class PortfolioConstructor:
             "v_recovery_dates": sorted(d.isoformat() if hasattr(d, 'isoformat') else str(d)
                                        for d in self._v_recovery_dates),
             "as_of": str(as_of)[:10] if as_of is not None else None,
+            "sector_rotation": self._sector_rotation.tracking_state() if self._sector_rotation is not None else None,
         }
-        with open(filepath, 'w', encoding='utf-8') as f:
-            _json.dump(state, f, ensure_ascii=False, indent=2, default=_serialize)
+        return _json.loads(_json.dumps(_finite(state), default=_serialize))
+
+    def save_tracking_state(self, filepath: str, as_of=None):
+        from .live_state import atomic_json
+        atomic_json(filepath, self.tracking_state(as_of))
 
     def restore_tracking_state(self, filepath: str):
         """从 JSON 文件恢复持仓跟踪状态"""
@@ -979,8 +1010,8 @@ class PortfolioConstructor:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 state = _json.load(f)
-        except Exception:
-            return
+        except Exception as exc:
+            raise RuntimeError(f'组合状态损坏，禁止按空状态继续: {filepath}') from exc
 
         for code, ds in state.get("entry_dates", {}).items():
             try:
@@ -1009,6 +1040,9 @@ class PortfolioConstructor:
             except (ValueError, TypeError):
                 pass
         self.current_exposure = state.get("current_exposure", 1.0)
+        self._bear_streak = int(state.get('bear_streak', 0))
+        self._market_state_date = _date.fromisoformat(state['market_state_date']) if state.get('market_state_date') else None
+        self._last_rebalance_date = _date.fromisoformat(state['last_rebalance_date']) if state.get('last_rebalance_date') else None
         self._stop_loss_triggered = state.get("stop_loss_triggered", False)
         self._stop_loss_recovery_days = state.get("stop_loss_recovery_days", 0)
         _stld = state.get("stop_loss_trigger_date")
@@ -1044,9 +1078,24 @@ class PortfolioConstructor:
             except (ValueError, TypeError):
                 pass
 
+        if state.get('sector_rotation') is not None:
+            from .sector_rotation import SectorRotation
+            self._sector_rotation = SectorRotation()
+            self._sector_rotation.restore_tracking_state(state['sector_rotation'])
+
     def set_fundamental_provider(self, fd):
         """注入基本面数据提供者 (实验#27 硬伤过滤用). 未注入时过滤自动不生效."""
         self._fundamental_provider = fd
+
+    def advance_market_state(self, date, bear_risk):
+        """One transition per decision day, including cheap no-trade days."""
+        day = pd.Timestamp(date).date()
+        if self._market_state_date is not None and day < self._market_state_date:
+            raise ValueError('market state cannot move backwards')
+        if day != self._market_state_date:
+            self._bear_streak = self._bear_streak + 1 if bear_risk else 0
+            self._market_state_date = day
+        return bool(bear_risk and self._bear_streak <= 60)
 
     def set_sentiment_multipliers(self, multipliers: dict):
         """设置行业情绪乘数（含小说逆向投资调整）
@@ -1399,6 +1448,24 @@ class PortfolioConstructor:
                         int(self._nan_safe(getattr(sig, 'trend_type', 0))) == 2:
                     _rej['tt_skip'] = _rej.get('tt_skip', 0) + 1
                     continue
+                # 臂钩子(2026-10-25): 买点桶入场闸. realized-first 证据 (当前锚166笔):
+                # B1一买 n=66 wr71.2% / B4回调 n=44 wr61.4% / B2二买 n=29 wr58.6%
+                # vs 技术买点 BP6-9 n=23 wr47.8%, 其中 BP7 n=12 wr25.0% mean-0.14%.
+                # 用法: QUANT_BP_EXCLUDE=7 (拒绝 chan_buy_point=7 的新入场)
+                #      QUANT_BP_ONLY=1,2,4,5 (只允许这些买点入场)
+                # 旧持仓不受影响 (与 AH_SKIP/TT_SKIP 同构); 默认空=逐位零改动.
+                _bp_ex = os.environ.get('QUANT_BP_EXCLUDE', '').strip()
+                if _bp_ex:
+                    _bp_ex_set = {int(_x) for _x in _bp_ex.split(',') if _x.strip().lstrip('-').isdigit()}
+                    if int(self._nan_safe(getattr(sig, 'chan_buy_point', 0))) in _bp_ex_set:
+                        _rej['bp_exclude'] = _rej.get('bp_exclude', 0) + 1
+                        continue
+                _bp_only = os.environ.get('QUANT_BP_ONLY', '').strip()
+                if _bp_only:
+                    _bp_only_set = {int(_x) for _x in _bp_only.split(',') if _x.strip().lstrip('-').isdigit()}
+                    if int(self._nan_safe(getattr(sig, 'chan_buy_point', 0))) not in _bp_only_set:
+                        _rej['bp_only'] = _rej.get('bp_only', 0) + 1
+                        continue
                 div_type = getattr(sig, 'chan_divergence_type', '')
                 div_strength = getattr(sig, 'chan_divergence_strength', 0.0)
                 # H-bpC(2026-10-10): 纯买点确认数(4源, bp5排除—唯一负信息非零买点)
@@ -2916,15 +2983,11 @@ class PortfolioConstructor:
             self._dbg['normal_days'] += 1
 
         # 连熊>60天→降级为FAST: V反行情不至于完全踏空
-        if not hasattr(self, '_bear_streak'):
-            self._bear_streak = 0
-        if bear_risk:
-            self._bear_streak += 1
-        else:
-            self._bear_streak = 0
-        if bear_risk and self._bear_streak > 60:
+        if bear_risk and not self.advance_market_state(date, bear_risk):
             bear_risk = False
             bear_risk_fast = True
+        elif not bear_risk:
+            self.advance_market_state(date, False)
 
         # === E-A4(2026-09-06): V反快速恢复 (默认关, 0=基线) ===
         # 证据(analysis/ea4_vrecovery_evidence.py): effective-BEAR期内 mom20>2%
@@ -3550,7 +3613,7 @@ class PortfolioConstructor:
                 self._peak_prices[code] = max(self._peak_prices.get(code, 0), current_price)
 
         desired_value = {}
-        # 调仓频率控制: 每10个交易日做一次完整选股, 非调仓日仅止损
+        # 调仓单位由配置显式指定；默认保持原策略自然日口径。
         _rebalance_interval = self._rebalance_interval
         _should_rebalance = False
         if not hasattr(self, '_last_rebalance_date'):
@@ -3565,9 +3628,8 @@ class PortfolioConstructor:
             else:
                 _should_rebalance = True
         elif hasattr(date, 'timetuple'):
-            # 计算交易日差(近似: 日历日差*0.7≈交易日)
-            _calendar_days = (date - self._last_rebalance_date).days
-            _should_rebalance = _calendar_days >= _rebalance_interval
+            _elapsed = self._rebalance_elapsed(self._last_rebalance_date, date)
+            _should_rebalance = _elapsed >= _rebalance_interval
         # HDS触发期间禁止新买入
         if _should_rebalance and not self._hds_triggered:
             self._last_rebalance_date = date
@@ -3711,7 +3773,20 @@ class PortfolioConstructor:
             except Exception:
                 pass
 
-        return adjusted
+        # 对最终账簿投影，包含未重新入选的旧持仓。留现金，不把削减权重再分回。
+        from .portfolio_risk import constrain_targets
+        _limits = dict(load_config().get('account_risk_limits', {}) or {})
+        if os.environ.get('QUANT_ACCOUNT_LIMITS') == '1':
+            _limits['enabled'] = True
+        if not _limits.get('enabled', False):
+            return adjusted
+        _industries, _scores = {}, {}
+        for code in adjusted:
+            sig = signal_store.get(code, date) if signal_store else None
+            if sig:
+                _industries[code] = getattr(sig, 'industry', '')
+                _scores[code] = self._nan_safe(getattr(sig, 'score', 0.0))
+        return constrain_targets(adjusted, total_equity, _limits, _industries, _scores)
 
     def print_dbg_summary(self):
         """打印熊市行为调试统计"""

@@ -17,6 +17,8 @@ def neutralize_factors(
     industry_labels: List[str],
     market_caps: Optional[np.ndarray] = None,
     min_samples_per_industry: int = 3,
+    neutralize_industry: bool = True,
+    market_cap_is_log: bool = False,
 ) -> np.ndarray:
     """截面因子中性化：剥离行业均值 + 可选市值回归
 
@@ -44,7 +46,7 @@ def neutralize_factors(
     industry_mean = {}
     for ind in unique_inds:
         mask = ind_valid == ind
-        if mask.sum() >= min_samples_per_industry:
+        if neutralize_industry and mask.sum() >= min_samples_per_industry:
             industry_mean[ind] = np.mean(fv_valid[mask])
         else:
             industry_mean[ind] = 0.0
@@ -57,9 +59,19 @@ def neutralize_factors(
     # Step 2: 可选市值中性化（截面回归去市值暴露）
     if market_caps is not None:
         mc_valid = market_caps[valid]
-        mc_finite = ~np.isnan(mc_valid) & ~np.isinf(mc_valid)
+        mc_finite = np.isfinite(mc_valid)
+        if not market_cap_is_log:
+            mc_finite &= mc_valid > 0
         if mc_finite.sum() > 10:
-            log_mc = np.log(np.clip(mc_valid[mc_finite], 1e8, 1e13))
+            log_mc = (mc_valid[mc_finite].copy() if market_cap_is_log
+                      else np.log(np.clip(mc_valid[mc_finite], 1e6, 1e15)))
+            # 先剥离市值的行业均值，避免市值回归重新引入行业暴露。
+            if neutralize_industry:
+                labels = ind_valid[mc_finite]
+                for ind in np.unique(labels):
+                    mask = labels == ind
+                    if mask.sum() >= min_samples_per_industry:
+                        log_mc[mask] -= log_mc[mask].mean()
             # OLS: residuals ~ alpha + beta * log_mc
             X = np.column_stack([np.ones(len(log_mc)), log_mc])
             try:
@@ -80,7 +92,7 @@ def neutralize_factors(
         residuals = residuals - res_mean + orig_mean
 
     result[valid] = residuals
-    # 无效值填全局均值
+    # [用户裁定 2026-10-25 方案A] 填充加回(HEAD语义): 无效值填截面全局均值
     result[~valid] = orig_mean
 
     return result
@@ -92,6 +104,9 @@ def neutralize_factor_df(
     industry_col: str = 'industry',
     market_cap_col: Optional[str] = None,
     date_col: str = 'date',
+    neutralize_industry: bool = True,
+    min_samples_per_industry: int = 3,
+    market_cap_transform: str = 'raw',
 ) -> pd.DataFrame:
     """对 factor_df 批量做截面中性化
 
@@ -105,27 +120,32 @@ def neutralize_factor_df(
     Returns:
         中性化后的 DataFrame（新增 _neu 后缀列）
     """
-    result = df.copy()
     if date_col not in df.columns:
-        return result
-
-    for date, grp in df.groupby(date_col):
-        idx = grp.index
+        return df.copy()
+    columns = [fc for fc in factor_cols if fc in df.columns]
+    # 避免在数百万行 DataFrame 上逐日期 .loc 写入（Pandas COW 会反复复制整列）。
+    # 使用位置索引写独立数组，最后一次性拼接；保持逐日计算和原浮点精度。
+    outputs = {fc + '_neu': np.full(len(df), np.nan,
+                    dtype=df[fc].dtype if pd.api.types.is_float_dtype(df[fc]) else np.float64)
+               for fc in columns}
+    for positions in df.groupby(date_col, sort=True).indices.values():
+        grp = df.iloc[positions]
         industries = grp[industry_col].fillna('default').tolist()
         mkt_caps = grp[market_cap_col].values if market_cap_col and market_cap_col in df.columns else None
-
-        for fc in factor_cols:
-            if fc not in df.columns:
-                continue
-            neu_col = f'{fc}_neu'
+        is_log = market_cap_transform == 'compressed_log'
+        if mkt_caps is not None and is_log:
+            mkt_caps = np.where(mkt_caps > 0,
+                                10.0 * (np.arctanh(np.clip(mkt_caps, -0.999999, 0.999999)) + .5),
+                                np.nan)
+        for fc in columns:
             neutralized = neutralize_factors(
-                grp[fc].values, industries, mkt_caps
+                grp[fc].values, industries, mkt_caps,
+                min_samples_per_industry=min_samples_per_industry,
+                neutralize_industry=neutralize_industry, market_cap_is_log=is_log,
             )
-            if neu_col not in result.columns:
-                result[neu_col] = np.nan
-            result.loc[idx, neu_col] = neutralized.astype(result[fc].dtype)
-
-    return result
+            outputs[fc + '_neu'][positions] = neutralized
+    existing = df.drop(columns=[c for c in outputs if c in df.columns])
+    return pd.concat([existing, pd.DataFrame(outputs, index=df.index)], axis=1)
 
 
 def calculate_factor_purity(

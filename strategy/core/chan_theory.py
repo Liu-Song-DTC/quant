@@ -1568,6 +1568,7 @@ def detect_buy_sell_points(
     # 波动收缩(VCP)后突破, Mark Minervini风格
     if n_bars >= 40:
         atr20_b8 = _sma(np.abs(np.diff(close, prepend=close[0])), 20)  # 近似ATR
+        ma20_b8 = _sma(close, 20)  # 与逐bar重复计算逐位相同，整段仅计算一次
         if volume is not None:
             vol_ma20_b8 = _sma(volume, 20)
         for idx in range(40, n_bars):
@@ -1592,7 +1593,7 @@ def detect_buy_sell_points(
             price_breakout = (close[idx] - close[idx-1]) / (close[idx-1] + 1e-10) > 0.01 if idx > 0 else False
 
             # 条件4: 价格在MA20之上（或刚突破）
-            close_above_ma20 = close[idx] > _sma(close, 20)[idx]
+            close_above_ma20 = close[idx] > ma20_b8[idx]
 
             if (vol_contracting or tight_range) and breakout_vol and price_breakout and close_above_ma20:
                 buy_point[idx] = 8

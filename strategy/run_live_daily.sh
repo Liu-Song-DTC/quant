@@ -15,10 +15,7 @@ if [ "${STRATEGY_QUIET:-0}" = "1" ]; then
 else
     NICE=0
 fi
-nice -n "$NICE" .venv/bin/python strategy/run_live.py \
-    --date "$(date +%Y-%m-%d)" \
-    --cash 500000 \
-    --skip-data
+nice -n "$NICE" bash strategy/run_daily_live.sh
 
 echo "========================================"
 echo "实盘选股完成: $(date '+%Y-%m-%d %H:%M:%S')"

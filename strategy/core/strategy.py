@@ -19,7 +19,8 @@ class Strategy:
         if fundamental_data:
             self.signal_engine.set_fundamental_data(fundamental_data)
 
-        self.portfolio = PortfolioConstructor()
+        self.portfolio = PortfolioConstructor(
+            rebalance_interval=int(load_config().get('backtest.rebalance_days', 10)))
         if fundamental_data:
             # 实验#27: 组合层基本面硬伤过滤依赖此提供者
             self.portfolio.set_fundamental_provider(fundamental_data)
@@ -122,12 +123,15 @@ class Strategy:
 
         # 计算当日买入信号密度（领先指标，无滞后）
         if hasattr(self, 'industry_stock_counts'):
-            buy_signals = []
-            for code in universe:
-                sig = self.signal_store.get(code, date)
-                if sig and sig.buy:
-                    ind = getattr(sig, 'industry', '')
-                    buy_signals.append((code, ind))
+            if hasattr(self.signal_store, 'buy_signals_for_date'):
+                buy_signals = self.signal_store.buy_signals_for_date(date, universe)
+            else:
+                buy_signals = []
+                for code in universe:
+                    sig = self.signal_store.get(code, date)
+                    if sig and sig.buy:
+                        ind = getattr(sig, 'industry', '')
+                        buy_signals.append((code, ind))
             self.sector_rotation.compute_signal_density(
                 buy_signals, self.industry_stock_counts
             )

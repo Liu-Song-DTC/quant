@@ -37,9 +37,11 @@ from core.market_regime_detector import MarketRegimeDetector
 from core.repo_sweep import compute_repo_sweep, sweep_guidance
 from core.cb_sleeve import (compute_cb_sleeve, load_snapshot as cb_load_snapshot,
                             load_state as cb_load_state, save_state as cb_save_state)
-from core.live_account import (load_account, save_account, mark_to_market,
-                               last_nav, record_nav, apply_orders_to_cash,
-                               settle_pending, est_fill_price)
+from core.live_account import load_account, mark_to_market, last_nav, record_nav, ACCOUNT_FILE
+from core.execution_ledger import (queue_orders, apply_execution_reports, unresolved_orders,
+                                  stale_orders, acknowledge_orders)
+from core.live_state import commit_json_files, live_run_lock
+from core.execution_context import load_context
 
 config = load_config()
 
@@ -289,14 +291,31 @@ def load_last_known_close(code: str, raw_map: Dict[str, str],
     return 0.0
 
 
-def get_index_regime(target_date) -> Tuple[int, float, float, bool, bool]:
-    """获取目标日期的市场状态."""
+def get_market_features(target_date):
+    """同一市场数据窗口、同一多指数输入；缺失目标日绝不默认中性。"""
+    target = pd.Timestamp(target_date).date()
+    context = load_context(SIGNALS_CSV)
+    if context is not None:
+        frame = context['index_data']
+        match = frame[frame['datetime'].dt.date == target]
+        if not match.empty:
+            return match.iloc[-1].to_dict()
     if not os.path.exists(INDEX_DATA_PATH):
-        return 0, 0.0, 0.0, False, False
+        raise RuntimeError('缺少主指数，禁止按默认中性状态出单')
 
     df = pd.read_csv(INDEX_DATA_PATH, parse_dates=['datetime'])
+    start = config.get('backtest.fromdate')
+    if start:
+        df = df[df['datetime'] >= pd.Timestamp(start)]
+    df = df[df['datetime'].dt.date <= target]
+    inputs = {}
+    for key, code in [('small_cap_df', 'sh000852'), ('growth_df', '399006')]:
+        path = os.path.join(os.path.dirname(INDEX_DATA_PATH), code + '_qfq.csv')
+        if os.path.exists(path):
+            values = pd.read_csv(path, parse_dates=['datetime'])
+            inputs[key] = values[values['datetime'].dt.date <= target]
     detector = MarketRegimeDetector()
-    regime_df = detector.generate(df)
+    regime_df = detector.generate(df, **inputs)
     del df
 
     # 修复(2026-10-14): dt.date列是datetime.date对象, 与pd.Timestamp比较恒False
@@ -306,14 +325,15 @@ def get_index_regime(target_date) -> Tuple[int, float, float, bool, bool]:
     target_dt = pd.Timestamp(target_date).date()
     row = regime_df[regime_df['datetime'].dt.date == target_dt]
     if row.empty:
-        return 0, 0.0, 0.0, False, False
+        raise RuntimeError(f'目标日 {target} 没有市场状态，拒绝出单')
+    return row.iloc[-1].to_dict()
 
-    regime = int(row['regime'].values[0]) if 'regime' in row.columns else 0
-    momentum = float(row['momentum_score'].values[0]) if 'momentum_score' in row.columns else 0.0
-    trend = float(row['trend_score'].values[0]) if 'trend_score' in row.columns else 0.0
-    bear_risk = bool(row['bear_risk'].values[0]) if 'bear_risk' in row.columns else False
-    bear_risk_fast = bool(row['bear_risk_fast'].values[0]) if 'bear_risk_fast' in row.columns else False
-    return regime, momentum, trend, bear_risk, bear_risk_fast
+
+def get_index_regime(target_date) -> Tuple[int, float, float, bool, bool]:
+    features = get_market_features(target_date)
+    return (int(features.get('regime', 0)), float(features.get('momentum_score', 0)),
+            float(features.get('trend_score', 0)), bool(features.get('bear_risk', False)),
+            bool(features.get('bear_risk_fast', False)))
 
 
 def compute_support_resistance(
@@ -496,30 +516,30 @@ def build_orders(
     target_codes = set(adjusted_positions.keys())
     prev_codes = set(prev_positions.keys())
 
-    # ── close: 之前持有但目标中已无 ──
-    for code in sorted(prev_codes - target_codes):
+    def _close_order(code):
         o = {'stock_code': _normalize_code(code), 'action': 'close'}
         _p = prices.get(code, 0)
         if _p > 0:
             o['price'] = round(_p, 2)
         _sh = prev_positions.get(code, {}).get('shares')
         if _sh:
-            o['shares'] = _sh
-        orders.append(o)
+            o['shares'] = int(_sh)
+            # 卖出按股数下单 (桥按 amount 换算整手 ⇒ 清仓必须给股数, 否则买不回来)
+            o['order_shares'] = int(_sh)
+            if _p > 0:
+                o['order_amount'] = int(_sh) * _p
+        return o
+
+    # ── close: 之前持有但目标中已无 ──
+    for code in sorted(prev_codes - target_codes):
+        orders.append(_close_order(code))
 
     # ── open / adjust / keep ──
     for code in sorted(target_codes):
         target_amount = adjusted_positions[code]
         if target_amount <= 0:
             if code in prev_codes:
-                o = {'stock_code': _normalize_code(code), 'action': 'close'}
-                _p = prices.get(code, 0)
-                if _p > 0:
-                    o['price'] = round(_p, 2)
-                _sh = prev_positions.get(code, {}).get('shares')
-                if _sh:
-                    o['shares'] = int(_sh)
-                orders.append(o)
+                orders.append(_close_order(code))
             continue
 
         price = prices.get(code, 0)
@@ -544,6 +564,9 @@ def build_orders(
                 'stock_code': _normalize_code(code),
                 'action': 'open',
                 'amount': int(actual_amount),
+                # 本单的下单口径 (桥按金额换算整手): 金额/股数都指这一笔, 不是目标持仓
+                'order_amount': int(actual_amount),
+                'order_shares': int(shares),
                 'stop_loss_price': sl,
                 'take_profit_price': tp,
                 'price': round(price, 2),
@@ -567,7 +590,7 @@ def build_orders(
                 shares = _lot_shares(code, target_amount, price)
                 if shares < 1:
                     # 调整后不足最小申报→清仓
-                    orders.append({'stock_code': _normalize_code(code), 'action': 'close'})
+                    orders.append(_close_order(code))
                     print(f"  [CLOSE] {code} 调整后不足最小申报 (target={target_amount:.0f})")
                     new_positions.pop(code, None)
                     continue
@@ -577,10 +600,16 @@ def build_orders(
                     kline_date=price_date
                 )
                 _sel = selection_map.get(code) or {}
+                _prev_shares = int(prev.get('shares', 0) or 0)
+                _inc_shares = int(shares) - _prev_shares
                 orders.append({
                     'stock_code': _normalize_code(code),
                     'action': 'adjust',
                     'amount': int(actual_amount),
+                    # 加仓单的下单口径 = 本次增量 (不是目标持仓市值): 桥按金额下单,
+                    # 给目标市值会重复买一遍已有持仓。
+                    'order_amount': int(_inc_shares * price),
+                    'order_shares': _inc_shares,
                     'stop_loss_price': sl,
                     'take_profit_price': tp,
                     'price': round(price, 2),
@@ -716,7 +745,14 @@ def main():
     parser.add_argument('--force-reset', action='store_true',
                         help='确认持仓全清重选 (仅当核对后确认账户无真实持仓时使用)')
     parser.add_argument('--force-rerun', action='store_true',
-                        help='同日重跑: 允许覆盖当日台账记录 (默认拒绝, 防止状态/现金二次记账)')
+                        help='兼容旧参数；同日运行只重放已提交订单，不重新推进状态')
+    parser.add_argument('--fills', default=os.path.join(_STRATEGY_DIR, 'qmt_bridge', 'fills_today.csv'),
+                        help='券商增量成交/拒单回报 CSV；无回报不改变真实账户')
+    parser.add_argument('--deviations', default=os.path.join(_STRATEGY_DIR, 'qmt_bridge', 'deviation_log.csv'),
+                        help='券商偏差账本 CSV (未ARMED/废单/未成交撤单)；终结对应挂单')
+    parser.add_argument('--ack-stale-unresolved', default='',
+                        help='显式确认未成交的过期挂单, 逗号分隔 run_id:seq；'
+                             '仅在核对真实券商账户后使用 (程序不替你假定成交)')
     args = parser.parse_args()
 
     # ── 数据新鲜度门禁 (fail-closed) ──────────────────────────
@@ -883,7 +919,7 @@ def main():
               f"收益窗={len(portfolio._daily_returns)}/{portfolio.vol_lookback})")
     else:
         print("组合状态: 无记录 → 初始状态起步 (与回测首日语义一致)")
-    if _rebuild_state is not None:
+    if _rebuild_state is not None and getattr(portfolio, '_last_rebalance_date', None) is None:
         portfolio._last_rebalance_date = _rebuild_state
         print(f"调仓状态: 上次完整重建 {_rebuild_state} (间隔={REBALANCE_INTERVAL}日历日)")
     else:
@@ -891,6 +927,11 @@ def main():
 
     # 读取当前持仓
     prev_positions = load_current_positions()
+    # 已持仓可能已掉出买入池，仍须独立检查 ST 和基本面状态。
+    if prev_positions:
+        _held_st, _held_stale = build_st_filter(sorted(prev_positions), target_date)
+        st_codes |= _held_st
+        stale_codes |= _held_stale
 
     # 价格日无行情的持仓(当日停牌): 补最后已知收盘价, 订单/监控显示不落成本价
     for _code in prev_positions:
@@ -920,29 +961,58 @@ def main():
         import copy as _copy
         account = _copy.deepcopy(account)
 
-    # ── 次日开盘 true-up (2026-10-22): 决策日按收盘估算 → 执行日开盘实际 ──
-    # 回测 bt_execution 在 T+1 开盘成交; 夜间出单时开盘未知, apply_orders_to_cash
-    # 先用决策日收盘估算. 次日拿执行日**真实开盘价**重算, 只把差额补进现金,
-    # 并把新开仓 entry_price 改成开盘成交价(含滑点) — 与回测 buy_px 同口径.
-    # 幂等: 结算后清空 acct['pending']; 无开盘价(停牌)的票保留, 下次重试.
-    _pending = account.get('pending') or {}
-    if _pending.get('fills'):
-        _pdec = str(_pending.get('decision_date') or '')[:10]
-        _pexec = next_index_date_after(_pdec) if _pdec else None
-        if _pexec and _pexec <= str(target_date)[:10]:
-            _pcodes = sorted({f['code'] for f in _pending['fills']})
-            _popen = load_open_prices_for_date(raw_map, _pcodes, _pexec)
-            _tu = settle_pending(account, _popen, _pexec)
-            print(f"  [台账] 开盘对账 {_pdec}→{_pexec}: {_tu['n']} 笔, "
-                  f"现金调整 {_tu['delta_cash']:+,.2f}"
-                  + (f", 无开盘价保留 {_tu['skipped']}" if _tu['skipped'] else ''))
-            for _f in _pending['fills']:
-                if (_f['side'] == 'buy' and _f.get('action') == 'open'
-                        and _f['code'] in _popen and _f['code'] in prev_positions):
-                    prev_positions[_f['code']]['entry_price'] = round(
-                        est_fill_price(_f['code'], _popen[_f['code']], 'buy'), 4)
-        elif _pexec:
-            print(f"  [台账] 有待对账成交(决策日 {_pdec}), 执行日 {_pexec} 未到 ⇒ 保留")
+    # 出单计划不等于成交。只消费真实回报；历史回报可重复输入，以 fill_id 去重。
+    _n_applied = 0
+    for _src, _label in ((args.fills, '成交回报'), (args.deviations, '偏差账本')):
+        if not os.path.exists(_src):
+            continue
+        _frame = pd.read_csv(_src, dtype=str, keep_default_na=False)
+        if _frame.empty:
+            continue
+        _reports = [r for r in _frame.to_dict('records') if r.get('run_id') and r.get('seq')]
+        if not _reports:
+            print(f'  [台账] {_label} 无有效行 ({os.path.basename(_src)})')
+            continue
+        _n = apply_execution_reports(account, prev_positions, _reports,
+                            commission=float(config.get('backtest.commission', .0005)),
+                            stamp_tax=float(config.get('backtest.stamp_tax', .0005)))
+        _n_applied += _n
+        print(f'  [台账] {_label} 新处理 {_n} 条 ({os.path.basename(_src)})')
+    for _s in account.get('skipped_reports', []):
+        print(f"  [台账][跳过] {_s['key']} status={_s['status']} — {_s['reason']}")
+    for _d in account.get('execution_deviations', []):
+        if _d.get('kind') == 'FILLED_ALL_RESIDUAL':
+            print(f"  [台账][偏差] {_d['order']} 计划{_d['planned']}股 实际{_d['filled']}股 "
+                  f"(未成交{_d['unfilled_shares']}股；券商按金额换算整手, 少于计划属正常)")
+
+    # 显式人工裁定: 核对真实券商账户后确认某笔挂单未成交。程序不替用户假定成交。
+    if args.ack_stale_unresolved:
+        _keys = [k.strip() for k in args.ack_stale_unresolved.split(',') if k.strip()]
+        _acked = acknowledge_orders(account, _keys,
+                                    reason='操作员核对真实券商账户后确认未成交')
+        commit_json_files({ACCOUNT_FILE: account},
+                          os.path.join(_PROJECT_DIR, '.live_state_journal.json'))
+        print(f'  [台账] 已人工确认未成交并落盘: {_acked}')
+
+    # 未终结挂单: 无回报既不代表成交也不代表撤单 ⇒ 拒绝假定成交, 也不自动过期。
+    _unresolved = unresolved_orders(account, before=target_date)
+    if _unresolved:
+        _max_age = int(config.get('live.account.max_stale_sessions', 3))
+        _stale = stale_orders(account, target_date, max_age_sessions=_max_age)
+        _detail = '; '.join(
+            f"{o['run_id']}:{o['seq']} {o['code']} {o['side']} {o['filled']}/{o['quantity']}股"
+            + (f"(龄{o['age_sessions']}个交易日)" if 'age_sessions' in o else '')
+            for o in _unresolved[:8])
+        _stale_txt = ''
+        if _stale:
+            _stale_txt = (f"\n  其中 {len(_stale)} 笔已超过 {_max_age} 个交易日未终结: "
+                          + ', '.join(f"{o['run_id']}:{o['seq']}" for o in _stale[:8]))
+        raise RuntimeError(
+            f'存在 {len(_unresolved)} 笔未完成订单，需导入成交/拒单/撤单回报后继续；禁止假定成交。'
+            f'\n  明细: {_detail}{_stale_txt}'
+            f'\n  证据文件: {os.path.basename(args.fills)} / {os.path.basename(args.deviations)}'
+            f' / qmt_bridge/positions_snapshot.csv'
+            f'\n  核对真实券商账户后: --ack-stale-unresolved run_id:seq,... 显式确认未成交')
 
     # amount 统一为"最新收盘市值" (旧值=下单时市值): build_orders 的 1% 调整阈值、
     # 卖出回款估算、监控盈亏都读 amount — 陈旧值会让"该调不调/不该调乱调".
@@ -966,12 +1036,23 @@ def main():
           + (f" | 上期NAV {_last_nav:,.0f} ({_last_date})" if _last_nav else " | 首日"))
     if _n_missing:
         print(f"  [WARN] {_n_missing} 只持仓无当日行情, 按 entry_price 估值")
-    if _same_day and not args.dry_run and not args.force_rerun:
-        print(f"\n[拒绝出单] 台账已有 {target_date} 记录: 同日重跑会二次记账(收益窗/现金/状态).")
-        print(f"  若首次运行在中途失败, 请先核对/还原 live_account.json、"
-              f"{os.path.basename(PORTFOLIO_STATE_FILE)}、current_positions.json; "
-              f"确认无误后加 --force-rerun (仅重生成订单, 不再改台账/状态).")
-        sys.exit(1)
+    if _last_date and str(_last_date)[:10] > str(target_date)[:10]:
+        raise RuntimeError('不能用过去日期覆盖当前实盘状态')
+    if _same_day and not args.dry_run:
+        with open(ORDERS_FILE, encoding='utf-8') as stream:
+            _committed_orders = json.load(stream)
+        if _committed_orders.get('date') != str(target_date):
+            raise RuntimeError('已提交台账与订单日期不一致，拒绝重算')
+        if _n_applied:
+            # 同日重放也必须落盘: 回报只改了内存的话, 重启/换进程即丢账。
+            record_nav(account, str(target_date), _nav, float(account['cash']), _pos_value)
+            commit_json_files({POSITIONS_FILE: prev_positions, ACCOUNT_FILE: account},
+                              os.path.join(_PROJECT_DIR, '.live_state_journal.json'))
+            print(f'[幂等重放] {target_date} 已提交，沿用原订单和 run_id；'
+                  f'已落盘当日新处理的 {_n_applied} 条回报 (现金/持仓以券商回报为准)')
+        else:
+            print(f'[幂等重放] {target_date} 已提交，沿用原订单和 run_id，不再次推进账户/组合状态')
+        return
 
     # 脏数据守卫(2026-08-30 P0 + 2026-10-22 台账口径): 持仓市值 > 1.5×上期NAV
     # 只可能是持仓文件漂移/大额入金. 自动全清是危险动作(0h 2026-09-17), 必须显式确认.
@@ -1014,6 +1095,20 @@ def main():
     total_equity = _nav
     cash = max(float(account['cash']), 0.0)
 
+    _ctx = load_context(SIGNALS_CSV)
+    if _ctx is None:
+        raise RuntimeError('信号缺少匹配的执行上下文，请重生成信号后出单')
+    from core.sector_rotation import SectorRotation
+    if portfolio._sector_rotation is None:
+        portfolio._sector_rotation = SectorRotation()
+    _buys = []
+    for _code in universe:
+        _sig = signal_store.get(_code, target_date)
+        if _sig and _sig.buy:
+            _buys.append((_code, getattr(_sig, 'industry', '')))
+    portfolio._sector_rotation.compute_signal_density(_buys, _ctx['industry_stock_counts'])
+    _market = get_market_features(target_date)
+
     adjusted = portfolio.build(
         date=target_date,
         universe=universe,
@@ -1026,6 +1121,12 @@ def main():
         trend_score=trend_score,
         bear_risk=bear_risk,
         bear_risk_fast=bear_risk_fast,
+        severe_bear=bool(_market.get('severe_bear', False)),
+        index_volume_ratio=float(_market.get('index_volume_ratio', 1.0)),
+        style_score=float(_market.get('style_score', 0.0)),
+        regime_volatility=float(_market.get('regime_volatility', 0.0)),
+        v_recovery_mom=float(_market.get('mom20', 0.0)),
+        v_recovery_dist=float(_market.get('dist20_low', 0.0)),
         cost=cost,
     )
 
@@ -1035,8 +1136,8 @@ def main():
     if _new_rebuild_date is not None and _new_rebuild_date != _rebuild_state:
         if args.dry_run:
             print(f"  [调仓状态][dry-run] 完整重建日将更新: {_rebuild_state} → {_new_rebuild_date} (不落盘)")
-        elif save_rebuild_state(_new_rebuild_date):
-            print(f"  [调仓状态] 完整重建日更新: {_rebuild_state} → {_new_rebuild_date}")
+        else:
+            print(f"  [调仓状态] 将与订单一起提交: {_rebuild_state} → {_new_rebuild_date}")
     else:
         print(f"  [调仓状态] 本次未做完整重建(不出新选股, 仅出场/清仓)")
 
@@ -1258,7 +1359,7 @@ def main():
 
     # ── 持仓监控清单: 全持仓最新支撑/压力 + 过滤警示 ──────────
     try:
-        monitor = build_monitor_list(str(target_date), new_positions, prices,
+        monitor = build_monitor_list(str(target_date), prev_positions, prices,
                                      signal_store, raw_map, stock_file_map,
                                      price_date=price_date)
         output['monitor'] = monitor
@@ -1272,33 +1373,16 @@ def main():
         return
 
     # ── 7. 写入文件 ──────────────────────────────────────────
-    with open(ORDERS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
-    print(f"\n订单已写入: {ORDERS_FILE}")
-
-    # ── 台账 + 组合状态落盘 (2026-10-22 架构修复) ──────────────
-    # 顺序: 订单 → 持仓 → 台账 → 组合状态. 台账 last_date 是"今日已记账"提交标记;
-    # 同日重跑(--force-rerun)只重写订单, 绝不二次记账/二次推进状态.
-    if _same_day:
-        print("  [台账] 同日重跑(--force-rerun): 跳过持仓/净值/现金/状态写入 "
-              "(请人工核对持仓与现金)")
-    else:
-        save_current_positions(new_positions)
-        _pre_cash = float(account['cash'])
-        record_nav(account, str(target_date), _nav, _pre_cash, _pos_value)
-        _sm = apply_orders_to_cash(account, orders, prev_positions, prices)
-        # 今日成交按收盘估算; 把明细挂到台账, 下一交易日用开盘价 true-up.
-        account['pending'] = ({'decision_date': str(target_date)[:10],
-                               'price_date': str(pd.Timestamp(price_date).date()),
-                               'fills': _sm['fills']}
-                              if _sm['fills'] else None)
-        save_account(account)
-        print(f"  [台账] 成交估算: 买{_sm['buy_amt']:,.0f} 卖{_sm['sell_amt']:,.0f} "
-              f"费用{_sm['fees']:,.0f} → 现金{account['cash']:,.0f}")
-        if _sm['skipped']:
-            print(f"  [WARN] 无价跳过记账: {_sm['skipped']}")
-        portfolio.save_tracking_state(PORTFOLIO_STATE_FILE, as_of=target_date)
-        print(f"组合状态已保存: {PORTFOLIO_STATE_FILE}")
+    record_nav(account, str(target_date), _nav, float(account['cash']), _pos_value)
+    output['run_id'] = queue_orders(account, orders, prev_positions, target_date)
+    output['accounting_mode'] = 'actual_fills'
+    output['generated_at'] = datetime.now().isoformat(timespec='seconds')
+    updates = {POSITIONS_FILE: prev_positions, ACCOUNT_FILE: account,
+               PORTFOLIO_STATE_FILE: portfolio.tracking_state(as_of=target_date),
+               REBUILD_STATE_FILE: {'last_rebuild_date': str(_new_rebuild_date) if _new_rebuild_date else None},
+               ORDERS_FILE: output}
+    commit_json_files(updates, os.path.join(_PROJECT_DIR, '.live_state_journal.json'))
+    print(f'订单与状态已提交；实际现金/持仓不因计划下单改变: {ORDERS_FILE}')
 
     # 转债sleeve状态落盘 (月度节奏跟踪, 独立于股票持仓文件)
     if _cb_result and _cb_result.get('rebalanced'):
@@ -1325,4 +1409,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    with live_run_lock(_PROJECT_DIR):
+        main()

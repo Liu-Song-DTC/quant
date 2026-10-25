@@ -129,7 +129,7 @@ def _compute_date_chunk(args):
         factor_df = factor_df.copy()
         factor_df['date'] = pd.to_datetime(factor_df['date'])
 
-    exclude_cols = {'code', 'date', 'future_ret', 'industry'} | _CHAN_EXCLUDE
+    exclude_cols = {'code', 'date', 'future_ret', 'industry', 'label_end_date'} | _CHAN_EXCLUDE
     factor_names = [c for c in factor_df.columns if c not in exclude_cols and not c.endswith('_rank')]
 
     train_window_days = config['train_window_days']

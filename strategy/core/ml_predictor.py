@@ -59,7 +59,8 @@ class MLFactorPredictor:
 
     def prepare_features(self, df: pd.DataFrame,
                          regime_info: dict = None,
-                         is_train: bool = False) -> pd.DataFrame:
+                         is_train: bool = False,
+                         selection_df: pd.DataFrame = None) -> pd.DataFrame:
         exclude = {'code', 'date', 'future_ret', 'industry'}
         base_features = [c for c in df.columns if c not in exclude
                          and df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
@@ -76,7 +77,8 @@ class MLFactorPredictor:
         if self._use_cross_features:
             if is_train or not self._cross_feature_pairs:
                 top_k = min(8, len(base_features))
-                top_features = self._select_top_features(df, base_features, k=top_k)
+                top_features = self._select_top_features(
+                    selection_df if selection_df is not None else df, base_features, k=top_k)
                 self._cross_feature_pairs = []
                 for i, f1 in enumerate(top_features):
                     for f2 in top_features[i+1:]:
@@ -109,7 +111,11 @@ class MLFactorPredictor:
                     df[_col] = _pf[_col].to_numpy()
 
         if self._use_regime_features and regime_info:
-            regime_val = regime_info.get('regime', 0)
+            if 'by_date' in regime_info:
+                regime_val = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d').map(
+                    regime_info['by_date']).fillna(0).to_numpy()
+            else:
+                regime_val = regime_info.get('regime', 0)
             # 支持逐行regime: list/array/Series按行使用, 标量广播
             if isinstance(regime_val, (list, np.ndarray)):
                 regime_arr = np.asarray(regime_val, dtype=float)
@@ -161,8 +167,14 @@ class MLFactorPredictor:
         exclude_set = {'code', 'date', 'future_ret', 'industry'}
         numeric_cols = [c for c in factor_df.columns if c not in exclude_set
                        and factor_df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
-        meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry'] if c in factor_df.columns]
+        meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry', 'label_end_date'] if c in factor_df.columns]
         df = factor_df[meta_cols + numeric_cols].copy()
+        availability_cols = self.config.get('ml', {}).get('feature_whitelist') or numeric_cols
+        availability_cols = [c for c in availability_cols if c in numeric_cols]
+        if not availability_cols:
+            return None
+        # 股票池外的全缺失行不参与标签截面和模型训练。
+        df = df.loc[df[availability_cols].notna().any(axis=1)].copy()
         # 行序无关性: XGBoost subsample按行位置抽样, merge_asof等上游重排序会改变
         # 抽样子集导致同数据不同模型. 固定按(date, code)排序保证确定性.
         if 'date' in df.columns and 'code' in df.columns:
@@ -182,11 +194,22 @@ class MLFactorPredictor:
                  / _fr.count().over('date') - 0.5).alias('_r')
             )['_r'].to_numpy()
 
-        # 特征工程 (基于标准化后的因子值)
-        df = self.prepare_features(df, regime_info, is_train=True)
         if 'future_ret' not in df.columns:
             print("[ML] 训练数据缺少future_ret列")
             return None
+
+        # 先划分并隔离标签窗口，再选择交叉特征；验证标签绝不能参与选特征。
+        df = df.replace([np.inf, -np.inf], np.nan)
+        dates = sorted(df.loc[df['future_ret'].notna(), 'date'].unique())
+        split_idx = int(len(dates) * 0.8)
+        if split_idx < 1 or split_idx >= len(dates):
+            return None
+        val_start = pd.Timestamp(dates[split_idx])
+        train_mask, val_mask = self.split_masks(df, val_start)
+        # 构造交叉因子的截面必须包含当时全部可预测股票。标签不可得（例如
+        # 次日涨停买不入）只能排除监督样本，不能提前改变当日特征的排名分母。
+        df = self.prepare_features(df, regime_info, is_train=True,
+                                   selection_df=df.loc[train_mask & df['future_ret'].notna()])
 
         valid_features = [c for c in self.feature_cols if c in df.columns]
         if len(valid_features) < 3:
@@ -214,14 +237,7 @@ class MLFactorPredictor:
                 print(f"[ML] 训练样本不足: {len(train_df)}")
                 return None
 
-        # 时序划分: 前80%训练, 后20%验证
-        dates = sorted(train_df['date'].unique())
-        split_idx = int(len(dates) * 0.8)
-        train_dates = set(dates[:split_idx])
-        val_dates = set(dates[split_idx:])
-
-        train_mask = train_df['date'].isin(train_dates)
-        val_mask = train_df['date'].isin(val_dates)
+        train_mask, val_mask = self.split_masks(train_df, val_start)
 
         X_train = train_df.loc[train_mask, valid_features].values
         y_train = train_df.loc[train_mask, 'future_ret'].values
@@ -235,7 +251,7 @@ class MLFactorPredictor:
         # 时序样本权重: 越靠近训练期末的数据权重越大(近期市场规律更相关)
         _max_date = train_df.loc[train_mask, 'date'].max()
         _days_diff = (_max_date - train_df.loc[train_mask, 'date']).dt.days.values
-        sample_weight = np.exp(_days_diff / 500.0)  # ~2年半衰, 近期数据权重≈2.7x最远数据
+        sample_weight = self.time_weights(_days_diff)
 
         # Ensemble: 3个不同种子模型，预测取均值 → 降方差5-10%
         self._ensemble_models = []
@@ -256,7 +272,18 @@ class MLFactorPredictor:
         # 固化训练特征: predict时复用, 避免prepare_features覆盖导致shape mismatch
         self._trained_features = valid_features
 
-        val_ic = np.corrcoef(_ensemble_preds, y_val)[0, 1] if len(y_val) > 1 else 0
+        # 每日截面 Rank IC，避免池大小和跨日分布主导一个混合 Pearson IC。
+        scored = pd.DataFrame({'date': train_df.loc[val_mask, 'date'].values,
+                               'pred': _ensemble_preds, 'target': y_val})
+        daily_ics = [g['pred'].corr(g['target'], method='spearman')
+                     for _, g in scored.groupby('date') if len(g) >= 5]
+        finite_ics = np.asarray(daily_ics, dtype=float)
+        finite_ics = finite_ics[np.isfinite(finite_ics)]
+        val_ic = float(finite_ics.mean()) if len(finite_ics) else 0.0
+        self.validation_summary = {'daily_rank_ic': val_ic, 'dates': int(len(finite_ics)),
+                                   'train_rows': int(train_mask.sum()),
+                                   'validation_rows': int(val_mask.sum()),
+                                   'validation_start': str(val_start.date())}
 
         # 特征重要性: ensemble均值
         _all_imp = {}
@@ -265,14 +292,33 @@ class MLFactorPredictor:
                 _all_imp[fn] = _all_imp.get(fn, 0) + imp / len(_ensemble_seeds)
         self._feature_importances = dict(sorted(_all_imp.items(), key=lambda x: -x[1]))
 
-        print(f"[ML] 训练完成: 样本={len(train_df)}, "
+        log_context = self.config.get('ml', {}).get('log_context', 'WALK_FORWARD')
+        print(f"[ML][{log_context}] 训练完成: 样本={len(train_df)}, "
               f"特征={len(valid_features)}, 验证IC={val_ic:.4f}")
         return val_ic
+
+    @staticmethod
+    def time_weights(days_old):
+        return np.exp(-np.maximum(np.asarray(days_old, dtype=float), 0.0) / 500.0)
+
+    def split_masks(self, df, validation_start):
+        dates = pd.to_datetime(df['date'])
+        val_start = pd.Timestamp(validation_start)
+        train = dates < val_start
+        if 'label_end_date' in df:
+            train &= pd.to_datetime(df['label_end_date']) < val_start
+        else:
+            # 兼容旧的无标签终止日帧：宁可多隔离，不让相邻收益窗口重叠。
+            horizon = int(self.config.get('dynamic_factor', {}).get('forward_period', 10))
+            train &= dates < val_start - pd.offsets.BDay(horizon)
+        return train, dates >= val_start
 
     def predict(self, df: pd.DataFrame,
                 regime_info: dict = None) -> np.ndarray:
         if self.model is None:
             return np.zeros(len(df))
+        if 'date' not in df or (df.groupby('date').size() < 2).any():
+            raise ValueError('ML截面模型必须联合输入同日多只股票；禁止按单只股票标准化预测')
 
         exclude_set = {'code', 'date', 'future_ret', 'industry'}
         numeric_cols = [c for c in df.columns if c not in exclude_set
@@ -290,7 +336,7 @@ class MLFactorPredictor:
         if not valid_features:
             return np.zeros(len(df))
 
-        X = df[valid_features].fillna(0).values
+        X = df[valid_features].replace([np.inf, -np.inf], np.nan).fillna(0).values
         # 补齐缺失特征列: 训练时63特征, 预测时可能只有32个基础因子 → 缺失列填0
         if len(valid_features) < len(trained_cols):
             full_X = np.zeros((len(df), len(trained_cols)))
@@ -320,41 +366,62 @@ class MLFactorPredictor:
         """保存ensemble模型到文件"""
         if not hasattr(self, '_ensemble_models') or not self._ensemble_models:
             return
+        import hashlib
+        import os
+        from pathlib import Path
+        import tempfile
+        from .live_state import atomic_bytes
+        checksums = {}
         for i, _m in enumerate(self._ensemble_models):
-            _m.save_model(f"{path}.{i}.json")
+            member = Path(f"{path}.{i}.json")
+            fd, temp = tempfile.mkstemp(dir=member.parent, prefix=member.name + '.', suffix='.json')
+            os.close(fd)
+            try:
+                _m.save_model(temp)
+                payload = Path(temp).read_bytes()
+                checksums[str(i)] = hashlib.sha256(payload).hexdigest()
+                atomic_bytes(member, payload)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
         import pickle
-        with open(path + '.meta', 'wb') as f:
-            pickle.dump({
+        atomic_bytes(path + '.meta', pickle.dumps({
                 'feature_cols': self.feature_cols,
                 'trained_features': getattr(self, '_trained_features', self.feature_cols),
                 'cross_feature_pairs': self._cross_feature_pairs,
                 'feature_importances': getattr(self, '_feature_importances', {}),
                 'n_models': len(self._ensemble_models),
-            }, f)
+                'model_sha256': checksums,
+            }))
 
     def load_model(self, path: str):
         """从文件加载ensemble模型"""
         from xgboost import XGBRegressor
+        import hashlib
+        from pathlib import Path
         import pickle
         meta_path = path + '.meta'
-        n_models = 3
-        if __import__('os').path.exists(meta_path):
-            with open(meta_path, 'rb') as f:
-                data = pickle.load(f)
-            self.feature_cols = data['feature_cols']
-            self._trained_features = data.get('trained_features', data['feature_cols'])
-            self._cross_feature_pairs = data['cross_feature_pairs']
-            n_models = data.get('n_models', 3)
-        self._ensemble_models = []
+        with open(meta_path, 'rb') as f:
+            data = pickle.load(f)
+        n_models = data.get('n_models', 3)
+        if not isinstance(n_models, int) or n_models < 1 or not data.get('feature_cols'):
+            raise ValueError('invalid ensemble metadata')
+        members = []
         for i in range(n_models):
             _m = XGBRegressor()
             _mp = f"{path}.{i}.json"
-            if __import__('os').path.exists(_mp):
-                _m.load_model(_mp)
-                self._ensemble_models.append(_m)
-        if self._ensemble_models:
-            self.model = self._ensemble_models[-1]
-            self._feature_importances = data['feature_importances']
+            payload = Path(_mp).read_bytes()  # Any missing member invalidates the entire ensemble.
+            expected = data.get('model_sha256')
+            if expected is not None and hashlib.sha256(payload).hexdigest() != expected.get(str(i)):
+                raise ValueError(f'ensemble member checksum mismatch: {_mp}')
+            _m.load_model(bytearray(payload))
+            members.append(_m)
+        self.feature_cols = data['feature_cols']
+        self._trained_features = data.get('trained_features', data['feature_cols'])
+        self._cross_feature_pairs = data['cross_feature_pairs']
+        self._ensemble_models = members
+        self.model = members[-1]
+        self._feature_importances = data.get('feature_importances', {})
 
     @staticmethod
     def _filter_stable_features(df: pd.DataFrame, features: List[str],

@@ -1,5 +1,6 @@
 #!/bin/bash
 # 运行回测并保存结果
+set -e -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_FILE="bt_result.log"

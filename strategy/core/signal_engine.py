@@ -1544,21 +1544,11 @@ class SignalEngine:
                     ml_pred_series = np.array([self._ml_predictions.get((code_str, d), 0.0) for d in bar_dates])
                 ml_normalized = np.tanh(ml_pred_series * 3)
             elif has_ml_model:
-                # 实盘路径：直接调用模型预测(仅最新bar)
-                from .market_regime_detector import MarketRegimeDetector
-                bar_date = pd.to_datetime(dates[n - 1])
-                # 构建单行特征(因子截面值)
-                feature_vals = {}
-                for fn in self.ml_predictor.feature_cols:
-                    if fn in ind:
-                        feature_vals[fn] = float(_safe_get_arr(ind, fn, n, 0.0)[n - 1])
-                if feature_vals:
-                    row_df = pd.DataFrame([feature_vals])
-                    row_df['date'] = bar_date
-                    row_df['code'] = str(code).zfill(6)
-                    pred_val = self.ml_predictor.predict(row_df)
-                    if len(pred_val) > 0 and abs(pred_val[0]) > 0.001:
-                        ml_normalized[n - 1] = float(np.tanh(pred_val[0] * 3))
+                # 截面标准化不能对单只股票调用。没有联合截面预测时保留纯因子分，
+                # 不能用未来训练的最终模型给历史/新股补出一个单行预测。
+                if not getattr(self, '_warned_missing_cross_section', False):
+                    print('[ML][NO_CROSS_SECTION] 无同日联合预测，使用因子评分回退')
+                    self._warned_missing_cross_section = True
 
         if self.ml_enabled:
             ml_active = np.abs(ml_normalized) > 0.01

@@ -27,7 +27,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
 SECRETS = BASE / 'config' / 'secrets.env'
-ORDERS_FILE = BASE / 'trade_orders.json'
+ORDERS_FILE = BASE.parent / 'trade_orders.json'
 EQUITY_FILE = BASE / 'rolling_validation_results' / 'equity_curve.csv'
 SIGNALS_FILE = BASE / 'rolling_validation_results' / 'backtest_signals.csv'
 
@@ -170,7 +170,7 @@ def render_orders(path: Path) -> tuple:
     date = data.get('date', data.get('trade_date', ''))
     nav_line = ''
     try:
-        acct = json.loads((BASE / 'live_account.json').read_text(encoding='utf-8'))
+        acct = json.loads((BASE.parent / 'live_account.json').read_text(encoding='utf-8'))
         h = sorted(acct.get('nav_history') or [], key=lambda r: str(r['date']))
         if h:
             last = h[-1]

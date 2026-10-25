@@ -82,7 +82,7 @@ class MultiTimeframeAnalyzer:
         """主分析入口"""
         n = len(close)
 
-        if not self.enabled:
+        if not self.enabled or n == 0:
             return MTFResult(
                 weekly_trend_up=np.zeros(n, dtype=bool),
                 monthly_trend_up=np.zeros(n, dtype=bool),
@@ -139,7 +139,8 @@ class MultiTimeframeAnalyzer:
         # Step 5: 支撑/阻力位 (可选，开销较大)
         if self.support_resistance_enabled:
             resistance_pct, support_pct = self._compute_support_resistance_fast(
-                weekly, monthly, weekly_daily_map, monthly_daily_map, close, n
+                weekly, monthly, weekly_daily_map, monthly_daily_map, close, n,
+                lookback=self.pivot_lookback,
             )
         else:
             resistance_pct = np.zeros(n)
@@ -204,7 +205,9 @@ class MultiTimeframeAnalyzer:
         w_low = np.empty(n_bars)
         w_close = np.empty(n_bars)
         w_volume = np.empty(n_bars)
-        w_date = dates.values[boundaries[1:] - 1]  # 每周最后一天
+        # 固定日历结束日: 截断在周中时不能把尚未完成的周线当作已完成。
+        # 周五休市时该周线于下一交易日可用，避免依赖未来日历/后续数据。
+        w_date = dates[boundaries[1:] - 1].to_period('W-FRI').end_time.normalize().values
 
         for i in range(n_bars):
             start, end = boundaries[i], boundaries[i + 1]
@@ -240,7 +243,7 @@ class MultiTimeframeAnalyzer:
         m_low = np.empty(n_bars)
         m_close = np.empty(n_bars)
         m_volume = np.empty(n_bars)
-        m_date = dates.values[boundaries[1:] - 1]
+        m_date = dates[boundaries[1:] - 1].to_period('M').end_time.normalize().values
 
         for i in range(n_bars):
             start, end = boundaries[i], boundaries[i + 1]
@@ -302,6 +305,9 @@ class MultiTimeframeAnalyzer:
         trend_up[start:] = np.where(valid, ema_fast[start:] > ema_slow[start:], False)
         spread = np.abs(ema_fast[start:] - ema_slow[start:]) / (ema_slow[start:] + 1e-10)
         trend_strength[start:] = np.where(valid, np.tanh(spread * 50), 0.0)
+
+        ema_fast[:min_bars - 1] = np.nan
+        ema_slow[:min_bars - 1] = np.nan
 
         return {
             'trend_up': trend_up,
@@ -473,47 +479,44 @@ class MultiTimeframeAnalyzer:
         resistance_pct = np.zeros(n_daily)
         support_pct = np.zeros(n_daily)
 
-        if len(weekly) < lookback * 2 + 1:
-            return resistance_pct, support_pct
+        def confirmed(frame):
+            high, low = frame['high'].to_numpy(), frame['low'].to_numpy()
+            resist, support, ri, si = [], [], [], []
+            for center in range(lookback, len(frame) - lookback):
+                h = high[center - lookback:center + lookback + 1]
+                l = low[center - lookback:center + lookback + 1]
+                if np.all(h <= high[center]) and np.sum(h == high[center]) == 1:
+                    resist.append(high[center]); ri.append(center + lookback)
+                if np.all(l >= low[center]) and np.sum(l == low[center]) == 1:
+                    support.append(low[center]); si.append(center + lookback)
+            return tuple(np.asarray(a) for a in (resist, support, ri, si))
 
-        w_resist, w_support = MultiTimeframeAnalyzer._find_pivot_levels(
-            weekly['high'].values, weekly['low'].values, lookback
-        )
-        m_resist, m_support = MultiTimeframeAnalyzer._find_pivot_levels(
-            monthly['high'].values, monthly['low'].values, lookback
-        )
-
-        all_resist = np.concatenate([w_resist, m_resist]) if len(w_resist) + len(m_resist) > 0 else np.array([])
-        all_support = np.concatenate([w_support, m_support]) if len(w_support) + len(m_support) > 0 else np.array([])
-
-        all_resist = MultiTimeframeAnalyzer._merge_nearby_levels(all_resist)
-        all_support = MultiTimeframeAnalyzer._merge_nearby_levels(all_support)
-
-        if len(all_resist) == 0 and len(all_support) == 0:
-            return resistance_pct, support_pct
-
-        # 使用 searchsorted 向量化查找
-        valid = daily_close > 0
-        prices = daily_close[valid]
-
-        if len(all_resist) > 0:
-            sorted_resist = np.sort(all_resist)
-            # searchsorted: 找到第一个 > price 的阻力位索引
-            idx_r = np.searchsorted(sorted_resist, prices, side='right')
-            has_resist = idx_r < len(sorted_resist)
-            nearest_r = np.full(len(prices), np.nan)
-            nearest_r[has_resist] = sorted_resist[idx_r[has_resist]]
-            resistance_pct[valid] = np.where(has_resist, (nearest_r - prices) / prices, 0.0)
-
-        if len(all_support) > 0:
-            sorted_support = np.sort(all_support)
-            # searchsorted: 找到第一个 >= price 的支撑位索引, 支撑位在它左边
-            idx_s = np.searchsorted(sorted_support, prices, side='left') - 1
-            has_support = idx_s >= 0
-            nearest_s = np.full(len(prices), np.nan)
-            nearest_s[has_support] = sorted_support[idx_s[has_support]]
-            support_pct[valid] = np.where(has_support, (prices - nearest_s) / prices, 0.0)
-
+        wr, ws, wri, wsi = confirmed(weekly)
+        mr, ms, mri, msi = confirmed(monthly)
+        # A pivot is available only after its right-hand confirmation bars close.
+        # The full-history pivot list may contain future events; each group sees
+        # only events confirmed by its completed weekly/monthly bar.
+        pairs = np.column_stack([weekly_daily_map, monthly_daily_map])
+        for wi, mi in np.unique(pairs, axis=0):
+            valid = ((weekly_daily_map == wi) & (monthly_daily_map == mi)
+                     & np.isfinite(daily_close) & (daily_close > 0))
+            prices = daily_close[valid]
+            for levels, output, resistance in (
+                (np.concatenate([wr[wri <= wi], mr[mri <= mi]]), resistance_pct, True),
+                (np.concatenate([ws[wsi <= wi], ms[msi <= mi]]), support_pct, False),
+            ):
+                levels = MultiTimeframeAnalyzer._merge_nearby_levels(levels)
+                if not len(levels):
+                    continue
+                if resistance:
+                    idx = np.searchsorted(levels, prices, side='right')
+                    found = idx < len(levels)
+                    dist = (levels[np.minimum(idx, len(levels) - 1)] - prices) / prices
+                else:
+                    idx = np.searchsorted(levels, prices, side='left') - 1
+                    found = idx >= 0
+                    dist = (prices - levels[np.maximum(idx, 0)]) / prices
+                output[valid] = np.where(found, dist, 0.0)
         return resistance_pct, support_pct
 
     # ===================================================================
