@@ -7725,6 +7725,17 @@ stock_pool:
   pool_relax_momentum: null
 ml:
   enabled: true
+  # 2026-10-26 臂: 缺失指示位 —— 让模型知道哪些因子值是中性化填出来的(填完再z-score
+  # 恰好=0), 并剔除"全部特征都被填"的池外掩码行。默认关=逐位零改动。
+  use_fill_indicator: false
+  # 识别阈值: z-score后 |z| <= tol 判为"被填成当日均值"。探针实测被填格最大|z|=2.4e-6,
+  # 自然格最小|z|≈1e-5 ⇒ 1e-5 时行级识别 precision/recall = 100%/100%。
+  fill_tol: 1.0e-5
+  # 训练期剔除池外掩码行(成员资格泄漏进训练集); 标签截面分母随之只算池成员。
+  fill_drop_pool_rows: true
+  # 指示位只给"被填率不过高"的列: 均值撞上自然众数的列(eg concept_heat 大量0)
+  # 指示位失真 ⇒ 跳过。
+  fill_indicator_max_frac: 0.35
   # 研究臂 net_short_3_5：只改ML标签，按次日开盘入场后的3/5日净收益训练。
   # 完整配对验证通过前保留既有目标；原始因子缓存与 ML 标签/参数解耦。
   target_mode: legacy_10d

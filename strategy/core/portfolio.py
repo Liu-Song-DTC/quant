@@ -1961,7 +1961,8 @@ class PortfolioConstructor:
         # 已覆盖原有的 sl/chan_sell/trend=-2/B3回踩/放量下跌/力竭 等全部维度
         # Gate硬门槛仅排除极端无效信号（gate通过score×gate_quality软性影响排名）
         # _GATE_DEFAULT_MEAN=0.55, 全默认gate_quality≈0.68, 需至少一个Gate有信号才能>0.7
-        GATE_FLOOR_NEW = 0.65   # 提高门槛: 64%无结构买入占比过高
+        GATE_FLOOR_NEW = 0.65   # 提高门槛(原注释引用的"64%无结构买入占比"是**信号面板**口径,
+                                # 入场层不可能为bp=0 ⇒ 该统计是误报; 阈值本身保留, 勿据面板占比再调)
         GATE_FLOOR_HOLD = 0.50  # 持仓放宽: gate质量下降不急于清仓
         gate_filtered = []
         for c in qualified:

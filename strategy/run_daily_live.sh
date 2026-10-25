@@ -34,12 +34,13 @@ chain_alert() {  # $1=标题 $2=内容
 }
 trap 'chain_alert "实盘链失败" "run_daily_live.sh 第 $LINENO 行附近失败 (rc=$?), $(date "+%F %T")。日志: strategy/logs/ $(tail -2 $QLOGS/alert_${TODAY//-/}.log 2>/dev/null)"' ERR
 
-ALLOW_WEEKEND=0; FORCE_FULL=0
+ALLOW_WEEKEND=0; FORCE_FULL=0; PREOPEN=0
 for _a in "$@"; do
   case "$_a" in
     --allow-weekend) ALLOW_WEEKEND=1 ;;
     --force-full) FORCE_FULL=1 ;;
-    *) echo "未知参数: $_a (支持 --allow-weekend --force-full)"; exit 1 ;;
+    --preopen) PREOPEN=1 ;;
+    *) echo "未知参数: $_a (支持 --allow-weekend --force-full --preopen)"; exit 1 ;;
   esac
 done
 if [ "$ALLOW_WEEKEND" = "1" ]; then
@@ -47,7 +48,18 @@ if [ "$ALLOW_WEEKEND" = "1" ]; then
 else
   [ "$DOW" -le 5 ] || { echo "今天周$DOW 不是交易日, 退出 (官方周末重跑用 --allow-weekend)"; exit 1; }
 fi
-[ "$(date +%H%M)" -ge 1730 ] || { echo "请在 17:30 后运行 (当日K线/融资融券等数据尚未齐)"; exit 1; }
+if [ "$PREOPEN" = "1" ]; then
+  # 开盘前出单 (2026-10-26 用户裁定"今天周一还未开盘, 照样出名单"):
+  # 数据=上一交易日收盘(已定稿), 新鲜度门禁本来就按"17:30前=期望上一交易日"判
+  # (check_data_freshness.expected_trading_day) ⇒ 口径一致, 不减配。
+  # 只允许开盘前跑; 开盘后请走常规晚间流程(当日数据齐了再跑)。
+  [ "$(date +%H%M)" -lt 0930 ] || { echo "--preopen 只允许 09:30 前使用 (现在 $(date +%H%M))"; exit 1; }
+  echo "[--preopen] 开盘前出单模式: 数据=上一交易日收盘, todate→今天, 订单按今日开盘执行"
+elif [ "$(date +%H%M)" -ge 1730 ]; then
+  :
+else
+  echo "请在 17:30 后运行 (当日K线/融资融券等数据尚未齐); 开盘前出名单用 --preopen"; exit 1
+fi
 
 # ===== 0/4 出单区洁净闸 (研究/出单物理隔离, 2026-10-24) =====
 # 研究区 = /mnt/d/quant-r (git worktree, data 共享只读): 一切臂/探针/实验在那里跑。

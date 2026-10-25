@@ -138,15 +138,19 @@ class BacktestDiagnostics:
         if m['factor_selection'].get('DYN', 0) / total_sel < 0.01:
             self.warnings.append("DYN因子命中率<1%，动态因子选择几乎无效")
 
-        # 2. 买入信号分布
+        # 2. 买入信号分布 (信号面板层, 不是入场层)
+        # 2026-10-26 更正: 这里的计数是**信号面板**(每只票每个调仓日), 不是实际入场。
+        # 面板级 bp=0 占比天然很高(信号层允许"无结构"高分票进候选), 而**入场不可能为0**
+        # (bp_confirm_min=3: 4个来源权重各1, 无结构票确认数上限2<3 ⇒ 数学上不可入场)。
+        # 旧口径按面板占比告警 ⇒ 每次回测都误报"B4/B5未生效"(10-25据此误判过一次)。
+        # 入场层结构分布由 portfolio DEBUG 的"买入结构分布 (per regime)"给出。
         total_buys = m['buy_signals'] or 1
-        print(f"\n--- 买入信号分布 (总计 {total_buys:,}) ---")
+        print(f"\n--- 买入信号分布 (信号面板, 总计 {total_buys:,}) ---")
         bp_names = {0: '无结构', 1: 'B1一买', 2: 'B2二买', 3: 'B3三买', 4: 'B4回调', 5: 'B5启动'}
         for bp in sorted(m['buy_by_buy_point'].keys()):
             cnt = m['buy_by_buy_point'][bp]
             print(f"  {bp_names.get(bp, f'BP{bp}'):<10}: {cnt:>6,} ({cnt/total_buys*100:5.1f}%)")
-        if m['buy_by_buy_point'].get(0, 0) / total_buys > 0.35:
-            self.warnings.append(f"无结构买入占比{m['buy_by_buy_point'][0]/total_buys*100:.0f}% (>35%), B4/B5未生效或覆盖不足")
+        print("  (面板口径; 入场结构见 portfolio DEBUG 的「买入结构分布 (per regime)」)")
 
         # 因子家族买入分布
         print(f"\n  按因子家族:")

@@ -54,6 +54,13 @@ class MLFactorPredictor:
 
         self._use_cross_features = ml_cfg.get('use_cross_features', True)
         self._use_regime_features = ml_cfg.get('use_regime_features', True)
+        # 缺失指示位 (2026-10-26): 让ML知道哪些因子值是中性化填出来的, 并剔除
+        # "全部特征都被填"的池外掩码行。默认关 = 逐位零改动。
+        self.use_fill_indicator = bool(ml_cfg.get('use_fill_indicator', False))
+        self.fill_tol = float(ml_cfg.get('fill_tol', 1e-5))
+        self.fill_drop_pool_rows = bool(ml_cfg.get('fill_drop_pool_rows', True))
+        self.fill_indicator_max_frac = float(ml_cfg.get('fill_indicator_max_frac', 0.35))
+        self._fill_indicator_src_cols: List[str] = []
         self.blend_weight = ml_cfg.get('blend_weight', 0.50)
         self._cross_feature_pairs = []  # 训练时固化，预测时复用
 
@@ -133,8 +140,82 @@ class MLFactorPredictor:
                     df[col] = df[f].fillna(0).values * regime_arr
                     base_features.append(col)
 
+        if self.use_fill_indicator:
+            for fc in self._fill_indicator_src_cols:
+                col = f'{fc}__filled'
+                if col in df.columns and col not in base_features:
+                    base_features.append(col)
+
         self.feature_cols = [c for c in base_features
                              if c in df.columns and c not in exclude]
+        return df
+
+    def _fill_flags(self, df: pd.DataFrame, feat_cols: List[str]) -> Dict[str, np.ndarray]:
+        """逐格识别"被中性化填成当日均值"的格子 (df 必须已做截面 z-score)。
+
+        中性化把无效值(池外掩码/自然缺失)填成该列当日均值 ⇒ 之后的截面 z-score
+        让被填的格子恰好落在 0 附近。探针实测(.arms/probe/fill_detect_probe_1026.py,
+        真实 raw 缓存 + 真实池掩码 + 真实 neutralize_factor_df):
+            被填格最大 |z| = 2.4e-6, 自然格最小 |z| ≈ 1e-5 (非退化列)
+            阈值 1e-5 ⇒ 行级(全填行=池外掩码行) precision/recall = 100% / 100%
+        """
+        flags: Dict[str, np.ndarray] = {}
+        for c in feat_cols:
+            if c not in df.columns:
+                continue
+            v = pd.to_numeric(df[c], errors='coerce').to_numpy(dtype='float64', na_value=np.nan)
+            flags[c] = np.isfinite(v) & (np.abs(v) <= self.fill_tol)
+        return flags
+
+    def _mark_filled_train(self, df: pd.DataFrame, feat_cols: List[str]) -> pd.DataFrame:
+        """训练期: 剔除池外掩码行 + 给被填的格子加 0/1 指示位。
+
+        池外掩码行 = 池成员之外的所有因子列被置NaN ⇒ 中性化后全部等于当日均值 ⇒
+        "所有有值的特征列都在当日均值上"。这些行不是可交易标的, 让它们进训练集
+        等于把成员资格(池)泄漏给模型 ⇒ 整行剔除(标签的截面排名分母也随之只算成员)。
+        指示位: 让模型知道"这个基本面值是假的"(均值占位), 而不是把它当中性信号。
+        """
+        if not self.use_fill_indicator:
+            return df
+        flags = self._fill_flags(df, feat_cols)
+        if not flags:
+            return df
+        n = len(df)
+        notna = np.zeros(n, dtype=np.int32)
+        filled = np.zeros(n, dtype=np.int32)
+        for c, fl in flags.items():
+            v = pd.to_numeric(df[c], errors='coerce').to_numpy(dtype='float64', na_value=np.nan)
+            ok = np.isfinite(v)
+            notna += ok
+            filled += fl & ok
+        keep = np.ones(n, dtype=bool)
+        if self.fill_drop_pool_rows:
+            pool_rows = (notna >= 2) & (filled >= notna)
+            if pool_rows.any():
+                keep = ~pool_rows
+                df = df.loc[keep].copy()
+        src_cols: List[str] = []
+        for c, fl in flags.items():
+            fl_k = fl[keep]
+            if fl_k.mean() > self.fill_indicator_max_frac:
+                # 退化列: 当日均值撞上自然众数(eg concept_heat 大量0) ⇒ 指示位失真
+                continue
+            df[f'{c}__filled'] = fl_k.astype('float32')
+            src_cols.append(c)
+        self._fill_indicator_src_cols = src_cols
+        print(f"[ML][FILL_INDICATOR] 池外掩码行 {int((~keep).sum())}/{n} 剔除, "
+              f"指示位列 {len(src_cols)}/{len(flags)}")
+        return df
+
+    def _mark_filled_predict(self, df: pd.DataFrame) -> pd.DataFrame:
+        """预测期: 按训练期固化的列集合加指示位 (不剔行, 预测要覆盖全市场)。"""
+        if not self._fill_indicator_src_cols:
+            return df
+        flags = self._fill_flags(df, self._fill_indicator_src_cols)
+        for c in self._fill_indicator_src_cols:
+            if c not in flags:
+                continue
+            df[f'{c}__filled'] = flags[c].astype('float32')
         return df
 
     @staticmethod
@@ -182,6 +263,13 @@ class MLFactorPredictor:
 
         # 截面标准化: 消除跨日期量级差异, 模型学习相对排名而非绝对量级
         df = self._cross_sectional_zscore(df, numeric_cols)
+
+        # 缺失指示位 (可选, 默认关): 识别被中性化填成当日均值的格子 ⇒ 剔除池外掩码行
+        # (成员资格泄漏) + 给模型 0/1 指示位。必须在标签排名之前, 否则标签的截面
+        # 分母仍把非成员算进去。
+        if self.use_fill_indicator:
+            _feat = [c for c in availability_cols if c not in exclude_set]
+            df = self._mark_filled_train(df, _feat)
 
         # Rank标签: 截面百分位排名 → 中心化到[-0.5, 0.5], 预测排序而非绝对收益
         # 性能(2026-10-09): polars窗口rank替代pandas groupby.rank, 探针逐位一致
@@ -329,6 +417,10 @@ class MLFactorPredictor:
         # 截面标准化 (与训练一致)
         df = self._cross_sectional_zscore(df, numeric_cols)
 
+        # 缺失指示位 (与训练同口径: 同一批列, 同一阈值)
+        if self.use_fill_indicator:
+            df = self._mark_filled_predict(df)
+
         df = self.prepare_features(df, regime_info)
         # 使用训练时固化的特征列表, 避免prepare_features重建的feature_cols与模型不匹配
         trained_cols = getattr(self, '_trained_features', self.feature_cols)
@@ -392,6 +484,9 @@ class MLFactorPredictor:
                 'feature_importances': getattr(self, '_feature_importances', {}),
                 'n_models': len(self._ensemble_models),
                 'model_sha256': checksums,
+                # 缺失指示位(2026-10-26): 训练期固化的被填列集合 — 预测期必须用同一批列
+                # 加指示位, 否则特征矩阵与模型不匹配(载入模型后重算预测的路径会走错)。
+                'fill_indicator_src_cols': list(self._fill_indicator_src_cols),
             }))
 
     def load_model(self, path: str):
@@ -418,6 +513,7 @@ class MLFactorPredictor:
             members.append(_m)
         self.feature_cols = data['feature_cols']
         self._trained_features = data.get('trained_features', data['feature_cols'])
+        self._fill_indicator_src_cols = list(data.get('fill_indicator_src_cols', []) or [])
         self._cross_feature_pairs = data['cross_feature_pairs']
         self._ensemble_models = members
         self.model = members[-1]

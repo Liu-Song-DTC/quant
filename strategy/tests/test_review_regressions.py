@@ -479,6 +479,98 @@ class CausalityTests(unittest.TestCase):
         self.assertAlmostEqual(out['f1_neu'].iloc[11],
                                out['f1_neu'].iloc[:11].mean(), places=6)
 
+    def test_fill_indicator_identifies_pool_masked_rows(self):
+        """缺失指示位 (2026-10-26): 均值填充后, "被填的格子" = 当日均值。
+
+        池外掩码行 = 池成员之外所有因子列被置NaN ⇒ 中性化后全部等于当日均值
+        ⇒ 模型必须知道哪些值是假的, 且这些非成员行不得进训练集。
+        """
+        from core.ml_predictor import MLFactorPredictor
+        pred = MLFactorPredictor({'ml': {'use_fill_indicator': True,
+                                         'feature_whitelist': ['f1', 'f2']}})
+        rows = []
+        for day in ('2026-10-22', '2026-10-23'):
+            for i in range(10):
+                rows.append({'date': day, 'code': f'{i:06d}',
+                             'f1': float(i), 'f2': float(i) * 2.0})
+        frame = pd.DataFrame(rows)
+        for day in ('2026-10-22', '2026-10-23'):
+            d = frame['date'] == day
+            def code(i):
+                return d & (frame['code'] == f'{i:06d}')
+            # 自然缺失行(000008): f1 缺(会被填), f2 是真值 99
+            frame.loc[code(8), 'f2'] = 99.0
+            # 中性化按列填: f1 的有效行 = 0..7 ⇒ 填充值 = mean(0..7);
+            # f2 的有效行 = 0..8 (含 99) ⇒ 填充值 = mean(0..8)。
+            f1_fill = frame.loc[d & (frame['code'] < '000008'), 'f1'].mean()
+            f2_fill = frame.loc[d & (frame['code'] <= '000008'), 'f2'].mean()
+            # 池外行(000009): 两列都被填 ⇒ 都等于当日均值
+            frame.loc[code(9), 'f1'] = f1_fill
+            frame.loc[code(9), 'f2'] = f2_fill
+            # 自然缺失行(000008): f1 被填, f2 保持真值
+            frame.loc[code(8), 'f1'] = f1_fill
+        z = pred._cross_sectional_zscore(frame[['date', 'code', 'f1', 'f2']].copy(),
+                                         ['f1', 'f2'])
+        out = pred._mark_filled_train(z, ['f1', 'f2'])
+        # 池外行被剔除, 自然缺失行保留
+        self.assertNotIn('000009', set(out['code']))
+        self.assertIn('000008', set(out['code']))
+        self.assertEqual(len(out), 18)
+        # 指示位: 自然缺失行的 f1 被标记, f2 没被标记
+        self.assertIn('f1__filled', out.columns)
+        self.assertIn('f2__filled', out.columns)
+        nat = out[out['code'] == '000008'].iloc[0]
+        self.assertAlmostEqual(float(nat['f1__filled']), 1.0, places=6)
+        self.assertAlmostEqual(float(nat['f2__filled']), 0.0, places=6)
+
+    def test_fill_indicator_columns_survive_model_roundtrip(self):
+        """载入模型后必须仍知道"哪些列有指示位" ⇒ 预测期特征矩阵与模型一致。"""
+        from core.ml_predictor import MLFactorPredictor
+        rng = np.random.default_rng(23)
+        dates = pd.bdate_range('2025-01-01', periods=60)
+        frame = pd.DataFrame({'date': np.repeat(dates, 12), 'code': np.tile(np.arange(12), 60),
+                              'a': rng.normal(size=720), 'b': rng.normal(size=720),
+                              'c': rng.normal(size=720), 'future_ret': rng.normal(size=720)})
+        frame['label_end_date'] = frame['date'] + pd.offsets.BDay(10)
+        # 每个日期的最后一行 = "全填行"(池外掩码行): 三列都等于**其余有效行**的均值
+        # (中性化按列填: 填充值 = 该列当日有效行的均值 ⇒ 填完后的当日均值不变 ⇒ z=0)
+        for day in dates:
+            m = frame['date'] == day
+            for col in ('a', 'b', 'c'):
+                fill_val = frame.loc[m & (frame['code'] != 11), col].mean()
+                frame.loc[m & (frame['code'] == 11), col] = fill_val
+        cfg = {'ml': {'feature_whitelist': ['a', 'b', 'c'],
+                      'use_fill_indicator': True, 'log_context': 'REGRESSION_RANDOM_DATA'}}
+        p = MLFactorPredictor(cfg)
+        p.xgb_params.update(n_jobs=1, n_estimators=4, early_stopping_rounds=2)
+        ic = p.train(frame, {'by_date': {}})
+        self.assertTrue(np.isfinite(ic))
+        self.assertTrue(p._fill_indicator_src_cols)
+        self.assertIn('a__filled', p._trained_features)
+        last = frame.loc[frame['date'] == dates[-1]]
+        pred = p.predict(last, {'regime': 0})
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / 'ensemble.json')
+            p.save_model(path)
+            restored = MLFactorPredictor(cfg)
+            restored.load_model(path)
+            self.assertEqual(restored._fill_indicator_src_cols, p._fill_indicator_src_cols)
+            np.testing.assert_array_equal(restored.predict(last, {'regime': 0}), pred)
+
+    def test_fill_indicator_off_is_byte_identical(self):
+        """默认关 = 逐位零改动 (生产基线不能被这个开关碰到)。"""
+        from core.ml_predictor import MLFactorPredictor
+        pred = MLFactorPredictor({'ml': {'feature_whitelist': ['f1', 'f2']}})
+        self.assertFalse(pred.use_fill_indicator)
+        frame = pd.DataFrame({'date': ['2026-10-22'] * 5,
+                               'code': [f'{i:06d}' for i in range(5)],
+                               'f1': [1.0, 2.0, 3.0, 4.0, 5.0],
+                               'f2': [2.0, 4.0, 6.0, 8.0, 10.0]})
+        z = pred._cross_sectional_zscore(frame.copy(), ['f1', 'f2'])
+        before = z.copy()
+        out = pred._mark_filled_train(z, ['f1', 'f2'])
+        pd.testing.assert_frame_equal(before, out)
+
     def test_size_neutralization_removes_exposure(self):
         cap = np.exp(np.linspace(18, 25, 40)); signal = np.log(cap) + np.sin(np.arange(40)) * .1
         frame = pd.DataFrame({'date': ['2026-10-23'] * 40, 'industry': ['A'] * 40,
