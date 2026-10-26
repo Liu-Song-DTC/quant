@@ -336,6 +336,12 @@ class SignalEngine:
         # 另类数据开关 (2026-09-17 0g裁决: dragon_tiger前视artifact关闭)
         alt_cfg = config_loader.get('alternative_data', {})
         self.dragon_tiger_enabled = alt_cfg.get('dragon_tiger_enabled', True)
+        # 市场级北向/两融只做绝对分数偏移，不改变同日截面排序；保留原默认，
+        # 同时允许隔离实验关闭/扫描该择时偏移。
+        _market_alt_override = __import__('os').environ.get('QUANT_MARKET_ALT_WEIGHT')
+        self.market_alt_adjustment_weight = float(
+            _market_alt_override if _market_alt_override is not None
+            else alt_cfg.get('market_adjustment_weight', 0.15))
 
         # 信号阈值（从配置文件加载）
         signal_config = config_loader.get('signal', {})
@@ -1575,7 +1581,8 @@ class SignalEngine:
                     prev_date = (pd.to_datetime(dates[i]) - pd.Timedelta(days=1)).date()
                     nb = self._alt_data.get_northbound_signal(prev_date)
                     mg = self._alt_data.get_margin_signal(prev_date)
-                    alt_market[i] = (nb * 0.6 + mg * 0.4) * 0.15
+                    alt_market[i] = ((nb * 0.6 + mg * 0.4)
+                                     * self.market_alt_adjustment_weight)
                 # NaN 兜底：replace NaN with 0 before adding to adjusted_score
                 alt_market = np.nan_to_num(alt_market, nan=0.0)
                 adjusted_score += alt_market

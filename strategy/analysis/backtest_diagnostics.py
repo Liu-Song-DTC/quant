@@ -128,14 +128,18 @@ class BacktestDiagnostics:
         print("=" * 70)
 
         # 1. 因子选择分布
-        total_sel = sum(m['factor_selection'].values()) or 1
-        print(f"\n--- 因子选择分布 (总计 {total_sel:,}) ---")
-        for path in ['DYN', 'IND', 'DEFAULT', 'V41', 'OTHER']:
-            cnt = m['factor_selection'].get(path, 0)
-            pct = cnt / total_sel * 100
-            bar = '█' * int(pct / 2)
-            print(f"  {path:<10}: {cnt:>8,} ({pct:5.1f}%) {bar}")
-        if m['factor_selection'].get('DYN', 0) / total_sel < 0.01:
+        observed_selections = sum(m['factor_selection'].values())
+        print(f"\n--- 因子选择分布 (总计 {observed_selections:,}) ---")
+        if observed_selections:
+            for path in ['DYN', 'IND', 'DEFAULT', 'V41', 'OTHER']:
+                cnt = m['factor_selection'].get(path, 0)
+                pct = cnt / observed_selections * 100
+                bar = '█' * int(pct / 2)
+                print(f"  {path:<10}: {cnt:>8,} ({pct:5.1f}%) {bar}")
+        else:
+            print("  暂无记录，当前统计无法判断动态因子命中率")
+        # Empty instrumentation is unknown, not evidence of a sub-1% hit rate.
+        if observed_selections and m['factor_selection'].get('DYN', 0) / observed_selections < 0.01:
             self.warnings.append("DYN因子命中率<1%，动态因子选择几乎无效")
 
         # 2. 买入信号分布 (信号面板层, 不是入场层)

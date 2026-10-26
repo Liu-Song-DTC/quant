@@ -253,6 +253,10 @@ def _signal_code_fingerprint() -> str:
     # 信号被静默复用 ⇒ 臂只换了成交价不换选股 = 半假臂。路径变了必须重生成。
     # ★realpath 归一 (2026-10-25): 研究区软链 ⇒ 同一份数据 ⇒ 同一指纹 (跨树可比)。
     h.update(f"data_path|{os.path.realpath(DATA_PATH)};".encode('utf-8'))
+    # Market-level alternative score adjustment changes generated signals; include
+    # its research override in the cache identity to prevent stale signal reuse.
+    _market_alt_weight = os.environ.get('QUANT_MARKET_ALT_WEIGHT')
+    h.update(f"market_alt_weight_env|{_market_alt_weight!r};".encode('utf-8'))
     return h.hexdigest()[:8]
 
 
