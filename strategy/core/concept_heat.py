@@ -102,13 +102,14 @@ class ConceptHeatCalculator:
                     _h = pickle.load(f)
                 vs = sorted((v for v in _h.get('versions', []) if v.get('map')),
                             key=lambda v: str(v['date']))
+                if not vs:
+                    raise ValueError('empty concept history')
                 if vs:
                     self._cmap_versions = [(str(v['date']), v['map']) for v in vs]
                     print(f"[ConceptHeat] 版本化映射已启用: {len(vs)} 版 "
                           f"({self._cmap_versions[0][0]} → {self._cmap_versions[-1][0]})")
             except Exception as _e:
-                print(f"[ConceptHeat] ⚠ 版本化映射加载失败({str(_e)[:60]}), 退回静态映射")
-                self._cmap_versions = None
+                raise RuntimeError('invalid concept history; refusing static-map fallback') from _e
 
         # 加载概念历史数据(回测用)
         if hist_path is None:
@@ -137,7 +138,7 @@ class ConceptHeatCalculator:
         self._loaded = True
 
     def _version_for(self, date) -> Optional[str]:
-        """决策日 date 对应的版本号 ("截止该日的最近版本"; 早于最早版本 ⇒ 最早版本)。
+        """决策日对应的版本；首版之前固定用首版作为历史关系代理。
 
         版本化映射关闭 ⇒ None。结果按日期串 memo —— _get_bom_score 每个
         (股票×bar) 都调一次(实测 ~7.4M 次), 不能每次构造 Timestamp。
@@ -154,6 +155,8 @@ class ConceptHeatCalculator:
         hit = self._cmap_ver_cache.get(d)
         if hit is not None:
             return hit
+        # Preserve the original strategy's prehistory approximation. This frozen
+        # proxy is reproducible, but does not establish historical membership.
         ver = self._cmap_versions[0][0]
         for vd, _ in self._cmap_versions:
             if vd <= d:
@@ -165,6 +168,8 @@ class ConceptHeatCalculator:
 
     def _version_payload(self, ver: str):
         """版本号 → (stock_concepts, concept_stocks); 构造结果按版本缓存"""
+        if ver == '':
+            return {}, {}
         cached = self._cmap_vcache.get(ver)
         if cached is None:
             m = next(mm for vd, mm in self._cmap_versions if vd == ver)
@@ -203,7 +208,7 @@ class ConceptHeatCalculator:
     def _apply_map_asof(self, date):
         """按决策日 τ 切换到"截止 τ 的最近版本"成分股名单 (版本化映射关闭时=no-op)
 
-        τ 早于最早版本 ⇒ 用最早版本(能拿到的最早名单, 恒定 ⇒ 可复现)。
+        τ 早于最早版本 ⇒ 固定使用首版历史代理；后续版本不回写此前关系。
         切换只换两个属性的**引用**(构造结果按版本缓存), 下游消费者
         (get_concept_heat / get_chain_lead_score)读的都是属性。
 

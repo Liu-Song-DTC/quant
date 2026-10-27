@@ -21,6 +21,7 @@
   · 同日重刷(md5 不同) ⇒ **覆盖当日版本**(同一天内属同一 as-of 时刻, 非重述);
     历史日期**永不修改**。
   · md5 相同 ⇒ 幂等跳过, 不产生新版本。
+  · 已有台账只允许新增当日版本，拒绝插入早期/未来日期；历史补证须另建数据版本。
   · 写盘 tmp + os.replace(原子) — 见 data/refresh_concept_map_0903.py 同源修复。
 """
 import os
@@ -28,6 +29,7 @@ import sys
 import time
 import pickle
 import hashlib
+from datetime import date as calendar_date
 
 HIST = '/mnt/d/quant/data/concept_map_history.pkl'
 
@@ -54,8 +56,13 @@ def _same_map(a, b):
 
 
 def record_version(map_dict, src='manual', note='', hist=HIST, date=None):
-    """把 map_dict 记为今日版本。返回 'added' | 'updated' | 'same'。"""
-    d = date or time.strftime('%Y-%m-%d')
+    """记录当日版本；历史异值返回 exists，回填或未来日期拒绝写入。"""
+    today = time.strftime('%Y-%m-%d')
+    d = date or today
+    if not isinstance(d, str) or calendar_date.fromisoformat(d).isoformat() != d:
+        raise ValueError('concept version date must use YYYY-MM-DD')
+    if d > today:
+        raise ValueError(f'refusing future-dated concept snapshot: {d}')
     md5 = _md5_of_map(map_dict)
     if os.path.exists(hist):
         with open(hist, 'rb') as f:
@@ -64,6 +71,13 @@ def record_version(map_dict, src='manual', note='', hist=HIST, date=None):
         h = {'versions': []}
     vs = h.setdefault('versions', [])
     cur = next((v for v in vs if str(v.get('date')) == d), None)
+    # An inserted earlier snapshot would change which map is the fixed first
+    # version, or rewrite an already covered interval. Treat historical repairs
+    # as a separate data version, never as an ordinary daily append.
+    if cur is None and vs and d <= max(str(v['date']) for v in vs):
+        raise ValueError(f'refusing backdated concept insertion: {d}')
+    if cur is None and vs and d != today:
+        raise ValueError(f'historical concept backfill requires a separate data version: {d}')
     if cur is not None and _same_map(map_dict, cur.get('map') or {}):
         return 'same'
     entry = {'date': d, 'src': src, 'note': note, 'md5': md5,

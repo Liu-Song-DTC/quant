@@ -106,7 +106,7 @@ def main():
     # 2026-10-16: **版本快照** — 概念层是全系统唯一没有日期维度的输入, 每刷新一次
     # 追加一版 as-of 成分股归属(见 concept_map_version.py / QUANT_CONCEPT_MAP_HIST).
     # ⚠ 时间敏感: 东财只提供**当前**名单, 历史名单不可回补 ⇒ 今天不记就永久丢失.
-    # 失败**不阻塞**刷新(映射本体已落盘), 但要显式告警 —— 丢版本是不可逆的.
+    # 版本记录失败必须阻塞刷新成功路径，避免静态快照和实盘版本表分叉。
     try:
         import sys as _sys
         _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -116,12 +116,13 @@ def main():
         print(f'版本快照: {_r}', flush=True)
     except Exception as _e:
         print(f'!!! 概念映射版本快照失败({str(_e)[:80]}) — 该日归属将永久缺失, 请手工补', flush=True)
+        return 1
 
     # 2026-10-17: **一致性守卫** — 概念 PIT 开启后, 今天的实盘决策走"版本表最后一版",
-    # 而不是静态快照。上面的快照失败是**非阻塞**的 ⇒ 会出现"静态快照前进、版本表落后"
-    # 的静默分叉: 回测用新名单、实盘用旧名单, 且两边都不报错
+    # 而不是静态快照。旧实现快照失败不阻塞，会出现"静态快照前进、版本表落后"
+    # 的分叉；现已在版本记录失败及此处一致性检查失败时返回非零。
     # (形态同 live-regime-blind-bug: 查表失败返回默认=静默温床)。
-    # 这里只告警(映射本体已落盘, 回滚无意义); 硬闸在下单前的门控里。
+    # 此处直接拒绝成功，外层 refresh_all.sh 的 pipefail 会阻止继续出单。
     try:
         import subprocess as _sp
         import sys as _sys  # 上一段的 import 在 try 内, 可能未执行到
@@ -134,11 +135,13 @@ def main():
                   flush=True)
             print('    ' + (_r2.stdout or _r2.stderr).strip().replace('\n', '\n    '),
                   flush=True)
+            return 1
         else:
             print('一致性守卫: 静态快照 ≡ 版本表最后一版 ✓', flush=True)
     except Exception as _e:
         print(f'一致性守卫未能运行({str(_e)[:80]}) — 请手工执行 '
               f'strategy/tools/check_cmap_consistency.py', flush=True)
+        return 1
 
     print(f'=== map 刷新完成: {len(new_map)} 只 / {len(new_concepts)} 概念 ===', flush=True)
     return 0

@@ -114,7 +114,7 @@ def _load_concept_map_history():
     它直接决定评分用哪套因子, 不是 scale-invariant。
     ⇒ 每次概念刷新全史重写 + 回测/实盘分叉。
 
-    τ 早于最早版本 ⇒ 用最早版本(能拿到的最早名单, 恒定 ⇒ 可复现)。
+    τ 早于最早版本 ⇒ 固定使用首版作为历史代理；不代表当时真实可知的成员。
     """
     import pickle
     hist_p = resolve_hist_path()   # 默认开启; 见 core/cmap_hist.py
@@ -126,14 +126,13 @@ def _load_concept_map_history():
         vs = sorted((v for v in h.get('versions', []) if v.get('map')),
                     key=lambda v: str(v['date']))
         if not vs:
-            return None
+            raise ValueError('empty concept history')
         out = [(str(v['date']), _filter_concept_map(v['map'])) for v in vs]
         print(f"[SignalEngine] 版本化概念映射已启用: {len(out)} 版 "
               f"({out[0][0]} → {out[-1][0]})")
         return out
     except Exception as e:
-        print(f"[SignalEngine] ⚠ 版本化概念映射加载失败({str(e)[:60]}), 退回静态映射")
-        return None
+        raise RuntimeError('invalid concept history; refusing static-map fallback') from e
 
 
 def _load_concept_inception():

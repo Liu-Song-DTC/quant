@@ -25,7 +25,8 @@
 按决策日 τ 取"截止 τ 的最近版本"的成分股名单, 数据源
 `data/concept_map_history.pkl` —— 由 `data/refresh_concept_map_0903.py` 每次刷新
 **追加一版**(`record_version` 拒绝覆盖历史日期, 只允许覆盖"今天"), 因此历史恒定。
-τ 早于最早版本 ⇒ 用最早版本(能拿到的最早名单, 恒定 ⇒ 可复现)。
+τ 早于最早版本 ⇒ 固定使用首版作为历史代理；之后按时间线更新。
+首版前的代理关系可复现，但不构成当时真实成员的证明，历史评估须标注覆盖边界。
 
 **默认开启 (2026-10-17)**
 
@@ -44,7 +45,7 @@ _OFF = ('', 'off', 'none', '0', 'false')
 
 
 def resolve_hist_path() -> str:
-    """返回版本化概念映射文件路径; 显式关闭或文件不存在 ⇒ None(退回静态快照)。
+    """返回版本化概念映射路径; 只有显式关闭才允许静态快照。
 
     未设 env  ⇒ 用 DEFAULT_HIST(**默认开启**)。
     显式设为 _OFF 之一 ⇒ None。
@@ -55,9 +56,5 @@ def resolve_hist_path() -> str:
     if str(v).strip().lower() in _OFF:
         return None
     if not os.path.exists(v):
-        # 只在"默认路径缺失"时告警 —— 显式指向的路径由调用方自己负责
-        if v == DEFAULT_HIST:
-            print(f"[cmap_hist] ⚠ 默认版本表不存在({v}) ⇒ 退回静态快照 "
-                  f"stock_concept_map.pkl(**会重写历史**, 违反铁律)")
-        return None
+        raise FileNotFoundError(f'concept history missing; refusing static-map fallback: {v}')
     return v
