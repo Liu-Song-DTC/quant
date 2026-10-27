@@ -30,6 +30,7 @@ class MLFactorPredictor:
         self.config = config or {}
         self.model = None
         self.feature_cols = []
+        self.feature_contract = {}
         self._last_train_date = None
 
         ml_cfg = self.config.get('ml', {})
@@ -219,6 +220,24 @@ class MLFactorPredictor:
         return df
 
     @staticmethod
+    def describe_feature_contract(frame: pd.DataFrame, whitelist=None):
+        """Report configured versus usable inputs without changing selection."""
+        meta = {'code', 'date', 'future_ret', 'industry'}
+        numeric = [c for c in frame.columns if c not in meta
+                   and frame[c].dtype in ('float64', 'float32', 'int64', 'int32')]
+        requested = list(whitelist) if whitelist else numeric.copy()
+        requested_set = set(requested)
+        return {
+            'status': 'observed_training_input',
+            'requested': requested,
+            'available_base': [c for c in numeric if c in requested_set],
+            'absent': [c for c in requested if c not in frame.columns],
+            'non_numeric': [c for c in requested if c in frame.columns and c not in numeric],
+            'generated_but_not_requested': [c for c in numeric if c not in requested_set],
+            'scope': 'columns and numeric dtypes; does not prove source freshness or nonmissing coverage',
+        }
+
+    @staticmethod
     def _cross_sectional_zscore(df: pd.DataFrame, cols: List[str]):
         """截面标准化: 每个日期内 (x - mean) / std, 消除市场量级干扰"""
         # 注意(2026-10-09): 勿换polars — numpy在float32列上保持f32累加,
@@ -243,6 +262,15 @@ class MLFactorPredictor:
         except ImportError:
             print("[ML] xgboost未安装")
             return None
+
+        self.feature_contract = self.describe_feature_contract(
+            factor_df, self.config.get('ml', {}).get('feature_whitelist'))
+        if self.feature_contract['absent'] or self.feature_contract['non_numeric']:
+            print('[ML][FEATURE_CONTRACT] '
+                  f"配置={len(self.feature_contract['requested'])} "
+                  f"可用={len(self.feature_contract['available_base'])} "
+                  f"缺列={self.feature_contract['absent']} "
+                  f"非数值={self.feature_contract['non_numeric']}")
 
         # 只复制数值型特征列
         exclude_set = {'code', 'date', 'future_ret', 'industry'}
@@ -359,6 +387,7 @@ class MLFactorPredictor:
 
         # 固化训练特征: predict时复用, 避免prepare_features覆盖导致shape mismatch
         self._trained_features = valid_features
+        self.feature_contract['trained_features'] = list(valid_features)
 
         # 每日截面 Rank IC，避免池大小和跨日分布主导一个混合 Pearson IC。
         scored = pd.DataFrame({'date': train_df.loc[val_mask, 'date'].values,
@@ -484,6 +513,8 @@ class MLFactorPredictor:
                 'feature_importances': getattr(self, '_feature_importances', {}),
                 'n_models': len(self._ensemble_models),
                 'model_sha256': checksums,
+                'feature_contract': self.feature_contract,
+                'validation_summary': getattr(self, 'validation_summary', None),
                 # 缺失指示位(2026-10-26): 训练期固化的被填列集合 — 预测期必须用同一批列
                 # 加指示位, 否则特征矩阵与模型不匹配(载入模型后重算预测的路径会走错)。
                 'fill_indicator_src_cols': list(self._fill_indicator_src_cols),
@@ -518,6 +549,8 @@ class MLFactorPredictor:
         self._ensemble_models = members
         self.model = members[-1]
         self._feature_importances = data.get('feature_importances', {})
+        self.feature_contract = data.get('feature_contract') or {'status': 'legacy_metadata_unavailable'}
+        self.validation_summary = data.get('validation_summary')
 
     @staticmethod
     def _filter_stable_features(df: pd.DataFrame, features: List[str],
