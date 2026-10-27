@@ -270,8 +270,32 @@ def _latest_data_date():
         return ''
 
 
+def _signal_data_fingerprint():
+    """Content identity of signal/ML/pool inputs, independent of mtimes."""
+    from pathlib import Path
+    from core.input_identity import factor_input_identity
+    prices = {p.name[:-8]: p for p in Path(DATA_PATH).glob('*_qfq.csv')}
+    if not prices:
+        raise RuntimeError('signal data directory contains no QFQ files')
+    data = Path(_PROJECT_DIR) / 'data'
+    extras = [
+        data / 'stock_data/stock_metadata',
+        data / 'concept_hist.pkl', data / 'concept_daily.csv', data / 'concept_inception.pkl',
+        os.environ.get('QUANT_CONCEPT_MAP') or data / 'stock_concept_map.pkl',
+        Path(__file__).resolve().parent / 'config/large_cap_whitelist.txt',
+        *[data / 'alternative_data' / name for name in (
+            'northbound_daily.pkl', 'margin_daily.pkl', 'dragon_tiger_history.pkl', 'dragon_tiger.pkl')],
+    ]
+    history = _resolve_cmap_hist()
+    if history:
+        extras.append(history)
+    if config.get('margin_features.enabled', False):
+        extras.append(data / 'alternative_data/margin_detail.pkl')
+    return factor_input_identity(prices, FUNDAMENTAL_PATH, extras)
+
+
 def _signals_stale(signals_csv):
-    """信号CSV是否比任何数据文件旧 (数据刷新后必须重新生成信号).
+    """Check code, calendar coverage, input bytes and signal bytes before reuse.
     2026-09-04: 旧行为无条件复用既有CSV, 数据全量刷新后曾混用旧信号
     (被杀旧代码实验残留CSV + 9/4新数据 → 混搭基线)。同数据态下portfolio类
     实验仍走复用快路径 (数据未变则信号CSV不旧).
@@ -325,46 +349,9 @@ def _signals_stale(signals_csv):
         if _sig_max != _expected:
             print(f"信号CSV止于 {_sig_max} ≠ 应覆盖 {_expected} (todate/K线最新日), 重新生成信号")
             return True
-    # 2026-09-12 收窄(#54): 信号层仅消费4个另类文件 — 经消费路径核验, signal_engine
-    # 只调get_northbound_signal(northbound_daily)/get_margin_signal(margin_daily)/
-    # get_dragon_tiger_signal(dragon_tiger_history+dragon_tiger); 其余(yjyg/unlock/
-    # reduction_records/reduction_plans/holdernum/增持/回购/研报/大宗/margin_detail)
-    # 均为组合层输入, 组合层每次运行实时读取, 不改变信号内容 → 不触发信号重生成。
-    # 旧整目录根: 任一另类文件mtime更新(如yjyg每日下载)即78min信号重生成churn。
-    _SIGNAL_ALT_FILES = ['northbound_daily.pkl', 'margin_daily.pkl',
-                         'dragon_tiger_history.pkl', 'dragon_tiger.pkl']
-    roots = [DATA_PATH, FUNDAMENTAL_PATH,
-             *[os.path.join(_PROJECT_DIR, 'data/alternative_data', fn)
-               for fn in _SIGNAL_ALT_FILES],
-             os.path.join(_PROJECT_DIR, 'data/concept_hist.pkl'),
-             os.environ.get('QUANT_CONCEPT_MAP') or os.path.join(
-                 _PROJECT_DIR, 'data/stock_concept_map.pkl'),
-             os.path.join(_PROJECT_DIR, 'data/concept_inception.pkl')]
-    # 2026-10-17: 版本化概念映射**默认开启**, 故恒计入新鲜度。
-    # (它确实是信号输入了; 且 stock_concept_map.pkl 本就在 roots 里且每天变,
-    #  所以"每天重生成一次信号"这件事的成本没有变化。)
-    _ch = _resolve_cmap_hist()
-    if _ch:
-        roots.append(_ch)
-    newest, newest_what = 0, ''
-    for root in roots:
-        if os.path.isdir(root):
-            for dirpath, _dirs, files in os.walk(root):
-                for fn in files:
-                    p = os.path.join(dirpath, fn)
-                    try:
-                        mt = os.path.getmtime(p)
-                    except OSError:
-                        continue
-                    if mt > newest:
-                        newest, newest_what = mt, p
-        elif os.path.exists(root):
-            mt = os.path.getmtime(root)
-            if mt > newest:
-                newest, newest_what = mt, root
-    if sig_mtime < newest:
-        print(f"信号CSV过期 (构建 {_t.ctime(sig_mtime)} 早于 数据最新 {_t.ctime(newest)}: "
-              f"{os.path.basename(newest_what)}), 重新生成信号")
+    from core.input_identity import signal_identity_matches
+    if not signal_identity_matches(signals_csv, _signal_data_fingerprint()):
+        print('信号输入内容或CSV内容不匹配（含首次缺少内容记录），重新生成信号')
         return True
     return False
 
@@ -2822,16 +2809,22 @@ if __name__ == "__main__":
     else:
         # 不再预删既有CSV: add_data_and_signal原子写(os.replace)自然覆盖,
         # 中途被杀时旧CSV保留可复用 (2026-09-06)
+        _signal_code_before = _signal_code_fingerprint()
+        _signal_data_before = _signal_data_fingerprint()
         add_data_and_signal(cerebro, strategy, fundamental_data,
                             membership_map=membership_map, prepare_backtrader_feeds=False)
+        if (_signal_code_before != _signal_code_fingerprint()
+                or _signal_data_before != _signal_data_fingerprint()):
+            raise RuntimeError('signal source or input data changed during generation; refusing cache publication')
         save_context(strategy, _signals_csv)
+        from core.input_identity import write_signal_identity
+        write_signal_identity(_signals_csv, _signal_data_before)
         # 记录生成此CSV的信号代码指纹 → 下次复用门禁比对
         _sidecar = os.path.join(os.path.dirname(os.path.abspath(_signals_csv)),
                                 '.signal_code_fp')
         try:
-            with open(_sidecar, 'w') as _f:
-                # E-B1v2: sidecar协议=fp|warmup_days (warmup影响信号内容, 指纹不可见)
-                _f.write(f"{_signal_code_fingerprint()}|{_B1V2_WARMUP_DAYS}")
+            from core.live_state import atomic_bytes
+            atomic_bytes(_sidecar, f"{_signal_code_before}|{_B1V2_WARMUP_DAYS}".encode('utf-8'))
         except OSError as _e:
             print(f"[WARN] 信号代码指纹sidecar写入失败: {_e}")
 

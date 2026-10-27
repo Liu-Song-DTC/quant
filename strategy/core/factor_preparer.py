@@ -268,42 +268,15 @@ def _compute_stock_factors_worker(args):
 
 
 def _data_fingerprint(stock_file_map: dict, fd, extra_paths: list) -> str:
-    """数据内容指纹 (mtime_ns+size): 因子计算消费的全部输入文件。
-
-    缓存键缺陷修复 (344复现陷阱): 旧键只含池代码/日期/参数, 不含数据内容 ->
-    K线/基本面/题材数据刷新后键不变, 旧缓存被静默复用 (8/31新基本面缓存与
-    8/28原版缓存键相同, 谁先建好谁占据该键)。加入指纹后, 任何输入文件变动
-    都会使缓存失效并触发重算 — 失效方向安全 (只多算一次, 不会错用旧值)。
-    """
-    import hashlib
-    h = hashlib.md5()
-
-    def _feed(path):
-        try:
-            st = os.stat(path)
-            h.update(f"{path}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
-        except OSError:
-            h.update(f"{path}|MISSING;".encode('utf-8'))
-
-    for p in sorted(set(stock_file_map.values())):
-        _feed(p)
-    if fd is not None and getattr(fd, 'data_path', None):
-        for root, _, files in os.walk(fd.data_path):
-            for f in sorted(files):
-                _feed(os.path.join(root, f))
-    for p in sorted(set(extra_paths)):
-        if os.path.isdir(p):
-            for root, _, files in os.walk(p):
-                for f in sorted(files):
-                    _feed(os.path.join(root, f))
-        else:
-            _feed(p)
-    return h.hexdigest()[:8]
+    """Hash consumed data bytes and logical roles, not file timestamps."""
+    from .input_identity import factor_input_identity
+    return factor_input_identity(stock_file_map, getattr(fd, 'data_path', None), extra_paths)[:24]
 
 
 # 因子值计算所消费的代码/配置 (改动任一 → 因子缓存失效重算, 方向安全)
 _FACTOR_CODE_FILES = [
     'core/factor_preparer.py',
+    'core/input_identity.py',
     'core/factor_calculator.py',
     'core/factor_neutralizer.py',
     'core/multi_timeframe.py',
