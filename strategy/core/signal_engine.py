@@ -407,6 +407,9 @@ class SignalEngine:
         ml_config = config_loader.get('ml', {})
         self.ml_enabled = ml_config.get('enabled', False)
         self.ml_blend_weight = ml_config.get('blend_weight', 0.50)
+        self.ml_coverage_policy = ml_config.get('coverage_policy', 'factor_fallback')
+        if self.ml_coverage_policy not in ('factor_fallback', 'require_prediction'):
+            raise ValueError('ml.coverage_policy must be factor_fallback or require_prediction')
         self.ml_predictor = None
         self._ml_predictions = {}  # {(code, date): float}
 
@@ -1529,6 +1532,7 @@ class SignalEngine:
 
         # === 3.4 ML预测融合：XGBoost非线性因子组合 ===
         ml_normalized = np.zeros(n)  # 默认无ML
+        ml_prediction_available = np.zeros(n, dtype=bool)
         # 预计算dict路径(回测) 或 直接predict路径(实盘)
         has_ml_model = self.ml_predictor is not None and self.ml_predictor.is_trained()
         if self.ml_enabled and dates is not None and code:
@@ -1543,10 +1547,16 @@ class SignalEngine:
                         ml_dt64 = np.asarray(ml_dates_arr, dtype='datetime64[ns]')
                         bar_dt64 = np.asarray(bar_dates, dtype='datetime64[ns]')
                         idx = np.searchsorted(ml_dt64, bar_dt64, side='right') - 1
-                        valid = (idx >= 0) & (idx < len(ml_vals_arr))
-                        ml_pred_series[valid] = ml_vals_arr[idx[valid]]
+                        ml_lookup_valid = (idx >= 0) & (idx < len(ml_vals_arr))
+                        ml_lookup_rows = np.flatnonzero(ml_lookup_valid)
+                        ml_lookup_values = np.asarray(ml_vals_arr)[idx[ml_lookup_valid]]
+                        ml_finite = np.isfinite(ml_lookup_values)
+                        ml_prediction_available[ml_lookup_rows[ml_finite]] = True
+                        ml_pred_series[ml_lookup_rows[ml_finite]] = ml_lookup_values[ml_finite]
                 else:
-                    ml_pred_series = np.array([self._ml_predictions.get((code_str, d), 0.0) for d in bar_dates])
+                    ml_raw = np.array([self._ml_predictions.get((code_str, d), np.nan) for d in bar_dates])
+                    ml_prediction_available = np.isfinite(ml_raw)
+                    ml_pred_series[ml_prediction_available] = ml_raw[ml_prediction_available]
                 ml_normalized = np.tanh(ml_pred_series * 3)
             elif has_ml_model:
                 # 截面标准化不能对单只股票调用。没有联合截面预测时保留纯因子分，
@@ -1554,6 +1564,11 @@ class SignalEngine:
                 if not getattr(self, '_warned_missing_cross_section', False):
                     print('[ML][NO_CROSS_SECTION] 无同日联合预测，使用因子评分回退')
                     self._warned_missing_cross_section = True
+
+        # Coverage is a declared, point-in-time eligibility rule, not a side
+        # effect of whether a code happens to appear in a future cache file.
+        if self.ml_enabled and getattr(self, 'ml_coverage_policy', 'factor_fallback') == 'require_prediction':
+            valid = valid & ml_prediction_available
 
         if self.ml_enabled:
             ml_active = np.abs(ml_normalized) > 0.01
@@ -1721,6 +1736,7 @@ class SignalEngine:
             'adjusted_score': adjusted_score,
             'pre_discount_score': pre_discount_score,
             'ml_score': ml_normalized,          # 独立ML信号(IC=0.28)
+            'ml_prediction_available': ml_prediction_available,
             'factor_score': pre_discount_score,  # 独立因子信号(IC=0.07)
             'factor_value': s['factor_value'],
             'factor_name': s['factor_name'],

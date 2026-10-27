@@ -7725,6 +7725,9 @@ stock_pool:
   pool_relax_momentum: null
 ml:
   enabled: true
+  # 与2021-2026封存基线逐字节等价的历史准入规则；每个信号日只认当日及之前已生成的预测。
+  # 不得静默改回 factor_fallback：在相同封存数据上该变体收益和回撤明显恶化。
+  coverage_policy: require_prediction
   # 2026-10-26 臂: 缺失指示位 —— 让模型知道哪些因子值是中性化填出来的(填完再z-score
   # 恰好=0), 并剔除"全部特征都被填"的池外掩码行。默认关=逐位零改动。
   use_fill_indicator: false
