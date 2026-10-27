@@ -31,9 +31,16 @@ class MLFactorPredictor:
         self.model = None
         self.feature_cols = []
         self.feature_contract = {}
+        self._fitted_preprocessing = None
         self._last_train_date = None
 
         ml_cfg = self.config.get('ml', {})
+        market_cols = ml_cfg.get('market_feature_cols') or []
+        if (not isinstance(market_cols, (list, tuple))
+                or any(not isinstance(c, str) or not c for c in market_cols)
+                or set(market_cols) & {'code', 'date', 'industry', 'future_ret', 'label_end_date'}):
+            raise ValueError('market_feature_cols must list feature names, not labels or identifiers')
+        self._market_feature_cols = list(dict.fromkeys(market_cols))
         self.xgb_params = {
             'n_estimators': ml_cfg.get('n_estimators', 200),
             'max_depth': ml_cfg.get('max_depth', 4),
@@ -64,6 +71,7 @@ class MLFactorPredictor:
         self._fill_indicator_src_cols: List[str] = []
         self.blend_weight = ml_cfg.get('blend_weight', 0.50)
         self._cross_feature_pairs = []  # 训练时固化，预测时复用
+        self._regime_feature_sources = None
 
     def prepare_features(self, df: pd.DataFrame,
                          regime_info: dict = None,
@@ -75,6 +83,8 @@ class MLFactorPredictor:
 
         # 白名单过滤: 只用已验证的因子, 避免噪声因子混入特征空间
         whitelist = self.config.get('ml', {}).get('feature_whitelist', None)
+        if not is_train and self._fitted_preprocessing is not None:
+            whitelist = self._fitted_preprocessing['feature_whitelist']
         if whitelist:
             base_features = [f for f in base_features if f in whitelist]
 
@@ -84,9 +94,12 @@ class MLFactorPredictor:
 
         if self._use_cross_features:
             if is_train or not self._cross_feature_pairs:
-                top_k = min(8, len(base_features))
+                # A shared market observation has no within-date cross-sectional
+                # rank. Preserve it as a time-series input, not a constant rank.
+                crossable = [f for f in base_features if f not in self._market_feature_cols]
+                top_k = min(8, len(crossable))
                 top_features = self._select_top_features(
-                    selection_df if selection_df is not None else df, base_features, k=top_k)
+                    selection_df if selection_df is not None else df, crossable, k=top_k)
                 self._cross_feature_pairs = []
                 for i, f1 in enumerate(top_features):
                     for f2 in top_features[i+1:]:
@@ -135,7 +148,9 @@ class MLFactorPredictor:
                     regime_arr = np.full(len(df), float(regime_arr.mean()))
             else:
                 regime_arr = np.full(len(df), float(regime_val))
-            for f in base_features[:10]:
+            if is_train or self._regime_feature_sources is None:
+                self._regime_feature_sources = list(base_features[:10])
+            for f in self._regime_feature_sources:
                 col = f'regime_{f}'
                 if col not in df.columns and f in df.columns:
                     df[col] = df[f].fillna(0).values * regime_arr
@@ -238,7 +253,7 @@ class MLFactorPredictor:
         }
 
     @staticmethod
-    def _cross_sectional_zscore(df: pd.DataFrame, cols: List[str]):
+    def _cross_sectional_zscore(df: pd.DataFrame, cols: List[str], preserve_cols=()):
         """截面标准化: 每个日期内 (x - mean) / std, 消除市场量级干扰"""
         # 注意(2026-10-09): 勿换polars — numpy在float32列上保持f32累加,
         # polars窗口mean/std升f64累加, 结果差~1e-7相对(探针实测378k单元
@@ -248,6 +263,10 @@ class MLFactorPredictor:
         for col in cols:
             if col not in df.columns:
                 continue
+            if col in preserve_cols:
+                if (df.groupby('date')[col].nunique(dropna=True) > 1).any():
+                    raise ValueError(f'market feature differs across stocks on the same date: {col}')
+                continue
             grouped = df.groupby('date')[col]
             mean_s = grouped.transform('mean')
             std_s = grouped.transform('std').replace(0, 1.0)
@@ -256,6 +275,17 @@ class MLFactorPredictor:
 
     def train(self, factor_df: pd.DataFrame,
               regime_info: dict = None) -> Optional[float]:
+        """Build a candidate; preserve the current model on failure or no fit."""
+        import copy
+        candidate = copy.copy(self)
+        candidate.__dict__ = self.__dict__.copy()
+        result = candidate._train_impl(factor_df, regime_info)
+        if result is not None:
+            self.__dict__ = candidate.__dict__
+        return result
+
+    def _train_impl(self, factor_df: pd.DataFrame,
+                    regime_info: dict = None) -> Optional[float]:
         """训练XGBoost模型，返回验证集IC"""
         try:
             from xgboost import XGBRegressor
@@ -265,6 +295,7 @@ class MLFactorPredictor:
 
         self.feature_contract = self.describe_feature_contract(
             factor_df, self.config.get('ml', {}).get('feature_whitelist'))
+        self.feature_contract['market_feature_cols'] = list(self._market_feature_cols)
         if self.feature_contract['absent'] or self.feature_contract['non_numeric']:
             print('[ML][FEATURE_CONTRACT] '
                   f"配置={len(self.feature_contract['requested'])} "
@@ -290,7 +321,7 @@ class MLFactorPredictor:
             df = df.sort_values(['date', 'code'], kind='stable').reset_index(drop=True)
 
         # 截面标准化: 消除跨日期量级差异, 模型学习相对排名而非绝对量级
-        df = self._cross_sectional_zscore(df, numeric_cols)
+        df = self._cross_sectional_zscore(df, numeric_cols, self._market_feature_cols)
 
         # 缺失指示位 (可选, 默认关): 识别被中性化填成当日均值的格子 ⇒ 剔除池外掩码行
         # (成员资格泄漏) + 给模型 0/1 指示位。必须在标签排名之前, 否则标签的截面
@@ -388,6 +419,17 @@ class MLFactorPredictor:
         # 固化训练特征: predict时复用, 避免prepare_features覆盖导致shape mismatch
         self._trained_features = valid_features
         self.feature_contract['trained_features'] = list(valid_features)
+        import copy
+        self._fitted_preprocessing = {
+            'version': 1,
+            'feature_whitelist': copy.deepcopy(self.config.get('ml', {}).get('feature_whitelist')),
+            'use_cross_features': self._use_cross_features,
+            'use_regime_features': self._use_regime_features,
+            'use_fill_indicator': self.use_fill_indicator,
+            'fill_tol': self.fill_tol,
+            'fill_drop_pool_rows': self.fill_drop_pool_rows,
+            'fill_indicator_max_frac': self.fill_indicator_max_frac,
+        }
 
         # 每日截面 Rank IC，避免池大小和跨日分布主导一个混合 Pearson IC。
         scored = pd.DataFrame({'date': train_df.loc[val_mask, 'date'].values,
@@ -444,7 +486,7 @@ class MLFactorPredictor:
         df = df[meta_cols + numeric_cols].copy()
 
         # 截面标准化 (与训练一致)
-        df = self._cross_sectional_zscore(df, numeric_cols)
+        df = self._cross_sectional_zscore(df, numeric_cols, self._market_feature_cols)
 
         # 缺失指示位 (与训练同口径: 同一批列, 同一阈值)
         if self.use_fill_indicator:
@@ -515,6 +557,9 @@ class MLFactorPredictor:
                 'model_sha256': checksums,
                 'feature_contract': self.feature_contract,
                 'validation_summary': getattr(self, 'validation_summary', None),
+                'market_feature_cols': list(self._market_feature_cols),
+                'regime_feature_sources': self._regime_feature_sources,
+                'preprocessing': self._fitted_preprocessing,
                 # 缺失指示位(2026-10-26): 训练期固化的被填列集合 — 预测期必须用同一批列
                 # 加指示位, 否则特征矩阵与模型不匹配(载入模型后重算预测的路径会走错)。
                 'fill_indicator_src_cols': list(self._fill_indicator_src_cols),
@@ -532,6 +577,13 @@ class MLFactorPredictor:
         n_models = data.get('n_models', 3)
         if not isinstance(n_models, int) or n_models < 1 or not data.get('feature_cols'):
             raise ValueError('invalid ensemble metadata')
+        preprocessing = data.get('preprocessing')
+        if preprocessing is not None:
+            required = {'version', 'feature_whitelist', 'use_cross_features', 'use_regime_features',
+                        'use_fill_indicator', 'fill_tol', 'fill_drop_pool_rows', 'fill_indicator_max_frac'}
+            if (not isinstance(preprocessing, dict) or preprocessing.get('version') != 1
+                    or not required.issubset(preprocessing)):
+                raise ValueError('invalid fitted preprocessing metadata')
         members = []
         for i in range(n_models):
             _m = XGBRegressor()
@@ -551,6 +603,23 @@ class MLFactorPredictor:
         self._feature_importances = data.get('feature_importances', {})
         self.feature_contract = data.get('feature_contract') or {'status': 'legacy_metadata_unavailable'}
         self.validation_summary = data.get('validation_summary')
+        # Preprocessing belongs to the fitted model, not the caller's new config.
+        self._market_feature_cols = list(data.get('market_feature_cols') or [])
+        self._regime_feature_sources = data.get('regime_feature_sources')
+        if self._regime_feature_sources is None:
+            self._regime_feature_sources = [c[len('regime_'):] for c in self._trained_features
+                                            if c.startswith('regime_')]
+        self._fitted_preprocessing = preprocessing
+        if preprocessing is not None:
+            import copy
+            self.config = copy.deepcopy(self.config)
+            self.config.setdefault('ml', {})['feature_whitelist'] = preprocessing['feature_whitelist']
+            self._use_cross_features = preprocessing['use_cross_features']
+            self._use_regime_features = preprocessing['use_regime_features']
+            self.use_fill_indicator = preprocessing['use_fill_indicator']
+            self.fill_tol = preprocessing['fill_tol']
+            self.fill_drop_pool_rows = preprocessing['fill_drop_pool_rows']
+            self.fill_indicator_max_frac = preprocessing['fill_indicator_max_frac']
 
     @staticmethod
     def _filter_stable_features(df: pd.DataFrame, features: List[str],
