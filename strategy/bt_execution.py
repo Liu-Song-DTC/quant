@@ -360,7 +360,7 @@ def _signals_stale(signals_csv):
 # 机制: chunk网格是_pred_dates上的index网格(range(0,N,retrain_freq)),
 # 新交易日只把新日期追加到_pred_dates末尾 → 既有chunk的chunk_dates/
 # first_pred_date/purge_end/train_mask全部不变 → 训练产物(模型+预测)可跨日复用。
-# 失效键=数据指纹(K线+基本面+题材+两融, mtime_ns+size)+信号代码指纹(含
+# 失效键=数据内容指纹(K线+基本面+题材+两融)+信号代码指纹(含
 # ml_predictor/bt_execution/yaml剥壳摘要/季度标定) — 任一变化→全miss→全量重训,
 # 失效方向安全(只多算一次, 不会错用旧值)。与_signals_stale门禁同源。
 # 落盘顺序: preds parquet(原子) → model(原子) → manifest最后引用 → 中途被杀
@@ -382,26 +382,35 @@ def _ml_chunk_cache_fp(stock_file_map, fundamental_data, boundaries) -> dict:
     """
     import hashlib
     _bkeys = sorted({str(pd.Timestamp(b).date()) for b in boundaries})
-    _mds = {_k: hashlib.md5() for _k in _bkeys}
-    for _p in sorted(set(stock_file_map.values())):
-        try:
-            _raw = open(_p, 'rb').read()
-        except OSError:
+    _mds = {_k: hashlib.sha256() for _k in _bkeys}
+    _roles = [(f'stock:{code}', path) for code, path in sorted(stock_file_map.items())]
+    # Regime features depend on index histories even though indices are not
+    # stock candidates. Appended index bars still leave old chunk keys stable.
+    _roles += [(f'index:{code}', os.path.join(DATA_PATH, f'{code}_qfq.csv'))
+               for code in ('sh000001', 'sh000852', '399006')]
+    for _role, _p in _roles:
+        for _k in _bkeys:
+            _mds[_k].update(_role.encode('utf-8') + b'\x00')
+        if _role.startswith('index:') and not os.path.exists(_p):
             for _k in _bkeys:
-                _mds[_k].update(f"{_p}|MISSING;".encode('utf-8'))
+                _mds[_k].update(b'MISSING_INDEX\x00')
             continue
+        with open(_p, 'rb') as _stream:
+            _raw = _stream.read()
         _lines = _raw.split(b'\n')
         if _lines and not _lines[-1]:
             _lines.pop()
         if not _lines:
-            continue
-        _dates = np.array([_l.split(b',', 1)[0] for _l in _lines])
-        _lh = np.array([hashlib.md5(_l).digest() for _l in _lines], dtype='S16')
+            raise ValueError(f'empty ML price input: {_p}')
+        _header, *_rows = _lines
+        _dates = np.array([_l.split(b',', 1)[0] for _l in _rows])
+        _lh = np.array([hashlib.sha256(_l).digest() for _l in _rows], dtype='S32')
         for _k in _bkeys:
             # 日期YYYY-MM-DD零填充 → 字典序=时间序
             _sel = _dates <= _k.encode('utf-8')
+            _mds[_k].update(hashlib.sha256(_header).digest())
             _mds[_k].update(_lh[_sel].tobytes())
-    return {_k: _m.hexdigest()[:12] for _k, _m in _mds.items()}
+    return {_k: _m.hexdigest() for _k, _m in _mds.items()}
 
 
 def _ml_chunk_cache_aux_fp(fundamental_data, config=None) -> str:
@@ -410,40 +419,29 @@ def _ml_chunk_cache_aux_fp(fundamental_data, config=None) -> str:
     config节覆盖feature_whitelist/min_val_ic/模型超参等键中未含项 —
     否则改config会静默服务陈旧缓存模型(跨日正确性hazard)。
     """
-    import hashlib, json
-    _h = hashlib.md5()
-    if config is not None:
-        try:
-            _cc = getattr(config, 'config', config)
-            for _sec in ('ml', 'margin_features', 'dynamic_factor'):
-                _sec_v = _cc.get(_sec) if isinstance(_cc, dict) else None
-                if _sec_v is not None:
-                    _h.update(f"{_sec}=".encode('utf-8'))
-                    _h.update(json.dumps(_sec_v, sort_keys=True, default=str).encode('utf-8'))
-                    _h.update(b";")
-        except Exception:
-            _h.update(b"configfp-ERR;")
-    else:
-        _h.update(b"noconfig;")
-    if fundamental_data is not None and getattr(fundamental_data, 'data_path', None):
-        for _root, _dirs, _files in os.walk(fundamental_data.data_path):
-            for _f in sorted(_files):
-                _fp = os.path.join(_root, _f)
-                try:
-                    _st = os.stat(_fp)
-                    _h.update(f"{_fp}|{_st.st_mtime_ns}|{_st.st_size};".encode('utf-8'))
-                except OSError:
-                    _h.update(f"{_fp}|MISSING;".encode('utf-8'))
-    for _f in ('concept_hist.pkl', 'stock_concept_map.pkl', 'concept_inception.pkl'):
-        # 研究钩子: QUANT_CONCEPT_MAP 覆盖(默认空=生产路径) — 换路径必须换指纹, 否则信号静默复用
-        _p = (os.environ.get('QUANT_CONCEPT_MAP')
-              if _f == 'stock_concept_map.pkl' else None) or os.path.join(_PROJECT_DIR, 'data', _f)
-        try:
-            _st = os.stat(_p)
-            _h.update(f"{_p}|{_st.st_mtime_ns}|{_st.st_size};".encode('utf-8'))
-        except OSError:
-            _h.update(f"{_p}|MISSING;".encode('utf-8'))
-    return f"{_h.hexdigest()[:12]}|{_signal_code_fingerprint()}"
+    import hashlib, json, platform, sys
+    from pathlib import Path
+    import xgboost
+    from core.input_identity import factor_input_identity
+    _data = Path(_PROJECT_DIR) / 'data'
+    _cc = getattr(config, 'config', config) if config is not None else {}
+    if not isinstance(_cc, dict):
+        raise TypeError('ML cache configuration must be a mapping')
+    _extras = [_data / 'stock_data/stock_metadata',
+               _data / 'concept_hist.pkl', _data / 'concept_inception.pkl',
+               os.environ.get('QUANT_CONCEPT_MAP') or _data / 'stock_concept_map.pkl']
+    _history = _resolve_cmap_hist()
+    if _history:
+        _extras.append(_history)
+    _financial = getattr(fundamental_data, 'data_path', None) if fundamental_data is not None else None
+    _identity = {
+        'version': 2,
+        'inputs': factor_input_identity({}, _financial, _extras),
+        'config': {key: _cc.get(key) for key in ('ml', 'margin_features', 'dynamic_factor')},
+        'code': _signal_code_fingerprint(),
+        'runtime': [sys.version, platform.machine(), np.__version__, pd.__version__, xgboost.__version__],
+    }
+    return hashlib.sha256(json.dumps(_identity, sort_keys=True, default=str).encode('utf-8')).hexdigest()
 
 
 def _ml_chunk_cache_margin_fp(boundaries) -> dict:
@@ -511,8 +509,23 @@ def _ml_chunk_load(_key: str, _config):
     _e = _m.get(_key)
     if not _e:
         return None
+    if _e.get('version') != 2 or not _e.get('preds_sha256'):
+        return None  # Legacy artifacts have no evidence binding predictions to bytes.
     try:
+        import hashlib, io
+        from pathlib import Path
         from core.ml_predictor import MLFactorPredictor
+        _payload = Path(os.path.join(_ML_CHUNK_CACHE_DIR, _e['preds'])).read_bytes()
+        if hashlib.sha256(_payload).hexdigest() != _e['preds_sha256']:
+            raise ValueError('ML cached predictions checksum mismatch')
+        _preds = pd.read_parquet(io.BytesIO(_payload))
+        if (not {'code', 'date', 'ml_pred'}.issubset(_preds.columns)
+                or _preds[['code', 'date']].isna().any().any()
+                or _preds.duplicated(['code', 'date']).any()
+                or not np.isfinite(_preds['ml_pred'].to_numpy(dtype=float)).all()
+                or _e.get('outcome') not in ('trained_good', 'reuse_prev', 'reuse_forced', 'reuse_chain_exceeded')
+                or (_e['outcome'] in ('trained_good', 'reuse_forced') and not _e.get('model'))):
+            raise ValueError('invalid ML cached prediction records')
         _model = None
         if _e.get('model'):
             _model = MLFactorPredictor(_config.config)
@@ -522,7 +535,6 @@ def _ml_chunk_load(_key: str, _config):
             if not getattr(_model, '_ensemble_models', None) or \
                     not getattr(_model, 'feature_cols', None):
                 raise RuntimeError(f'缓存模型不完整(文件缺失?): {_e["model"]}')
-        _preds = pd.read_parquet(os.path.join(_ML_CHUNK_CACHE_DIR, _e['preds']))
         return (_model, _e['outcome'], _e.get('val_ic'), _preds,
                 os.path.join(_ML_CHUNK_CACHE_DIR, _e['model']) if _e.get('model') else None)
     except Exception as _ex:
@@ -538,8 +550,10 @@ def _ml_chunk_save(_key: str, _idx: int, _outcome: str, _val_ic, _model,
     有效模型, 与原逻辑不切换_last_good_predictor一致。
     """
     _m = _ml_chunk_load_manifest()
-    _ent = {'idx': _idx, 'outcome': _outcome, 'val_ic': _val_ic, 'model': None}
+    _ent = {'version': 2, 'idx': _idx, 'outcome': _outcome, 'val_ic': _val_ic, 'model': None}
     try:
+        import hashlib, io
+        from core.live_state import atomic_bytes
         os.makedirs(_ML_CHUNK_CACHE_DIR, exist_ok=True)
         # ⚠ 2026-10-24 修 (navlaw −27% 事故二次地雷): 文件名必须用**缓存键**而不是
         #   chunk 序号 — 旧实现 `chunk_{idx}_*` 让不同数据态的键**碰撞覆写同一批
@@ -550,8 +564,12 @@ def _ml_chunk_save(_key: str, _idx: int, _outcome: str, _val_ic, _model,
         #   旧 idx 命名条目经 manifest 引用仍可加载(向后兼容)。
         _pfile = f'chunk_{_key}_preds.parquet'
         _pdf = pd.DataFrame({'code': _codes_arr, 'date': _dates_arr, 'ml_pred': _preds_arr})
-        _pdf.to_parquet(os.path.join(_ML_CHUNK_CACHE_DIR, _pfile), index=False)
+        _buffer = io.BytesIO()
+        _pdf.to_parquet(_buffer, index=False)
+        _payload = _buffer.getvalue()
+        atomic_bytes(os.path.join(_ML_CHUNK_CACHE_DIR, _pfile), _payload)
         _ent['preds'] = _pfile
+        _ent['preds_sha256'] = hashlib.sha256(_payload).hexdigest()
         if _model is not None:
             _mfile = f'chunk_{_key}_model.json'
             _model.save_model(os.path.join(_ML_CHUNK_CACHE_DIR, _mfile))
