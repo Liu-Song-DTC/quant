@@ -65,6 +65,51 @@ class SnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'no sealed'):
             review.verify_snapshot(self.root)
 
+    def run_fixture(self):
+        from types import SimpleNamespace
+        target = self.root / 'run'
+        target.mkdir()
+        seal = review.freeze_data(target, {})
+        (target / 'manifest.json').write_text(json.dumps({'source_sha256': {}, 'data_sha256': seal['sha256']}))
+        (target / 'strategy/rolling_validation_results').mkdir(parents=True)
+        return target, SimpleNamespace(returncode=0)
+
+    def test_run_scans_twice_and_rejects_content_change_during_execution(self):
+        target, success = self.run_fixture()
+        price = target / 'data/stock_data/backtrader_data/000001_qfq.csv'
+        def mutate(*args, **kwargs):
+            old = price.stat()
+            price.chmod(0o644)
+            price.write_text('close\n20\n')
+            os.utime(price, ns=(old.st_atime_ns, old.st_mtime_ns))
+            return success
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(review, 'input_stamp', wraps=review.input_stamp) as scan, \
+                patch.object(review.subprocess, 'run', side_effect=mutate):
+            with self.assertRaisesRegex(RuntimeError, 'input data changed'):
+                review.run(target)
+            self.assertEqual(scan.call_count, 2)
+        self.assertFalse(json.loads((target / 'corrected_input_stamp.json').read_text())['unchanged'])
+        self.assertFalse((target / 'corrected').exists())
+
+    def test_run_rejects_tampering_before_launch_and_accepts_unchanged_inputs(self):
+        target, success = self.run_fixture()
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(review, 'input_stamp', wraps=review.input_stamp) as scan, \
+                patch.object(review.subprocess, 'run', return_value=success) as launch:
+            review.run(target)
+            self.assertEqual(scan.call_count, 2)
+            self.assertEqual(launch.call_count, 1)
+        self.assertTrue(json.loads((target / 'corrected_input_stamp.json').read_text())['unchanged'])
+        price = target / 'data/stock_data/backtrader_data/000001_qfq.csv'
+        price.chmod(0o644)
+        price.write_text('close\n30\n')
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(review.subprocess, 'run', return_value=success) as launch:
+            with self.assertRaisesRegex(RuntimeError, 'differs from seal'):
+                review.run(target)
+            launch.assert_not_called()
+
     def test_mtime_only_change_preserves_content_identity(self):
         before, _ = review.input_stamp({})
         stat = self.price.stat()

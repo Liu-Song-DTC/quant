@@ -181,11 +181,15 @@ def freeze_data(target, env=None):
     return seal
 
 
-def verify_snapshot(target):
+def read_snapshot_seal(target):
     seal_path = target / 'data_snapshot.json'
     if not seal_path.is_file():
         raise RuntimeError('run has no sealed data snapshot; legacy live-data runs cannot be replayed')
-    seal = json.loads(seal_path.read_text(encoding='utf-8'))
+    return json.loads(seal_path.read_text(encoding='utf-8'))
+
+
+def verify_snapshot(target):
+    seal = read_snapshot_seal(target)
     stamp, records = input_stamp(env={}, root=target)
     if content_id(records) != seal['sha256']:
         raise RuntimeError('snapshot content differs from seal')
@@ -276,7 +280,7 @@ def prepare(name, target_mode=None, workers=None, snapshot_from=None, legacy_con
 
 def run(target, risk_limits=False):
     target = Path(target).resolve()
-    seal, _ = verify_snapshot(target)
+    seal = read_snapshot_seal(target)
     manifest_path = target / 'manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     for rel, digest in manifest['source_sha256'].items():
@@ -297,6 +301,11 @@ def run(target, risk_limits=False):
     else:
         env.pop('QUANT_ACCOUNT_LIMITS', None)
     before, records = input_stamp(env=env, root=target)
+    # The execution-environment scan covers the same sealed file set. Compare
+    # its content identity directly instead of reading every file a second time
+    # through verify_snapshot(). Keep a second full scan after execution.
+    if content_id(records) != seal['sha256']:
+        raise RuntimeError('snapshot content differs from seal before execution')
     if before['adjustment_mode']['state'] != 'qfq_only':
         raise RuntimeError(
             'the current vectorized execution path is validated for qfq-only data; '
@@ -319,11 +328,11 @@ def run(target, risk_limits=False):
                                 stderr=subprocess.STDOUT)
     if result.returncode:
         raise RuntimeError(f'research run failed (rc={result.returncode}): {log}')
-    after, _ = input_stamp(env=env, root=target)
-    verify_snapshot(target)
+    after, after_records = input_stamp(env=env, root=target)
+    unchanged = before == after and content_id(after_records) == seal['sha256']
     (target / f'{label}_input_stamp.json').write_text(json.dumps(
-        {'before': before, 'after': after, 'unchanged': before == after}, indent=2))
-    if before != after:
+        {'before': before, 'after': after, 'unchanged': unchanged}, indent=2))
+    if not unchanged:
         raise RuntimeError(f'input data changed during research; results are not a frozen-data comparison: {log}')
     results = target / 'strategy/rolling_validation_results'
     archive = target / label
