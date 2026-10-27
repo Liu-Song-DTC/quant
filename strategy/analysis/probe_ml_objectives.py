@@ -24,6 +24,32 @@ from analysis.ml_combination_rules import (fit_probability_calibration,calibrate
                                            choose_candidates,selected_metrics)
 
 
+def attach_feature_panel(frame, features, panel_path, columns, data_sha256, cache_sha256):
+    """Join declared event features without changing candidate rows or order."""
+    panel_path = Path(panel_path)
+    manifest_path = panel_path.with_name('report.json')
+    metadata = json.loads(manifest_path.read_text())
+    if (metadata['data_sha256'] != data_sha256 or metadata['factor_cache_sha256'] != cache_sha256
+            or metadata['features_sha256'] != file_content_sha256(panel_path)):
+        raise ValueError('event panel does not match the sealed experiment inputs')
+    if not columns or len(columns) != len(set(columns)) or any(not c.startswith('fresh_') for c in columns):
+        raise ValueError('explicit unique fresh_ feature columns required')
+    if set(columns) & set(frame.columns):
+        raise ValueError('event features overlap existing inputs')
+    panel = pd.read_parquet(panel_path, columns=['code', 'date', *columns])
+    if len(panel) != len(frame) or panel.duplicated(['code', 'date']).any():
+        raise ValueError('event panel changed the candidate universe')
+    if any(not pd.api.types.is_numeric_dtype(panel[c]) for c in columns):
+        raise ValueError('event features must be numeric')
+    joined = frame.merge(panel, on=['code', 'date'], how='left', sort=False,
+                         validate='one_to_one', indicator='_panel_join')
+    if not joined['_panel_join'].eq('both').all():
+        raise ValueError('event panel has missing candidate keys')
+    pd.testing.assert_frame_equal(frame[['code', 'date']].reset_index(drop=True),
+                                  joined[['code', 'date']].reset_index(drop=True))
+    return joined.drop(columns='_panel_join'), features + list(columns), [panel_path, manifest_path]
+
+
 def purged_split(frame, test_start, test_end, validation_days=120, training_days=750):
     start,end=pd.Timestamp(test_start),pd.Timestamp(test_end)
     if end<=start or validation_days<=0 or training_days<=validation_days:
@@ -71,10 +97,13 @@ def summarize(predictions, values, days, higher_is_better=True):
             'daily_rank_ic':float(np.mean(ics)) if ics else None}
 
 
-def run(run_dir,output,stocks=256,combinations=False):
-    from xgboost import XGBRegressor
+def run(run_dir,output,stocks=256,combinations=False,feature_panel=None,feature_columns=None,
+        rank_method='regression'):
+    from xgboost import XGBRegressor, XGBRanker
     import xgboost,scipy,polars
     run_dir,output=Path(run_dir),Path(output)
+    if rank_method not in ['regression','ndcg_top5']:
+        raise ValueError('unknown rank learning method')
     if not isinstance(stocks,int) or stocks<20:raise ValueError('at least 20 sampled stocks required')
     if output.exists():raise FileExistsError(output)
     output.mkdir(parents=True)
@@ -89,10 +118,19 @@ def run(run_dir,output,stocks=256,combinations=False):
     codes=sorted(paths,key=lambda c:hashlib.sha256(c.encode()).hexdigest())[:stocks]
     input_paths=[cache[0],run_dir/'data/stock_data/backtrader_data/sh000001_qfq.csv',
                  *[Path(paths[c]) for c in codes]]
+    if (feature_panel is None) != (not feature_columns):
+        raise ValueError('feature panel and explicit feature columns must be supplied together')
+    if feature_panel is not None:
+        input_paths.extend([Path(feature_panel),Path(feature_panel).with_name('report.json')])
     before={str(path):file_content_sha256(path) for path in input_paths}
     frame=pd.read_parquet(cache[0],columns=['code','date',*features],filters=[('code','in',codes)])
     if frame.duplicated(['code','date']).any():raise ValueError('duplicate factor rows')
     frame=frame.sort_values(['date','code'],kind='stable').reset_index(drop=True)
+    if feature_panel is not None:
+        frame,features,_=attach_feature_panel(
+            frame,features,feature_panel,feature_columns,
+            json.loads((run_dir/'manifest.json').read_text())['data_sha256'],file_content_sha256(cache[0]))
+        config['ml']['feature_whitelist']=list(features)
     calendar=pd.read_csv(run_dir/'data/stock_data/backtrader_data/sh000001_qfq.csv',usecols=['datetime'])['datetime']
     frame,details=short_net_targets(frame,{c:paths[c] for c in codes},calendar,return_details=True)
     raw=frame['future_ret'].to_numpy(dtype=float)
@@ -105,6 +143,8 @@ def run(run_dir,output,stocks=256,combinations=False):
             'dependency_sha256':{name:file_content_sha256(Path(__file__).resolve().parents[1]/'core'/name)
                                  for name in ['ml_predictor.py','forward_targets.py']},
             'stocks':codes,'features':features,'seeds':[42,123,777],
+            'feature_panel_columns':list(feature_columns or []),
+            'rank_method':rank_method,
             'versions':{'python':sys.version,'numpy':np.__version__,'pandas':pd.__version__,
                         'xgboost':xgboost.__version__,'scipy':scipy.__version__,'polars':polars.__version__},
             'input_sha256':before,'combinations':combinations,
@@ -157,9 +197,25 @@ def run(run_dir,output,stocks=256,combinations=False):
             cal_predictions=np.zeros(calibration.sum()) if calibration is not None else None
             model_records=[]
             for seed in report['seeds']:
-                model=XGBRegressor(**common,objective=objective,random_state=seed)
-                model.fit(matrix[fit],target[fit],sample_weight=MLFactorPredictor.time_weights(days_old),
-                          eval_set=[(matrix[val],target[val])],verbose=False)
+                if name=='rank' and rank_method=='ndcg_top5':
+                    # NDCG requires nonnegative relevance grades, not signed
+                    # return labels. Fixed deciles are derived within each
+                    # completed training/validation day; test labels are unused.
+                    grade=np.clip(np.floor((rank+.5)*10),0,9)
+                    fit_dates=frame.loc[fit,'date']
+                    val_dates=frame.loc[val,'date']
+                    train_groups=fit_dates.groupby(fit_dates,sort=False).size().to_numpy()
+                    val_groups=val_dates.groupby(val_dates,sort=False).size().to_numpy()
+                    group_days=(fit_dates.max()-pd.DatetimeIndex(fit_dates.unique())).days.to_numpy()
+                    model=XGBRanker(**common,objective='rank:ndcg',eval_metric='ndcg@5',
+                        random_state=seed,lambdarank_pair_method='topk',lambdarank_num_pair_per_sample=8)
+                    model.fit(matrix[fit],grade[fit],group=train_groups,
+                        sample_weight=MLFactorPredictor.time_weights(group_days),
+                        eval_set=[(matrix[val],grade[val])],eval_group=[val_groups],verbose=False)
+                else:
+                    model=XGBRegressor(**common,objective=objective,random_state=seed)
+                    model.fit(matrix[fit],target[fit],sample_weight=MLFactorPredictor.time_weights(days_old),
+                              eval_set=[(matrix[val],target[val])],verbose=False)
                 predictions+=model.predict(matrix[test])/3
                 if cal_predictions is not None:cal_predictions+=model.predict(matrix[calibration])/3
                 model_dir=output/'models'/start[:4];model_dir.mkdir(parents=True,exist_ok=True)
@@ -204,4 +260,7 @@ if __name__=='__main__':
     parser.add_argument('--run',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--stocks',type=int,default=256)
     parser.add_argument('--combinations',action='store_true')
-    args=parser.parse_args();run(args.run,args.output,args.stocks,args.combinations)
+    parser.add_argument('--feature-panel',type=Path)
+    parser.add_argument('--feature-columns',nargs='+')
+    parser.add_argument('--rank-method',choices=['regression','ndcg_top5'],default='regression')
+    args=parser.parse_args();run(args.run,args.output,args.stocks,args.combinations,args.feature_panel,args.feature_columns,args.rank_method)

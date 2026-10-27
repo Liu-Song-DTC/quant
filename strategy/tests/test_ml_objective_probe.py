@@ -1,5 +1,7 @@
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
 import unittest
 
 import numpy as np
@@ -11,6 +13,28 @@ probe=importlib.util.module_from_spec(spec);spec.loader.exec_module(probe)
 
 
 class ObjectiveProbeTests(unittest.TestCase):
+    def test_event_join_preserves_candidates_order_and_rejects_wrong_keys_or_snapshot(self):
+        frame=pd.DataFrame({'code':['000002','000001'],'date':pd.to_datetime(['2026-01-02','2026-01-01']),
+                            'base':[1.,2.]})
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'features.parquet'
+            panel=frame[['code','date']].iloc[::-1].copy()
+            panel['fresh_age']=[1.,np.nan]
+            def save():
+                panel.to_parquet(path,index=False)
+                path.with_name('report.json').write_text(json.dumps({'data_sha256':'data',
+                    'factor_cache_sha256':'cache','features_sha256':probe.file_content_sha256(path)}))
+            save()
+            joined,features,_=probe.attach_feature_panel(frame,['base'],path,['fresh_age'],'data','cache')
+            pd.testing.assert_frame_equal(frame,joined[frame.columns])
+            self.assertTrue(pd.isna(joined.fresh_age.iloc[0]))
+            self.assertEqual(features,['base','fresh_age'])
+            with self.assertRaisesRegex(ValueError,'sealed'):
+                probe.attach_feature_panel(frame,['base'],path,['fresh_age'],'different','cache')
+            panel.loc[panel.index[0],'code']='999999';save()
+            with self.assertRaisesRegex(ValueError,'missing candidate'):
+                probe.attach_feature_panel(frame,['base'],path,['fresh_age'],'data','cache')
+
     def test_purging_excludes_labels_crossing_fit_and_validation_boundaries(self):
         dates=pd.date_range('2023-01-01','2024-03-01',freq='7D')
         frame=pd.DataFrame({'date':dates,'label_end_date':dates+pd.Timedelta(days=15)})
