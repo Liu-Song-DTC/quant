@@ -27,8 +27,8 @@ import pandas as pd  # noqa: E402
 import requests  # noqa: E402
 from data_manager import StockDataManager  # noqa: E402 (含akshare代理patch)
 from fundamental_pit import pit_available_series  # noqa: E402 可用日=法定披露截止日
+from fundamental_refresh_rules import recent_refresh_quarters, merge_report_rows  # noqa: E402
 
-QUARTERS = ['20251231', '20260331', '20260630']
 
 QT_GET_UT = 'fa5fd1943c7b386f172d6893dbfba10b'
 
@@ -78,11 +78,16 @@ def build_quarter_frame(qdir, q):
     yjbb_df = yjbb_df.rename(columns=RENAME_YJBB)
 
     for name, f in [('zcfz', qdir / "zcfz.csv"), ('lrb', qdir / "lrb.csv"), ('xjll', qdir / "xjll.csv")]:
-        if f.exists() and os.path.getsize(f) > 0:
-            df = pd.read_csv(f, dtype={'股票代码': str})
-            df = df.add_prefix(f'{name}_')
-            df = df.rename(columns={f'{name}_股票代码': '股票代码'})
-            yjbb_df = yjbb_df.merge(df, on='股票代码', how='left')
+        if not f.exists() or os.path.getsize(f) == 0:
+            print(f"  [{q}] {name} 缺失/为空，保留已有季度行，不以残缺三表覆盖")
+            return None
+        df = pd.read_csv(f, dtype={'股票代码': str})
+        if df.empty:
+            print(f"  [{q}] {name} 只有表头，保留已有季度行")
+            return None
+        df = df.add_prefix(f'{name}_')
+        df = df.rename(columns={f'{name}_股票代码': '股票代码'})
+        yjbb_df = yjbb_df.merge(df, on='股票代码', how='left')
 
     yjbb_df['报告期'] = q
     # 2026-10-17: 原为 `= q`(报告期)。报告期≠可披露日 —— 用报告期当可用日会让
@@ -99,7 +104,7 @@ def main():
     ap.add_argument('--no-download', action='store_true',
                     help='跳过下载, 仅用现有源文件重合并')
     args = ap.parse_args()
-    quarters = args.quarters if args.quarters else QUARTERS
+    quarters = args.quarters if args.quarters else recent_refresh_quarters()
 
     mgr = StockDataManager()
     src = mgr.fundamental_source_dir
@@ -148,20 +153,13 @@ def main():
         if fpath.exists():
             old = pd.read_csv(fpath, dtype={'股票代码': str})
             old['报告期'] = old['报告期'].astype(str)  # 旧CSV可能int, 统一为str
-            n_repl = old['报告期'].isin(quarters).sum()
+            n_repl = old['报告期'].isin(add['报告期'].astype(str)).sum()
             replaced_rows += n_repl
-            old = old[~old['报告期'].isin(quarters)]
         else:
             old = pd.DataFrame()
         add = add.copy()
         add['报告期'] = add['报告期'].astype(str)
-        if not old.empty:
-            add = add.reindex(columns=old.columns)
-            merged = pd.concat([old, add], ignore_index=True)
-        else:
-            merged = add
-        if '报告期' in merged.columns:
-            merged = merged.sort_values('报告期', kind='stable').reset_index(drop=True)
+        merged = merge_report_rows(old, add)
         # 2026-09-04: akshare新版yjbb四表均无'所处行业'列 → 新行行业全NaN
         # (全市场5565只实锤, signal_engine回退路径崩溃33次)。行业为静态属性,
         # 从该股自身历史行前向填充, 恢复9/3前"所有行有值"的行为。
@@ -198,11 +196,13 @@ def main():
                   flush=True)
             print('    ' + (_r.stdout or _r.stderr).strip().replace('\n', '\n    '),
                   flush=True)
+            raise RuntimeError('基本面可用日检查失败，拒绝刷新成功')
         else:
             print('可用日守卫: 数据可用日期 ≡ 法定披露截止日 ✓', flush=True)
     except Exception as _e:
         print(f'可用日守卫未能运行({str(_e)[:80]}) — 请手工执行 '
               f'strategy/tools/check_fundamental_pit.py', flush=True)
+        raise
 
     if st_hits:
         print(f"=== 新数据中发现 ST/带风险警示名称 {len(st_hits)} 只 ===")

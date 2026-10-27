@@ -39,6 +39,7 @@ import hashlib
 import shutil
 import time
 import random
+import tempfile
 from tqdm import tqdm
 
 
@@ -1242,26 +1243,38 @@ class StockDataManager:
         """按日期下载所有股票的财务数据（源文件）"""
         os.makedirs(self.fundamental_source_dir / f"{date}", exist_ok=True)
         def help(source_file, func):
+            tmp = None
             try:
-                if source_file.exists():
-                    return True
+                if source_file.exists() and source_file.stat().st_size > 0:
+                    if not pd.read_csv(source_file, nrows=1).empty:
+                        return True
                 df = func(date=date)
                 time.sleep(0.3)  # 请求间隔，避免被限流
 
                 if df is not None and len(df) > 0:
-                    df.to_csv(source_file, index=False, encoding="utf-8")
+                    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                                     dir=source_file.parent, delete=False) as stream:
+                        tmp = Path(stream.name)
+                        df.to_csv(stream, index=False)
+                    os.replace(tmp, source_file)
                     print(f"  {date}: 获取 {len(df)} 条记录")
                     return True
+                return False
             except Exception as e:
                 print(f"  警告: {date} 获取失败: {e}")
                 return False
+            finally:
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
         # efinance 日期格式为 YYYY-MM-DD
         _ef_date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
-        help(self.fundamental_source_dir / f"{date}" / "yjbb.csv", lambda date=date: ef.stock.get_all_company_performance(_ef_date))
-        help(self.fundamental_source_dir / f"{date}" / "zcfz.csv", ak.stock_zcfz_em)
-        help(self.fundamental_source_dir / f"{date}" / "lrb.csv", ak.stock_lrb_em)
-        help(self.fundamental_source_dir / f"{date}" / "xjll.csv", ak.stock_xjll_em)
-        return True
+        results = [
+            help(self.fundamental_source_dir / f"{date}" / "yjbb.csv", lambda date=date: ef.stock.get_all_company_performance(_ef_date)),
+            help(self.fundamental_source_dir / f"{date}" / "zcfz.csv", ak.stock_zcfz_em),
+            help(self.fundamental_source_dir / f"{date}" / "lrb.csv", ak.stock_lrb_em),
+            help(self.fundamental_source_dir / f"{date}" / "xjll.csv", ak.stock_xjll_em),
+        ]
+        return all(results)
 
     def update_fundamental_source(self):
         """更新基本面源数据（按日期，自动检测已有数据）"""

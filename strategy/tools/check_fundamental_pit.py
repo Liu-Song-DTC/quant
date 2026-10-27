@@ -1,85 +1,71 @@
-#!/usr/bin/env python
-"""守卫: 基本面 `数据可用日期` ≡ 法定披露截止日 (PIT)。
+#!/usr/bin/env python3
+"""Validate the financial availability *proxy*, including invalid/missing rows.
 
-**为什么必须守**: 原约定 `数据可用日期 = 报告期` 让**回测**提前 1~4 个月用未公开财报,
-而**实盘**库里物理上没有未披露的行 ⇒ 两边信息集不同 = 违反铁律。
-修法是把这个列改成法定截止日(见 data/fundamental_pit.py)。
-
-这个守卫防的是**回退**: `data_manager.py` / `refresh_fundamental_recent.py` 里
-只要有一处写回 `= 报告期`, 新入库的行就会静默恢复泄漏口径 —— 而泄漏**不会报错**,
-只会让回测悄悄变好看。形态同 live-regime-blind-bug(查表失败返回默认=静默温床)。
-
-退出码: 0=全部合规  1=有行不合规  2=目录/列缺失
-用法: check_fundamental_pit.py [--quiet] [--dir DIR] [--max-report N]
+Passing this check only establishes agreement with the configured deadline
+proxy. It does not prove original publication times or unrevised financial data.
+Exit: 0=proxy contract satisfied; 1=invalid dates/values; 2=unreadable inputs.
 """
-import os
+import argparse
+from pathlib import Path
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))), 'data'))
-
-import pandas as pd  # noqa: E402
-
-from fundamental_pit import pit_available_series  # noqa: E402
-
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-QUIET = '--quiet' in sys.argv
-DIR = ROOT + '/data/stock_data/fundamental_data'
-if '--dir' in sys.argv:
-    DIR = sys.argv[sys.argv.index('--dir') + 1]
-MAXREP = 0
-if '--max-report' in sys.argv:
-    MAXREP = int(sys.argv[sys.argv.index('--max-report') + 1])
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'data'))
+import pandas as pd
+from fundamental_pit import pit_available_series
 
 
-def fail(msg, code):
-    print(f'[fund-pit] ✗ {msg}')
-    sys.exit(code)
+def audit(directory, max_report=5):
+    directory = Path(directory)
+    files = sorted(directory.glob('*.csv')) if directory.is_dir() else []
+    result = {'files': len(files), 'rows': 0, 'checked_files': 0, 'bad_rows': 0,
+              'invalid_period_rows': 0, 'read_errors': [], 'examples': []}
+    if not files:
+        result['read_errors'].append('financial directory missing or empty')
+        return 2, result
+    for path in files:
+        try:
+            frame = pd.read_csv(path, dtype=str, usecols=['报告期', '数据可用日期'])
+            if frame.empty:
+                raise ValueError('empty financial history')
+        except Exception as exc:
+            result['read_errors'].append(f'{path.name}: {type(exc).__name__}: {exc}')
+            continue
+        result['checked_files'] += 1
+        result['rows'] += len(frame)
+        expected = pit_available_series(frame['报告期'])
+        invalid = expected.eq('')
+        mismatch = ~invalid & frame['数据可用日期'].fillna('').ne(expected)
+        bad = invalid | mismatch
+        result['invalid_period_rows'] += int(invalid.sum())
+        result['bad_rows'] += int(bad.sum())
+        if bad.any() and len(result['examples']) < max_report:
+            row = int(bad.to_numpy().nonzero()[0][0])
+            result['examples'].append(
+                f'{path.stem}: period={frame["报告期"].iloc[row]!r}, '
+                f'available={frame["数据可用日期"].iloc[row]!r}, expected={expected.iloc[row]!r}')
+    code = 2 if result['read_errors'] else (1 if result['bad_rows'] else 0)
+    return code, result
 
 
-if not os.path.isdir(DIR):
-    fail(f'目录缺失: {DIR}', 2)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--quiet', action='store_true')
+    parser.add_argument('--dir', type=Path,
+                        default=Path(__file__).resolve().parents[2] / 'data/stock_data/fundamental_data')
+    parser.add_argument('--max-report', type=int, default=5)
+    args = parser.parse_args(argv)
+    code, result = audit(args.dir, max_report=max(0, args.max_report))
+    if code == 0:
+        if not args.quiet:
+            print(f'[fund-pit] deadline proxy satisfied: {result["checked_files"]} files / {result["rows"]} rows; '
+                  'publication/revision PIT still requires separate verification')
+        return 0
+    print(f'[fund-pit] rejected: bad rows={result["bad_rows"]}, '
+          f'invalid periods={result["invalid_period_rows"]}, read errors={len(result["read_errors"])}')
+    for example in result['examples'] + result['read_errors'][:max(0, args.max_report)]:
+        print('  ' + example)
+    return code
 
-files = sorted(f for f in os.listdir(DIR) if f.endswith('.csv'))
-if not files:
-    fail(f'目录为空: {DIR}', 2)
 
-bad_files, bad_rows, tot_rows, checked = [], 0, 0, 0
-examples = []
-for f in files:
-    try:
-        d = pd.read_csv(os.path.join(DIR, f), dtype=str, usecols=['报告期', '数据可用日期'])
-    except Exception:
-        continue                      # 缺列/读不动的不算违规(另有新鲜度门禁管)
-    exp = pit_available_series(d['报告期'])
-    ok = exp != ''
-    if not ok.any():
-        continue
-    checked += 1
-    got = d['数据可用日期'].astype(str)
-    bad = ok.values & (got.values != exp.values)   # numpy bool 数组(.nonzero 需要)
-    n = int(bad.sum())
-    tot_rows += int(ok.sum())
-    if n:
-        bad_files.append(f[:-4])
-        bad_rows += n
-        if len(examples) < 5:
-            j = int(bad.nonzero()[0][0])
-            examples.append(f'    {f[:-4]} 报告期 {d["报告期"].iloc[j]}: '
-                            f'{got.iloc[j]} (应为 {exp.iloc[j]})')
-
-if bad_rows == 0:
-    if not QUIET:
-        print(f'[fund-pit] ✓ 数据可用日期 ≡ 法定截止日  '
-              f'({checked} 只 / {tot_rows} 行)')
-    sys.exit(0)
-
-print(f'[fund-pit] ✗ {bad_rows} 行不合规, 涉及 {len(bad_files)} 只 '
-      f'(共查 {checked} 只 / {tot_rows} 行)')
-for e in examples:
-    print(e)
-if len(bad_files) > 5:
-    print(f'    ... 另 {len(bad_files)-5} 只')
-print('    ⇒ 这些行会让回测提前 1~4 个月看到未公开财报 (实盘看不到) = 实盘≠回测。')
-print('    ⇒ 修: /mnt/d/quant/.venv/bin/python data/apply_fundamental_pit_dates.py --apply')
-sys.exit(1)
+if __name__ == '__main__':
+    raise SystemExit(main())
