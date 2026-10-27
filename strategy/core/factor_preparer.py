@@ -61,6 +61,8 @@ def _preload_fundamental_cache(fd, code, dates):
     report_idx = -1
     n_reports = len(df)
     stock_industry = None
+    cached_report_idx = -1
+    report_values = None
 
     for d in sorted_dates:
         d_ts = pd.Timestamp(d)
@@ -73,6 +75,13 @@ def _preload_fundamental_cache(fd, code, dates):
             row = reports[report_idx]
             cache_key = d
             if cache_key not in cache:
+                if cached_report_idx == report_idx:
+                    # Isolate dictionaries for callers; reuse only the report
+                    # calculations, never a mutable per-date cache entry.
+                    cache[cache_key] = report_values.copy()
+                    if stock_industry is None:
+                        stock_industry = row.get('所处行业')
+                    continue
                 # 提取基本面值
                 roe = _parse_pct(row.get('净资产收益率'))
                 profit_growth = _parse_pct(row.get('净利润-同比增长'))
@@ -116,6 +125,8 @@ def _preload_fundamental_cache(fd, code, dates):
                     'cf_to_profit': cf_to_profit,
                     'industry': row.get('所处行业'),
                 }
+                cached_report_idx = report_idx
+                report_values = cache[cache_key].copy()
 
         if stock_industry is None and report_idx >= 0:
             stock_industry = reports[report_idx].get('所处行业')
