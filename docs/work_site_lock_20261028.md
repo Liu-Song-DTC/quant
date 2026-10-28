@@ -5,11 +5,11 @@
 `/mnt/d/quant-w1`（`feat/listing-reconciliation`）= P0-a 的对照分支，已被 `3071932` 取代。
 **不用** `/mnt/d/quant-r`（10-24 起的旧研究区，detached 于 ff53295，已停用）。
 
-## 1. 现场快照（13:35 更新）
+## 1. 现场快照（15:10 更新）
 
 ```
-git status -sb  →  ## main...origin/main [ahead 4]
-git log -1      →  3071932 fix(data): 上市名册对账闸 — 在册代码缺数据不得静默缩小股票池 (P0-a)
+git status -sb  →  ## main...origin/main (已同步)
+git log -1      →  51ac47d docs: 现场锁定补 P0-c 结果与今晚链口径
 ```
 
 - 已跟踪未提交：**20** 个文件（**全部在 `data/**` 白名单内**）
