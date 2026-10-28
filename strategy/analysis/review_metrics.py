@@ -46,7 +46,21 @@ def account_metrics(directory, initial_cash=250000):
     return out
 
 
-def forward_labels(directory, data_path, commission=.0005, slippage=.001, horizons=(1, 3, 5, 10)):
+def forward_labels(directory, data_path, commission=.0005, slippage=.001, horizons=(1, 3, 5, 10),
+                   entry_basis='simulated'):
+    if entry_basis not in ('simulated', 'fills'):
+        raise ValueError(f'unknown entry basis: {entry_basis}')
+    fills = {}
+    if entry_basis == 'fills':
+        records = pd.read_csv(Path(directory) / 'execution_fills.csv', dtype={'code': str})
+        buys = records[records['side'] == 'BUY'].copy()
+        if not buys.empty:
+            buys['entry_cost'] = (buys['gross_notional'] + buys['commission']
+                                  + buys['impact_cost'])
+            grouped = buys.groupby(['date', 'code'], sort=False)[['shares', 'entry_cost']].sum()
+            if (grouped['shares'] <= 0).any() or (grouped['entry_cost'] <= 0).any():
+                raise ValueError('invalid executed BUY fill shares or cost')
+            fills = (grouped['entry_cost'] / grouped['shares']).to_dict()
     selections = pd.read_csv(Path(directory) / 'portfolio_selections.csv', dtype={'code': str}, parse_dates=['date'])
     selections = selections.drop_duplicates(['date', 'code'])
     if selections.empty:
@@ -69,20 +83,25 @@ def forward_labels(directory, data_path, commission=.0005, slippage=.001, horizo
             entry = decision + 1
             if entry >= len(calendar):
                 continue
-            entry_ok = bool(np.isfinite(op[entry]) and op[entry] > 0 and vol[entry] > 0
-                            and op[entry] / close[decision] - 1 < rate - .003)
+            if entry_basis == 'fills':
+                entry_price = fills.get((calendar[entry].strftime('%Y-%m-%d'), code))
+                entry_ok = entry_price is not None
+            else:
+                entry_ok = bool(np.isfinite(op[entry]) and op[entry] > 0 and vol[entry] > 0
+                                and op[entry] / close[decision] - 1 < rate - .003)
+                entry_price = op[entry] * (1 + slippage) * (1 + commission)
             for horizon in horizons:
                 exit_day = entry + horizon - 1
                 if exit_day >= len(calendar):
                     continue
                 stamp = .001 if calendar[exit_day] < pd.Timestamp('2023-08-28') else .0005
                 net = (close[exit_day] * (1 - slippage) * (1 - commission - stamp)
-                       / (op[entry] * (1 + slippage) * (1 + commission)) - 1) if entry_ok else np.nan
+                       / entry_price - 1) if entry_ok else np.nan
                 prev = close[exit_day - 1]
                 exit_ok = bool(vol[exit_day] > 0 and close[exit_day] / prev - 1 > -rate + .003)
                 rows.append({'date': day, 'code': code, 'horizon': horizon,
                              'entry_available': entry_ok, 'exit_available': exit_ok,
-                             'net_mtm_return': net})
+                             'entry_basis': entry_basis, 'net_mtm_return': net})
     return pd.DataFrame(rows)
 
 
@@ -111,6 +130,10 @@ def summarize_labels(labels, bootstrap_samples=1000):
                                  'exit_unavailable': int((~rows['exit_available']).sum()),
                                  'net_mtm_win_rate': float(rows['win'].mean()) if len(rows) else None,
                                  'mean_net_mtm_return': float(rows['net_mtm_return'].mean()) if len(rows) else None,
+                                 'fixed_slot_net_return': float(all_rows['net_mtm_return'].fillna(0).mean())
+                                     if len(all_rows) else None,
+                                 'fixed_slot_win_rate': float((all_rows['net_mtm_return'] > 0).mean())
+                                     if len(all_rows) else None,
                                  'win_rate_block_bootstrap_ci95': list(np.quantile(distribution, [.025, .975]))
                                      if distribution else None, 'annual': annual}
         if len(rows) > 1:
@@ -127,11 +150,13 @@ if __name__ == '__main__':
     p.add_argument('--data', required=True)
     p.add_argument('--out', required=True)
     p.add_argument('--initial-cash', type=float, default=250000)
+    p.add_argument('--entry-basis', choices=('simulated', 'fills'), default='fills',
+                   help='fills uses executed BUY cash cost; simulated reproduces legacy next-open marks')
     args = p.parse_args()
-    labels = forward_labels(args.results, args.data)
+    labels = forward_labels(args.results, args.data, entry_basis=args.entry_basis)
     result = {'account': account_metrics(args.results, args.initial_cash),
               'short_horizon': summarize_labels(labels),
-              'label_basis': 'next_open_to_horizon_close_net_mark_to_market',
+              'label_basis': args.entry_basis + '_next_open_to_horizon_close_net_mark_to_market',
               'limitations': ['Blocked exits retained as marks; not executable profit.',
                               'Historical periods were already used for research, not untouched OOS.']}
     out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
