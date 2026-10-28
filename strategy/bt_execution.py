@@ -2277,6 +2277,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     positions = np.zeros(len(stock_codes), dtype=np.int32)
     nav = np.full(n_dates, np.nan)
     daily_ret = np.full(n_dates - 1, np.nan)
+    executed_exposure = np.zeros(n_dates, dtype=np.float64)
+    executed_n_pos = np.zeros(n_dates, dtype=np.int32)
     selections = []
     cost_tracker = {}
     _entry_dates = {}     # code -> 首次建仓日期
@@ -2536,6 +2538,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         # 当前持仓市值 (开盘成交后, 按当日收盘价计)
         pos_value = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
         nav[i] = cash + pos_value
+        executed_exposure[i] = pos_value / max(nav[i], 1.0)
+        executed_n_pos[i] = int(np.count_nonzero(positions))
         if i > 0:
             daily_ret[i - 1] = (nav[i] - nav[i - 1]) / max(nav[i - 1], 1.0)
             # 波动率控制喂数 — A批修复(2026-08-30 review): 旧代码只在死的Backtrader路径调用,
@@ -2715,22 +2719,19 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             'daily_ret': np.concatenate([[np.nan], daily_ret]),
         }).to_csv(_eq_path, index=False)
         print(f"净值曲线已保存: {_eq_path}")
-        # H4证据(2026-09-06): 逐日状态落盘(regime/n_pos/exposure),
-        # 供分析FAST预警期的暴露行为与回撤关系(positions_dist每日1次调用, 顺序=calendar)
+        # Always distinguish actual holdings after simulated fills from portfolio targets.
+        # A target above 100% can be reduced by the executor's cash constraint.
         _rs = getattr(getattr(strategy, 'portfolio', None), '_dbg', {}).get('positions_dist', [])
         if _rs:
             _rs = _rs[:len(calendar)]
             _rs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     'rolling_validation_results', 'regime_state.csv')
-            pd.DataFrame({
-                'date': [pd.Timestamp(d).strftime('%Y-%m-%d') for d in calendar[:len(_rs)]],
-                'regime': [r[0] for r in _rs],
-                'n_pos': [r[1] for r in _rs],
-                'exposure': [r[2] for r in _rs],
-            }).to_csv(_rs_path, index=False)
+            from core.regime_reporting import regime_state_frame
+            regime_state_frame(calendar, _rs, executed_exposure, executed_n_pos).to_csv(_rs_path, index=False)
             print(f"逐日状态已保存: {_rs_path}")
     except Exception as e:
         import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
+        raise RuntimeError('回测报表写入或真实仓位校验失败，拒绝归档结果') from e
 
     return {'nav': nav, 'daily_returns': daily_ret_clean, 'sharpe': sharpe,
             'max_drawdown': max_dd, 'annual_returns': annual_rets,
