@@ -236,38 +236,39 @@ def check_kline(exp):
 
 
 def _check_listing_reconciliation():
-    """用下载器落盘的上市名册对账现存文件; 返回非空字符串=硬失败说明。"""
+    """生产名册必须是今天生成且可信的；无法对账即拒绝出单。"""
     import sys as _sys
-    from pathlib import Path as _Path
     _meta = PROJECT / 'data' / 'stock_data' / 'stock_metadata'
-    _rosters = sorted(_meta.glob('listed_codes_*.csv'), reverse=True)
-    if not _rosters:
-        return ''          # 没有名册(旧数据版本) ⇒ 不阻断, 由刷新链3c步负责
+    # MMDD 文件名不能排序表示时间；明确要求今天的文件，避免跨年误选旧名册。
+    _roster = _meta / f'listed_codes_{date_type.today():%m%d}.csv'
+    if not _roster.is_file():
+        return f'上市名册对账(硬): 缺少今日名册 {_roster}，拒绝出单'
+    try:
+        if datetime.fromtimestamp(_roster.stat().st_mtime).date() != date_type.today():
+            return f'上市名册对账(硬): 今日名册文件未在今天生成 {_roster}，拒绝出单'
+    except OSError as exc:
+        return f'上市名册对账(硬): 无法检查名册时间 {_roster}: {exc}'
     _sys.path.insert(0, str(PROJECT / 'data'))
     try:
+        from check_listing_reconciliation import load_roster
         from listing_reconciliation import reconcile_listing
-    except Exception as _e:
-        return ''
-    codes = []
-    try:
-        with _rosters[0].open(encoding='utf-8') as _f:
-            codes = [ln.strip() for ln in _f if ln.strip()]
-    except OSError:
-        return ''
-    if not codes:
-        return ''
-    _raw = {d.name for d in (PROJECT / 'data' / 'stock_data' / 'raw_data').iterdir()
-            if d.is_dir()} if (PROJECT / 'data' / 'stock_data' / 'raw_data').exists() else set()
-    _qfq = {f[:-8] for f in os.listdir(BT_DIR) if f.endswith('_qfq.csv')}
-    _rep = reconcile_listing(codes, _raw, _qfq, allowlist=_load_listing_allowlist())
+        codes, reference_count = load_roster(_roster)
+        _raw_dir = PROJECT / 'data' / 'stock_data' / 'raw_data'
+        _raw = {d.name for d in _raw_dir.iterdir() if d.is_dir()} if _raw_dir.is_dir() else set()
+        _qfq = {f[:-8] for f in os.listdir(BT_DIR) if f.endswith('_qfq.csv')}
+        _rep = reconcile_listing(codes, _raw, _qfq,
+                                 allowlist=_load_listing_allowlist(),
+                                 reference_count=reference_count)
+    except (OSError, UnicodeError, ValueError, ImportError) as exc:
+        return f'上市名册对账(硬): 无法完成对账 ({exc})，拒绝出单'
     if _rep.roster_anomaly:
-        return ''          # 名册不可信 ⇒ 无法判定, 不阻断(刷新链3c步会拦换名)
+        return f'上市名册对账(硬): 名册不可信 ({_rep.roster_note})，拒绝出单'
     if _rep.ok:
         return ''
-    _miss = (_rep.missing_raw + _rep.missing_qfq)
-    _s = ', '.join(_miss[:8]) + ('...' if len(_miss) > 8 else '')
-    return (f'上市名册对账(硬): 在册{_rep.expected_count}只, 缺数据{len(_miss)}只: {_s}'
-            f' ⇒ 股票池会静默缩小, 拒绝放行')
+    missing = sorted(set(_rep.missing_raw) | set(_rep.missing_qfq))
+    preview = ', '.join(missing[:8]) + ('...' if len(missing) > 8 else '')
+    return (f'上市名册对账(硬): 在册{_rep.expected_count}只, 缺数据{len(missing)}只: '
+            f'{preview} ⇒ 股票池会静默缩小, 拒绝放行')
 
 
 def check_fundamental(exp):

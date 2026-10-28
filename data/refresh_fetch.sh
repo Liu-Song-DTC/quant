@@ -85,8 +85,8 @@ $PY -u data/guard_degenerate_prices.py "$BT_NEW" --prod "$SD/backtrader_data" \
 # 3c/10 上市名册对账 (P0-a, 2026-10-28): 应有上市代码 - 实际原始文件 - 实际QFQ文件。
 # 换名前 fail-closed: 少一只在册股票 = 股票池静默缩小 => 拒绝换名。
 # 名册由 1 步的下载器落盘 (stock_metadata/listed_codes_<MMDD>.csv)。
-_ROSTER=$(ls -t "$SD"/stock_metadata/listed_codes_*.csv 2>/dev/null | head -1)
-if [ -z "$_ROSTER" ]; then
+_ROSTER="$SD/stock_metadata/listed_codes_$(date +%m%d).csv"
+if [ ! -f "$_ROSTER" ]; then
   echo "!!! 缺少上市名册文件(下载器未落盘) => 拒绝换名"; exit 1
 fi
 echo "=== 3c/10 上市名册对账 ($_ROSTER) ==="
