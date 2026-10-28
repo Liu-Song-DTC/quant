@@ -157,3 +157,28 @@ git log -1      →  51ac47d docs: 现场锁定补 P0-c 结果与今晚链口径
 
 ⚠ 口径边界：概念首版代理（2026-05-31 前借用首版名单）⇒ 这是**工程回归基线**，
 不是严格 PIT 收益证明；2021–2026 已被反复用于研究，不能当"未用样本外"。
+
+## 3f. 事故记录: P0-b 搬走研究臂时误搬了生产数据链的依赖 (18:26)
+
+**经过**：17:40 排程的链在**第 1 步就失败退出**（rc=1）：
+`data/akshare_kline_downloader.py:301` → `data/record_st_status.py:6`
+→ `from core.st_history import record_observations`
+→ `ModuleNotFoundError: No module named 'core.st_history'`。
+
+**根因**：P0-b 清理时把 26 个未跟踪文件**全部**当作研究残码搬走，其中
+`strategy/core/st_history.py` 其实是**生产数据链的依赖**（下载器 → record_st_status →
+core.st_history），而 `data/record_st_status.py` 是未提交的下载器配套件（白名单内，
+不拦链）。⇒ 只看"未跟踪 + 在 strategy/ 下"就判为研究残码，漏了跨目录依赖。
+
+**处置**：从研究区 `2e21784` 恢复 `strategy/core/st_history.py` 到主树（未跟踪），
+18:29 重启链（`logs/chain_20261028_r2.log`）。
+**失败是 fail-safe**：刷新第一步就崩 ⇒ raw/价格目录未被写、信号未重生成、订单未出。
+
+**教训（写进铁律）**：
+1. 搬走任何文件前，必须扫**现存代码的 import**（不只是 `strategy/` 内）：
+   `data/*.py` 也会 import `core.*`（本次即 `data/record_st_status.py` → `core.st_history`）。
+2. 未跟踪文件不等于研究残码：**生产链的未提交依赖必须显式登记**（本次补记：
+   `data/record_st_status.py` + `strategy/core/st_history.py` 是数据层未提交件）。
+3. 该依赖仍是"未提交 + 主树依赖"的状态 ⇒ 脆（一次 `git clean -xdf` 就会打断链）
+   ⇒ 属 D1 晋升项：要么把 ST 观测记录这组一起提交进 main，要么把下载器的
+   `record_st_status` 集成撤掉（退回已提交版下载器）。
