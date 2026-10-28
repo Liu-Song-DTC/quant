@@ -34,13 +34,14 @@ chain_alert() {  # $1=标题 $2=内容
 }
 trap 'chain_alert "实盘链失败" "run_daily_live.sh 第 $LINENO 行附近失败 (rc=$?), $(date "+%F %T")。日志: strategy/logs/ $(tail -2 $QLOGS/alert_${TODAY//-/}.log 2>/dev/null)"' ERR
 
-ALLOW_WEEKEND=0; FORCE_FULL=0; PREOPEN=0
+ALLOW_WEEKEND=0; FORCE_FULL=0; PREOPEN=0; _FRESH=1
 for _a in "$@"; do
   case "$_a" in
     --allow-weekend) ALLOW_WEEKEND=1 ;;
     --force-full) FORCE_FULL=1 ;;
     --preopen) PREOPEN=1 ;;
-    *) echo "未知参数: $_a (支持 --allow-weekend --force-full --preopen)"; exit 1 ;;
+    --fresh) _FRESH=0 ;;   # 忽略链级断点, 强制重取数+重过门禁
+    *) echo "未知参数: $_a (支持 --allow-weekend --force-full --preopen --fresh)"; exit 1 ;;
   esac
 done
 if [ "$ALLOW_WEEKEND" = "1" ]; then
@@ -88,8 +89,21 @@ if [ -n "$_gunk" ]; then
 fi
 echo "[洁净闸] 工作区干净 (白名单外零改动) ✓"
 
-echo "===== 1/4 数据刷新 + 新鲜度门禁 (失败即停) ====="
-bash data/refresh_all.sh
+echo "===== 1/4 数据刷新 (取数段) + 新鲜度门禁 (校验段) (失败即停) ====="
+# 2026-10-28: 取数与校验**分段** + **链级断点**。
+#   动机: 校验段失败(例: 两只退市股未登记滞后白名单)时, 重跑整条链会把 5,394 只
+#   再下一遍(约 50 分钟) ⇒ 白等。拆开后: 重跑 ⇒ 取数段幂等跳过(名册未变且已同步到
+#   同一目标交易日 ⇒ 下载器跳过) + 校验段秒级 ⇒ 80 分钟的信号重生成照跑。
+#   断点文件 logs/.chain_state_<date> 记录已完成的步骤, 重跑从失败步继续。
+export REFRESH_LOG=/mnt/d/quant/logs/refresh_${TODAY//-/}.log
+CHAIN_STATE=logs/.chain_state_${TODAY//-/}
+if [ "$_FRESH" = "0" ] && grep -q '^refresh$' "$CHAIN_STATE" 2>/dev/null; then
+  echo "[断点] 本日取数+门禁已完成 ⇒ 跳过刷新(要强制重取: --fresh 或 QUANT_FORCE_FETCH=1)"
+else
+  bash data/refresh_fetch.sh
+  bash data/refresh_verify.sh
+  echo 'refresh' >> "$CHAIN_STATE"
+fi
 
 # 1.2/4 数据每日快照 (P0, 2026-10-24): refresh 后的当日最终态 → snapshots/daily/
 # 供应商重述时按日期回到任意一天对比。失败不拦链但日志报警 (set +e)。
@@ -140,6 +154,7 @@ echo "===== 3/4 信号重生成 (bt_execution, ~80分钟) ====="
 cd strategy
 ../.venv/bin/python -u bt_execution.py > "logs/live_${TODAY//-/}.log" 2>&1
 echo "信号重生成完成 → logs/live_${TODAY//-/}.log"
+echo 'signals' >> "$CHAIN_STATE"
 
 echo "===== 3.5/4 回测富报告 ====="
 ../.venv/bin/python -u analysis/backtest_report.py \
@@ -164,6 +179,7 @@ if [ "$_navlaw_rc" -ne 0 ]; then
   exit "$_navlaw_rc"
 fi
 
+echo 'navlaw' >> "$CHAIN_STATE"
 echo "===== 4/4 出单 ====="
 ../.venv/bin/python -u generate_trade_orders.py --date "$TODAY" \
   | tee "logs/orders_${TODAY//-/}.log"
@@ -177,6 +193,7 @@ else
   echo "(非周日跳过)"
 fi
 
+echo 'orders' >> "$CHAIN_STATE"
 echo "===== 5/5 微信推送 ====="
 # 出单结果→微信 (P0, 2026-10-24)。未配置密钥=跳过; 发送失败不拦链但日志报警。
 set +e

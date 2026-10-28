@@ -128,6 +128,52 @@ def _load_listing_allowlist() -> set:
         return {ln.split()[0] for ln in f if ln.strip() and not ln.strip().startswith('#')}
 
 
+def _propose_stale_allowlist(stale_codes):
+    """为"已不在上游在册名册、且K线滞后"的股票生成可直接粘贴的滞后白名单建议行。
+
+    动机(2026-10-28): 两只停止交易的股票未登记滞后白名单 ⇒ 新鲜度门禁拦停整条链
+    ⇒ 需人工考古才知道该登记什么。自动提名 ⇒ 门禁失败时直接给出建议行。
+
+    返回 (建议行列表, 建议文件路径或None)。非"名册外"的滞后码不提名(那是真数据问题)。
+    """
+    meta = PROJECT / 'data' / 'stock_data' / 'stock_metadata'
+    rosters = sorted(meta.glob('listed_codes_*.csv'), reverse=True)
+    if not rosters:
+        return [], None
+    try:
+        listed = {ln.strip() for ln in rosters[0].read_text(encoding='utf-8').splitlines() if ln.strip()}
+    except OSError:
+        return [], None
+    raw_dir = PROJECT / 'data' / 'stock_data' / 'raw_data'
+    lines = []
+    for code in stale_codes:
+        if code in listed:
+            continue                      # 仍在册 ⇒ 滞后是**真数据问题** ⇒ 不提名
+        name, last = '', ''
+        try:
+            import csv as _csv
+            with open(raw_dir / code / 'none.csv', encoding='utf-8-sig') as fh:
+                rows = list(_csv.DictReader(fh))
+            if rows:
+                name = (rows[-1].get('股票名称') or '').strip()
+                last = (rows[-1].get('日期') or '').strip()
+        except (OSError, ValueError):
+            pass
+        lines.append(f'{code} {name} {last} 停止交易(退市/长期停牌): 上游在册名册已不含该码, '
+                     f'末根bar={last}; 若复牌请从本文件移除')
+    out = PROJECT / 'data' / 'stock_data' / 'kline_stale_proposals.txt'
+    try:
+        out.write_text(
+            '# K线滞后白名单**建议行** (check_data_freshness.py 自动生成, 每次门禁检查覆盖)\n'
+            '# 条件: 已在册名册里没有 + K线滞后 ⇒ 停止交易(退市/长期停牌) ⇒ 无后续K线是真实状态\n'
+            '# 处置: 人工确认后把下列行追加到 data/stock_data/kline_stale_allowlist.txt\n'
+            + ('\n'.join(lines) + '\n' if lines else '(本次无建议)\n'),
+            encoding='utf-8')
+    except OSError:
+        out = None
+    return lines, out
+
+
 def check_kline(exp):
     """K线全量检查 (2026-09-03 升级: 抽样→全量, 新鲜度+数值健全性一路扫描):
     - 指数输入(sh000001上证/399006创业板指, 市场状态检测用) → 硬失败
@@ -164,7 +210,14 @@ def check_kline(exp):
         stale_hard.append(f'{code}({d})')
     if stale_hard:
         s = ', '.join(stale_hard[:8]) + ('...' if len(stale_hard) > 8 else '')
-        return False, f'K线: {len(files)}只, 滞后{len(stale_hard)}只(硬): {s}'
+        _codes = [x.split('(')[0] for x in stale_hard]
+        _prop, _pfile = _propose_stale_allowlist(_codes)
+        _extra = ''
+        if _prop:
+            _extra = (f' | 已自动提名 {len(_prop)} 只"停止交易"股 ⇒ 追加到 '
+                      f'data/stock_data/kline_stale_allowlist.txt (建议行: {_pfile}): '
+                      f'{_prop[0][:60]}')
+        return False, f'K线: {len(files)}只, 滞后{len(stale_hard)}只(硬): {s}{_extra}'
     if bad_bar:
         s = ', '.join(bad_bar[:8]) + ('...' if len(bad_bar) > 8 else '')
         return False, f'K线数值异常(硬): {s}'

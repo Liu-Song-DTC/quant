@@ -10,7 +10,7 @@
    → raw_data/{code}/{none,qfq,hfq}.csv + fq_factors.csv (tmp+os.replace 原子写)
 bt文件重建 = convert_raw_to_backtrader.py (本脚本不管)
 """
-import os, sys, time, random, socket, json, threading
+import os, sys, time, random, socket, json, threading, hashlib
 import warnings
 warnings.filterwarnings('ignore')
 socket.setdefaulttimeout(30)
@@ -279,18 +279,49 @@ def download_index(end_ymd):
 def run(full=False, test_n=0):
     end = last_complete_trading_day()
     print(f'=== K线下载 {"全量迁移" if full else "增量"} 截止 {end} ===', flush=True)
+    # 2026-10-28: **同日重入跳过下载**(幂等标记) —— 判据放在**任何网络调用之前**。
+    # 动机: 刷新链 = 取数(50min) + 校验; 校验段失败时重跑整条链会把 5,394 只再下一遍。
+    # 判据: 上次已同步到**同一个目标交易日** 且 已落盘名册文件的 sha256 未变
+    #      ⇒ raw 已是该交易日的终态 ⇒ 跳过无副作用。
+    # 放在网络之前的原因: 上游/代理抽风时(10-28 21:00 实测鉴权失败)也要能跳过, 否则
+    #   "重跑"又变成一次 50 分钟的下载尝试。
+    # 失效: 跨日(目标交易日变) / 名册变 / QUANT_FORCE_FETCH=1 / --full ⇒ 必取。
+    # 取舍: 同日跳过不重查"EM侧复权重锚"(同交易日内上游不会改已收盘的历史);
+    #   跨日必取 ⇒ 该检测照常生效(10-17/10-23 事故的检出能力不变)。
+    _stamp = time.strftime('%m%d')
+    _roster_path = os.path.join(META, f'listed_codes_{_stamp}.csv')
+    _stamp_path = os.path.join(META, f'kline_sync_{_stamp}.stamp')
+    _end_key = str(end)
+    _force = os.environ.get('QUANT_FORCE_FETCH', '').strip().lower() in ('1', 'true')
+    if full:
+        _force = True
+    if not _force:
+        try:
+            with open(_stamp_path, encoding='utf-8') as _f:
+                _st = json.load(_f)
+            with open(_roster_path, 'rb') as _f:
+                _roster_sha = hashlib.sha256(_f.read()).hexdigest()
+            if (_st.get('roster_sha256') == _roster_sha
+                    and _st.get('synced_through') == _end_key):
+                print(f'[sync] 名册未变且已同步到 {_end_key} ⇒ **跳过下载**(幂等标记命中; '
+                      f'强制重取: QUANT_FORCE_FETCH=1 或 --full)', flush=True)
+                return
+        except (OSError, ValueError):
+            pass
+    else:
+        print('[sync] 强制重取 (--full 或 QUANT_FORCE_FETCH=1)', flush=True)
     install_patch()
     download_index(end)
     listed = get_listed_codes()
     # 2026-10-28 (P0-a): 名册落盘, 供换名前/新鲜度门禁做集合对账。
     # 此前下载失败只写状态日志并正常结束, 新上市/从未建档的股票可能无声缺席
     # ⇒ 股票池缩小而不报错 (隔离样例: 只留 sh000001 时新鲜度检查仍报"全部新鲜")。
-    _stamp = time.strftime('%m%d')
-    _roster_path = os.path.join(META, f'listed_codes_{_stamp}.csv')
+    _roster_sha = None
     try:
+        _body = ''.join(f'{_c}\n' for _c in sorted(listed))
         with open(_roster_path, 'w', encoding='utf-8') as _f:
-            for _c in sorted(listed):
-                _f.write(f'{_c}\n')
+            _f.write(_body)
+        _roster_sha = hashlib.sha256(_body.encode('utf-8')).hexdigest()
         print(f'[roster] 在册名册已落盘 {len(listed)} 只 → {_roster_path}', flush=True)
     except OSError as _e:
         print(f'[roster] 名册落盘失败({_e}) ⇒ 门禁将无法对账', flush=True)
@@ -372,6 +403,17 @@ def run(full=False, test_n=0):
     from collections import Counter
     c = Counter(s for _, s in results)
     print(f'=== 完成: {dict(c)} ===', flush=True)
+    # 2026-10-28: 写**取数幂等标记**(名册文件 sha256 + 同步到的目标交易日)。
+    #   同日重入(校验段失败后重跑)据此跳过下载 ⇒ 不再重复 5,394 次网络往返(约 50 分钟)。
+    if _roster_sha:
+        try:
+            with open(_stamp_path, 'w', encoding='utf-8') as _f:
+                json.dump({'roster_sha256': _roster_sha, 'synced_through': _end_key,
+                           'listed': len(listed), 'at': time.strftime('%F %T'),
+                           'status_counts': dict(c)}, _f, ensure_ascii=False, indent=1)
+            print(f'[sync] 取数幂等标记已写: {_stamp_path}', flush=True)
+        except OSError as _e:
+            print(f'[sync] 标记写入失败({_e}) ⇒ 下次重入会重新下载', flush=True)
     # 2026-10-28 (P0-a): 重试后仍失败的代码 ⇒ 写失败清单并**非零退出**。
     # 真实失败率历史上为 0 (5219 skip + 201 frozen + 1 incr), 因此非零退出不会造成
     # 日常阻断; 但一旦有代码取不到历史, 必须显式失败而不是静默缩小股票池。
