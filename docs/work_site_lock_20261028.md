@@ -1,43 +1,72 @@
 # 工作现场与实验身份锁定 (2026-10-28, 交接计划 §3.1)
 
 对象仓库：`/mnt/d/quant`（主树，出单区）。研究产物在 `.review_runs/`（主树内），
-隔离实现用 quant 自身的 worktree `/mnt/d/quant-w1`（分支 `feat/listing-reconciliation`）。
+研究区 = worktree `/mnt/d/quant-rs`（分支 `research/uncommitted-arms-1028`）。
+`/mnt/d/quant-w1`（`feat/listing-reconciliation`）= P0-a 的对照分支，已被 `3071932` 取代。
 **不用** `/mnt/d/quant-r`（10-24 起的旧研究区，detached 于 ff53295，已停用）。
 
-## 1. 现场快照
+## 1. 现场快照（13:35 更新）
 
 ```
-git status -sb  →  ## main...origin/main [ahead 3]
-git log -1      →  042ccb4 Expand end-to-end quant review with reproduced data gate gap
+git status -sb  →  ## main...origin/main [ahead 4]
+git log -1      →  3071932 fix(data): 上市名册对账闸 — 在册代码缺数据不得静默缩小股票池 (P0-a)
 ```
 
-- 已跟踪未提交：**33** 个文件
-- 未跟踪：**560** 项
-- 洁净闸（`strategy/run_daily_live.sh` 第 0 步）：白名单外已跟踪改动 ⇒ **拒绝出单**；
-  白名单 = `data/**`、`.arms/**`、`factor_config.yaml` 仅 todate 行。
-  ⇒ **当前主树按每日链会被洁净闸阻断**（这是 P0-b 的实质）。
+- 已跟踪未提交：**20** 个文件（**全部在 `data/**` 白名单内**）
+- 未跟踪：**536** 项（`.arms/**` 为主 + `data/` 历史脚本）
+- **洁净闸：白名单外已跟踪改动 = 0 ⇒ 出单前置条件已恢复**（P0-b 已闭合）
 
 ## 2. 改动归属分类（逐文件）
 
 | 归属 | 路径 | 说明 |
 |---|---|---|
 | 生产数据（刷新产物，二进制） | `data/alternative_data/*.pkl`(8)、`data/concept_hist.pkl`、`data/concept_map_history.pkl`、`data/stock_concept_map.pkl` | 每日刷新产物；白名单内 |
-| 研究/门禁强化（**上一模型未提交**） | `data/akshare_kline_downloader.py`、`data/build_events_table.py`、`data/fetch_actions_table.py`、`data/fetch_sina_factors.py`、`data/freeze_st_timeline.py`、`data/guard_degenerate_prices.py`、`data/market_codes.py`、`data/rebuild_table_qfq.py`、`data/refresh_all.sh` + 新文件 `data/guard_security_identity.py` | 证券身份守卫（交易所限定 quote id、响应自校验、退市码不再用数字黑名单）；**已提交的 refresh_all.sh 不含这道守卫** ⇒ 已提交版自洽但缺守卫 |
-| 研究（ML/基本面/评分，未提交） | `strategy/bt_execution.py`、`core/factor_calculator.py`、`core/factor_preparer.py`、`core/fundamental.py`、`core/signal_engine.py`、`generate_trade_orders.py`、`snapshot_data.py`、`analysis/*`(5)、`tests/test_review_regressions.py`；未跟踪新模块 `core/fundamental_freshness.py`、`core/fundamental_units.py`、`core/price_frame.py`、`core/st_history.py`、`core/calibration_windows.py` + 12 个新测试 | 与"单位修正臂/统一评分臂/增长压缩臂"对应（研究候选，**不得直接进生产**） |
-| 本次交付（P0-a） | `data/listing_reconciliation.py`、`data/check_listing_reconciliation.py`、`data/probe_listing_gap_1028.py`、`data/stock_data/listing_reconciliation_allowlist.txt`、`strategy/tests/test_listing_reconciliation.py`、以及 `data/akshare_kline_downloader.py` / `data/refresh_all.sh` / `data/rebuild_table_qfq.py` / `strategy/check_data_freshness.py` 的增量 | 见 `docs/listing_reconciliation_p0a_20261028.md` |
-| 研究台账（白名单内） | `.arms/**`（491 项未跟踪 + winrate_PLAN.md 已跟踪） | 不入库亦不阻断 |
+| **数据层脚本（未提交，白名单内 ⇒ 不拦链）** | `data/akshare_kline_downloader.py`、`build_events_table.py`、`fetch_actions_table.py`、`fetch_sina_factors.py`、`freeze_st_timeline.py`、`guard_degenerate_prices.py`、`market_codes.py`、`rebuild_table_qfq.py`、`refresh_all.sh` + 未跟踪 `guard_security_identity.py`、`record_st_status.py`、`audit_security_identity.py`、`audit_fundamental_inputs.py`、`quarantine_security_sources.py`、`update_actions_table.py` | **不回退**：这些脚本正是 10-26 刷新所用的版本，`market_codes.is_stock_code(code, raw_dir)` 会改变重建符号集 ⇒ 回退后下次刷新会产出**不同的价格目录**（改写历史）。晋升（=提交进 main）属 D1 工作包，需先验证自洽与守卫无误报 |
+| 研究臂（**已移出生产树**） | 原 13 个 `strategy/**` 文件 + 26 个未跟踪研究模块/测试 | 已原样保存到研究区 `research/uncommitted-arms-1028`（`2e21784` + `7a6aa3c`），主树已恢复为 HEAD |
+| 本次交付（P0-a，已提交 `3071932`） | `data/listing_reconciliation.py`、`data/check_listing_reconciliation.py`、`data/probe_listing_gap_1028.py`、`data/stock_data/listing_reconciliation_allowlist.txt`、`strategy/tests/test_listing_reconciliation.py` + `akshare_kline_downloader.py`/`refresh_all.sh`/`rebuild_table_qfq.py`/`check_data_freshness.py` 的增量 | 见 `docs/listing_reconciliation_p0a_20261028.md` |
+| 研究台账（白名单内） | `.arms/**` | 不入库亦不阻断 |
 
-**已提交版可独立启动**（P0-b 的前置）：`git show HEAD:data/refresh_all.sh` 引用的 14 个
-`.py` 全部在 HEAD 中被跟踪 ⇒ 不依赖任何未提交/未跟踪文件（缺的是证券身份守卫）。
+**已提交版可独立启动**：`git show HEAD:data/refresh_all.sh` 引用的 `.py` 全部在 HEAD
+中被跟踪 ⇒ 不依赖任何未提交/未跟踪文件。
 
 ## 3. 正在执行的任务（锁定时）
 
 | 任务 | 位置 | 状态 |
 |---|---|---|
-| `code_repro_1028`：当前工作区源码 + 封存数据快照的重算 | `.review_runs/code_repro_1028/` | 运行中（因子计算 57%） |
-| `arm_base_1026`：当前代码 + **生产实时数据**的基线复现 | `.review_runs/arm_base_1026/` | 已完成：NAV **842,623**（≠ 封存锚 882,519.85；数据态不同，不可直接比较） |
+| `p0c_committed_1028`：**已提交源码** + 封存数据快照（计划 §3 任务 2） | `.review_runs/p0c_committed_1028/` | 运行中（13:29 启动） |
+| `code_repro_1028`：脏工作区源码 + 封存快照 | `.review_runs/code_repro_1028/` | **已停**（ML 4/24）—— 前提（脏源码）已随 P0-b 消失，其结论由三臂审计表覆盖 |
+| `arm_base_1026`：当前代码 + 生产实时数据的基线复现 | `.review_runs/arm_base_1026/` | 已完成：NAV **842,623**（≠ 封存锚 882,519.85；数据态不同，不可直接比较） |
 
 ⇒ 同一时点只允许一个全量重算（15GB 内存，历史上有过 OOM）。
+
+## 3b. P0-b 期间的重大发现：10-26 的生产信号是用**失败候选臂**生成的
+
+`logs/chain_20261026.log` 第 202 行 `--force-full` ⇒ 10-26 06:52 那次链**完整重跑了
+信号生成**，而当时工作区带着上一模型的未提交改动（统一评分 + 增长压缩臂的
+`core/fundamental.py` / `core/factor_calculator.py` / `core/fundamental_units.py`）：
+
+- 三臂审计表：增长压缩臂 NAV **404,336**（锚 882,519.85）⇒ **失败候选**；
+- 主树工作区源码 ≈ 增长压缩臂 ⇒ 10-26 产出的 `backtest_signals.csv` /
+  `portfolio_selections.csv` 是**臂口径**，不是已提交口径；
+- 当日 navlaw 检出铁律违反并登记 REBASELINE（`logs/chain_20261026.log:327`），
+  但**信号集已被臂口径覆盖**；
+- 实盘影响有限：熊市 + 空仓 ⇒ 0 单、0 持仓、账户 50 万现金 ⇒ 无真钱敞口；
+- **后续影响仍在**：熊市空仓前置闸会**跳过**信号重生成 ⇒ 若今晚链不带
+  `--force-full`，臂口径信号会被继续用于出单与选股名单。
+  ⇒ 今晚链须带 `--force-full`（或先单独重生成信号），否则名单仍来自失败臂。
+
+## 3c. P0-b 处置记录（13:20–13:35）
+
+1. 备份：`.arms/backups/uncommitted_1028/tracked.patch`（1494 行）+ 状态清单。
+2. 研究区：新建 worktree `/mnt/d/quant-rs`（分支 `research/uncommitted-arms-1028`），
+   sparse-checkout `/*` + `!/data/`，`data/` 改为实体脚本 + 共享数据产品的符号链接。
+3. 搬入：13 个 `strategy/**` 改动（`git apply --include='strategy/*'`）+ 26 个未跟踪
+   研究模块/测试 + `data/` 脚本改动 ⇒ 提交 `2e21784`、`7a6aa3c`。
+4. 主树：`git checkout -- strategy/`（13 文件）+ 删除 26 个未跟踪研究文件 ⇒
+   `strategy/**` 与 HEAD 逐字节一致。
+5. 验证：洁净闸白名单外改动 = 0；全量单测 **126 项全绿**（比之前少 46 项 = 被移走的
+   研究测试）；`build_st_filter` 实测 000004 正确判 ST、600519/000001 不判；
+   `check_data_freshness` 的上市名册对账在真实数据上 rc=0（含 301718 例外）。
 
 ## 4. 三臂审计表（§3.1 的"源码差异—配置差异—缓存—交易差异"）
 

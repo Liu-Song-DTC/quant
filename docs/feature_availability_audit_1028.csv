@@ -1,0 +1,63 @@
+feature,status,factor_column,data_class,availability_timepoint,missing_policy,missing_ratio_overall,missing_ratio_by_year,in_linear_score,definition_sites
+trend_lowvol,进入ML,trend_lowvol,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/dynamic_factor_selector.py:56;strategy/core/factor_calculator.py:391;strategy/core/factor_calculator.py:1850;strategy/core/factor_calculator.py:1851
+momentum_reversal,进入ML,momentum_reversal,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/dynamic_factor_selector.py:52;strategy/core/factor_calculator.py:379;strategy/core/factor_calculator.py:1841;strategy/core/factor_calculator.py:1842
+mom_x_lowvol_20_20,进入ML,mom_x_lowvol_20_20,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,Y,strategy/core/dynamic_factor_selector.py:53;strategy/core/factor_calculator.py:363;strategy/core/factor_calculator.py:1804
+mom_x_lowvol_20_10,进入ML,mom_x_lowvol_20_10,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,Y,strategy/core/factor_calculator.py:362;strategy/core/factor_calculator.py:1805
+mom_diff_5_20,进入ML,mom_diff_5_20,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,Y,strategy/core/dynamic_factor_selector.py:52;strategy/core/factor_calculator.py:1811
+mom_diff_10_20,进入ML,mom_diff_10_20,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,Y,strategy/core/dynamic_factor_selector.py:52;strategy/core/factor_calculator.py:1812
+momentum_acceleration,进入ML,momentum_acceleration,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/dynamic_factor_selector.py:53;strategy/core/factor_calculator.py:381;strategy/core/factor_calculator.py:1843;strategy/core/factor_calculator.py:1844
+mom_x_lowvol_10_10,进入ML,mom_x_lowvol_10_10,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,Y,strategy/core/dynamic_factor_selector.py:53;strategy/core/factor_calculator.py:360;strategy/core/factor_calculator.py:1807
+volatility_skew,进入ML,volatility_skew,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:508;strategy/core/factor_calculator.py:1886;strategy/core/factor_calculator.py:1887
+low_downside,进入ML,low_downside,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/dynamic_factor_selector.py:57;strategy/core/factor_calculator.py:293;strategy/core/factor_calculator.py:1868;strategy/core/factor_calculator.py:1869
+skewness_20,进入ML,skewness_20,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:506;strategy/core/factor_calculator.py:1876;strategy/core/factor_calculator.py:1877
+tail_risk,进入ML,tail_risk,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/dynamic_factor_selector.py:67;strategy/core/factor_calculator.py:525;strategy/core/factor_calculator.py:1882;strategy/core/factor_calculator.py:1883
+bb_width_20,进入ML,bb_width_20,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:203;strategy/core/factor_calculator.py:1824;strategy/core/factor_calculator.py:1825
+ret_vol_ratio_20,进入ML,ret_vol_ratio_20,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:376;strategy/core/factor_calculator.py:1839;strategy/core/factor_calculator.py:1840
+ema20_slope,进入ML,ema20_slope,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:334;strategy/core/factor_calculator.py:1930;strategy/core/factor_calculator.py:1931
+ma_alignment,进入ML,ma_alignment,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:322;strategy/core/factor_calculator.py:1928;strategy/core/factor_calculator.py:1929
+trend_mom_v24,进入ML,trend_mom_v24,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,Y,strategy/core/factor_calculator.py:1796;strategy/core/factor_calculator.py:1800
+relative_strength,进入ML,relative_strength,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:554;strategy/core/factor_calculator.py:1898;strategy/core/factor_calculator.py:1899;strategy/core/factor_library.py:402
+smart_money_flow,进入ML,smart_money_flow,量价推断,"**量价推断**(capital_flow.py: 收益×波动率推断主力意图), 非真实资金流观测",无底层数据缺失 ⇒ 恒有值,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:559;strategy/core/factor_calculator.py:1900;strategy/core/factor_calculator.py:1901;strategy/core/factor_preparer.py:828
+bb_rsi_combo,进入ML,bb_rsi_combo,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/dynamic_factor_selector.py:58;strategy/core/factor_calculator.py:368;strategy/core/factor_calculator.py:1835;strategy/core/factor_calculator.py:1836
+vol_price_breakout,进入ML,vol_price_breakout,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:552;strategy/core/factor_calculator.py:1894;strategy/core/factor_calculator.py:1895
+fund_pe,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/factor_calculator.py:63;strategy/core/signal_engine.py:2021;strategy/core/signal_engine.py:2026;strategy/core/signal_engine.py:2221
+fund_roe,进入ML,fund_roe,基本面,净资产收益率(报告期) ⇒ 数据可用日 = 披露截止日,缺失 ⇒ 因子层 NaN ⇒ 截面填充,0.0213,2020:0.037;2021:0.035;2022:0.029;2023:0.022;2024:0.014;2025:0.009;2026:0.009,Y,strategy/core/factor_calculator.py:45;strategy/core/factor_calculator.py:56;strategy/core/factor_preparer.py:219;strategy/core/factor_preparer.py:255
+tech_fund_combo,进入ML,tech_fund_combo,基本面,技术×基本面组合(基本面部分同上报期口径),缺失 ⇒ 因子层 NaN ⇒ 截面填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:1847;strategy/core/signal_engine.py:2501;strategy/core/signal_engine.py:2504
+fund_cf_to_profit,进入ML,fund_cf_to_profit,基本面,经营现金流/净利润(报告期) ⇒ 数据可用日 = 披露截止日,缺失 ⇒ 因子层 NaN ⇒ 截面填充,0.2173,2020:0.219;2021:0.162;2022:0.190;2023:0.212;2024:0.231;2025:0.241;2026:0.256,Y,strategy/core/dynamic_factor_selector.py:60;strategy/core/factor_calculator.py:57;strategy/core/factor_preparer.py:220;strategy/core/factor_preparer.py:265
+earnings_quality,进入ML,earnings_quality,量价推断,"**量价代理**(factor_calculator.py: inv_turnover × 1/(1+|vol20|·10)), 非财报盈利质量",无底层数据缺失 ⇒ 恒有值,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:589;strategy/core/factor_calculator.py:591;strategy/core/factor_calculator.py:1908;strategy/core/factor_calculator.py:1909
+intraday_ret,进入ML,intraday_ret,量价,T 日开盘/日内 ⇒ T+1 开盘前已知,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:500;strategy/core/factor_calculator.py:503;strategy/core/factor_calculator.py:1874;strategy/core/factor_calculator.py:1875
+gap_ratio,进入ML,gap_ratio,量价,T 日开盘/日内 ⇒ T+1 开盘前已知,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/dynamic_factor_selector.py:66;strategy/core/factor_calculator.py:543;strategy/core/factor_calculator.py:545;strategy/core/factor_calculator.py:1888
+V41_RSI_915,进入ML,V41_RSI_915,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,N,strategy/core/factor_calculator.py:1830
+mom_x_lowvol_10_20,进入ML,mom_x_lowvol_10_20,量价,T 日收盘 ⇒ T+1 开盘可用,窗口不足 ⇒ NaN ⇒ 零填充,0.0000,2020:0.000;2021:0.000;2022:0.000;2023:0.000;2024:0.000;2025:0.000;2026:0.000,Y,strategy/core/factor_calculator.py:361;strategy/core/factor_calculator.py:1806
+volume_divergence,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:65
+relative_volume_ratio,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:68
+volume_trend,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+overnight_gap_5d,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+amplitude_5d,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+amplitude_expansion,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:66
+limit_up_proximity,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+limit_down_proximity,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+volume_price_resonance,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:69
+volume_dry_up,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:69
+dt_signal,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+northbound_signal,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:71
+margin_signal,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+profit_growth_accel,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:62
+revenue_growth_accel,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:63
+days_since_report,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+earnings_yield,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+fund_cf_quality,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+debt_ratio,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:59
+fund_gross_margin,进入ML,fund_gross_margin,基本面,销售毛利率(报告期) ⇒ 数据可用日 = 披露截止日,缺失 ⇒ 因子层 NaN ⇒ 截面填充,0.0364,2020:0.054;2021:0.052;2022:0.046;2023:0.038;2024:0.030;2025:0.022;2026:0.020,Y,strategy/core/dynamic_factor_selector.py:63;strategy/core/factor_calculator.py:58;strategy/core/factor_preparer.py:220;strategy/core/factor_preparer.py:263
+log_total_assets,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:59
+log_revenue,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:59
+log_operating_cf,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/dynamic_factor_selector.py:59
+fund_roic,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+fund_net_margin,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+vol_regime,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,strategy/core/portfolio.py:2038;strategy/core/signal.py:161;strategy/core/signal_engine.py:1072;strategy/core/signal_engine.py:1137
+turnover_regime,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+market_breadth,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+market_momentum_ratio,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+market_volatility,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+market_dry_up_ratio,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
+market_fear_index,缺列(零填充/剔除),,缺列,—,管线不产出 ⇒ 训练时剔除 / 预测时零填充(ml_predictor.py:505-510),,,N,
