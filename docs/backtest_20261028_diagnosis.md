@@ -12,3 +12,5 @@
 python strategy/analysis/review_metrics.py --results strategy/rolling_validation_results --data .review_runs/data_catalog_quarantine_20261027/data/stock_data/backtrader_data --entry-basis fills --out /tmp/quant_20261028_executed_metrics.json
 python strategy/analysis/attribute_drawdown.py --results strategy/rolling_validation_results --data .review_runs/data_catalog_quarantine_20261027/data/stock_data/backtrader_data --start 2026-04-29 --end 2026-10-08 --out /tmp/quant_20261028_drawdown.json
 ```
+
+追加机制探针（只读回测内 `backtest_signals.csv` 的入选当日行，161/161 条可核对）：以 2021–2024 年信号中位数定候选阈值，分开检查 2025/2026 年 5 日结果。`score` 高半区在 2025 较好，但 2026 较差（高 8/21=38.1%，低 4/6=66.7%；少样本）；`volume_ratio` 高半区在 2025 较差、2026 较好；`mom_60d`、`max_dd_20d` 也跨年反向。买点类型 2 在全期 12/35=34.3% 的 5 日胜率相对偏弱，但分年度样本各 4–8 笔，且其他买点/年份表现不同。**不据此新增硬过滤**：现有历史已被反复观察，探索性多重试验会选出偶然阈值。优先研究不靠挑参数的损失路径、市场状态与既有风控的真实日级动作，再做冻结数据的单变量全量配对实验。
