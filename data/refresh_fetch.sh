@@ -8,6 +8,11 @@
 set -e
 set -o pipefail
 cd /mnt/d/quant
+# 独立取数也必须与每日链共享锁；仅校验段取锁会在换名期间留下竞态。
+if [ "$(readlink /proc/self/fd/9 2>/dev/null)" != "$PWD/.daily_chain.lock" ]; then
+    exec 9>.daily_chain.lock
+fi
+flock -n 9 || { echo '数据维护或每日链正在运行，拒绝并发刷新'; exit 3; }
 PY=/mnt/d/quant/.venv/bin/python
 SD=/mnt/d/quant/data/stock_data
 # 每一步的**完整**输出落这里; 控制台仍只留尾部 N 行。

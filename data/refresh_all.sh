@@ -8,6 +8,12 @@
 #   拆开后重跑校验段只需秒级(取数段另有幂等标记: 名册未变且已同步到同一目标交易日 ⇒ 跳过)。
 set -e
 set -o pipefail
+cd /mnt/d/quant
+# 持锁贯穿取数与校验，子脚本复用同一 fd，避免两段之间被并发刷新插入。
+if [ "$(readlink /proc/self/fd/9 2>/dev/null)" != "$PWD/.daily_chain.lock" ]; then
+    exec 9>.daily_chain.lock
+fi
+flock -n 9 || { echo '数据维护或每日链正在运行，拒绝并发刷新'; exit 3; }
 export REFRESH_LOG=${REFRESH_LOG:-/mnt/d/quant/logs/refresh_$(date +%Y%m%d_%H%M%S).log}
 bash /mnt/d/quant/data/refresh_fetch.sh
 bash /mnt/d/quant/data/refresh_verify.sh

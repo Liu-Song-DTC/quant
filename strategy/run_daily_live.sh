@@ -34,13 +34,13 @@ chain_alert() {  # $1=标题 $2=内容
 }
 trap 'chain_alert "实盘链失败" "run_daily_live.sh 第 $LINENO 行附近失败 (rc=$?), $(date "+%F %T")。日志: strategy/logs/ $(tail -2 $QLOGS/alert_${TODAY//-/}.log 2>/dev/null)"' ERR
 
-ALLOW_WEEKEND=0; FORCE_FULL=0; PREOPEN=0; _FRESH=1
+ALLOW_WEEKEND=0; FORCE_FULL=0; PREOPEN=0; _FRESH=0
 for _a in "$@"; do
   case "$_a" in
     --allow-weekend) ALLOW_WEEKEND=1 ;;
     --force-full) FORCE_FULL=1 ;;
     --preopen) PREOPEN=1 ;;
-    --fresh) _FRESH=0 ;;   # 忽略链级断点, 强制重取数+重过门禁
+    --fresh) _FRESH=1 ;;   # 忽略链级断点, 强制重取数+重过门禁
     *) echo "未知参数: $_a (支持 --allow-weekend --force-full --preopen --fresh)"; exit 1 ;;
   esac
 done
@@ -96,9 +96,22 @@ echo "===== 1/4 数据刷新 (取数段) + 新鲜度门禁 (校验段) (失败�
 #   同一目标交易日 ⇒ 下载器跳过) + 校验段秒级 ⇒ 80 分钟的信号重生成照跑。
 #   断点文件 logs/.chain_state_<date> 记录已完成的步骤, 重跑从失败步继续。
 export REFRESH_LOG=/mnt/d/quant/logs/refresh_${TODAY//-/}.log
-CHAIN_STATE=logs/.chain_state_${TODAY//-/}
-if [ "$_FRESH" = "0" ] && grep -q '^refresh$' "$CHAIN_STATE" 2>/dev/null; then
-  echo "[断点] 本日取数+门禁已完成 ⇒ 跳过刷新(要强制重取: --fresh 或 QUANT_FORCE_FETCH=1)"
+# 早盘使用前一交易日数据，晚间必须重新刷新；两个窗口不能共用断点。
+if [ "$PREOPEN" = "1" ]; then
+  CHAIN_STATE=logs/.chain_state_${TODAY//-/}_preopen
+else
+  CHAIN_STATE=logs/.chain_state_${TODAY//-/}_evening
+fi
+_force_fetch=${QUANT_FORCE_FETCH:-}
+case "${_force_fetch,,}" in 1|true) _force_fetch=1 ;; *) _force_fetch=0 ;; esac
+if [ "$_FRESH" = "1" ]; then
+  export QUANT_FORCE_FETCH=1
+  _force_fetch=1
+fi
+if [ "$_FRESH" = "0" ] && [ "$_force_fetch" = "0" ] \
+    && grep -q '^refresh$' "$CHAIN_STATE" 2>/dev/null; then
+  echo "[断点] 本窗口取数已完成 ⇒ 跳过取数，但重新运行数据门禁"
+  bash data/refresh_verify.sh
 else
   bash data/refresh_fetch.sh
   bash data/refresh_verify.sh
