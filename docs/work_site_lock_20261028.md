@@ -33,7 +33,8 @@ git log -1      →  3071932 fix(data): 上市名册对账闸 — 在册代码�
 
 | 任务 | 位置 | 状态 |
 |---|---|---|
-| `p0c_committed_1028`：**已提交源码** + 封存数据快照（计划 §3 任务 2） | `.review_runs/p0c_committed_1028/` | 运行中（13:29 启动） |
+| `p0c_committed_1028`：**已提交源码** + 封存数据快照（计划 §3 任务 2） | `.review_runs/p0c_committed_1028/` | **完成**（13:29→14:58）：四份产物 SHA256 与锚逐字节一致；NAV 882,519.8499688671 / Sharpe 1.2255 / MDD −21.36% / 2,343 成交 / 161 已平仓 / 胜率 52.80%；实际敞口与逐日重放差 3.6e-08 ⇒ 详见 `docs/p0c_committed_source_20261028.md` |
+| 今晚链（17:40 排程） | `logs/chain_20261028.log` | 已排程：`--force-full` + `NAVLAW_REBASELINE` ⇒ 强制用**已提交口径**重建信号（不复用 10-26 的臂口径信号） |
 | `code_repro_1028`：脏工作区源码 + 封存快照 | `.review_runs/code_repro_1028/` | **已停**（ML 4/24）—— 前提（脏源码）已随 P0-b 消失，其结论由三臂审计表覆盖 |
 | `arm_base_1026`：当前代码 + 生产实时数据的基线复现 | `.review_runs/arm_base_1026/` | 已完成：NAV **842,623**（≠ 封存锚 882,519.85；数据态不同，不可直接比较） |
 
@@ -109,3 +110,21 @@ git log -1      →  3071932 fix(data): 上市名册对账闸 — 在册代码�
 
 **结论**：两臂都不满足"整体目标"（权益或胜率倒退）⇒ 只能作为负结果登记；
 锚 882,519.85 继续作为工程回归基线（不是严格 PIT 收益证明，见计划 §5 P0-c）。
+
+## 3d. 今晚链（10-28 17:40）的口径与守门
+
+已排程：`NAVLAW_REBASELINE="…P0-b…"` + `bash strategy/run_daily_live.sh --force-full`
+⇒ 日志 `logs/chain_20261028.log`。
+
+必带 `--force-full` 的原因：熊市 + 空仓时前置闸会**跳过信号重生成**（省 80 分钟），
+而生产信号此时仍是 10-26 的**臂口径**产物 ⇒ 跳过就会让失败候选继续供给明日名单。
+`--force-full` 只多跑信号生成，订单仍为空（熊市 + 0 持仓 ⇒ 0 单）。
+
+今晚链会用到两处**未提交**的工作区脚本（data/ 白名单内，当前流水线的实际版本）：
+
+1. `data/refresh_all.sh` 的 **1b 证券身份检查**（`data/guard_security_identity.py`）——
+   已在当前数据上实测通过（rc=0），不会误拦；
+2. `data/refresh_all.sh` 的 **3c 上市名册对账**（P0-a，本次交付）——工作区版本的允许清单
+   路径原写成 `$SD/stock_data/listing_reconciliation_allowlist.txt`（多一层目录 ⇒ 文件
+   不存在 ⇒ 301718 会被判缺股 ⇒ 链在换名前中止），**已修为**
+   `$SD/listing_reconciliation_allowlist.txt`（与已提交版本一致）。
