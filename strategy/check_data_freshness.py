@@ -46,6 +46,9 @@ ALT_DIR = PROJECT / 'data' / 'alternative_data'
 CONCEPT_HIST = PROJECT / 'data' / 'concept_hist.pkl'
 CONCEPT_MAP = PROJECT / 'data' / 'stock_concept_map.pkl'
 KLINE_ALLOWLIST = PROJECT / 'data' / 'stock_data' / 'kline_stale_allowlist.txt'
+# 上市名册对账的允许清单 = "在册但整个价格文件缺失"的例外 (新上市待建库);
+# 与上面的**滞后**清单语义不同 ⇒ 不可混用 (混用会让缺文件的股票被静默放过)。
+LISTING_ALLOWLIST = PROJECT / 'data' / 'stock_data' / 'listing_reconciliation_allowlist.txt'
 
 # 东财已下架、真实终止的板块 (2026-09-03 核实): 无后续数据, 豁免检查
 CONCEPT_FROZEN = {'2025年报预增'}
@@ -118,6 +121,13 @@ def _load_kline_allowlist() -> set:
         return {ln.split()[0] for ln in f if ln.strip() and not ln.strip().startswith('#')}
 
 
+def _load_listing_allowlist() -> set:
+    if not os.path.exists(LISTING_ALLOWLIST):
+        return set()
+    with open(LISTING_ALLOWLIST, encoding='utf-8') as f:
+        return {ln.split()[0] for ln in f if ln.strip() and not ln.strip().startswith('#')}
+
+
 def check_kline(exp):
     """K线全量检查 (2026-09-03 升级: 抽样→全量, 新鲜度+数值健全性一路扫描):
     - 指数输入(sh000001上证/399006创业板指, 市场状态检测用) → 硬失败
@@ -162,8 +172,49 @@ def check_kline(exp):
         s = ', '.join(neg_close[:8]) + ('...' if len(neg_close) > 8 else '')
         return False, (f'K线全历史负收盘(硬): {len(neg_close)}只: {s} '
                        f'(sina修复被覆盖, 跑 data/repair_qfq_negatives.py)')
+    # 2026-10-28 (P0-a): 上市名册对账 —— 本检查此前只枚举**现存**文件,
+    # 新上市/从未建档的股票下载失败时不可见 (股票池静默缩小)。
+    # 名册由下载器落盘; 只在名册可信时把"缺股"当硬失败。
+    _listing_note = _check_listing_reconciliation()
+    if _listing_note:
+        return False, _listing_note
     return True, (f'K线: {len(files)}只全部新鲜且末bar数值健全'
                   f' (北交所{bse_total}只已排除, 其中滞后{bse_stale}只仅报告)')
+
+
+def _check_listing_reconciliation():
+    """用下载器落盘的上市名册对账现存文件; 返回非空字符串=硬失败说明。"""
+    import sys as _sys
+    from pathlib import Path as _Path
+    _meta = PROJECT / 'data' / 'stock_data' / 'stock_metadata'
+    _rosters = sorted(_meta.glob('listed_codes_*.csv'), reverse=True)
+    if not _rosters:
+        return ''          # 没有名册(旧数据版本) ⇒ 不阻断, 由刷新链3c步负责
+    _sys.path.insert(0, str(PROJECT / 'data'))
+    try:
+        from listing_reconciliation import reconcile_listing
+    except Exception as _e:
+        return ''
+    codes = []
+    try:
+        with _rosters[0].open(encoding='utf-8') as _f:
+            codes = [ln.strip() for ln in _f if ln.strip()]
+    except OSError:
+        return ''
+    if not codes:
+        return ''
+    _raw = {d.name for d in (PROJECT / 'data' / 'stock_data' / 'raw_data').iterdir()
+            if d.is_dir()} if (PROJECT / 'data' / 'stock_data' / 'raw_data').exists() else set()
+    _qfq = {f[:-8] for f in os.listdir(BT_DIR) if f.endswith('_qfq.csv')}
+    _rep = reconcile_listing(codes, _raw, _qfq, allowlist=_load_listing_allowlist())
+    if _rep.roster_anomaly:
+        return ''          # 名册不可信 ⇒ 无法判定, 不阻断(刷新链3c步会拦换名)
+    if _rep.ok:
+        return ''
+    _miss = (_rep.missing_raw + _rep.missing_qfq)
+    _s = ', '.join(_miss[:8]) + ('...' if len(_miss) > 8 else '')
+    return (f'上市名册对账(硬): 在册{_rep.expected_count}只, 缺数据{len(_miss)}只: {_s}'
+            f' ⇒ 股票池会静默缩小, 拒绝放行')
 
 
 def check_fundamental(exp):

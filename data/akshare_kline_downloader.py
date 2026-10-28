@@ -282,6 +282,18 @@ def run(full=False, test_n=0):
     install_patch()
     download_index(end)
     listed = get_listed_codes()
+    # 2026-10-28 (P0-a): 名册落盘, 供换名前/新鲜度门禁做集合对账。
+    # 此前下载失败只写状态日志并正常结束, 新上市/从未建档的股票可能无声缺席
+    # ⇒ 股票池缩小而不报错 (隔离样例: 只留 sh000001 时新鲜度检查仍报"全部新鲜")。
+    _stamp = time.strftime('%m%d')
+    _roster_path = os.path.join(META, f'listed_codes_{_stamp}.csv')
+    try:
+        with open(_roster_path, 'w', encoding='utf-8') as _f:
+            for _c in sorted(listed):
+                _f.write(f'{_c}\n')
+        print(f'[roster] 在册名册已落盘 {len(listed)} 只 → {_roster_path}', flush=True)
+    except OSError as _e:
+        print(f'[roster] 名册落盘失败({_e}) ⇒ 门禁将无法对账', flush=True)
     raw_codes = {d for d in os.listdir(RAW)
                  if os.path.isdir(os.path.join(RAW, d)) and d != 'sh000001'}
     frozen = sorted(raw_codes - listed)
@@ -360,6 +372,17 @@ def run(full=False, test_n=0):
     from collections import Counter
     c = Counter(s for _, s in results)
     print(f'=== 完成: {dict(c)} ===', flush=True)
+    # 2026-10-28 (P0-a): 重试后仍失败的代码 ⇒ 写失败清单并**非零退出**。
+    # 真实失败率历史上为 0 (5219 skip + 201 frozen + 1 incr), 因此非零退出不会造成
+    # 日常阻断; 但一旦有代码取不到历史, 必须显式失败而不是静默缩小股票池。
+    _still_failed = sorted(c for c, s in results if str(s).startswith('FAIL'))
+    if _still_failed:
+        _fail_path = os.path.join(META, f'kline_download_failures_{time.strftime("%m%d")}.csv')
+        pd.DataFrame({'code': _still_failed}).to_csv(_fail_path, index=False)
+        print(f'!!! {len(_still_failed)} 只股票下载失败(重试后仍失败) ⇒ 清单: {_fail_path}',
+              flush=True)
+        print(f'    前20: {_still_failed[:20]}', flush=True)
+        raise SystemExit(2)
 
 if __name__ == '__main__':
     import argparse

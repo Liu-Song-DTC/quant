@@ -196,6 +196,9 @@ def main():
     ap.add_argument('--events', default=CA,
                     help='事件表 pickle。默认东财 corporate_actions.pkl (code,ex_date,s,D); '
                          '可传融合表 (…,mult,src) —— mult 非空时按**直接乘数**消费(新浪通道填补)')
+    ap.add_argument('--include-new', action='store_true',
+                    help='同时为"有原始价但尚无生产价格文件"的新上市股票建库 (P0-a, 2026-10-28)。'
+                         '默认关: 股票池会新增新上市标的 ⇒ 行为改动, 需独立臂与人工裁定。')
     a = ap.parse_args()
     _settle_guard()                     # 铁律守卫: 拒绝用"今天未收盘的临时 raw"构建
     if a.out is None:
@@ -254,11 +257,22 @@ def main():
     for i, sym in enumerate(syms):
         bp = f'{BT}/{sym}_qfq.csv'
         rp = f'{RAW}/{sym}/none.csv'
-        if not (os.path.exists(bp) and os.path.exists(rp)):
+        if not os.path.exists(rp):
+            stats['missing'] = stats.get('missing', 0) + 1
+            continue
+        # 2026-10-28 (P0-a): **新上市股票此前被永久排除**。
+        # 旧条件要求"生产里已有 qfq 文件"才重建 ⇒ 新上市(尚无生产文件)永远进不了
+        # 价格库 ⇒ 永远不进股票池, 且只以 stats['missing'] 计数留痕(实测: 10-26 刷新
+        # 重建 5365 只, 异常 {'missing': 1} = 301718, 2026-10-22 上市, 仅 2 根bar)。
+        # build_one 不消费旧文件(bt_df 未被使用) ⇒ 无生产文件也能建; 锚因子按"首建日
+        # 冻结"落盘, 符合铁律(不追改历史)。
+        # ★ 行为改动(股票池会新增新上市) ⇒ 默认关闭, 需独立臂 + 人工裁定后启用。
+        _is_new = not os.path.exists(bp)
+        if _is_new and not a.include_new:
             stats['missing'] = stats.get('missing', 0) + 1
             continue
         try:
-            b = pd.read_csv(bp)
+            b = None if _is_new else pd.read_csv(bp)
             r = pd.read_csv(rp, encoding='utf-8-sig')
         except Exception as e:
             stats['read_fail'] = stats.get('read_fail', 0) + 1
@@ -308,10 +322,16 @@ def main():
         #   真实停牌日 raw 也是 0 ⇒ 不会误补。其余既有值逐位保留。
         #   实测爆炸半径(400 只抽样): 变化格 19,314, 其中 1996–2015 占 18,927(退市股旧链路
         #   整段缺量), 2026 占 384(= 10-16 新行), **回测窗口 2021-01-01~2026-10-15 内 0 格**。
-        b2 = b.copy()
-        b2['datetime'] = pd.to_datetime(b2['datetime'])
-        out = out.merge(b2[['datetime', 'volume', 'openinterest', 'amount']],
-                        on='datetime', how='left')
+        b2 = b.copy() if b is not None else None
+        if b2 is not None:
+            b2['datetime'] = pd.to_datetime(b2['datetime'])
+            out = out.merge(b2[['datetime', 'volume', 'openinterest', 'amount']],
+                            on='datetime', how='left')
+        else:
+            # 新上市: 无旧文件 ⇒ 没有"既有值需要保留" ⇒ 量额直接取自 raw
+            out['volume'] = np.nan
+            out['openinterest'] = np.nan
+            out['amount'] = np.nan
         _dtm = pd.to_datetime(out['datetime'])
         _rv = (pd.to_numeric(m['成交量'], errors='coerce').values.astype(float)
                if '成交量' in m.columns else np.full(len(m), np.nan))
@@ -337,7 +357,7 @@ def main():
         #   ⇒ 24选股日翻转 ⇒ NAV 1,321,718→965,332)。
         #   规则: 旧 bt volume 是整型 dtype 且本列全整值 ⇒ 回写 int64 (旧文件本就是
         #   float 格式的股如 002673 不动, 保持其既有格式)。
-        if pd.api.types.is_integer_dtype(b2['volume']) \
+        if b2 is not None and pd.api.types.is_integer_dtype(b2['volume']) \
                 and out['volume'].notna().all() \
                 and float(np.abs(out['volume'].values
                                  - np.round(out['volume'].values)).max(initial=0.0)) == 0.0:

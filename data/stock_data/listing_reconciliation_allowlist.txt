@@ -1,0 +1,11 @@
+# 上市名册对账允许清单 (data/check_listing_reconciliation.py 用): 一码一行, 空格后为备注
+# 列入条件: **在册但本地无价格文件**, 且属已知且已登记的例外。
+#   与 kline_stale_allowlist.txt(滞后/退市)不同: 这里是"缺文件", 不是"缺最新bar"。
+#
+# 2026-10-28 (P0-a) 初始条目:
+301718 C通则 2026-10-22上市(仅2根bar) 价格库未建; 待 D1 build-side(--include-new)裁定
+#
+# 处置规则:
+#   - 本清单是**人工复核过的例外**, 不是兜底开关; 新增条目必须写明原因与复核日期;
+#   - 若某码已出现在价格库中, 请从本文件移除(否则例外会长期掩盖新的缺口);
+#   - 对账报告: data/stock_data/stock_metadata/listing_reconciliation_<MMDD>.json

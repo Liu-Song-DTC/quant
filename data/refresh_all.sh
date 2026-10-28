@@ -80,6 +80,25 @@ EOF
 echo "=== 3b/10 退化价格守卫 (负价/零价/NaN/倒挂/负量额/重复日期/丢行) ==="
 $PY -u data/guard_degenerate_prices.py "$BT_NEW" --prod "$SD/backtrader_data" \
     2>&1 | tee -a "$REFRESH_LOG" | tail -20
+# 3c/10 上市名册对账 (P0-a, 2026-10-28): 应有上市代码 - 实际原始文件 - 实际QFQ文件。
+# 换名前 fail-closed: 少一只在册股票 = 股票池静默缩小 => 拒绝换名。
+# 名册由 1 步的下载器落盘 (stock_metadata/listed_codes_<MMDD>.csv)。
+_ROSTER=$(ls -t "$SD"/stock_metadata/listed_codes_*.csv 2>/dev/null | head -1)
+if [ -z "$_ROSTER" ]; then
+  echo "!!! 缺少上市名册文件(下载器未落盘) => 拒绝换名"; exit 1
+fi
+echo "=== 3c/10 上市名册对账 ($_ROSTER) ==="
+set +e
+$PY -u data/check_listing_reconciliation.py --roster "$_ROSTER" \
+    --raw "$SD/raw_data" --qfq "$BT_NEW" \
+    --allow "$SD/listing_reconciliation_allowlist.txt" \
+    --report "$SD/stock_metadata/listing_reconciliation_$(date +%m%d).json" \
+    2>&1 | tee -a "$REFRESH_LOG" | tail -20
+_listing_rc=${PIPESTATUS[0]}
+set -e
+if [ "$_listing_rc" -ne 0 ]; then
+  echo "!!! 上市名册对账未通过(rc=$_listing_rc) => 拒绝换名(带病出单)"; exit 1
+fi
 # 原子换名: mv 是原子的 ⇒ 任何时刻 backtrader_data 都指向完整目录。
 # 快照(datastate.py)是**硬链接**, 换名不影响其 inode ⇒ 历史快照不被污染。
 rm -rf "$BT_OLD"
