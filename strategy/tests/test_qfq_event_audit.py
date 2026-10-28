@@ -43,6 +43,10 @@ class QFQEventAuditTests(unittest.TestCase):
             good = audit(data)
             self.assertEqual(good['counts']['audited_event_day'], 1)
             self.assertEqual(good['counts'].get('out_of_rounding_bound', 0), 0)
+            self.assertEqual(good['counts'].get('non_event_out_of_rounding_bound', 0), 0)
+            pd.DataFrame({'datetime': ['2025-01-03', '2025-01-06', '2025-01-07'],
+                          'close': [10., 10.20, 9.80]}).to_csv(price, index=False)
+            self.assertEqual(audit(data)['counts']['non_event_out_of_rounding_bound'], 1)
             pd.DataFrame({'datetime': ['2025-01-03', '2025-01-06', '2025-01-07'],
                           'close': [10., 9.90, 10.10]}).to_csv(price, index=False)
             bad = audit(data)

@@ -28,6 +28,10 @@ def audit(data_dir: Path, codes=None):
     largest_rounding_errors = []
     recent_deltas = []
     missing_raw_ids = []
+    largest_non_event_errors = []
+    largest_non_event_rounding_errors = []
+    largest_non_event_errors_since_2021 = []
+    non_event_max_since_2021 = 0.0
     for path in price_files:
         code = path.stem[:-4]
         raw_path = data_dir / 'stock_data/raw_data' / code / 'none.csv'
@@ -77,6 +81,57 @@ def audit(data_dir: Path, codes=None):
             mult = float(mult) if mult is not None and np.isfinite(mult) else None
             mapped[ix] = ((1 + previous_shares) * (1 + shares) - 1,
                           previous_cash + cash, mult if mult is not None else previous_mult)
+        ordinary = np.ones(len(frame), dtype=bool)
+        ordinary[0] = False
+        if mapped:
+            ordinary[list(mapped)] = False
+        ordinary_ix = np.flatnonzero(ordinary)
+        if len(ordinary_ix):
+            yesterday = ordinary_ix - 1
+            finite = (np.isfinite(raw_close[yesterday]) & np.isfinite(raw_close[ordinary_ix]) &
+                      np.isfinite(adj_close[yesterday]) & np.isfinite(adj_close[ordinary_ix]) &
+                      (raw_close[yesterday] > 0) & (adj_close[yesterday] > .005))
+            counts['invalid_non_event_price_day'] += int((~finite).sum())
+            ordinary_ix = ordinary_ix[finite]
+            yesterday = ordinary_ix - 1
+            expected_daily = raw_close[ordinary_ix] / raw_close[yesterday]
+            observed_daily = adj_close[ordinary_ix] / adj_close[yesterday]
+            errors = np.abs(expected_daily - observed_daily)
+            bounds = .005 * (1 + np.abs(expected_daily)) / (adj_close[yesterday] - .005) + 1e-9
+            counts['audited_non_event_day'] += len(ordinary_ix)
+            recent_mask = dates[ordinary_ix] >= np.datetime64('2021-01-01')
+            counts['non_event_day_since_2021'] += int(recent_mask.sum())
+            if recent_mask.any():
+                non_event_max_since_2021 = max(non_event_max_since_2021, float(errors[recent_mask].max()))
+                counts['non_event_prev_below_one_yuan_since_2021'] += int(((adj_close[yesterday] < 1) & recent_mask).sum())
+                counts['non_event_delta_above_one_pct_since_2021'] += int(((errors > .01) & recent_mask).sum())
+                recent_positions = np.flatnonzero(recent_mask)
+                recent_worst = int(recent_positions[np.argmax(errors[recent_mask])])
+                if errors[recent_worst] >= .005:
+                    day_ix = ordinary_ix[recent_worst]
+                    largest_non_event_errors_since_2021.append({
+                        'code': code, 'date': str(frame.date.iat[day_ix].date()),
+                        'error': float(errors[recent_worst]),
+                        'rounding_bound': float(bounds[recent_worst]),
+                        'adjusted_prev': float(adj_close[day_ix - 1]),
+                        'expected': float(expected_daily[recent_worst]),
+                        'observed': float(observed_daily[recent_worst])})
+            top_pos = int(np.argmax(errors))
+            if errors[top_pos] >= .005:
+                day_ix = ordinary_ix[top_pos]
+                largest_non_event_rounding_errors.append({'code': code, 'date': str(frame.date.iat[day_ix].date()),
+                                                    'error': float(errors[top_pos]), 'rounding_bound': float(bounds[top_pos]),
+                                                    'adjusted_prev': float(adj_close[day_ix - 1]),
+                                                    'expected': float(expected_daily[top_pos]), 'observed': float(observed_daily[top_pos])})
+            mismatch = np.flatnonzero(errors > bounds)
+            counts['non_event_out_of_rounding_bound'] += len(mismatch)
+            for pos in mismatch[:max(0, 40 - len(largest_non_event_errors))]:
+                ix = ordinary_ix[pos]
+                largest_non_event_errors.append({'code': code, 'date': str(frame.date.iat[ix].date()),
+                                                 'expected': float(expected_daily[pos]),
+                                                 'observed': float(observed_daily[pos]),
+                                                 'error': float(errors[pos]),
+                                                 'rounding_bound': float(bounds[pos])})
         for ix, (shares, cash, mult) in mapped.items():
             counts['audited_event_day'] += 1
             if not np.isfinite([raw_close[ix - 1], raw_close[ix], adj_close[ix - 1], adj_close[ix], shares, cash]).all() or min(raw_close[ix - 1], adj_close[ix - 1]) <= 0:
@@ -111,7 +166,7 @@ def audit(data_dir: Path, codes=None):
                 counts['out_of_rounding_bound'] += 1
                 max_over_bound = max(max_over_bound, delta / rounding_bound)
                 exceptions.append({'code': code, 'date': str(frame.date.iat[ix].date()), 'reason': 'event_return_mismatch', 'expected': expected, 'observed': observed, 'error': delta, 'rounding_bound': rounding_bound, 's': shares, 'D': cash, 'mult': mult})
-    result = {'counts': dict(counts), 'delta_quantiles': {str(q): float(np.quantile(deltas, q)) for q in (.5, .9, .95, .99, 1.)} if deltas else {}, 'missing_raw_codes': missing_raw_ids, 'recent_delta_quantiles': {str(q): float(np.quantile(recent_deltas, q)) for q in (.5, .9, .95, .99, 1.)} if recent_deltas else {}, 'max_error_over_rounding_bound': max_over_bound, 'largest_rounding_errors': sorted(largest_rounding_errors, key=lambda row: row['error'], reverse=True)[:25], 'exception_count': len(exceptions), 'exceptions': exceptions[:200]}
+    result = {'counts': dict(counts), 'delta_quantiles': {str(q): float(np.quantile(deltas, q)) for q in (.5, .9, .95, .99, 1.)} if deltas else {}, 'missing_raw_codes': missing_raw_ids, 'non_event_max_error_since_2021': non_event_max_since_2021, 'non_event_mismatch_examples': largest_non_event_errors, 'largest_non_event_rounding_errors': sorted(largest_non_event_rounding_errors, key=lambda row: row['error'], reverse=True)[:25], 'largest_non_event_errors_since_2021': sorted(largest_non_event_errors_since_2021, key=lambda row: row['error'], reverse=True)[:25], 'recent_delta_quantiles': {str(q): float(np.quantile(recent_deltas, q)) for q in (.5, .9, .95, .99, 1.)} if recent_deltas else {}, 'max_error_over_rounding_bound': max_over_bound, 'largest_rounding_errors': sorted(largest_rounding_errors, key=lambda row: row['error'], reverse=True)[:25], 'exception_count': len(exceptions), 'exceptions': exceptions[:200]}
     return result
 
 
