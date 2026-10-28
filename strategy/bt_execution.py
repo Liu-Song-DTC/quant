@@ -2283,6 +2283,17 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     cost_tracker = {}
     _entry_dates = {}     # code -> 首次建仓日期
     _realized_trades = []  # 逐笔平仓审计
+    _execution_fills = []  # Actual simulated fills, including partial/remaining positions.
+
+    def _record_fill(code, date, side, shares, price, impact, stamp, reference):
+        gross = float(shares) * price
+        _execution_fills.append({
+            'date': str(date), 'code': code, 'side': side, 'shares': int(shares),
+            'price': price, 'gross_notional': gross,
+            'commission': gross * COMMISSION, 'stamp_tax': gross * stamp,
+            'impact_cost': gross * impact,
+            'price_adjustment_cost': float(shares) * (price - reference) * (1 if side == 'BUY' else -1),
+        })
     _trade_invested = defaultdict(float)
     _trade_received = defaultdict(float)
 
@@ -2369,6 +2380,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
                 proceeds = float(positions[j]) * sell_px * (1.0 - COMMISSION - _STAMP_ARR[i] - impact)
                 cash += proceeds
+                _record_fill(code, date, 'SELL', positions[j], sell_px, impact, _STAMP_ARR[i], float(open_today[j]))
                 _trade_received[code] += proceeds
                 _log_realized(code, date, sell_px)
                 positions[j] = 0
@@ -2405,6 +2417,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
                     proceeds = abs(diff) * sell_px * (1.0 - COMMISSION - _STAMP_ARR[i] - impact)
                     cash += proceeds
+                    _record_fill(code, date, 'SELL', abs(diff), sell_px, impact, _STAMP_ARR[i], openx)
                     _trade_received[code] += proceeds
                     positions[j] = target_shares
                     # 减仓: 减少成本追踪股数 (均价不变)
@@ -2468,6 +2481,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     scaled_cost = scaled_diff * buy_px * (1.0 + COMMISSION + impact)
                     if scaled_cost <= cash + 1e-6:
                         cash -= scaled_cost
+                        _record_fill(code, date, 'BUY', scaled_diff, buy_px, impact, 0., float(open_today[j]))
                         _trade_invested[code] += scaled_cost
                         positions[j] = curr_shares + scaled_diff
                         _fill_stats['buy_filled'] += 1
@@ -2518,6 +2532,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                             _fill_stats['tranche_cash_insufficient'] += 1
                             continue  # 现金不足, 挂单保留
                     cash -= buy_shares * unit
+                    _record_fill(code, date, 'BUY', buy_shares, fill_px, impact, 0., min(float(open_px[i, j]), _lp))
                     _trade_invested[code] += buy_shares * unit
                     positions[j] += buy_shares
                     _fill_stats['tranche_filled'] += 1
@@ -2719,6 +2734,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             'daily_ret': np.concatenate([[np.nan], daily_ret]),
         }).to_csv(_eq_path, index=False)
         print(f"净值曲线已保存: {_eq_path}")
+        pd.DataFrame(_execution_fills, columns=[
+            'date', 'code', 'side', 'shares', 'price', 'gross_notional',
+            'commission', 'stamp_tax', 'impact_cost', 'price_adjustment_cost',
+        ]).to_csv(os.path.join(os.path.dirname(_eq_path), 'execution_fills.csv'), index=False)
         # Always distinguish actual holdings after simulated fills from portfolio targets.
         # A target above 100% can be reduced by the executor's cash constraint.
         _rs = getattr(getattr(strategy, 'portfolio', None), '_dbg', {}).get('positions_dist', [])
@@ -2738,7 +2757,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             'annual_max_drawdown': annual_mdd,
             'final_value': final_nav, 'selections': selections,
             'n_dates': n_dates, 'realized_trades': _realized_trades,
-            'fill_stats': _fill_stats}
+            'fill_stats': _fill_stats, 'execution_fills': _execution_fills}
 
 
 if __name__ == "__main__":
