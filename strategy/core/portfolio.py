@@ -837,8 +837,7 @@ class PortfolioConstructor:
                     self._alt_provider = AlternativeDataProvider()
                 codes = self._alt_provider.get_reduction_codes(date, self.reduction_recent_days)
             except Exception as e:
-                print(f" [减持过滤] 数据加载失败, 本期放行: {e}")
-                codes = set()
+                raise RuntimeError(f'减持过滤数据不可读，拒绝无数据放行: {e}') from e
             self._reduction_codes_cache = codes
             self._reduction_codes_cache_date = str(date)[:10]
             if codes:
@@ -856,8 +855,7 @@ class PortfolioConstructor:
                     self._alt_provider = AlternativeDataProvider()
                 codes = self._alt_provider.get_reduction_plan_codes(date)
             except Exception as e:
-                print(f" [减持计划过滤] 数据加载失败, 本期放行: {e}")
-                codes = set()
+                raise RuntimeError(f'减持计划数据不可读，拒绝无数据放行: {e}') from e
             self._plan_codes_cache = codes
             self._plan_codes_cache_date = str(date)[:10]
             if codes:

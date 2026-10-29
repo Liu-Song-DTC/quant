@@ -19,6 +19,9 @@
 """
 
 import os, sys, json, argparse, shutil, subprocess
+# Orders must use the version that passed the explicit daily data refresh.
+if __name__ == '__main__':
+    os.environ['QUANT_ALT_NO_AUTOREFRESH'] = '1'
 import pandas as pd
 import numpy as np
 from datetime import date as date_type, datetime

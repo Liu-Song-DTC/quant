@@ -6,6 +6,10 @@ import pandas as pd
 import numpy as np
 import datetime
 import os
+# Backtests consume the published data snapshot; only data/refresh_all.sh may
+# download alternative inputs. Prevent on-demand refresh from mutating a run.
+if __name__ == '__main__':
+    os.environ['QUANT_ALT_NO_AUTOREFRESH'] = '1'
 from tqdm import tqdm
 import math
 from collections import defaultdict

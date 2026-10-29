@@ -25,6 +25,11 @@ from pathlib import Path
 _AUTOREFRESH_OFF = os.environ.get('QUANT_ALT_NO_AUTOREFRESH', '') in ('1', 'true', 'yes', 'on')
 
 
+def _require_published_cache(path):
+    if _AUTOREFRESH_OFF and not path.exists():
+        raise FileNotFoundError(f'read-only alternative data cache missing: {path}')
+
+
 # 原子写 (2026-10-16) — 数据冻结快照层前置。与 convert_raw_to_backtrader.py /
 # refresh_concept_*.py 同源修复。另类数据是**信号输入**(龙虎榜/北向/两融/减持/
 # 解禁/业绩预告), 原地写有两个问题:
@@ -107,6 +112,7 @@ class AlternativeDataProvider:
             institution_buy, institution_sell, top_institution_count
         """
         cache_path = self.data_dir / 'dragon_tiger.pkl'
+        _require_published_cache(cache_path)
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
             if _age_hours < 24 or _AUTOREFRESH_OFF:
@@ -133,6 +139,7 @@ class AlternativeDataProvider:
     def _ensure_dragon_tiger_history(self):
         """确保龙虎榜历史明细缓存存在, 不存在则从聚合数据构建或自动下载。"""
         history_path = self.data_dir / 'dragon_tiger_history.pkl'
+        _require_published_cache(history_path)
         if history_path.exists():
             if self._dt_history is None:
                 import pickle
@@ -302,6 +309,7 @@ class AlternativeDataProvider:
             date, net_flow(净流入/亿), cumulative_flow, sh_flow, sz_flow
         """
         cache_path = self.data_dir / 'northbound_daily.pkl'
+        _require_published_cache(cache_path)
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
             if _age_hours < 24 or _AUTOREFRESH_OFF:
@@ -424,6 +432,7 @@ class AlternativeDataProvider:
             margin_change, margin_buy, total_balance
         """
         cache_path = self.data_dir / 'margin_daily.pkl'
+        _require_published_cache(cache_path)
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
             if _age_hours < 24 or _AUTOREFRESH_OFF:
@@ -553,6 +562,7 @@ class AlternativeDataProvider:
         Returns DataFrame: code, name, holder, change_num(万股), change_ratio(占总股本),
                            start_date(变动开始), end_date(变动截止), eitime(公告时刻)"""
         cache_path = self.data_dir / 'reduction_records.pkl'
+        _require_published_cache(cache_path)
         old = None
         if cache_path.exists():
             if self._reduction is not None:
@@ -634,6 +644,7 @@ class AlternativeDataProvider:
         """加载限售解禁日程(2021至今+已公告的未来日程).
         Returns DataFrame: code, unlock_date, ratio(占解禁前流通市值比例), shares, market_value, type"""
         cache_path = self.data_dir / 'unlock_schedule.pkl'
+        _require_published_cache(cache_path)
         if self._unlock is not None:
             return self._unlock
         if cache_path.exists():
@@ -726,6 +737,7 @@ class AlternativeDataProvider:
         Returns DataFrame: code, name, indicator, forecast_type, change_pct(%),
                            predict_value(区间中值), base_value(上年同期), notice_date, report_period"""
         cache_path = self.data_dir / 'yjyg_records.pkl'
+        _require_published_cache(cache_path)
         old = None
         if cache_path.exists():
             if self._yjyg is not None:
@@ -895,6 +907,7 @@ class AlternativeDataProvider:
         if self._reduction_plans is not None:
             return self._reduction_plans
         pkl = self.data_dir / 'reduction_plans.pkl'
+        _require_published_cache(pkl)
         df = pd.read_pickle(pkl) if pkl.exists() else pd.DataFrame()
         today = str(pd.Timestamp.now().date())
         last = df['ann_date'].max() if len(df) else None
