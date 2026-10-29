@@ -19,7 +19,7 @@ import pandas as pd
 from core.alternative_data import AlternativeDataProvider
 
 DATA = '/mnt/d/quant/data/alternative_data'
-prov = AlternativeDataProvider(data_dir=DATA)
+prov = AlternativeDataProvider(data_dir=DATA, strict_refresh=True)
 from core.unlock_schedule_versions import record_version as record_unlock_version
 
 REFRESH_PKLS = [

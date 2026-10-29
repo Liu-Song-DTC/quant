@@ -50,7 +50,8 @@ def _atomic_to_pickle(df, path):
 class AlternativeDataProvider:
     """另类数据统一接口 — 从本地缓存提供因子级信号"""
 
-    def __init__(self, data_dir: str = None):
+    def __init__(self, data_dir: str = None, *, strict_refresh: bool = False):
+        self.strict_refresh = strict_refresh
         if data_dir is None:
             strategy_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             data_dir = os.path.join(strategy_dir, '..', 'data', 'alternative_data')
@@ -582,6 +583,8 @@ class AlternativeDataProvider:
             return df if df is not None else pd.DataFrame()
         except Exception as e:
             print(f"[AltData] 股东减持下载失败: {e}")
+            if self.strict_refresh:
+                raise
             if old is not None:
                 self._reduction = old
                 return old
@@ -853,6 +856,8 @@ class AlternativeDataProvider:
                 raw = _stock_notice_report(symbol='持股变动', begin_date=b, end_date=e)
             except Exception as ex:
                 print(f"[AltData] 减持计划增量拉取{b[:7]}失败: {str(ex)[:60]}")
+                if self.strict_refresh:
+                    raise RuntimeError(f'减持计划月份 {b[:7]} 拉取失败') from ex
                 continue
             _time.sleep(0.8)
             if raw is None or len(raw) == 0:
@@ -905,6 +910,8 @@ class AlternativeDataProvider:
                 new_last = df['ann_date'].max() if len(df) else 'NA'
                 print(f"[AltData] 减持计划已增量更新: {len(df)} 条, 最新公告 {new_last}")
             except Exception as e:
+                if self.strict_refresh:
+                    raise
                 print(f"[AltData] 减持计划增量失败(用已有数据): {e}")
         else:
             print(f"[AltData] 减持计划: {len(df)} 条, 最新公告 {last}")
