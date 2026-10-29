@@ -27,7 +27,8 @@ import pandas as pd  # noqa: E402
 import requests  # noqa: E402
 from data_manager import StockDataManager  # noqa: E402 (含akshare代理patch)
 from fundamental_pit import pit_available_series  # noqa: E402 可用日=法定披露截止日
-from fundamental_refresh_rules import recent_refresh_quarters, merge_report_rows  # noqa: E402
+from fundamental_refresh_rules import (recent_refresh_quarters, merge_report_rows,
+                                       published_report_changes)  # noqa: E402
 
 
 QT_GET_UT = 'fa5fd1943c7b386f172d6893dbfba10b'
@@ -103,6 +104,8 @@ def main():
                     help='仅处理指定季度 (默认全部3个)')
     ap.add_argument('--no-download', action='store_true',
                     help='跳过下载, 仅用现有源文件重合并')
+    ap.add_argument('--preflight-only', action='store_true',
+                    help='只检查源表与已发布报告的差异, 不写单股基本面文件')
     args = ap.parse_args()
     quarters = args.quarters if args.quarters else recent_refresh_quarters()
 
@@ -132,24 +135,54 @@ def main():
 
     # ── 2. 合并新季度frame ──
     frames = []
+    missing_quarters = []
     for q in quarters:
         fr = build_quarter_frame(src / q, q)
         if fr is not None and len(fr):
             print(f"  [{q}] 合并 {len(fr)} 行")
             frames.append(fr)
-    if not frames:
-        print("无新数据可并入, 退出")
-        return
+        else:
+            missing_quarters.append(q)
+    if missing_quarters:
+        raise RuntimeError(f'基本面源表缺失/不完整，拒绝以旧报告冒充刷新成功: {missing_quarters}')
     new_all = pd.concat(frames, ignore_index=True)
 
+    # Validate all incoming availability dates before touching a single stock.
+    expected = pit_available_series(new_all['报告期'])
+    if expected.eq('').any() or not new_all['数据可用日期'].astype(str).eq(expected).all():
+        raise RuntimeError('new financial report has an invalid or premature availability date')
+
     # ── 3. 增量并入 per-stock CSV ──
-    codes = sorted(new_all['股票代码'].dropna().unique())
+    grouped = {str(code): frame for code, frame in new_all.groupby('股票代码', sort=False)}
+    codes = sorted(grouped)
     print(f"=== 并入 {len(codes)} 只股票 ===")
-    updated, replaced_rows = 0, 0
+    # Do not modify 5,000+ files and only afterwards discover a historical
+    # source revision. Review and version actual revisions separately.
+    revisions = []
+    for code in codes:
+        fpath = out / f'{code}.csv'
+        if not fpath.exists():
+            continue
+        previous = pd.read_csv(fpath, dtype=str)
+        changes = published_report_changes(previous, grouped[code])
+        if changes:
+            revisions.append({'stock': code, 'changes': changes})
+    if revisions:
+        import json
+        from datetime import datetime
+        report = mgr.stock_metadata_dir / f'fundamental_revisions_{datetime.now():%Y%m%d_%H%M%S}.json'
+        report.write_text(json.dumps({'changed_stocks': len(revisions), 'examples': revisions[:30]},
+                                     ensure_ascii=False, indent=2) + '\n')
+        raise RuntimeError(f'历史基本面报告发生修订: {len(revisions)} 只; 已拒绝写入, 取证: {report}')
+    print('基本面历史行预检通过: 已发布报告期未发生源表回修', flush=True)
+    if args.preflight_only:
+        print('预检模式: 未改动单股基本面文件', flush=True)
+        return
+    updated, unchanged, replaced_rows = 0, 0, 0
     st_hits = []
     for code in codes:
         fpath = out / f"{code}.csv"
-        add = new_all[new_all['股票代码'] == code]
+        add = grouped[code]
         if fpath.exists():
             old = pd.read_csv(fpath, dtype={'股票代码': str})
             old['报告期'] = old['报告期'].astype(str)  # 旧CSV可能int, 统一为str
@@ -170,16 +203,23 @@ def main():
             # 单股接口补; 补不到也建列留NaN, 让门禁行业NaN探针可见 (fail-closed)。
             ind = fetch_industry_eastmoney(code)
             merged['所处行业'] = ind if ind else None
-        tmp = fpath.with_suffix('.tmp')
-        merged.to_csv(tmp, index=False, encoding='utf-8')
-        os.replace(tmp, fpath)
-        updated += 1
+        # Re-serializing 5,000+ unchanged stocks needlessly replaces their
+        # inodes and churns snapshot/refresh storage. Compare exact output
+        # bytes first; a genuine new report still uses atomic replacement.
+        serialized = merged.to_csv(index=False)
+        if fpath.exists() and fpath.read_text(encoding='utf-8') == serialized:
+            unchanged += 1
+        else:
+            tmp = fpath.with_suffix('.tmp')
+            tmp.write_text(serialized, encoding='utf-8')
+            os.replace(tmp, fpath)
+            updated += 1
 
         names = add['股票简称'].astype(str)
         if names.str.contains('ST').any():
             st_hits.append((code, names.iloc[-1], add['报告期'].iloc[-1] if '报告期' in add.columns else '?'))
 
-    print(f"=== 完成: 更新 {updated} 只, 替换旧季度行 {replaced_rows} 行 ===")
+    print(f"=== 完成: 实际更新 {updated} 只, 未变跳过 {unchanged} 只, 重叠季度行 {replaced_rows} 行 ===")
 
     # 2026-10-17: **可用日口径守卫** — 本脚本刚写入了新行, 这里立刻验一遍全库
     # `数据可用日期 ≡ 法定披露截止日`。防的是: 将来有人把上面的 pit_available_series

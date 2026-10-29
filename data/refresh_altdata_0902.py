@@ -20,6 +20,7 @@ from core.alternative_data import AlternativeDataProvider
 
 DATA = '/mnt/d/quant/data/alternative_data'
 prov = AlternativeDataProvider(data_dir=DATA)
+from core.unlock_schedule_versions import record_version as record_unlock_version
 
 REFRESH_PKLS = [
     ('dragon_tiger.pkl', 'load_dragon_tiger'),
@@ -51,6 +52,14 @@ def rng(name):
 
 
 print('=== 刷新前 ===')
+failures = []
+# Seed the currently published table before forced mtime aging/rebuild. The
+# file mtime is only a data-state proxy, not an issuer publication timestamp.
+_unlock_file = os.path.join(DATA, 'unlock_schedule.pkl')
+if os.path.exists(_unlock_file) and not os.path.exists(os.path.join(DATA, 'unlock_schedule_versions.json')):
+    _mtime_day = pd.Timestamp.fromtimestamp(os.path.getmtime(_unlock_file)).date()
+    print(f'[unlock] 初始化已发布数据版本 {_mtime_day}: '
+          f'{record_unlock_version(_unlock_file, observed_on=_mtime_day)}')
 for name, _ in REFRESH_PKLS:
     print(f'  {name}: {rng(name)}')
 print(f'  dragon_tiger_history.pkl: {rng("dragon_tiger_history.pkl")}')
@@ -65,9 +74,14 @@ for name, meth in REFRESH_PKLS:
             old = time.time() - 72 * 3600
             os.utime(p, (old, old))
         print(f'--- 刷新 {name} ---')
-        getattr(prov, meth)()
+        result = getattr(prov, meth)()
+        if result is None or len(result) == 0:
+            raise RuntimeError('下载返回空数据，不能视为另类数据刷新成功')
+        if name == 'unlock_schedule.pkl':
+            print(f'[unlock] 记录当日数据版本: {record_unlock_version(p)}')
     except Exception as e:
         print(f'[FAIL] {name}: {str(e)[:200]}')
+        failures.append(name)
 
 print()
 print('=== 刷新后 ===')
@@ -84,8 +98,12 @@ try:
     sys.path.insert(0, '/mnt/d/quant/data')
     from rebuild_dragon_tiger_history import rebuild, write_hist
     hist, ok = rebuild(verbose=True)
-    write_hist(hist, ok, min_ok=3)
+    if not write_hist(hist, ok, min_ok=3):
+        raise RuntimeError('龙虎榜历史未通过旧记录保留检查')
 except Exception as e:
     print(f'[FAIL] history重建: {str(e)[:200]}')
+    failures.append('dragon_tiger_history.pkl')
 
 print('=== 补全完成 ===')
+if failures:
+    raise SystemExit(f'另类数据刷新失败, 拒绝把旧数据当作刷新成功: {failures}')

@@ -59,6 +59,24 @@ class FundamentalRefreshRulesTests(unittest.TestCase):
             with self.subTest(periods=periods), self.assertRaises(ValueError):
                 rules.merge_report_rows(old, pd.DataFrame({'报告期': periods}))
 
+    def test_published_report_revision_detected_but_new_quarter_is_allowed(self):
+        old = pd.DataFrame({'报告期': ['20260331'], '净利润': ['2.0'],
+                            '数据可用日期': ['20260430']})
+        incoming = pd.DataFrame({'报告期': ['20260331', '20260630'],
+                                 '净利润': [2.1, 3.0],
+                                 '数据可用日期': ['20260430', '20260831']})
+        changes = rules.published_report_changes(old, incoming)
+        self.assertEqual(changes, [{'period': '20260331', 'column': '净利润',
+                                    'old': '2.0', 'new': '2.1'}])
+        incoming.loc[0, '净利润'] = 2.0
+        self.assertEqual(rules.published_report_changes(old, incoming), [])
+
+    def test_published_report_revision_fails_on_ambiguous_quarter(self):
+        old = pd.DataFrame({'报告期': ['20260331'], '净利润': ['2.0']})
+        incoming = pd.DataFrame({'报告期': ['20260331', '20260331'], '净利润': [2, 3]})
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            rules.published_report_changes(old, incoming)
+
 
 if __name__ == '__main__':
     unittest.main()

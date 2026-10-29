@@ -52,7 +52,7 @@ def fetch_month(ym, tries=4):
             except Exception:
                 time.sleep(2.0 * (attempt + 1))
         if d is None or not d.get('result'):
-            break
+            raise RuntimeError(f'{ym} page {page}: 龙虎榜接口失败或缺少 result, 不得当作空月份')
         res = d['result']
         for it in res.get('data') or []:
             code = str(it.get('SECURITY_CODE', '')).strip()
@@ -105,22 +105,31 @@ def rebuild(months_start='2024-01', months_end=None, verbose=True):
     return hist, ok
 
 
-def write_hist(hist, ok_months, min_ok=1):
-    """ok_months >= min_ok 才写入 (fail-open: 全失败不动旧文件)"""
+def write_hist(hist, ok_months, min_ok=1, out=OUT):
+    """Only publish if the rebuild retains every previously observed event."""
     if ok_months < min_ok:
         print(f'[SKIP] 成功月份 {ok_months} < {min_ok}, 保留旧文件')
         return False
-    if os.path.exists(OUT):
-        bak = OUT + '.preRebuild_0904'
+    if os.path.exists(out):
+        with open(out, 'rb') as f:
+            previous = pickle.load(f)
+        if not isinstance(previous, dict):
+            raise ValueError('旧龙虎榜历史结构异常; 拒绝覆盖')
+        removed = [(code, str(day)) for code, days in previous.items()
+                   for day in days if day not in hist.get(code, ())]
+        if removed:
+            print(f'[BLOCK] 历史龙虎榜缺失 {len(removed)} 条, 前5条={removed[:5]}; 保留旧文件')
+            return False
+        bak = out + '.preRebuild_0904'
         if not os.path.exists(bak):
-            shutil.copy2(OUT, bak)
+            shutil.copy2(out, bak)
             print(f'备份: {bak}')
     # 2026-10-16: 原子写(tmp + os.replace) — 数据冻结快照层前置
-    _tmp = OUT + '.tmp'
+    _tmp = out + '.tmp'
     with open(_tmp, 'wb') as f:
         pickle.dump(hist, f)
-    os.replace(_tmp, OUT)
-    print(f'写入: {OUT} ({len(hist)} 只)')
+    os.replace(_tmp, out)
+    print(f'写入: {out} ({len(hist)} 只)')
     return True
 
 

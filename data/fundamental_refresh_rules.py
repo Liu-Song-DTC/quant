@@ -55,3 +55,39 @@ def merge_report_rows(old, incoming):
         old = old[~old['报告期'].isin(incoming['报告期'])]
     result = pd.concat([old, incoming], ignore_index=True, sort=False)
     return result.sort_values('报告期', kind='stable').reset_index(drop=True)
+
+
+def published_report_changes(old, incoming, limit=5):
+    """Return examples of revisions to already published report-period rows.
+
+    Compare source values before the daily refresh writes any per-stock CSV.
+    Newly appearing periods are allowed. Existing source columns that the
+    current merge writes must not acquire a revised historical value silently.
+    """
+    if incoming.empty or old.empty:
+        return []
+    if '报告期' not in old or '报告期' not in incoming:
+        raise ValueError('report period missing from existing or incoming financial data')
+    old = old.copy()
+    incoming = incoming.copy()
+    for frame in (old, incoming):
+        periods = frame['报告期'].map(normalize_report_period)
+        if periods.eq('').any() or periods.duplicated().any():
+            raise ValueError('invalid or duplicate financial report period')
+        frame['报告期'] = periods
+    previous = old.set_index('报告期')
+    overlap = incoming[incoming['报告期'].isin(previous.index)].set_index('报告期')
+    columns = [key for key in overlap.columns if key in previous.columns]
+    examples = []
+    for period, row in overlap.iterrows():
+        prior = previous.loc[period]
+        for column in columns:
+            a, b = prior[column], row[column]
+            old_value = '' if pd.isna(a) else str(a)
+            new_value = '' if pd.isna(b) else str(b)
+            if old_value != new_value:
+                examples.append({'period': period, 'column': column,
+                                 'old': old_value[:100], 'new': new_value[:100]})
+                if len(examples) >= limit:
+                    return examples
+    return examples

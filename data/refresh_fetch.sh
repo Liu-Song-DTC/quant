@@ -82,6 +82,13 @@ EOF
 echo "=== 3b/10 退化价格守卫 (负价/零价/NaN/倒挂/负量额/重复日期/丢行) ==="
 $PY -u data/guard_degenerate_prices.py "$BT_NEW" --prod "$SD/backtrader_data" \
     2>&1 | tee -a "$REFRESH_LOG" | tail -20
+echo "=== 3bb/10 QFQ历史行守卫 (旧交易日逐字节不改写) ==="
+# 上游补发/修订可导致旧QFQ漂移；先拒绝换名并保存差异，再单独建立数据版本与配对回测。
+# 新交易日追加正常通过，首建新股票由后续上市名册守卫负责。
+$PY -u data/guard_qfq_history.py --old "$SD/backtrader_data" --new "$BT_NEW" \
+    --preserve-auxiliary \
+    --out "$SD/stock_metadata/qfq_history_guard_$(date +%Y%m%d_%H%M%S).json" \
+    2>&1 | tee -a "$REFRESH_LOG" | tail -15
 # 3c/10 上市名册对账 (P0-a, 2026-10-28): 应有上市代码 - 实际原始文件 - 实际QFQ文件。
 # 换名前 fail-closed: 少一只在册股票 = 股票池静默缩小 => 拒绝换名。
 # 名册由 1 步的下载器落盘 (stock_metadata/listed_codes_<MMDD>.csv)。

@@ -427,6 +427,19 @@ def check_concept_map():
     return ok, f'概念映射: mtime {age.days}天前 (软警告, 阈值14天)'
 
 
+def check_unlock_versions():
+    """Prevent orders if the as-of unlock table diverges from the live table."""
+    try:
+        try:
+            from core.unlock_schedule_versions import verify_current
+        except ModuleNotFoundError:
+            from strategy.core.unlock_schedule_versions import verify_current
+        day = verify_current(ALT_DIR / 'unlock_schedule.pkl')
+        return True, f'解禁日程版本: 已发布表与{day}观测版本一致'
+    except Exception as exc:
+        return False, f'解禁日程版本: {str(exc)[:150]}'
+
+
 def check_events_table():
     """#353: events_table.pkl (表驱动复权的事件表) 注册门禁。
     结构性塌陷(n_events/n_codes 骤减) ⇒ 硬失败 — 全史事件表只增不减,
@@ -489,6 +502,7 @@ def main():
 
     hard = [
         check_kline(exp),
+        check_unlock_versions(),
         check_alt_pkl('margin_daily.pkl', 'date', prev_trading_day(exp)),
         # 北向: 东财源头**本身**滞后一个交易日 (2026-10-19 实测: 北向资金/沪股通/
         # 深股通三个 symbol 在 20:15 查询, max 全部 = 2026-10-16 = 上一交易日;

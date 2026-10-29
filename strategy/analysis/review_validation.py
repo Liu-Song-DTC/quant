@@ -62,6 +62,7 @@ def input_stamp(env=None, root=None):
         'stock_data/raw_data/*/none.csv',
         'stock_data/raw_data/000001/qfq.csv',
         'alternative_data/**/*.pkl', 'alternative_data/**/*.csv',
+        'alternative_data/unlock_schedule_versions.json',
         'stock_data/*.pkl', 'stock_data/*.json',
         'macro/*.csv',
         'stock_concept_map.pkl', 'concept_map_history.pkl',

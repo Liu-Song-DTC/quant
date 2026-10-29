@@ -865,7 +865,7 @@ class PortfolioConstructor:
         return self._plan_codes_cache
 
     def _unlock_codes(self, date):
-        """未来unlock_ahead_days天内有大额解禁的股票集合. fail-open."""
+        """未来unlock_ahead_days天内有大额解禁的股票集合."""
         if not self.exclude_unlock:
             return set()
         if self._unlock_codes_cache_date != str(date)[:10]:
@@ -876,8 +876,7 @@ class PortfolioConstructor:
                 codes = self._alt_provider.get_unlock_codes(
                     date, self.unlock_ahead_days, self.unlock_min_ratio)
             except Exception as e:
-                print(f" [解禁过滤] 数据加载失败, 本期放行: {e}")
-                codes = set()
+                raise RuntimeError(f'解禁数据版本不可读, 拒绝选股: {e}') from e
             self._unlock_codes_cache = codes
             self._unlock_codes_cache_date = str(date)[:10]
             if codes:

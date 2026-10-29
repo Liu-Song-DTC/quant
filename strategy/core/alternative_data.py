@@ -83,6 +83,7 @@ class AlternativeDataProvider:
         self._unlock: pd.DataFrame = None
         self._unlock_idx: set = None
         self._unlock_idx_key = None
+        self._unlock_version_cache = None  # (snapshot path, DataFrame) for as-of lookup
 
         # 业绩预告: 懒加载(超预期事件研究/因子)
         self._yjyg: pd.DataFrame = None
@@ -214,7 +215,7 @@ class AlternativeDataProvider:
                     cutoff = pd.to_datetime(str(query_date)[:10]).date()
                     dates_set = {d for d in dates_set if d <= cutoff}
                 except Exception:
-                    pass
+                    return set()  # Invalid decision date must not expose future events.
             return dates_set
 
         # 回退: 聚合数据 (只存最近上榜日)
@@ -234,13 +235,12 @@ class AlternativeDataProvider:
         if not mask.any():
             return set()
         if query_date is not None:
-            try:
-                dt_series = pd.to_datetime(df[date_col])
-                cutoff = pd.to_datetime(str(query_date)[:10])
-                mask = mask & (dt_series <= cutoff)
-            except Exception:
-                print(f"[AltData] 龙虎榜日期解析失败(get_dragon_tiger_dates), date_col={date_col}")
-        dates = pd.to_datetime(df.loc[mask, date_col]).dt.date
+            dt_series = pd.to_datetime(df[date_col], errors='coerce')
+            cutoff = pd.to_datetime(str(query_date)[:10], errors='coerce')
+            if pd.isna(cutoff):
+                return set()
+            mask = mask & (dt_series <= cutoff)
+        dates = pd.to_datetime(df.loc[mask, date_col], errors='coerce').dropna().dt.date
         return set(dates)
 
     def get_dragon_tiger_signal(self, code: str, date) -> float:
@@ -266,11 +266,9 @@ class AlternativeDataProvider:
                 parsed = self._dt_parsed = (df, None, None, None, None, None, None)
             else:
                 code_strs = df[code_col].astype(str).str.extract(r'(\d{6})', expand=False)
-                try:
-                    dt_arr = pd.to_datetime(df[date_col]).to_numpy()
-                except Exception:
-                    print(f"[AltData] 龙虎榜日期解析失败，date_col={date_col}")
-                    dt_arr = None
+                # One malformed date must not disable the as-of filter for
+                # the entire file; NaT comparisons exclude only bad rows.
+                dt_arr = pd.to_datetime(df[date_col], errors='coerce').to_numpy()
                 buy_col = next((c for c in df.columns if '买入' in str(c)), None)
                 sell_col = next((c for c in df.columns if '卖出' in str(c)), None)
                 parsed = self._dt_parsed = (df, code_col, date_col, code_strs, dt_arr, buy_col, sell_col)
@@ -280,10 +278,10 @@ class AlternativeDataProvider:
 
         code_mask = code_strs.to_numpy() == code[:6]  # NaN → False, 与原Series比较一致
         # 日期过滤：仅使用 <= 查询日期的记录，防止前视偏差
-        if dt_arr is not None:
-            date_mask = dt_arr <= pd.to_datetime(date_str)
-        else:
-            date_mask = np.ones(len(df), dtype=bool)
+        decision_date = pd.to_datetime(date_str, errors='coerce')
+        if pd.isna(decision_date):
+            return 0.0
+        date_mask = dt_arr <= decision_date
         mask = code_mask & date_mask
         recent = df[mask].sort_values(date_col) if date_col and not df[mask].empty else df[mask]
         if recent.empty:
@@ -663,10 +661,19 @@ class AlternativeDataProvider:
 
     def get_unlock_codes(self, date, ahead_days: int = 30, min_ratio: float = 0.05) -> set:
         """date时点'解禁临近'的股票集合: 未来ahead_days天内存在解禁且规模>=min_ratio(占流通市值比例).
-        解禁日程在发行/增发时即确定, 提前数月可知, 前视风险低."""
-        if self._unlock is None:
-            self._unlock = self.load_unlock()
-        df = self._unlock
+        历史查询按已观测数据版本选表；首版以前使用固定代理并注明非严格PIT."""
+        from .unlock_schedule_versions import resolve_asof
+        source = self.data_dir / 'unlock_schedule.pkl'
+        selected = resolve_asof(source, date)
+        if selected == source:
+            if self._unlock is None:
+                self._unlock = self.load_unlock()
+            df = self._unlock
+        else:
+            cache = self._unlock_version_cache
+            if cache is None or cache[0] != selected:
+                cache = self._unlock_version_cache = (selected, pd.read_pickle(selected))
+            df = cache[1]
         if df is None or len(df) == 0:
             return set()
         t = pd.Timestamp(str(date)[:10])
