@@ -1,5 +1,5 @@
 #!/bin/bash
-# 刷新**校验段** (新鲜度门禁 + 9/10 历史格哨兵 + 打新提醒)
+# 刷新**校验段** (新鲜度门禁 + 历史格哨兵)
 # 与取数段分离(2026-10-28): 校验失败 ⇒ 只重跑本段, 不重复下载(取数幂等标记见下载器)。
 # 用法: bash data/refresh_verify.sh
 set -e
@@ -50,8 +50,3 @@ else
 fi
 
 echo "=== 全部新鲜, 可以出单: cd strategy && $PY generate_trade_orders.py ==="
-
-echo "=== 10/10(附加) 打新提醒 (新股/新债今日申购清单→strategy/ipo_today.json, 仅信息块; 失败不阻塞) ==="
-QUANT_ALT_NO_AUTOREFRESH=1 $PY strategy/tools/ipo_reminder.py 2>&1 | tee -a "$REFRESH_LOG" | tail -15 || {
-  echo "!!! 打新提醒获取失败(不影响出单; 手动: $PY strategy/tools/ipo_reminder.py)"
-}

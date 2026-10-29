@@ -11,7 +11,7 @@
 | 脚本 | 内容 |
 |---|---|
 | `data/refresh_fetch.sh` | 步骤 1-8：K线下载 → 事件表 → 表驱动复权重建 → 守卫(1b/3b/3c) → 基本面 → 另类 → 概念 → 转债 |
-| `data/refresh_verify.sh` | 新鲜度门禁 + 9/10 历史格哨兵 + 打新提醒 |
+| `data/refresh_verify.sh` | 新鲜度门禁 + 历史格哨兵（打新提醒不再自动运行） |
 | `data/refresh_all.sh` | **兼容入口** = fetch && verify（对外调用方式不变） |
 | `strategy/run_daily_live.sh` | 第 1 步改为**两次调用**（fetch / verify）⇒ 校验失败可只重跑校验段 |
 
