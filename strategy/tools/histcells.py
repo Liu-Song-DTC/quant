@@ -58,7 +58,8 @@ LAYERS = [
     ('sina_factors', 'data/alternative_data/sina_factors.pkl', 'pkl_df', ['ex_date'], ['code'], 'append'),
     ('dragon_tiger_hist', 'data/alternative_data/dragon_tiger_history.pkl', 'pkl_dict_set', None, None, 'append'),
     ('margin_daily', 'data/alternative_data/margin_daily.pkl', 'pkl_df', ['date'], None, 'append'),
-    ('unlock_schedule', 'data/alternative_data/unlock_schedule.pkl', 'pkl_df', ['unlock_date'], ['code'], 'append'),
+    # 供应商会重述整张日程表；历史回放只读按观测日归档的版本，完整性由 check_unlock_versions 校验。
+    ('unlock_schedule', 'data/alternative_data/unlock_schedule.pkl', 'pkl_df', ['unlock_date'], ['code'], 'restate'),
     ('holdernum', 'data/alternative_data/holdernum_det.pkl',   'pkl_df', ['end_date'], ['code'], 'append'),
     # ── 2026-10-18 补: 此前 4 层**完全不在受检范围**(哨兵盲区) ───────────────
     #   前 3 层是"纯追加"语义的事件流; dragon_tiger 是**滚动 1 年快照**

@@ -37,6 +37,11 @@ class UnlockScheduleVersionsTests(unittest.TestCase):
             self.assertEqual(verify_current(src), '2026-10-29')
             self.assertEqual(provider.get_unlock_codes('2026-10-29'), {'000002'})
             self.assertEqual(provider.get_unlock_codes('2026-10-28'), {'000001'})
+            # A same-day refresh must invalidate the cached decision-day set.
+            write([('000003', '2026-11-01', .10)])
+            self.assertEqual(record_version(src, '2026-10-29'), 'updated_today')
+            self.assertEqual(provider.get_unlock_codes('2026-10-29'), {'000003'})
+            self.assertEqual(provider.get_unlock_codes('2026-10-28'), {'000001'})
 
     def test_missing_snapshot_fails_instead_of_falling_back_to_current(self):
         with tempfile.TemporaryDirectory() as directory:

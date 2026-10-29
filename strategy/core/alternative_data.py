@@ -677,7 +677,7 @@ class AlternativeDataProvider:
         if df is None or len(df) == 0:
             return set()
         t = pd.Timestamp(str(date)[:10])
-        key = (str(date)[:10], ahead_days, min_ratio)
+        key = (str(date)[:10], ahead_days, min_ratio, selected)
         if self._unlock_idx_key != key:
             m = (df['unlock_date'] >= t) & (df['unlock_date'] <= t + pd.Timedelta(days=ahead_days)) \
                 & (df['ratio'] >= min_ratio)
