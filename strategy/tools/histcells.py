@@ -31,6 +31,7 @@ import hashlib
 import os
 import pickle
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -225,7 +226,10 @@ def _scan_all(prev_all=None, verbose=True):
 
 def _load(label):
     p = os.path.join(SNAP_DIR, f'{label}.pkl')
-    return pickle.load(open(p, 'rb')) if os.path.exists(p) else None
+    if not os.path.exists(p):
+        return None
+    with open(p, 'rb') as source:
+        return pickle.load(source)
 
 
 def cmd_snap(args):
@@ -235,16 +239,28 @@ def cmd_snap(args):
     snap, errs = _scan_all(None)
     n_cells = sum(len(f['d'] or {}) for L in snap.values() for f in L['files'].values())
     n_files = sum(len(L['files']) for L in snap.values())
+    if errs:
+        print(f'  ✗ {len(errs)} 个文件读失败; 保留上一份完整基线:')
+        for e in errs[:10]:
+            print(f'    {e}')
+        return 3
     blob = {'label': args.label, 'ts': time.strftime('%Y-%m-%d %H:%M:%S'),
             'layers': snap, 'git': _git_head()}
     p = os.path.join(SNAP_DIR, f'{args.label}.pkl')
-    pickle.dump(blob, open(p, 'wb'), protocol=4)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='wb', prefix='.histcells_', suffix='.tmp',
+                                         dir=SNAP_DIR, delete=False) as output:
+            tmp = output.name
+            pickle.dump(blob, output, protocol=4)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(tmp, p)
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
     print(f'  ✓ {n_files} 文件 / {n_cells:,} 历史格 → {os.path.relpath(p, ROOT)}  '
           f'({time.time()-t0:.0f}s)')
-    if errs:
-        print(f'  ⚠ {len(errs)} 个文件读失败:')
-        for e in errs[:10]:
-            print(f'    {e}')
     return 0
 
 
@@ -255,6 +271,11 @@ def cmd_diff(args):
         return 1
     print(f'[diff {args.label}]  快照于 {old["ts"]} (git {old.get("git", "?")[:8]})')
     new, errs = _scan_all(old['layers'])
+    if errs:
+        print(f'✗ {len(errs)} 个文件读失败; 无法判定历史格完整性:')
+        for e in errs[:10]:
+            print(f'  {e}')
+        return 3
     print()
 
     viol_rew = viol_gone = viol_gonef = 0

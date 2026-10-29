@@ -36,9 +36,14 @@ if [ -n "$_LATEST" ]; then
     touch "$_SNAP_DIR/VIOLATION_$(date +%Y%m%d_%H%M%S)"
     echo "!!! 历史格哨兵: append 层出现改写/消失 (上方分层明细 + 登记台账 .arms/ledger.csv)"
     echo "    处置: 供应商重述→登记台账+照常出单; 本管线bug→停链排查后再出单"
+  elif [ "$_HRC" -ne 0 ]; then
+    echo "!!! 历史格哨兵无法完成扫描(rc=$_HRC)，拒绝滚存基线和出单"
+    exit "$_HRC"
   fi
-  $PY -u strategy/tools/histcells.py snap "roll_$(date +%Y%m%d)" 2>&1 | tee -a "$REFRESH_LOG" | tail -3 \
-    || echo "!!! 哨兵基线滚存失败(不阻塞出单; 检查磁盘/权限, 明日 diff 将对旧基线)"
+  $PY -u strategy/tools/histcells.py snap "roll_$(date +%Y%m%d)" 2>&1 | tee -a "$REFRESH_LOG" | tail -3 || {
+    echo "!!! 哨兵基线滚存失败，保留上一份基线并停止出单"
+    exit 1
+  }
   ls -t $_SNAP_DIR/roll_*.pkl 2>/dev/null | tail -n +3 | xargs -r rm -f
 else
   echo "  [跳过] 无基线快照 (首次基线: $PY strategy/tools/histcells.py snap base_<date>)"
