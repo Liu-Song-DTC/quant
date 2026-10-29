@@ -34,7 +34,7 @@ class HistoryCellSnapshotIntegrityTests(unittest.TestCase):
     def test_failed_diff_is_not_reported_as_clean(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / 'roll_today.pkl'
-            target.write_bytes(pickle.dumps({'ts': 'today', 'layers': {}, 'git': ''}))
+            target.write_bytes(pickle.dumps({'ts': 'today', 'layers': {}, 'git': '', 'cell_hash_version': histcells.CELL_HASH_VERSION}))
             with (patch.object(histcells, 'SNAP_DIR', directory),
                   patch.object(histcells, '_scan_all', return_value=({}, ['bad.pkl: unreadable']))):
                 self.assertEqual(histcells.cmd_diff(argparse.Namespace(label='roll_today')), 3)

@@ -39,6 +39,7 @@ import pandas as pd
 
 ROOT = '/mnt/d/quant'
 SNAP_DIR = os.path.join(ROOT, '.arms', 'histcells')
+CELL_HASH_VERSION = 2  # Sort complete row digests within each date, independent of API row order.
 
 # (层名, 相对路径或 glob, 类型, 日期列候选, 实体列候选, 期望)
 #   期望 'append' = 历史格必须零改写; 'restate' = 已知会重述(仅记录, 不判违规)
@@ -101,14 +102,14 @@ def _dates_from_df(df: pd.DataFrame, date_cands, key_cols):
     d = df.reindex(sorted(df.columns), axis=1).reset_index(drop=True)
     colrepr = repr(list(d.columns)) + repr([str(t) for t in d.dtypes])
 
-    by = [c for c in (key_cols or []) if c in d.columns]
-    if by:
-        keys = [dts] + [d[c].astype(str).values for c in by]
-        order = np.lexsort(tuple(reversed(keys)))
-        d = d.iloc[order]
-        dts = dts[order]
-
-    rh = pd.util.hash_pandas_object(d, index=False).values.tobytes()
+    # A date can contain multiple rows for the same code (several holders, trades,
+    # or announcements). Sorting by date/code leaves their input order unstable:
+    # adding a new row can falsely flag thousands of unchanged historical dates.
+    # Sort complete row hashes instead, preserving duplicate multiplicity.
+    row_hashes = pd.util.hash_pandas_object(d, index=False).to_numpy(dtype=np.uint64)
+    order = np.lexsort((row_hashes, dts))
+    dts = dts[order]
+    rh = row_hashes[order].tobytes()
     w = 8  # uint64 → 8 字节/行
     out, start, n = {}, 0, len(dts)
     for i in range(1, n + 1):
@@ -197,7 +198,7 @@ def _scan_layer(name, pat, kind, date_cands, key_cols, prev=None, verbose=True):
             st = os.stat(p)
         except OSError:
             continue
-        key = (int(st.st_mtime), st.st_size)
+        key = (st.st_mtime_ns, st.st_size)
         cached = (prev or {}).get(rel)
         if cached and cached.get('k') == key and cached.get('err') is None:
             res[rel] = cached
@@ -244,7 +245,8 @@ def cmd_snap(args):
         for e in errs[:10]:
             print(f'    {e}')
         return 3
-    blob = {'label': args.label, 'ts': time.strftime('%Y-%m-%d %H:%M:%S'),
+    blob = {'label': args.label, 'cell_hash_version': CELL_HASH_VERSION,
+            'ts': time.strftime('%Y-%m-%d %H:%M:%S'),
             'layers': snap, 'git': _git_head()}
     p = os.path.join(SNAP_DIR, f'{args.label}.pkl')
     tmp = None
@@ -269,6 +271,10 @@ def cmd_diff(args):
     if old is None:
         print(f'✗ 快照 {args.label} 不存在; 先跑 snap')
         return 1
+    if old.get('cell_hash_version') != CELL_HASH_VERSION:
+        print(f'✗ 快照 {args.label} 使用旧格摘要算法; 请先归档旧快照并建立 v{CELL_HASH_VERSION} 基线，'
+              '不能混用不同算法得出历史改写结论')
+        return 3
     print(f'[diff {args.label}]  快照于 {old["ts"]} (git {old.get("git", "?")[:8]})')
     new, errs = _scan_all(old['layers'])
     if errs:
