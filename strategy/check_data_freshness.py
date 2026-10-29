@@ -114,11 +114,32 @@ def _file_has_bad_close(fpath):
     return False
 
 
-def _load_kline_allowlist() -> set:
+def _load_kline_allowlist(expected=None) -> set:
+    """Accept dated suspension exemptions only through their verified expiry.
+
+    Legacy undated entries remain supported; new suspension entries should use
+    ``until=YYYY-MM-DD`` to force periodic review if the share stays stale.
+    """
     if not os.path.exists(KLINE_ALLOWLIST):
         return set()
+    allowed = set()
     with open(KLINE_ALLOWLIST, encoding='utf-8') as f:
-        return {ln.split()[0] for ln in f if ln.strip() and not ln.strip().startswith('#')}
+        for line in f:
+            parts = line.split()
+            if not parts or parts[0].startswith('#'):
+                continue
+            deadlines = [field[6:] for field in parts[1:] if field.startswith('until=')]
+            if deadlines:
+                if len(deadlines) != 1:
+                    continue
+                try:
+                    deadline = date_type.fromisoformat(deadlines[0])
+                except ValueError:
+                    continue  # malformed expiry must never grant an exception
+                if expected is not None and expected > deadline:
+                    continue
+            allowed.add(parts[0])
+    return allowed
 
 
 def _load_listing_allowlist() -> set:
@@ -188,7 +209,7 @@ def check_kline(exp):
     files = [f for f in os.listdir(BT_DIR) if f.endswith('_qfq.csv')]
     if not files:
         return False, f'K线: {BT_DIR} 无 *_qfq.csv 文件!'
-    allow = _load_kline_allowlist()
+    allow = _load_kline_allowlist(exp)
     stale_hard = []
     bad_bar = []
     neg_close = []
