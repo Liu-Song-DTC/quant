@@ -41,6 +41,27 @@ class SnapshotTests(unittest.TestCase):
         after, _ = review.input_stamp({})
         self.assertNotEqual(before['sha256'], after['sha256'])
 
+    def test_record_date_sidecar_is_frozen_and_detects_revisions(self):
+        sidecar = self.data / 'alternative_data/.ca_record_parts/300953.pkl'
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_bytes(b'old record date')
+        # Unrelated hidden caches should stay outside the sealed data contract.
+        cache = self.data / 'alternative_data/.ca_parts/300953.pkl'
+        cache.parent.mkdir(parents=True)
+        cache.write_bytes(b'provider scratch')
+        before, records = review.input_stamp({})
+        self.assertIn('alternative_data/.ca_record_parts/300953.pkl', records)
+        self.assertNotIn('alternative_data/.ca_parts/300953.pkl', records)
+        target = self.root / 'record_run'
+        target.mkdir()
+        review.freeze_data(target, {})
+        frozen = target / 'data/alternative_data/.ca_record_parts/300953.pkl'
+        self.assertEqual(frozen.read_bytes(), b'old record date')
+        sidecar.write_bytes(b'new record date')
+        after, _ = review.input_stamp({})
+        self.assertNotEqual(before['sha256'], after['sha256'])
+        self.assertEqual(review.verify_snapshot(target)[0]['sha256'], review.content_id(records))
+
     def test_content_rewrite_with_same_stat_is_detected(self):
         before, _ = review.input_stamp({})
         stat = self.price.stat()
@@ -109,10 +130,12 @@ class SnapshotTests(unittest.TestCase):
         target, success = self.run_fixture()
         with patch.dict(os.environ, {}, clear=True), \
                 patch.object(review, 'input_stamp', wraps=review.input_stamp) as scan, \
+                patch.object(review, 'write_execution_audits', return_value={}) as audits, \
                 patch.object(review.subprocess, 'run', return_value=success) as launch:
             review.run(target)
             self.assertEqual(scan.call_count, 2)
             self.assertEqual(launch.call_count, 1)
+            audits.assert_called_once_with(target.resolve(), target.resolve() / 'corrected')
         self.assertTrue(json.loads((target / 'corrected_input_stamp.json').read_text())['unchanged'])
         price = target / 'data/stock_data/backtrader_data/000001_qfq.csv'
         price.chmod(0o644)

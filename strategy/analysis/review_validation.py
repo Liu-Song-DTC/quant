@@ -63,6 +63,9 @@ def input_stamp(env=None, root=None):
         'stock_data/raw_data/*/qfq.csv',
         'stock_data/raw_data/*/hfq.csv',
         'alternative_data/**/*.pkl', 'alternative_data/**/*.csv',
+        # Company-action entitlement sidecars are research inputs for raw-price
+        # replay; freeze their bytes even though their directory is hidden.
+        'alternative_data/.ca_record_parts/*.pkl',
         'alternative_data/**/*.json',
         'stock_data/*.pkl', 'stock_data/*.json',
         'macro/*.csv',
@@ -72,7 +75,11 @@ def input_stamp(env=None, root=None):
     paths = set()
     for pattern in patterns:
         paths.update(p for p in data.glob(pattern)
-                     if not any(part.startswith('.') for part in p.relative_to(data).parts))
+                     if (not any(part.startswith('.') for part in p.relative_to(data).parts)
+                         or (p.relative_to(data).parts[:2] ==
+                             ('alternative_data', '.ca_record_parts')
+                             and len(p.relative_to(data).parts) == 3
+                             and not p.name.startswith('.'))))
     if data_path.is_dir():
         paths.update(p for p in data_path.iterdir()
                      if p.is_file() and p.suffix.lower() == '.csv')
