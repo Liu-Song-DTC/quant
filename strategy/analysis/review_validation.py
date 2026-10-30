@@ -280,6 +280,30 @@ def prepare(name, target_mode=None, workers=None, snapshot_from=None, legacy_con
     return target
 
 
+def write_execution_audits(target, archive):
+    """Run point-of-use price/entitlement checks against a sealed run's outputs."""
+    target, archive = Path(target).resolve(), Path(archive).resolve()
+    audit_tools = {}
+    for script_name, report_name, extra_args in (
+        ('audit_qfq_lot_sizes.py', 'raw_lot_audit.json',
+         ['--raw', str(target / 'data/stock_data/raw_data'),
+          '--qfq', str(target / 'data/stock_data/backtrader_data')]),
+        ('audit_held_corporate_actions.py', 'held_corporate_actions.json',
+         ['--events', str(target / 'data/alternative_data/events_table.pkl')]),
+    ):
+        frozen_script = target / 'strategy/analysis' / script_name
+        tool_path = frozen_script if frozen_script.is_file() else ROOT / 'strategy/analysis' / script_name
+        command = [sys.executable, '-B', str(tool_path), '--results', str(archive),
+                   *extra_args, '--out', str(archive / report_name)]
+        check = subprocess.run(command, capture_output=True, text=True)
+        if check.returncode:
+            raise RuntimeError(f'execution audit {script_name} failed (rc={check.returncode}): '
+                               f'{check.stderr.strip() or check.stdout.strip()}')
+        audit_tools[script_name] = {'source': str(tool_path), 'sha256': _sha256_file(tool_path),
+                                    'report': report_name}
+    return audit_tools
+
+
 def run(target, risk_limits=False):
     target = Path(target).resolve()
     seal = read_snapshot_seal(target)
@@ -344,6 +368,10 @@ def run(target, risk_limits=False):
         p = results / name
         if p.exists():
             shutil.copy2(p, archive / name)
+    # These audits inspect the same sealed input after the backtest has exited;
+    # they do not modify the calculated NAV or any executed fill.
+    manifest['execution_audits'] = write_execution_audits(target, archive)
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     return log
 
 
