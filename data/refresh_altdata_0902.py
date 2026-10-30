@@ -21,6 +21,7 @@ from core.alternative_data import AlternativeDataProvider
 DATA = '/mnt/d/quant/data/alternative_data'
 prov = AlternativeDataProvider(data_dir=DATA, strict_refresh=True)
 from core.unlock_schedule_versions import record_version as record_unlock_version
+from core.alt_data_versions import TABLES, record_snapshot, verify_current
 
 REFRESH_PKLS = [
     ('dragon_tiger.pkl', 'load_dragon_tiger'),
@@ -61,6 +62,14 @@ if os.path.exists(_unlock_file) and not os.path.exists(os.path.join(DATA, 'unloc
     print(f'[unlock] 初始化已发布数据版本 {_mtime_day}: '
           f'{record_unlock_version(_unlock_file, observed_on=_mtime_day)}')
 for name, _ in REFRESH_PKLS:
+    source = os.path.join(DATA, name)
+    if name in TABLES and os.path.exists(source):
+        manifest = os.path.join(DATA, 'alt_versions', name[:-4] + '.json')
+        if os.path.exists(manifest):
+            verify_current(source)  # stale/unversioned writes must stop before download
+        else:
+            print(f'[alt PIT] First recorded observation for {name} is only a prehistory proxy')
+            record_snapshot(source)
     print(f'  {name}: {rng(name)}')
 print(f'  dragon_tiger_history.pkl: {rng("dragon_tiger_history.pkl")}')
 
@@ -79,6 +88,8 @@ for name, meth in REFRESH_PKLS:
             raise RuntimeError('下载返回空数据，不能视为另类数据刷新成功')
         if name == 'unlock_schedule.pkl':
             print(f'[unlock] 记录当日数据版本: {record_unlock_version(p)}')
+        if name in TABLES:
+            print(f'[alt PIT] {name}: {record_snapshot(p)}')
     except Exception as e:
         print(f'[FAIL] {name}: {str(e)[:200]}')
         failures.append(name)
@@ -87,6 +98,15 @@ print()
 print('=== 刷新后 ===')
 for name, _ in REFRESH_PKLS:
     print(f'  {name}: {rng(name)}')
+
+# The historical-detail file has its own producer below.
+_history = os.path.join(DATA, 'dragon_tiger_history.pkl')
+if os.path.exists(_history):
+    _manifest = os.path.join(DATA, 'alt_versions', 'dragon_tiger_history.json')
+    if os.path.exists(_manifest):
+        verify_current(_history)
+    else:
+        record_snapshot(_history)
 
 # === 龙虎榜历史明细 dict 重建 (2024-01 ~ 2026-09) ===
 print()
@@ -100,6 +120,7 @@ try:
     hist, ok = rebuild(verbose=True)
     if not write_hist(hist, ok, min_ok=3):
         raise RuntimeError('龙虎榜历史未通过旧记录保留检查')
+    print(f'[alt PIT] dragon_tiger_history.pkl: {record_snapshot(_history)}')
 except Exception as e:
     print(f'[FAIL] history重建: {str(e)[:200]}')
     failures.append('dragon_tiger_history.pkl')

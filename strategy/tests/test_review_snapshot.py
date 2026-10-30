@@ -28,6 +28,19 @@ class SnapshotTests(unittest.TestCase):
         self.root_patch.start()
         self.addCleanup(self.root_patch.stop)
 
+    def test_alternative_observation_manifest_is_hashed(self):
+        version = self.data / 'alternative_data/alt_versions/reduction_records.json'
+        version.parent.mkdir(parents=True)
+        version.write_text('{"schema":1}')
+        archive = version.with_name('reduction_records_fixture.pkl')
+        archive.write_bytes(b'original')
+        before, records = review.input_stamp({})
+        self.assertIn('alternative_data/alt_versions/reduction_records.json', records)
+        self.assertIn('alternative_data/alt_versions/reduction_records_fixture.pkl', records)
+        version.write_text('{"schema":2}')
+        after, _ = review.input_stamp({})
+        self.assertNotEqual(before['sha256'], after['sha256'])
+
     def test_content_rewrite_with_same_stat_is_detected(self):
         before, _ = review.input_stamp({})
         stat = self.price.stat()

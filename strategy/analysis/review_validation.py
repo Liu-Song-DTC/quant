@@ -63,7 +63,7 @@ def input_stamp(env=None, root=None):
         'stock_data/raw_data/*/qfq.csv',
         'stock_data/raw_data/*/hfq.csv',
         'alternative_data/**/*.pkl', 'alternative_data/**/*.csv',
-        'alternative_data/unlock_schedule_versions.json',
+        'alternative_data/**/*.json',
         'stock_data/*.pkl', 'stock_data/*.json',
         'macro/*.csv',
         'stock_concept_map.pkl', 'concept_map_history.pkl',
@@ -297,7 +297,8 @@ def run(target, risk_limits=False):
     env['QUANT_DATA_PATH'] = str((target / 'data/stock_data/backtrader_data').resolve())
     env['QUANT_LIQ_DATA_DIR'] = env['QUANT_DATA_PATH']
     env['QUANT_QFEAT_DATA_DIR'] = env['QUANT_DATA_PATH']
-    env.update(PYTHONDONTWRITEBYTECODE='1', QUANT_ALT_NO_AUTOREFRESH='1')
+    env.update(PYTHONDONTWRITEBYTECODE='1', QUANT_ALT_NO_AUTOREFRESH='1',
+               QUANT_ALT_VERSIONS_REQUIRED='1')
     if risk_limits:
         env['QUANT_ACCOUNT_LIMITS'] = '1'
     else:

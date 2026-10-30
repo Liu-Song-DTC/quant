@@ -1593,8 +1593,11 @@ class SignalEngine:
                 for i in range(60, n):
                     # B批修复(B1): 另类数据lag1 — 北向/两融D日值收盘后/次晨才公布, D日信号只可用D-1
                     prev_date = (pd.to_datetime(dates[i]) - pd.Timedelta(days=1)).date()
-                    nb = self._alt_data.get_northbound_signal(prev_date)
-                    mg = self._alt_data.get_margin_signal(prev_date)
+                    # Values are cut at D-1, but the snapshot can be observed on
+                    # decision day D (the vendor often publishes D-1 on D).
+                    observed_by = pd.to_datetime(dates[i]).date()
+                    nb = self._alt_data.get_northbound_signal(prev_date, observed_by=observed_by)
+                    mg = self._alt_data.get_margin_signal(prev_date, observed_by=observed_by)
                     alt_market[i] = ((nb * 0.6 + mg * 0.4)
                                      * self.market_alt_adjustment_weight)
                 # NaN 兜底：replace NaN with 0 before adding to adjusted_score
@@ -1610,7 +1613,9 @@ class SignalEngine:
                 dt_signal = np.zeros(n)
                 if code and self.dragon_tiger_enabled:
                     for i in range(60, n):
-                        dt_sig = self._alt_data.get_dragon_tiger_signal(code, (pd.to_datetime(dates[i]) - pd.Timedelta(days=1)).date())
+                        dt_sig = self._alt_data.get_dragon_tiger_signal(
+                            code, (pd.to_datetime(dates[i]) - pd.Timedelta(days=1)).date(),
+                            observed_by=pd.to_datetime(dates[i]).date())
                         if abs(dt_sig) > 0.01:
                             dt_signal[i] = dt_sig
                             adjusted_score[i] += dt_sig * 0.30

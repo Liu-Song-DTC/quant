@@ -78,6 +78,9 @@ class AlternativeDataProvider:
         # 龙虎榜预解析缓存: (df, code_col, date_col, code_strs, dt_arr, buy_col, sell_col)
         # 原实现每次调用都对全表 astype+extract+to_datetime, 均为df的纯函数, 一次性缓存等价
         self._dt_parsed = None
+        # One immutable table per observed version; reuse across repeated stock/date calls.
+        self._asof_tables = {}
+        self._asof_paths = {}
 
         # 股东减持: 懒加载; _reduction_idx_*为get_reduction_codes的按日缓存
         self._reduction: pd.DataFrame = None
@@ -103,6 +106,34 @@ class AlternativeDataProvider:
         self._plan_codes_cache: dict = {}
 
     # ========== 龙虎榜 ==========
+
+    def _asof_table(self, filename, date, current, *, prehistory_proxy=True):
+        """Use the supplier snapshot known on the decision date, not today's cache.
+
+        Older research fixtures without manifests remain readable unless the
+        production/research entrypoint explicitly requires observed versions.
+        """
+        from .alt_data_versions import resolve_asof
+        source = self.data_dir / filename
+        manifest = self.data_dir / 'alt_versions' / (source.stem + '.json')
+        if not manifest.exists():
+            canonical = Path(__file__).resolve().parents[2] / 'data' / 'alternative_data'
+            production_or_research = (self.data_dir.resolve() == canonical.resolve()
+                                      or '.review_runs' in self.data_dir.parts)
+            if production_or_research or os.environ.get('QUANT_ALT_VERSIONS_REQUIRED') == '1':
+                raise FileNotFoundError(f'point-in-time alternative data version missing: {manifest}')
+            return current
+        day = str(date)[:10]
+        key = (filename, day, prehistory_proxy)
+        if key not in self._asof_paths:
+            self._asof_paths[key] = resolve_asof(
+                source, day, prehistory_proxy=prehistory_proxy)
+        selected = self._asof_paths[key]
+        if selected is None:
+            return None
+        if selected not in self._asof_tables:
+            self._asof_tables[selected] = pd.read_pickle(selected)
+        return self._asof_tables[selected]
 
     def load_dragon_tiger(self) -> pd.DataFrame:
         """加载龙虎榜数据缓存。若无缓存则尝试下载。
@@ -213,11 +244,15 @@ class AlternativeDataProvider:
 
         优先使用历史明细缓存(dragon_tiger_history.pkl), 回退到聚合数据。
         """
+        if query_date is not None and pd.isna(pd.to_datetime(str(query_date)[:10], errors='coerce')):
+            return set()
         self._ensure_dragon_tiger_history()
 
         if self._dt_history is not None:
+            history = (self._asof_table('dragon_tiger_history.pkl', query_date, self._dt_history)
+                       if query_date is not None else self._dt_history)
             code_key = str(code)[:6].zfill(6) if len(str(code)) >= 6 else str(code).zfill(6)
-            dates_set = self._dt_history.get(code_key, set())
+            dates_set = history.get(code_key, set())
             if query_date is not None:
                 try:
                     cutoff = pd.to_datetime(str(query_date)[:10]).date()
@@ -251,7 +286,7 @@ class AlternativeDataProvider:
         dates = pd.to_datetime(df.loc[mask, date_col], errors='coerce').dropna().dt.date
         return set(dates)
 
-    def get_dragon_tiger_signal(self, code: str, date) -> float:
+    def get_dragon_tiger_signal(self, code: str, date, *, observed_by=None) -> float:
         """获取个股龙虎榜信号 [-1, 1]。
 
         正值=机构净买入(利好)，负值=游资出货(利空)。
@@ -262,7 +297,15 @@ class AlternativeDataProvider:
             return 0.0
 
         date_str = str(date)[:10]
-        df = self._dragon_tiger
+        if pd.isna(pd.to_datetime(date_str, errors='coerce')):
+            return 0.0
+        # Aggregate "last year" statistics include future observations relative
+        # to dates before this file was downloaded. Never use the first snapshot
+        # as a historical proxy for this factor.
+        df = self._asof_table('dragon_tiger.pkl', observed_by or date, self._dragon_tiger,
+                              prehistory_proxy=False)
+        if df is None:
+            return 0.0
 
         # 预解析 (2026-09-01性能优化): 代码提取/日期解析/买卖列名均为df的纯函数,
         # 一次性缓存; 每次调用仅剩 numpy mask + 小子集 sort_values (与原实现逐位等价)
@@ -341,7 +384,7 @@ class AlternativeDataProvider:
             print(f"[AltData] 北向资金下载失败: {e}")
             return pd.DataFrame()
 
-    def get_northbound_signal(self, date) -> float:
+    def get_northbound_signal(self, date, *, observed_by=None) -> float:
         """获取北向资金市场级信号 [-1, 1]。
 
         正值=外资持续流入(利好市场)，负值=外资流出(利空)。
@@ -356,13 +399,14 @@ class AlternativeDataProvider:
         if self._northbound is None or len(self._northbound) == 0:
             return 0.0
 
-        df = self._northbound
         date_str = str(date)[:10]
+        df = self._asof_table('northbound_daily.pkl', observed_by or date, self._northbound)
         # 逐日memo (2026-09-01性能优化): 信号是date的纯函数, 每股逐bar重复计算
-        if date_str in self._nb_sig_cache:
-            return self._nb_sig_cache[date_str]
+        key = (date_str, str(observed_by or date)[:10])
+        if key in self._nb_sig_cache:
+            return self._nb_sig_cache[key]
         result = self._nb_signal_impl(df, date_str)
-        self._nb_sig_cache[date_str] = result
+        self._nb_sig_cache[key] = result
         return result
 
     def _nb_signal_impl(self, df, date_str) -> float:
@@ -465,7 +509,7 @@ class AlternativeDataProvider:
             print(f"[AltData] 融资融券下载失败: {e}")
             return pd.DataFrame()
 
-    def get_margin_signal(self, date) -> float:
+    def get_margin_signal(self, date, *, observed_by=None) -> float:
         """获取融资融券市场级信号 [-1, 1]。
 
         正值=融资余额上升(散户看多)，但极度看多=反向信号。
@@ -476,13 +520,14 @@ class AlternativeDataProvider:
         if self._margin is None or len(self._margin) == 0:
             return 0.0
 
-        df = self._margin
         date_str = str(date)[:10]
+        df = self._asof_table('margin_daily.pkl', observed_by or date, self._margin)
         # 逐日memo (2026-09-01性能优化): 信号是date的纯函数, 每股逐bar重复计算
-        if date_str in self._mg_sig_cache:
-            return self._mg_sig_cache[date_str]
+        key = (date_str, str(observed_by or date)[:10])
+        if key in self._mg_sig_cache:
+            return self._mg_sig_cache[key]
         result = self._mg_signal_impl(df, date_str)
-        self._mg_sig_cache[date_str] = result
+        self._mg_sig_cache[key] = result
         return result
 
     def _mg_signal_impl(self, df, date_str) -> float:
@@ -607,7 +652,7 @@ class AlternativeDataProvider:
           2) date落在[变动开始日, 变动截止日]窗口内(多批次减持进行中)"""
         if self._reduction is None:
             self._reduction = self.load_reduction()
-        df = self._reduction
+        df = self._asof_table('reduction_records.pkl', date, self._reduction)
         if df is None or len(df) == 0:
             return set()
         t = pd.Timestamp(str(date)[:10])
@@ -941,7 +986,8 @@ class AlternativeDataProvider:
         d = str(date)[:10]
         if d in self._plan_codes_cache:
             return self._plan_codes_cache[d]
-        df = self.load_reduction_plans()
+        current = self.load_reduction_plans()
+        df = self._asof_table('reduction_plans.pkl', date, current)
         codes = set()
         if len(df):
             ev = df[df['kind'].isin(['start', 'end']) & (df['ann_date'] <= d)]

@@ -20,6 +20,9 @@ $PY strategy/check_data_freshness.py || {
   exit 1
 }
 
+echo "=== 另类数据观测版本校验 (历史快照不被更新覆盖) ==="
+$PY -B data/verify_alt_observations.py
+
 echo "=== 9/10 历史格哨兵 (append层零改写验证, #344 常驻化 2026-10-23) ==="
 # 刷新后立即 diff 最近快照: append 层任何历史格改写/消失 ⇒ rc=2 大声报警+旗标落盘。
 # 不拦链: 供应商重述属数据现实(需登记台账), 本管线bug由 navlaw 真闸在出单前拦 NAV 级。
