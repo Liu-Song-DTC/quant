@@ -28,6 +28,7 @@ def audit(data_dir: Path, codes=None):
     largest_rounding_errors = []
     recent_deltas = []
     missing_raw_ids = []
+    shifted_event_examples = []
     largest_non_event_errors = []
     largest_non_event_rounding_errors = []
     largest_non_event_errors_since_2021 = []
@@ -74,6 +75,12 @@ def audit(data_dir: Path, codes=None):
             if ix == 0:
                 counts['event_on_or_before_first_bar'] += 1
                 continue
+            if dates[ix] != np.datetime64(action.ex_date):
+                counts['event_shifted_to_next_raw_bar'] += 1
+                if len(shifted_event_examples) < 40:
+                    shifted_event_examples.append({'code': code,
+                        'ex_date': str(action.ex_date.date()),
+                        'mapped_bar': str(frame.date.iat[ix].date())})
             previous_shares, previous_cash, previous_mult = mapped.get(ix, (0.0, 0.0, None))
             shares = float(action.s) if np.isfinite(action.s) else 0.0
             cash = float(action.D) if np.isfinite(action.D) else 0.0
@@ -166,7 +173,7 @@ def audit(data_dir: Path, codes=None):
                 counts['out_of_rounding_bound'] += 1
                 max_over_bound = max(max_over_bound, delta / rounding_bound)
                 exceptions.append({'code': code, 'date': str(frame.date.iat[ix].date()), 'reason': 'event_return_mismatch', 'expected': expected, 'observed': observed, 'error': delta, 'rounding_bound': rounding_bound, 's': shares, 'D': cash, 'mult': mult})
-    result = {'counts': dict(counts), 'delta_quantiles': {str(q): float(np.quantile(deltas, q)) for q in (.5, .9, .95, .99, 1.)} if deltas else {}, 'missing_raw_codes': missing_raw_ids, 'non_event_max_error_since_2021': non_event_max_since_2021, 'non_event_mismatch_examples': largest_non_event_errors, 'largest_non_event_rounding_errors': sorted(largest_non_event_rounding_errors, key=lambda row: row['error'], reverse=True)[:25], 'largest_non_event_errors_since_2021': sorted(largest_non_event_errors_since_2021, key=lambda row: row['error'], reverse=True)[:25], 'recent_delta_quantiles': {str(q): float(np.quantile(recent_deltas, q)) for q in (.5, .9, .95, .99, 1.)} if recent_deltas else {}, 'max_error_over_rounding_bound': max_over_bound, 'largest_rounding_errors': sorted(largest_rounding_errors, key=lambda row: row['error'], reverse=True)[:25], 'exception_count': len(exceptions), 'exceptions': exceptions[:200]}
+    result = {'counts': dict(counts), 'delta_quantiles': {str(q): float(np.quantile(deltas, q)) for q in (.5, .9, .95, .99, 1.)} if deltas else {}, 'missing_raw_codes': missing_raw_ids, 'shifted_event_examples': shifted_event_examples, 'non_event_max_error_since_2021': non_event_max_since_2021, 'non_event_mismatch_examples': largest_non_event_errors, 'largest_non_event_rounding_errors': sorted(largest_non_event_rounding_errors, key=lambda row: row['error'], reverse=True)[:25], 'largest_non_event_errors_since_2021': sorted(largest_non_event_errors_since_2021, key=lambda row: row['error'], reverse=True)[:25], 'recent_delta_quantiles': {str(q): float(np.quantile(recent_deltas, q)) for q in (.5, .9, .95, .99, 1.)} if recent_deltas else {}, 'max_error_over_rounding_bound': max_over_bound, 'largest_rounding_errors': sorted(largest_rounding_errors, key=lambda row: row['error'], reverse=True)[:25], 'exception_count': len(exceptions), 'exceptions': exceptions[:200]}
     return result
 
 

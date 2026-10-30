@@ -25,6 +25,27 @@ class QFQEventAuditTests(unittest.TestCase):
                           'close': [10., 10.20]}).to_csv(bt / '000001_qfq.csv', index=False)
             self.assertEqual(audit(data)['counts'].get('out_of_rounding_bound', 0), 0)
 
+    def test_reports_event_without_exact_raw_bar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            raw = data / 'stock_data/raw_data/000001'
+            bt = data / 'stock_data/backtrader_data'
+            actions = data / 'alternative_data'
+            for path in (raw, bt, actions):
+                path.mkdir(parents=True)
+            pd.DataFrame({'code': ['000001'], 'ex_date': ['2025-01-04'],
+                          's': [1.], 'D': [.2]}).to_pickle(actions / 'events_table.pkl')
+            pd.DataFrame({'日期': ['2025-01-03', '2025-01-06'],
+                          '收盘': [10., 5.]}).to_csv(raw / 'none.csv', index=False)
+            pd.DataFrame({'datetime': ['2025-01-03', '2025-01-06'],
+                          'close': [10., 10.20]}).to_csv(bt / '000001_qfq.csv', index=False)
+            result = audit(data)
+            self.assertEqual(result['counts']['event_shifted_to_next_raw_bar'], 1)
+            self.assertEqual(result['shifted_event_examples'][0],
+                             {'code': '000001', 'ex_date': '2025-01-04',
+                              'mapped_bar': '2025-01-06'})
+            self.assertEqual(result['exception_count'], 0)
+
     def test_detects_bad_adjustment_but_accepts_correct_split_and_dividend(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
