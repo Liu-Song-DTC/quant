@@ -23,8 +23,8 @@ QFQ 成交反馈，需在两臂中按各自真实模拟净值重新计算，不�
 这些侧车，旧 run 不可追溯地套用后刷新的侧车来声称 PIT。
 
 既有 `docs/action_terms_issuer_verified_20261029.csv` 通过
-`audit_issuer_settlement_terms.py` 核验发行人公告 **3/21**（其中
-2 次送转）；另 **18 次**只具备供应商条款，仍须逐一查实施公告并
+`audit_issuer_settlement_terms.py` 核验发行人公告 **4/21**（其中
+2 次送转）；另 **17 次**只具备供应商条款，仍须逐一查实施公告并
 封存登记、除权、红利发放、新股可交易日期和差异化分配条款。
 对应的审计说明在 `docs/action_record_date_sidecar_20261029.md`。
 缺任何关键字段的持仓事件都不得静默假设当天到账。
@@ -37,3 +37,27 @@ QFQ 成交反馈，需在两臂中按各自真实模拟净值重新计算，不�
 的关系；再上全池同信号的成本净值成对实验，输出逐日权益、买卖差异、
 真实整手不可成交次数、1/3/5 日胜率、2026 年回撤和完整年度指标。
 税费及同日到账无法证实前不得用该分支声称“实盘收益已经证明提高”。
+
+## 发行人权益记账只读探针（2026-10-30）
+
+`probe_issuer_entitlements.py` 先与 2026-10-29 封存持仓事件做公告条款对照，
+然后**仅假定登记日收盘真实持有 100 股裸价股票**，分别算送转股和应收股息：
+300580 得 50 股、40 元；300953 得 40 股、30 元；603444 得 700 元；
+600858 得 2 元。输出在
+`.review_runs/data_post_refresh_20261029/issuer_entitlement_probe_100shares_20261030.csv`。
+`cash_available_before_open` 与 `cash_dividend_tax` 明确为 `UNKNOWN`，
+不把公告的现金发放日期等同于开盘可用现金；不足整数股的新股权益直接
+报错，等待发行人和券商的零碎股处理规则。100 股只是算术测试，不是
+2026-10-29 封存回测的历史真实仓位；当时 QFQ 股数不能转换为实际持股。
+
+```bash
+.venv/bin/python -B strategy/analysis/probe_issuer_entitlements.py \
+  --held .review_runs/data_post_refresh_20261029/action_record_coverage_current_sidecars.csv \
+  --issuer docs/action_terms_issuer_verified_20261029.csv \
+  --shares-on-record 100 \
+  --out .review_runs/data_post_refresh_20261029/issuer_entitlement_probe_100shares_20261030.csv
+```
+
+其余 17 次持仓事件和 300416 的送转公告尚需独立校核。真实裸价实验下一步
+必须重放全量逐日买卖，计算每个登记日收盘裸股数，按券商实际结算可用时点
+和税费记账，再成对比较两臂净值；目前没有得出修正后的收益结论。

@@ -1,0 +1,5 @@
+code,ex_date,record_date,shareholder_bonus,shareholder_cash,cash_payment_date,bonus_trading_date,source_url
+300580,2023-06-21,2023-06-20,0.5,0.4,2023-06-21,2023-06-21,https://static.cninfo.com.cn/finalpage/2023-06-14/1217053542.PDF
+603444,2026-05-21,2026-05-20,0,7.0,2026-05-21,,https://dataclouds.cninfo.com.cn/shgonggao/hsomarket/2026/20260513/4c79a3df94f64cef90ff8ffeb1741db7.PDF
+300953,2026-05-28,2026-05-27,0.4,0.3,2026-05-28,2026-05-28,https://disc.static.szse.cn/download/disc/disk03/finalpage/2026-05-20/09250f51-0f0e-40fb-a2a8-565be42f46ba.PDF
+600858,2026-05-19,2026-05-18,0,0.02,2026-05-19,,https://static.cninfo.com.cn/finalpage/2026-05-12/1225292524.PDF
