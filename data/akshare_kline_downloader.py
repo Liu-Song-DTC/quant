@@ -10,7 +10,7 @@
    → raw_data/{code}/{none,qfq,hfq}.csv + fq_factors.csv (tmp+os.replace 原子写)
 bt文件重建 = convert_raw_to_backtrader.py (本脚本不管)
 """
-import os, sys, time, random, socket, json, threading, hashlib
+import os, sys, time, random, socket, json, threading, hashlib, shutil
 import warnings
 warnings.filterwarnings('ignore')
 socket.setdefaulttimeout(30)
@@ -99,6 +99,30 @@ def atomic_write(df, path):
     df.to_csv(tmp, index=False, encoding='utf-8')
     os.replace(tmp, path)
 
+def atomic_append_csv(path, rows):
+    """Add unseen dates without reserializing previously published CSV rows."""
+    if rows.empty:
+        return
+    with open(path, 'rb') as source:
+        columns = pd.read_csv(source, nrows=0).columns.tolist()
+    if set(columns) != set(rows.columns):
+        raise ValueError(f'{path}: columns changed while appending raw bars')
+    suffix = rows.reindex(columns=columns).to_csv(index=False, header=False).encode('utf-8')
+    tmp = path + '.tmp'
+    try:
+        with open(path, 'rb') as source, open(tmp, 'wb') as target:
+            shutil.copyfileobj(source, target)
+            if source.tell() > 0:
+                source.seek(-1, os.SEEK_END)
+                if source.read(1) != b'\n':
+                    target.write(b'\n')
+            target.write(suffix)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 def coerce_dates(df):
     """EM返回的日期可能是str; 统一datetime64便于merge/去重"""
     df = df.copy()
@@ -165,7 +189,7 @@ def compute_fq_factors(code, none_df, qfq_df, hfq_df):
                         'qfq_factor': m['qfq_factor'], 'hfq_factor': m['hfq_factor']})
     return out
 
-def full_download(code, beg, end, old_raw_dir=None):
+def full_download(code, beg, end, old_raw_dir=None, preserve_unadjusted_history=False):
     """全量: none/qfq/hfq + fq_factors 原子写. 返回(qfq_df, 状态full/recycled/short_ipo)"""
     out = {}
     for t, fqt in FQ_TYPES.items():
@@ -198,39 +222,88 @@ def full_download(code, beg, end, old_raw_dir=None):
             status = 'short_ipo'  # 新上市码: 短历史合法
     else:
         status = 'full'
+    if preserve_unadjusted_history:
+        none_path = os.path.join(RAW, code, 'none.csv')
+        if os.path.exists(none_path):
+            previous = pd.read_csv(none_path, parse_dates=['日期'],
+                                   dtype={'股票代码': 'string'})
+            unseen = out['none'].loc[out['none']['日期'] > previous['日期'].max()].copy()
+            if '股票代码' in unseen.columns:
+                unseen['股票代码'] = code
+            out['none'] = pd.concat([previous, unseen], ignore_index=True).sort_values('日期')
     for t, df in out.items():
-        atomic_write(df, os.path.join(RAW, code, f'{t}.csv'))
+        path = os.path.join(RAW, code, f'{t}.csv')
+        if t == 'none' and preserve_unadjusted_history and os.path.exists(path):
+            atomic_append_csv(path, unseen)
+        else:
+            atomic_write(df, path)
     fq = compute_fq_factors(code, out['none'], out['qfq'], out['hfq'])
     atomic_write(fq, os.path.join(RAW, code, 'fq_factors.csv'))
     return out['qfq'], status
 
 def incremental(code, end_ymd):
-    """每日增量: 尾部追加; EM侧重叠复权变化>0.01 → 全量重载"""
+    """Append unseen sessions while preserving previously observed raw rows.
+
+    Fetching a short overlap is useful for detecting a supplier QFQ reanchor,
+    but keeping the supplier's last copy of every overlap day silently rewrites
+    raw_none (amount/turnover) and strips leading zeros via read_csv inference.
+    """
     raw_dir = os.path.join(RAW, code)
     qfq_path = os.path.join(raw_dir, 'qfq.csv')
     tail = read_tail_date(qfq_path)
     if tail is None:
-        _, st = full_download(code, BEG, end_ymd)  # 新上市码: 全量
+        _, st = full_download(code, BEG, end_ymd)  # New listing, first complete load.
         return st if st != 'full' else 'new'
     if tail >= pd.to_datetime(end_ymd).date():
         return 'skip'
     beg_ov = (pd.to_datetime(tail) - pd.Timedelta(days=12)).strftime('%Y%m%d')
     new_q = coerce_dates(fetch_with_retry(code, beg_ov, end_ymd, 1))
-    old_q = pd.read_csv(qfq_path, parse_dates=['日期'])
+    old_q = pd.read_csv(qfq_path, parse_dates=['日期'], dtype={'股票代码': 'string'})
     ov_new = new_q[new_q['日期'] <= pd.to_datetime(tail)]
     ov = old_q.merge(ov_new, on='日期', suffixes=('_o', '_n'))
     if len(ov) >= 3:
         diff = (ov['收盘_n'] - ov['收盘_o']).abs().max()
         if diff > 0.01:
-            full_download(code, BEG, end_ymd)
+            full_download(code, BEG, end_ymd, preserve_unadjusted_history=True)
             return 'fq_reload'
-    # 尾部追加 none/qfq/hfq (去重)
+
+    # Download all three sources before writing any file. A partial provider
+    # failure must leave the previous snapshot intact, including fq_factors.
+    updates = {}
+    increments = {}
     for t, fqt in FQ_TYPES.items():
-        df = coerce_dates(fetch_with_retry(code, beg_ov, end_ymd, fqt))
-        old = pd.read_csv(os.path.join(raw_dir, f'{t}.csv'), parse_dates=['日期'])
-        both = pd.concat([old, df], ignore_index=True)
-        both = both.drop_duplicates(subset=['日期'], keep='last').sort_values('日期')
-        atomic_write(both, os.path.join(raw_dir, f'{t}.csv'))
+        fetched = new_q if t == 'qfq' else coerce_dates(fetch_with_retry(code, beg_ov, end_ymd, fqt))
+        old = old_q if t == 'qfq' else pd.read_csv(
+            os.path.join(raw_dir, f'{t}.csv'), parse_dates=['日期'],
+            dtype={'股票代码': 'string'})
+        newer = fetched.loc[fetched['日期'] > old['日期'].max()].copy()
+        if '股票代码' in newer.columns:
+            newer['股票代码'] = code
+        combined = pd.concat([old, newer], ignore_index=True)
+        updates[t] = combined.sort_values('日期')
+        increments[t] = newer
+    latest = {t: pd.to_datetime(frame['日期']).max() for t, frame in updates.items()}
+    if len(set(latest.values())) != 1:
+        raise RuntimeError(f'{code}: raw none/qfq/hfq latest dates disagree: {latest}')
+
+    # The diagnostic factor CSV has a separate reader in legacy code. Backfill
+    # its missing trailing dates once, then append just new dates each refresh.
+    factor_path = os.path.join(raw_dir, 'fq_factors.csv')
+    if os.path.exists(factor_path):
+        old_factors = pd.read_csv(factor_path, parse_dates=['日期'], dtype={'symbol': 'string'})
+        known = old_factors['日期'].max() if len(old_factors) else pd.Timestamp.min
+        dates = {t: frame.loc[frame['日期'] > known] for t, frame in updates.items()}
+        fresh_factors = compute_fq_factors(code, dates['none'], dates['qfq'], dates['hfq'])
+        factors = pd.concat([old_factors, fresh_factors], ignore_index=True)
+    else:
+        factors = compute_fq_factors(code, updates['none'], updates['qfq'], updates['hfq'])
+    for t, newer in increments.items():
+        # Keep exact old bytes (float precision, names and padded codes).
+        atomic_append_csv(os.path.join(raw_dir, f'{t}.csv'), newer)
+    if os.path.exists(factor_path):
+        atomic_append_csv(factor_path, fresh_factors)
+    else:
+        atomic_write(factors, factor_path)
     return 'incr'
 
 def overlap_report(code, new_qfq):
