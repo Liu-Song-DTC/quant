@@ -2273,6 +2273,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     tradable = (~np.isnan(close_px)) & (_raw_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
     execution_available = np.isfinite(open_px) & (open_px > 0)
     if raw_execution_arm:
+        # A QFQ bar without a matching raw bar cannot enter a raw-price
+        # selection universe. Otherwise its stale QFQ/VWAP fallback can take
+        # portfolio capacity even though no raw-price fill is possible.
+        tradable &= np.isfinite(raw_close_m) & (raw_close_m > 0)
         # The rest of the order loop consumes these price arrays. Keep the
         # adjusted originals for gap checks across ex-rights dates: comparing
         # raw ex-open with raw pre-ex-close would fabricate a limit-down gap.
@@ -2394,6 +2398,14 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     raise RuntimeError(f'raw execution requires issuer settlement terms before '
                                        f'processing held corporate action: {_code}/{date}')
             held = positions > 0
+            # A traded QFQ session with no raw close is a data gap, not a
+            # suspension. Marking a position with yesterday's close here
+            # would silently suppress its actual daily gain or loss.
+            bad_active_close = held & (volume_m[i] > 0) & ~np.isfinite(raw_close_m[i])
+            if bad_active_close.any():
+                _j = int(np.flatnonzero(bad_active_close)[0])
+                raise RuntimeError(f'raw execution missing active-session close for held '
+                                   f'{stock_codes[_j]}/{date}')
             if (held & ~np.isfinite(px_today)).any():
                 _j = int(np.flatnonzero(held & ~np.isfinite(px_today))[0])
                 raise RuntimeError(f'raw execution has no valuation close for held '

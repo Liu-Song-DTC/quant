@@ -660,7 +660,8 @@ class CausalityTests(unittest.TestCase):
 
 class ExecutionTests(unittest.TestCase):
     def replay(self, closes, volumes=None, goals=None, *, raw_opens=None,
-               raw_closes=None, raw_arm=False, action_day=None):
+               raw_closes=None, raw_arm=False, action_day=None,
+               missing_raw_day=None):
         # Execute the real engine function with fixture data, isolated output paths
         # and a tiny strategy whose decisions are known in advance.
         src = Path(__file__).resolve().parents[1] / 'bt_execution.py'
@@ -684,7 +685,7 @@ class ExecutionTests(unittest.TestCase):
             pd.DataFrame({'股票代码': ['600000'] * len(dates), '日期': dates,
                           '开盘': raw_opens, '最高': np.maximum(raw_opens, raw_closes),
                           '最低': np.minimum(raw_opens, raw_closes),
-                          '收盘': raw_closes}).to_csv(raw / 'none.csv', index=False)
+                          '收盘': raw_closes}).drop(index=[missing_raw_day] if missing_raw_day is not None else []).to_csv(raw / 'none.csv', index=False)
             event_folder = root / 'data/alternative_data'; event_folder.mkdir(parents=True)
             events = pd.DataFrame({'code': ['600000'] if action_day is not None else [],
                                    'ex_date': [dates[action_day]] if action_day is not None else []})
@@ -720,6 +721,15 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(buys), 1)
         self.assertEqual(buys[0]['shares'], 700)
         self.assertEqual(result['fill_stats']['gap_buy_penalized'], 0)
+
+    def test_raw_arm_does_not_admit_stock_without_raw_close(self):
+        result, seen = self.replay([10.] * 10, raw_arm=True, missing_raw_day=6)
+        self.assertNotIn('600000', seen[6]['universe'])
+        self.assertFalse([f for f in result['execution_fills'] if f['side'] == 'BUY'])
+
+    def test_raw_arm_stops_on_missing_active_close_for_held_stock(self):
+        with self.assertRaisesRegex(RuntimeError, 'missing active-session close'):
+            self.replay([10.] * 10, raw_arm=True, missing_raw_day=7)
 
     def test_raw_arm_stops_before_unverified_held_action(self):
         with self.assertRaisesRegex(RuntimeError, 'requires issuer settlement terms'):
