@@ -2067,6 +2067,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     """向量化回测 — 替换 backtrader 逐 bar 循环。策略逻辑完全不变。"""
     import numpy as np
     from tqdm import tqdm
+    # Execution-only research arm: QFQ is still used for signals and
+    # ex-rights-aware limit/gap checks. Unverified held actions abort below.
+    raw_execution_arm = os.environ.get('QUANT_RAW_EXECUTION') == '1'
 
     # 1. 构建价格矩阵
     stock_codes = sorted([f.replace('_qfq.csv', '') for f in os.listdir(DATA_PATH)
@@ -2092,6 +2095,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     volume_m = np.zeros_like(close_px)
     amount_m = np.zeros_like(close_px)  # 真实成交额(元) — 文件自带列, 宇宙闸用(2026-10-17)
     raw_close_m = np.full_like(close_px, np.nan)  # #348: none.csv 真实收盘, 2元闸用
+    if raw_execution_arm:
+        raw_open_m = np.full_like(close_px, np.nan)
+        raw_low_m = np.full_like(close_px, np.nan)
     tradable = np.zeros_like(close_px, dtype=bool)
 
     from core.stock_pool import _is_non_stock_series
@@ -2117,20 +2123,29 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         # ⇒ 该日不可交易, 与实盘"无价行⇒排除"一致). 失败/缺文件 ⇒ 全 NaN ⇒ 兜底 VWAP.
         _rp = os.path.join(RAW_DATA_PATH, code, 'none.csv')
         if os.path.exists(_rp):
-            try:
-                _rd = pd.read_csv(_rp, encoding='utf-8-sig')
-                _rd.columns = [str(c).strip().lstrip('\ufeff') for c in _rd.columns]
-                if '日期' in _rd.columns and '收盘' in _rd.columns:
-                    _rc = pd.Series(pd.to_numeric(_rd['收盘'], errors='coerce').values,
-                                    index=pd.DatetimeIndex(
-                                        pd.to_datetime(_rd['日期'], errors='coerce')))
-                    _rc = _rc[_rc.index.notna()]
-                    _rc = _rc[~_rc.index.duplicated()]
-                    _rc = _rc[(_rc.index >= pd.Timestamp(fromdate)) &
-                              (_rc.index <= pd.Timestamp(todate))]
-                    raw_close_m[:, j] = _rc.reindex(calendar).values.astype(np.float32)
-            except Exception as _e:
-                print(f"  [raw收盘读取失败] {code}: {type(_e).__name__} {_e}")
+            if raw_execution_arm:
+                from core.raw_execution_prices import load_raw_ohlc
+                _raw_bars = load_raw_ohlc(_rp, calendar)
+                raw_open_m[:, j] = _raw_bars['open'].values.astype(np.float32)
+                raw_low_m[:, j] = _raw_bars['low'].values.astype(np.float32)
+                raw_close_m[:, j] = _raw_bars['close'].values.astype(np.float32)
+            else:
+                try:
+                    _rd = pd.read_csv(_rp, encoding='utf-8-sig')
+                    _rd.columns = [str(c).strip().lstrip('\ufeff') for c in _rd.columns]
+                    if '日期' in _rd.columns and '收盘' in _rd.columns:
+                        _rc = pd.Series(pd.to_numeric(_rd['收盘'], errors='coerce').values,
+                                        index=pd.DatetimeIndex(
+                                            pd.to_datetime(_rd['日期'], errors='coerce')))
+                        _rc = _rc[_rc.index.notna()]
+                        _rc = _rc[~_rc.index.duplicated()]
+                        _rc = _rc[(_rc.index >= pd.Timestamp(fromdate)) &
+                                  (_rc.index <= pd.Timestamp(todate))]
+                        raw_close_m[:, j] = _rc.reindex(calendar).values.astype(np.float32)
+                except Exception as _e:
+                    print(f"  [raw收盘读取失败] {code}: {type(_e).__name__} {_e}")
+        elif raw_execution_arm:
+            raise FileNotFoundError(f'raw execution arm missing price source: {_rp}')
         df = df.reindex(calendar)
         close_px[:, j] = df['close'].ffill().values.astype(np.float32)
         # 估值可沿用最后收盘，成交必须有当天真实开盘，不能前向填充停牌开盘价。
@@ -2145,6 +2160,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         close_px, open_px, low_px = close_px[:, _keep], open_px[:, _keep], low_px[:, _keep]
         volume_m, amount_m = volume_m[:, _keep], amount_m[:, _keep]
         raw_close_m = raw_close_m[:, _keep]
+        if raw_execution_arm:
+            raw_open_m, raw_low_m = raw_open_m[:, _keep], raw_low_m[:, _keep]
         code_to_idx = {c: i for i, c in enumerate(stock_codes)}
         idx_to_code = {i: c for i, c in enumerate(stock_codes)}
         print(f"矩阵宇宙: 剔除非个股序列 {len(_nonstock)} 个 (Fix#44 同源判别, #349) "
@@ -2255,6 +2272,36 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     print(f"2元闸口径(#348): 真实收盘 {_n_rc:,} 格 / 兜底VWAP {raw_close_m.size - _n_rc:,} 格")
     tradable = (~np.isnan(close_px)) & (_raw_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
     execution_available = np.isfinite(open_px) & (open_px > 0)
+    if raw_execution_arm:
+        # The rest of the order loop consumes these price arrays. Keep the
+        # adjusted originals for gap checks across ex-rights dates: comparing
+        # raw ex-open with raw pre-ex-close would fabricate a limit-down gap.
+        _qfq_open_for_gap, _qfq_close_for_gap = open_px, close_px
+        open_px, low_px = raw_open_m, raw_low_m
+        close_px = pd.DataFrame(raw_close_m).ffill().values.astype(np.float32)
+        execution_available &= np.isfinite(open_px) & (open_px > 0)
+        from collections import defaultdict as _action_defaultdict
+        _held_action_guard = _action_defaultdict(set)
+        _events_file = os.path.join(_PROJECT_DIR, 'data/alternative_data/events_table.pkl')
+        if not os.path.isfile(_events_file):
+            raise FileNotFoundError(f'raw arm requires sealed corporate events: {_events_file}')
+        _events = pd.read_pickle(_events_file)
+        if not {'code', 'ex_date'}.issubset(_events.columns):
+            raise ValueError('raw arm corporate event table missing code/ex_date')
+        for _event in _events[['code', 'ex_date']].itertuples(index=False):
+            _day = pd.Timestamp(_event.ex_date).date()
+            if calendar[0].date() <= _day <= calendar[-1].date():
+                _held_action_guard[_day].add(str(_event.code).zfill(6))
+        print('原价执行研究臂: 未核实公司行动入账前, 持仓跨事件将拒绝回测')
+
+    def _execution_gap_ratio(i, j, filled, opening, previous_close):
+        if raw_execution_arm:
+            previous = float(_qfq_close_for_gap[i - 1, j])
+            opening_qfq = float(_qfq_open_for_gap[i, j])
+            if not np.isfinite(previous) or previous <= 0 or not np.isfinite(opening_qfq):
+                return np.nan
+            return opening_qfq * (filled / opening) / previous - 1.0
+        return filled / previous_close - 1.0 if previous_close > 0 else np.nan
     # ST 过滤: 预计算每只股票ST状态时间线后向量化匹配交易日
     # 2026-08-22性能优化: 原双重循环约250万次is_st调用(每次含过滤+排序)耗时~42min
     if fundamental_data is not None and hasattr(fundamental_data, 'get_st_timeline'):
@@ -2340,6 +2387,17 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         date = calendar[i].date()
         px_today = close_px[i]
         ok = tradable[i]
+        if raw_execution_arm:
+            for _code in _held_action_guard.get(date, ()):
+                _j = code_to_idx.get(_code)
+                if _j is not None and positions[_j] > 0:
+                    raise RuntimeError(f'raw execution requires issuer settlement terms before '
+                                       f'processing held corporate action: {_code}/{date}')
+            held = positions > 0
+            if (held & ~np.isfinite(px_today)).any():
+                _j = int(np.flatnonzero(held & ~np.isfinite(px_today))[0])
+                raise RuntimeError(f'raw execution has no valuation close for held '
+                                   f'{stock_codes[_j]}/{date}')
         _today_buys.clear()  # T+1: 每日重置
 
         # 获取当日市场状态 (用于分市场统计)
@@ -2376,9 +2434,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 sell_px = float(open_today[j])
                 if slip_enabled:
                     sell_px *= (1.0 - slip_rate)
-                if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -_gap_thr_arr[j]:
+                _gap = _execution_gap_ratio(i, j, sell_px, float(open_today[j]), prev_close[j])
+                if gap_penalty_enabled and _gap < -_gap_thr_arr[j]:
                     if _gap_dbg:
-                        print(f"[GAP] 卖全清 {code} {date} gap={sell_px/prev_close[j]-1:+.4f} thr=-{_gap_thr_arr[j]:.3f}", flush=True)
+                        print(f"[GAP] 卖全清 {code} {date} gap={_gap:+.4f} thr=-{_gap_thr_arr[j]:.3f}", flush=True)
                     sell_px = sell_px * 0.97  # 跳空低开超板阈: 成交价再折让
                     _fill_stats['gap_sell_penalized'] += 1
                 impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
@@ -2413,9 +2472,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     sell_px = openx
                     if slip_enabled:
                         sell_px *= (1.0 - slip_rate)
-                    if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (sell_px / prev_close[j] - 1) < -_gap_thr_arr[j]:
+                    _gap = _execution_gap_ratio(i, j, sell_px, openx, prev_close[j])
+                    if gap_penalty_enabled and _gap < -_gap_thr_arr[j]:
                         if _gap_dbg:
-                            print(f"[GAP] 卖减仓 {code} {date} gap={sell_px/prev_close[j]-1:+.4f} thr=-{_gap_thr_arr[j]:.3f}", flush=True)
+                            print(f"[GAP] 卖减仓 {code} {date} gap={_gap:+.4f} thr=-{_gap_thr_arr[j]:.3f}", flush=True)
                         sell_px = sell_px * 0.97
                         _fill_stats['gap_sell_penalized'] += 1
                     impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
@@ -2448,9 +2508,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 buy_px = float(open_today[j])
                 if slip_enabled:
                     buy_px *= (1.0 + slip_rate)
-                if gap_penalty_enabled and not np.isnan(prev_close[j]) and prev_close[j] > 0 and (buy_px / prev_close[j] - 1) > _gap_thr_arr[j]:
+                _gap = _execution_gap_ratio(i, j, buy_px, float(open_today[j]), prev_close[j])
+                if gap_penalty_enabled and _gap > _gap_thr_arr[j]:
                     if _gap_dbg:
-                        print(f"[GAP] 买 {code} {date} gap={buy_px/prev_close[j]-1:+.4f} thr={_gap_thr_arr[j]:.3f}", flush=True)
+                        print(f"[GAP] 买 {code} {date} gap={_gap:+.4f} thr={_gap_thr_arr[j]:.3f}", flush=True)
                     buy_px = buy_px * 1.03  # 跳空高开超板阈: 成交价再折让
                     _fill_stats['gap_buy_penalized'] += 1
                 target_shares = int(tv / buy_px / 100) * 100

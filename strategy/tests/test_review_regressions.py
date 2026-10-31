@@ -659,7 +659,8 @@ class CausalityTests(unittest.TestCase):
 
 
 class ExecutionTests(unittest.TestCase):
-    def replay(self, closes, volumes=None, goals=None):
+    def replay(self, closes, volumes=None, goals=None, *, raw_opens=None,
+               raw_closes=None, raw_arm=False, action_day=None):
         # Execute the real engine function with fixture data, isolated output paths
         # and a tiny strategy whose decisions are known in advance.
         src = Path(__file__).resolve().parents[1] / 'bt_execution.py'
@@ -678,7 +679,16 @@ class ExecutionTests(unittest.TestCase):
                           'volume': volumes if volumes is not None else [100000.] * len(dates),
                           'amount': [100000000.] * len(dates)}).to_csv(data / '600000_qfq.csv', index=False)
             raw = root / 'raw/600000'; raw.mkdir(parents=True)
-            pd.DataFrame({'日期': dates, '收盘': closes}).to_csv(raw / 'none.csv', index=False)
+            raw_opens = raw_opens if raw_opens is not None else [10.] * len(dates)
+            raw_closes = raw_closes if raw_closes is not None else closes
+            pd.DataFrame({'股票代码': ['600000'] * len(dates), '日期': dates,
+                          '开盘': raw_opens, '最高': np.maximum(raw_opens, raw_closes),
+                          '最低': np.minimum(raw_opens, raw_closes),
+                          '收盘': raw_closes}).to_csv(raw / 'none.csv', index=False)
+            event_folder = root / 'data/alternative_data'; event_folder.mkdir(parents=True)
+            events = pd.DataFrame({'code': ['600000'] if action_day is not None else [],
+                                   'ex_date': [dates[action_day]] if action_day is not None else []})
+            events.to_pickle(event_folder / 'events_table.pkl')
             targets = goals or {5: {'600000': 10000}, 6: {}}
             state = SimpleNamespace(update_returns=lambda x: None, _dbg={})
             seen = []
@@ -690,11 +700,31 @@ class ExecutionTests(unittest.TestCase):
                                        generate_positions=generate)
             ns = {'pd': pd, 'np': np, 'os': os, '__file__': str(root / 'bt_execution.py'),
                   'config': load_config(), 'DATA_PATH': str(data), 'RAW_DATA_PATH': str(root / 'raw'),
+                  '_PROJECT_DIR': str(root),
                   'COMMISSION': .0005, 'plog': plog, 'defaultdict': defaultdict}
             exec(compile(ast.Module(body=[fn], type_ignores=[]), str(src), 'exec'), ns)
-            with patch('core.stock_pool._is_non_stock_series', return_value=False), contextlib.redirect_stdout(io.StringIO()):
+            with patch.dict(os.environ, {'QUANT_RAW_EXECUTION': '1' if raw_arm else '0'}), \
+                 patch('core.stock_pool._is_non_stock_series', return_value=False), \
+                 contextlib.redirect_stdout(io.StringIO()):
                 result = ns['_vectorized_backtest'](strategy, None, dates[0], dates[-1], 100000)
             return result, seen
+
+    def test_raw_arm_uses_real_lots_without_inventing_ex_date_limit_down(self):
+        raw_opens = [20.] * 10
+        raw_opens[6] = 13.0  # Ex-date gap in raw price; QFQ open remains 10.
+        raw_closes = [20.] * 10
+        raw_closes[6:] = [13.] * 4
+        result, _ = self.replay([10.] * 10, raw_opens=raw_opens,
+                                raw_closes=raw_closes, raw_arm=True, action_day=6)
+        buys = [fill for fill in result['execution_fills'] if fill['side'] == 'BUY']
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(buys[0]['shares'], 700)
+        self.assertEqual(result['fill_stats']['gap_buy_penalized'], 0)
+
+    def test_raw_arm_stops_before_unverified_held_action(self):
+        with self.assertRaisesRegex(RuntimeError, 'requires issuer settlement terms'):
+            self.replay([10.] * 10, raw_opens=[20.] * 10,
+                        raw_closes=[20.] * 10, raw_arm=True, action_day=7)
 
     def test_empty_target_liquidates(self):
         result, _ = self.replay([10.] * 10)
