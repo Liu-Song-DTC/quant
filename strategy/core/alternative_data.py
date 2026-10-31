@@ -57,6 +57,10 @@ class AlternativeDataProvider:
 
     def __init__(self, data_dir: str = None, *, strict_refresh: bool = False):
         self.strict_refresh = strict_refresh
+        # Research arm only: no supplier observation before first archived snapshot.
+        # Keep portfolio reduction filters unchanged; never weaken unknown risk data.
+        self._zero_preobserved_market_signals = (
+            os.environ.get('QUANT_ALT_ZERO_PREOBSERVED_MARKET') == '1')
         if data_dir is None:
             strategy_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             data_dir = os.path.join(strategy_dir, '..', 'data', 'alternative_data')
@@ -400,7 +404,10 @@ class AlternativeDataProvider:
             return 0.0
 
         date_str = str(date)[:10]
-        df = self._asof_table('northbound_daily.pkl', observed_by or date, self._northbound)
+        df = self._asof_table('northbound_daily.pkl', observed_by or date, self._northbound,
+                              prehistory_proxy=not self._zero_preobserved_market_signals)
+        if df is None:
+            return 0.0  # Missing provenance in the isolated research arm.
         # 逐日memo (2026-09-01性能优化): 信号是date的纯函数, 每股逐bar重复计算
         key = (date_str, str(observed_by or date)[:10])
         if key in self._nb_sig_cache:
@@ -521,7 +528,10 @@ class AlternativeDataProvider:
             return 0.0
 
         date_str = str(date)[:10]
-        df = self._asof_table('margin_daily.pkl', observed_by or date, self._margin)
+        df = self._asof_table('margin_daily.pkl', observed_by or date, self._margin,
+                              prehistory_proxy=not self._zero_preobserved_market_signals)
+        if df is None:
+            return 0.0  # Missing provenance in the isolated research arm.
         # 逐日memo (2026-09-01性能优化): 信号是date的纯函数, 每股逐bar重复计算
         key = (date_str, str(observed_by or date)[:10])
         if key in self._mg_sig_cache:

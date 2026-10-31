@@ -37,3 +37,30 @@
   --start 2021-01-01 --end 2026-10-28 \
   --out .review_runs/data_post_refresh_20261029/alt_observation_coverage_20261031.json
 ```
+
+## 同一批历史入选日的首版代理影响探针（2026-10-31）
+
+`probe_alt_preobservation_materiality.py` 在**已封存 run 的 161 条入选日期/代码**上，
+只读查询**当前留存的 2026-10-29 首版另类数据快照**：北向代理信号
+161/161 非零，两融代理信号 143/161 非零（2021 年 18 条均为零）；
+减持记录与计划在已入选股票上 0/161 命中，但在 101 个入选日上，
+全市场减持风险名单和计划名单都非空。报告为
+`.review_runs/data_post_refresh_20261029/alt_preobservation_materiality_20261031.json`。
+已入选股票零命中**不能**证明风险过滤未发挥作用：过滤本来就在入选前
+发生，必须进一步分析当日入选前候选池。探针把旧入选决策与后补首版
+快照结合，仅用于确定研究优先级；它不是对旧 run 当时另类信号的重算，
+不产生收益结论，也不证明这些历史事件当时已被供应商观察。
+
+已新增默认关闭的研究开关 `QUANT_ALT_ZERO_PREOBSERVED_MARKET=1`：
+仅北向与两融市场信号在首次留存版本之前返回零，其余逻辑（特别是
+减持过滤）保持不变。下一步应在**新封存的同一批当前输入**上做
+首版代理 vs 置零的双臂完整回测，并明确标记为“市场信号可归因实验”，
+而非全另类数据 PIT 证明；两臂分别记录逐日净值、成交、入选、1/3/5 日
+胜率及回撤，收益没改善则保持生产开关关闭。
+
+```bash
+.venv/bin/python -B strategy/analysis/probe_alt_preobservation_materiality.py \
+  --selections .review_runs/data_post_refresh_20261029/strategy/rolling_validation_results/portfolio_selections.csv \
+  --alt-root data/alternative_data \
+  --out .review_runs/data_post_refresh_20261029/alt_preobservation_materiality_20261031.json
+```
