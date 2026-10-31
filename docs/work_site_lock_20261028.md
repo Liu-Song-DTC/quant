@@ -182,3 +182,20 @@ core.st_history），而 `data/record_st_status.py` 是未提交的下载器配�
 3. 该依赖仍是"未提交 + 主树依赖"的状态 ⇒ 脆（一次 `git clean -xdf` 就会打断链）
    ⇒ 属 D1 晋升项：要么把 ST 观测记录这组一起提交进 main，要么把下载器的
    `record_st_status` 集成撤掉（退回已提交版下载器）。
+
+## 3g. 磁盘清理记录 (2026-10-31)
+
+磁盘一度 94% 满(可用仅 23G)。处置 `data/.preFullRefresh_0904`(09-04 全量刷新前的冻结快照):
+
+| 子项 | 原大小 | 处置 | 依据 |
+|---|---|---|---|
+| `cache/` | 62G | **已删** | 49 份旧因子 parquet = 派生缓存, 可重建; 全仓与封存跑 manifest 均无引用 |
+| `backup_raw_corrupt_20260821/` + `backup_torn_rows_20260821/` | 1.5G | **已删载荷**(保留 redownload_list.txt) | 08-21 损坏/断行事故的取证副本, 事故已闭合 |
+| `raw_data/` 4.2G / `backtrader_data/` 1.2G / `stock_data_all.tar.gz` 1.7G / fundamental 两个备份 200M | ~7.3G | **保留** | 各层的 09-04 回滚源(`clear_all_for_full_refresh_0904.sh` 写明的 mv 回原位); `backtrader_data/` 是 `run_survivorship_0c_mount.sh` 的 SRC |
+| `backtrader_data.{current_0902,repro_v2_0902,v1_bakbased}` | 3.0G | **暂留** | 已入库旧锚(anchor_0911/0913/0914)的价格库底座 |
+
+⇒ 释放 63G(磁盘 94% → 77%, 可用 23G → 85G)。
+`.review_runs/` 另有 **161G**(62 个 run: 信号面板 76G + 因子缓存 33G + tmp_factor 6.6G + 证据/快照 ~45G)
+—— **按用户裁定暂不动**(计划 §1.1 保护旧实验目录, 且另一 agent 的 `alt_preobs_zero_market_20261031`
+在跑, 其输入目录 `alt_preobs_proxy_20261031` 不可碰)。后续若再紧张: 先删 tmp_factor + factor_df 缓存
+(≈40G, 可重建), 信号面板(76G)须先登记产物 SHA256 再删。
