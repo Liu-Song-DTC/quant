@@ -125,3 +125,18 @@ OHLC 拒绝，不使用 QFQ 开盘价伪造成交。
 4,542 个活跃持仓日、0 个原价缺口和 0 个原价 OHLC 校验失败，审计
 输出在 `raw_held_price_coverage.json`。该验证只证明旧交易轨迹的价格
 覆盖，不对尚未运行的原价执行臂预测将来持仓的覆盖率。
+
+### QFQ 落盘到分位造成非除权段收益偏差（只读审计）
+
+`data/rebuild_table_qfq.py` 对 OHLC 执行 `.round(2)` 再落盘。无公司行动时，
+乘性 QFQ 和裸价的**收盘到收盘区间收益**原本应相等，但各日单独舍入使
+两日收益比不再严格相等。通过
+`strategy/analysis/audit_qfq_rounding_on_trades.py --run
+.review_runs/alt_preobs_proxy_20261031 --out
+.review_runs/alt_preobs_proxy_20261031/qfq_rounding_event_free.json`
+检查封存的已平仓记录：141 笔在持仓期间无除权事件，66 笔的收盘收益
+偏差超过 1bp，最大 14.49bp，绝对偏差第 95 百分位 5.34bp。
+报告附逐交易 CSV；这是区间**收盘收益**的差异，不等于成交 P&L、
+更不能推断全组合净值差值。当前只审计，不改动生产复权文件：提高精度
+会改写大量历史文件及缓存指纹，需要隔离实验臂和全量回测再判定收益、
+短期胜率及回撤的影响。
