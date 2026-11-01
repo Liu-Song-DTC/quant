@@ -179,7 +179,9 @@ fi
 
 echo 'navlaw' >> "$CHAIN_STATE"
 echo "===== 4/4 出单 ====="
-QUANT_ALT_NO_AUTOREFRESH=1 QUANT_ALT_VERSIONS_REQUIRED=1 ../.venv/bin/python -u generate_trade_orders.py --date "$TODAY" \
+_order_args=(--date "$TODAY")
+[ "$PREOPEN" = "1" ] && _order_args+=(--preopen)
+QUANT_ALT_NO_AUTOREFRESH=1 QUANT_ALT_VERSIONS_REQUIRED=1 ../.venv/bin/python -u generate_trade_orders.py "${_order_args[@]}" \
   | tee "logs/orders_${TODAY//-/}.log"
 
 echo "===== 4.5/5 风险画像 (周日生成, 三层裁定: 只报实盘台账净值) ====="

@@ -22,9 +22,10 @@ VALUE_TOLERANCE = 1.05
 SHARE_TOLERANCE = 1.20
 
 
-def queue_orders(account, orders, positions, decision_date):
+def queue_orders(account, orders, positions, decision_date, execution_date=None):
     """Register intentions only; neither cash nor actual positions change."""
-    run_id = str(decision_date)[:10].replace('-', '')
+    execution_date = decision_date if execution_date is None else execution_date
+    run_id = str(execution_date)[:10].replace('-', '')
     pending = account.setdefault('pending_orders', {})
     for seq, order in enumerate(orders, 1):
         code = str(order['stock_code']).split('.')[0].zfill(6)
@@ -44,6 +45,7 @@ def queue_orders(account, orders, positions, decision_date):
                   'side': 'BUY' if delta > 0 else 'SELL',
                   'quantity': abs(delta), 'filled': 0, 'filled_value': 0.0,
                   'status': 'PENDING', 'decision_date': str(decision_date)[:10],
+                  'execution_date': str(execution_date)[:10],
                   'planned_price': planned_price or None,
                   'planned_amount': planned_amount}
         if key in pending and any(pending[key][k] != record[k]

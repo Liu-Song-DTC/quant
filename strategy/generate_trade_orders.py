@@ -739,6 +739,8 @@ def main():
     parser = argparse.ArgumentParser(description='生成 trade_orders.json 给 miniqmt')
     parser.add_argument('--date', type=str, default=None,
                         help='目标日期 (YYYY-MM-DD), 默认最新交易日')
+    parser.add_argument('--preopen', action='store_true',
+                        help='开盘前出单: --date 为执行日, 信号/定价取最新已定稿交易日')
     parser.add_argument('--cash', type=float, default=DEFAULT_CASH,
                         help=f'总资金 (默认: {DEFAULT_CASH})')
     parser.add_argument('--dry-run', action='store_true',
@@ -768,13 +770,16 @@ def main():
             sys.exit(1)
 
     # ── 确定目标日期 ──────────────────────────────────────────
+    if args.preopen and not args.date:
+        parser.error('--preopen 必须用 --date 显式指定执行日')
     if args.date:
         target_date = pd.Timestamp(args.date).date()
         date_specified = True
     else:
         target_date = date_type.today()
         date_specified = False
-    print(f"目标日期: {target_date} | 总资金: {args.cash:,.0f}")
+    execution_date = target_date
+    print(f"{'执行日期' if args.preopen else '目标日期'}: {target_date} | 总资金: {args.cash:,.0f}")
 
     # ── 1. 加载信号 ──────────────────────────────────────────
     stock_file_map = build_stock_file_map()
@@ -800,17 +805,17 @@ def main():
     # (新股/停牌/不在信号universe)时误判为"当日无信号" → 静默回退到旧日期出单.
     # 改用 SignalStore 的日期索引判定, 与抽样无关.
     if not signal_store.has_date(target_date):
-        if date_specified:
+        if date_specified and not args.preopen:
             print(f"\n错误: 目标日期 {target_date} 无信号数据")
             print(f"请更新信号CSV: cd strategy && python bt_execution.py")
             sys.exit(1)
         else:
-            # 自动回退到信号CSV中的最新日期
-            sig_df = pd.read_csv(SIGNALS_CSV, usecols=['date'])
-            latest_sig_date = pd.Timestamp(sig_df['date'].max()).date()
-            del sig_df
-            print(f"  (今日 {target_date} 无信号, 回退到最新交易日期 {latest_sig_date})")
+            latest_sig_date = pd.Timestamp(signal_store.max_date()).date()
+            print(f"  (执行日 {target_date} 无信号, 使用最新定稿信号日 {latest_sig_date})")
             target_date = latest_sig_date
+    if args.preopen and execution_date <= target_date:
+        print(f"\n[拒绝出单] 开盘前执行日 {execution_date} 必须晚于信号日 {target_date}")
+        sys.exit(1)
 
     # ── 2. 获取价格 ───────────────────────────────────────────
     # 信号日(target_date)与价格日(price_date)分离: 信号取信号CSV最新日, 但订单定价
@@ -1281,6 +1286,8 @@ def main():
 
     output = {
         'date': str(target_date),
+        'signal_date': str(target_date),
+        'execution_date': str(execution_date),
         'price_date': str(price_date)[:10],
         'orders': orders,
     }
@@ -1377,7 +1384,8 @@ def main():
 
     # ── 7. 写入文件 ──────────────────────────────────────────
     record_nav(account, str(target_date), _nav, float(account['cash']), _pos_value)
-    output['run_id'] = queue_orders(account, orders, prev_positions, target_date)
+    output['run_id'] = queue_orders(account, orders, prev_positions, target_date,
+                                    execution_date=execution_date)
     output['accounting_mode'] = 'actual_fills'
     output['generated_at'] = datetime.now().isoformat(timespec='seconds')
     updates = {POSITIONS_FILE: prev_positions, ACCOUNT_FILE: account,

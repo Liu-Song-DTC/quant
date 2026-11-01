@@ -76,6 +76,17 @@ class ActualLedgerTests(unittest.TestCase):
         self.assertEqual(self.book, {})
         self.assertEqual(len(unresolved_orders(self.account, '2026-10-23')), 1)
 
+    def test_preopen_run_id_uses_execution_date_not_signal_date(self):
+        account = {'cash': 100000., 'pending_orders': {}, 'processed_reports': {}}
+        orders = [{'stock_code': '600000.SH', 'action': 'open', 'shares': 1000, 'price': 10.}]
+        run_id = queue_orders(account, orders, {}, '2026-10-30', execution_date='2026-11-02')
+        self.assertEqual(run_id, '20261102')
+        pending = account['pending_orders']['20261102:1']
+        self.assertEqual(pending['decision_date'], '2026-10-30')
+        self.assertEqual(pending['execution_date'], '2026-11-02')
+        self.assertEqual(unresolved_orders(account, '2026-10-30'), [])
+        self.assertEqual(len(unresolved_orders(account, '2026-11-02')), 1)
+
     def test_fill_is_idempotent(self):
         r = self.report()
         self.assertEqual(apply_execution_reports(self.account, self.book, [r]), 1)
@@ -324,6 +335,65 @@ class StateTests(unittest.TestCase):
             self.assertEqual(json.loads((root / 'positions.json').read_text()), {})
             self.assertEqual(len(account['pending_orders']), 1)
             self.assertEqual(json.loads((root / 'orders.json').read_text())['accounting_mode'], 'actual_fills')
+
+    def test_preopen_planner_separates_signal_state_and_execution_run_id(self):
+        import generate_trade_orders as live
+        import core.live_account as accounts
+        day = pd.Timestamp('2026-10-30').date()
+        execution_day = pd.Timestamp('2026-11-02').date()
+        class Store:
+            def finalize(self, *args): pass
+            def has_date(self, value): return str(value) == str(day)
+            def max_date(self): return str(day)
+            def get(self, *args): return None
+        class Portfolio:
+            current_exposure = 1.; peak_equity = None; _stop_loss_triggered = False
+            _clb_triggered = False; _daily_returns = []; vol_lookback = 20
+            _last_rebalance_date = day; last_selection = []
+            _sector_rotation = None
+            def __init__(self, **kwargs): pass
+            def restore_tracking_state(self, *args): pass
+            def tracking_state(self, **kwargs): return {'as_of': str(kwargs['as_of'])}
+            def build(self, **kwargs): return {'600000': 10000.}
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); (root / 'signals.csv').write_text('date\n2026-10-30\n')
+            changes = {'_PROJECT_DIR': d, '_STRATEGY_DIR': d,
+                       'POSITIONS_FILE': str(root / 'positions.json'),
+                       'ORDERS_FILE': str(root / 'orders.json'),
+                       'ACCOUNT_FILE': str(root / 'account.json'),
+                       'PORTFOLIO_STATE_FILE': str(root / 'portfolio.json'),
+                       'REBUILD_STATE_FILE': str(root / 'rebuild.json'),
+                       'SIGNALS_CSV': str(root / 'signals.csv'),
+                       'SignalStore': Store, 'PortfolioConstructor': Portfolio,
+                       'config': SimpleNamespace(get=lambda key, default=None:
+                                                False if key == 'stock_pool.enabled' else default)}
+            with contextlib.ExitStack() as stack:
+                for key, value in changes.items(): stack.enter_context(patch.object(live, key, value))
+                stack.enter_context(patch.object(accounts, 'ACCOUNT_FILE', str(root / 'account.json')))
+                stack.enter_context(patch.object(live, 'build_stock_file_map', return_value={'600000': 'unused'}))
+                stack.enter_context(patch.object(live, 'build_raw_file_map', return_value={'600000': 'unused'}))
+                stack.enter_context(patch.object(live, 'load_prices_for_date', return_value={'600000': 10.}))
+                stack.enter_context(patch.object(live, 'build_st_filter', return_value=(set(), set())))
+                stack.enter_context(patch.object(live, 'get_index_regime', return_value=(1, .1, 1., False, False)))
+                stack.enter_context(patch.object(live, 'get_market_features', return_value={}))
+                stack.enter_context(patch.object(live, 'load_context', return_value={'industry_stock_counts': {}}))
+                stack.enter_context(patch.object(live, 'compute_support_resistance', return_value=(8., 12., {'price': 10.})))
+                stack.enter_context(patch.object(live, 'build_monitor_list', return_value=[]))
+                stack.enter_context(patch.object(sys, 'argv', ['orders', '--date', str(execution_day),
+                                                             '--preopen', '--skip-freshness']))
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                live.main()
+            orders = json.loads((root / 'orders.json').read_text())
+            account = json.loads((root / 'account.json').read_text())
+            state = json.loads((root / 'portfolio.json').read_text())
+            self.assertEqual(orders['date'], str(day))
+            self.assertEqual(orders['signal_date'], str(day))
+            self.assertEqual(orders['execution_date'], str(execution_day))
+            self.assertEqual(orders['price_date'], str(day))
+            self.assertEqual(orders['run_id'], '20261102')
+            self.assertEqual(account['last_date'], str(day))
+            self.assertEqual(state['as_of'], str(day))
+            self.assertEqual(account['pending_orders']['20261102:1']['decision_date'], str(day))
 
     def test_execution_context_roundtrip_and_signal_binding(self):
         import hashlib

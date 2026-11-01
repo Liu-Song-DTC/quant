@@ -167,7 +167,7 @@ def render_orders(path: Path) -> tuple:
     """trade_orders.json → (title, markdown)。含实盘状态区 (arch_1022 台账) + 守卫灯。"""
     data = json.loads(path.read_text(encoding='utf-8'))
     orders = data.get('orders', [])
-    date = data.get('date', data.get('trade_date', ''))
+    date = data.get('execution_date', data.get('date', data.get('trade_date', '')))
     nav_line = ''
     try:
         acct = json.loads((BASE.parent / 'live_account.json').read_text(encoding='utf-8'))
