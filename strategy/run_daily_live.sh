@@ -126,11 +126,9 @@ echo "===== 1.5/4 熊市空仓免算前置闸 ====="
 if [ "$FORCE_FULL" = "1" ]; then
   echo "[--force-full] 跳过前置闸, 完整管线照跑 (注意: 熊市+空仓时订单仍将为空, 策略本身不进场)"
 else
-set +e
+_pre_rc=0
 $PY strategy/live_no_trade_precheck.py --date "$TODAY" \
-  | tee "strategy/logs/precheck_${TODAY//-/}.log"
-_pre_rc=${PIPESTATUS[0]}
-set -e
+  | tee "strategy/logs/precheck_${TODAY//-/}.log" || _pre_rc=${PIPESTATUS[0]}
 case $_pre_rc in
   0) echo "熊市+空仓: 已跳过信号生成/回测, 空订单+熊市观察名单已写入"
      # 跳过日也推送 (2026-10-24, 用户裁定"供自行判断"): 空单+观察名单+守卫灯
