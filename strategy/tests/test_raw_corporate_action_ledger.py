@@ -29,8 +29,9 @@ class RawCorporateActionLedgerTests(unittest.TestCase):
         self.assertEqual(book.cash_receivable, 0)
         self.assertEqual(book.cash, 1035)
         self.assertAlmostEqual(book.equity({'999901': 6.4}), 1995)
-        book.fill('999901', 'SELL', 150, 6.4, fees=5)
-        self.assertEqual(book.cash, 1990)
+        tax = book.fill('999901', 'SELL', 150, 6.4, fees=5)
+        self.assertAlmostEqual(tax, 8)
+        self.assertAlmostEqual(book.cash, 1982)
 
     def test_entitlement_fixed_at_record_close_even_if_original_shares_sold(self):
         action = IssuerAction('999902', '2026-05-20', '2026-05-21',
@@ -40,11 +41,12 @@ class RawCorporateActionLedgerTests(unittest.TestCase):
         book.fill('999902', 'BUY', 100, 20)
         book.capture_at_record_close(action)
         book.advance('2026-05-21')
-        book.fill('999902', 'SELL', 100, 13)
+        tax = book.fill('999902', 'SELL', 100, 13)
+        self.assertAlmostEqual(tax, 140)
         self.assertEqual(book.cash_receivable, 700)
-        self.assertEqual(book.cash, 2300)
+        self.assertAlmostEqual(book.cash, 2160)
         book.advance('2026-05-22')
-        self.assertEqual(book.cash, 3000)
+        self.assertAlmostEqual(book.cash, 2860)
         self.assertEqual(book.cash_receivable, 0)
 
     def test_rejects_fractional_bonus_and_unknown_availability(self):

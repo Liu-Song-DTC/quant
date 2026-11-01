@@ -252,6 +252,25 @@ class StateTests(unittest.TestCase):
             c = SignalStore(); c.finalize(p)
             self.assertEqual(c.get('000001', '2026-10-23').score, .9)
 
+    def test_sealed_signal_cache_ignores_mtime_without_rewriting(self):
+        from core.signal_store import SignalStore
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'signals.csv'
+            pd.DataFrame({'code': ['000001', '600000'], 'date': ['2026-10-23'] * 2,
+                          'buy': [True, False], 'sell': [False, True],
+                          'score': [.25, .5], 'industry': ['A', 'B']}).to_csv(p, index=False)
+            cache = Path(str(p) + '.store.parquet')
+            meta = Path(str(p) + '.store.json')
+            original = SignalStore()
+            original.finalize(p)
+            before = {path: path.read_bytes() for path in (p, cache, meta)}
+            os.utime(p, ns=(p.stat().st_atime_ns, p.stat().st_mtime_ns + 1_000_000))
+            replay = SignalStore()
+            replay.finalize(p, sealed_replay=True)
+            pd.testing.assert_frame_equal(original._df, replay._df, check_exact=True)
+            for path, content in before.items():
+                self.assertEqual(path.read_bytes(), content)
+
     def test_live_planner_commits_plan_without_fabricating_positions_and_replays(self):
         import generate_trade_orders as live
         import core.live_account as accounts
@@ -307,7 +326,8 @@ class StateTests(unittest.TestCase):
             self.assertEqual(json.loads((root / 'orders.json').read_text())['accounting_mode'], 'actual_fills')
 
     def test_execution_context_roundtrip_and_signal_binding(self):
-        from core.execution_context import save_context, load_context
+        import hashlib
+        from core.execution_context import load_sealed_context, save_context, load_context
         with tempfile.TemporaryDirectory() as d:
             signal = Path(d) / 'signals.csv'; signal.write_text('one')
             frame = pd.DataFrame({'datetime': pd.to_datetime(['2026-10-23']), 'style_score': [.75]})
@@ -316,8 +336,15 @@ class StateTests(unittest.TestCase):
             context = load_context(signal)
             pd.testing.assert_frame_equal(context['index_data'], frame)
             self.assertEqual(context['industry_stock_counts'], {'A': 3})
+            digest = hashlib.sha256(signal.read_bytes()).hexdigest()
+            stat = signal.stat()
+            os.utime(signal, ns=(stat.st_atime_ns, stat.st_mtime_ns - 1000))
+            self.assertIsNone(load_context(signal))
+            self.assertIsNotNone(load_sealed_context(signal, digest))
             signal.write_text('different signals')
             self.assertIsNone(load_context(signal))
+            with self.assertRaisesRegex(ValueError, 'content differs'):
+                load_sealed_context(signal, digest)
 
     def test_sector_history_roundtrip(self):
         from core.sector_rotation import SectorRotation
@@ -661,7 +688,7 @@ class CausalityTests(unittest.TestCase):
 class ExecutionTests(unittest.TestCase):
     def replay(self, closes, volumes=None, goals=None, *, raw_opens=None,
                raw_closes=None, raw_arm=False, action_day=None,
-               missing_raw_day=None):
+               missing_raw_day=None, action_terms=None):
         # Execute the real engine function with fixture data, isolated output paths
         # and a tiny strategy whose decisions are known in advance.
         src = Path(__file__).resolve().parents[1] / 'bt_execution.py'
@@ -690,6 +717,20 @@ class ExecutionTests(unittest.TestCase):
             events = pd.DataFrame({'code': ['600000'] if action_day is not None else [],
                                    'ex_date': [dates[action_day]] if action_day is not None else []})
             events.to_pickle(event_folder / 'events_table.pkl')
+            terms_path = None
+            if action_terms is not None:
+                terms = {
+                    'code': '600000', 'record_date': dates[action_day - 1],
+                    'ex_date': dates[action_day], 'shareholder_bonus': 0.0,
+                    'shareholder_cash': 0.0,
+                    'cash_payment_date': dates[action_day],
+                    'bonus_trading_date': None,
+                    **action_terms,
+                }
+                if terms['shareholder_bonus'] and terms['bonus_trading_date'] is None:
+                    terms['bonus_trading_date'] = dates[action_day]
+                terms_path = root / 'issuer_terms.csv'
+                pd.DataFrame([terms]).to_csv(terms_path, index=False)
             targets = goals or {5: {'600000': 10000}, 6: {}}
             state = SimpleNamespace(update_returns=lambda x: None, _dbg={})
             seen = []
@@ -704,7 +745,11 @@ class ExecutionTests(unittest.TestCase):
                   '_PROJECT_DIR': str(root),
                   'COMMISSION': .0005, 'plog': plog, 'defaultdict': defaultdict}
             exec(compile(ast.Module(body=[fn], type_ignores=[]), str(src), 'exec'), ns)
-            with patch.dict(os.environ, {'QUANT_RAW_EXECUTION': '1' if raw_arm else '0'}), \
+            run_env = {'QUANT_RAW_EXECUTION': '1' if raw_arm else '0'}
+            if terms_path is not None:
+                run_env.update(QUANT_RAW_ACTION_TERMS=str(terms_path),
+                               QUANT_RAW_CASH_POLICY='next_session_after_payment')
+            with patch.dict(os.environ, run_env), \
                  patch('core.stock_pool._is_non_stock_series', return_value=False), \
                  contextlib.redirect_stdout(io.StringIO()):
                 result = ns['_vectorized_backtest'](strategy, None, dates[0], dates[-1], 100000)
@@ -735,6 +780,41 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'requires issuer settlement terms'):
             self.replay([10.] * 10, raw_opens=[20.] * 10,
                         raw_closes=[20.] * 10, raw_arm=True, action_day=7)
+
+    def test_raw_arm_books_dividend_tax_and_next_session_cash(self):
+        raw_opens = [20.] * 7 + [13.] * 3
+        raw_closes = [20.] * 7 + [13.] * 3
+        result, _ = self.replay(
+            [10.] * 10, goals={5: {'600000': 20000}, 6: {}},
+            raw_opens=raw_opens, raw_closes=raw_closes, raw_arm=True,
+            action_day=7, action_terms={'shareholder_cash': 1.0})
+        self.assertEqual(result['execution_fills'][0]['shares'], 900)
+        self.assertEqual(result['execution_fills'][1]['shares'], 900)
+        tax = result['raw_dividend_tax_lots']
+        self.assertEqual(len(tax), 1)
+        self.assertAlmostEqual(tax[0]['gross_dividend'], 900)
+        self.assertAlmostEqual(tax[0]['rate'], .2)
+        self.assertAlmostEqual(tax[0]['tax'], 180)
+        daily = result['raw_account_daily']
+        self.assertAlmostEqual(daily[7]['cash_receivable'], 900)
+        self.assertAlmostEqual(daily[8]['cash_receivable'], 0)
+        self.assertAlmostEqual(daily[8]['cash'] - daily[7]['cash'], 900)
+        events = [row['event'] for row in result['raw_action_events']]
+        self.assertEqual(events, ['record_close', 'ex_entitlement', 'cash_available'])
+
+    def test_raw_arm_bonus_shares_are_sellable_on_verified_date(self):
+        raw_opens = [20.] * 7 + [13.] * 3
+        raw_closes = [20.] * 7 + [13.] * 3
+        result, _ = self.replay(
+            [10.] * 10, goals={5: {'600000': 20000}, 6: {}},
+            raw_opens=raw_opens, raw_closes=raw_closes, raw_arm=True,
+            action_day=7, action_terms={'shareholder_bonus': .5, 'shareholder_cash': .4})
+        fills = result['execution_fills']
+        self.assertEqual([row['shares'] for row in fills], [900, 1350])
+        self.assertAlmostEqual(result['raw_dividend_tax_lots'][0]['tax'], 72)
+        events = [row['event'] for row in result['raw_action_events']]
+        self.assertEqual(events, ['record_close', 'ex_entitlement',
+                                  'bonus_tradable', 'cash_available'])
 
     def test_empty_target_liquidates(self):
         result, _ = self.replay([10.] * 10)

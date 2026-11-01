@@ -287,9 +287,66 @@ def prepare(name, target_mode=None, workers=None, snapshot_from=None, legacy_con
     return target
 
 
+def write_raw_account_audit(target, archive):
+    import numpy as np
+    import pandas as pd
+
+    daily = pd.read_csv(archive / 'raw_account_daily.csv', dtype={'date': str})
+    curve = pd.read_csv(archive / 'equity_curve.csv', dtype={'date': str})
+    components = ['cash', 'cash_receivable', 'tradable_value', 'restricted_bonus_value']
+    if not daily['date'].equals(curve['date']):
+        raise ValueError('raw account and NAV calendars differ')
+    component_error = np.abs(daily[components].sum(axis=1) - daily['nav']).max()
+    nav_error = np.abs(daily['nav'] - curve['nav']).max()
+    if max(component_error, nav_error) > 1e-6:
+        raise ValueError('raw account output does not reconcile to NAV')
+
+    fills = pd.read_csv(archive / 'execution_fills.csv', dtype={'date': str, 'code': str})
+    if not fills['date'].is_monotonic_increasing:
+        raise ValueError('raw fills must be chronological')
+    buys = fills[fills['side'] == 'BUY']
+    if (fills['shares'] <= 0).any() or (buys['shares'] % 100 != 0).any():
+        raise ValueError('invalid raw fill share count')
+    direction = np.where(fills['side'] == 'BUY', 1.0, -1.0)
+    fills['reference_open'] = (fills['price'] - direction *
+                               fills['price_adjustment_cost'] / fills['shares'])
+    open_errors = []
+    for code, group in fills.groupby('code', sort=False):
+        raw = pd.read_csv(target / f'data/stock_data/raw_data/{code}/none.csv',
+                          usecols=['日期', '开盘'], dtype={'日期': str})
+        if raw['日期'].duplicated().any():
+            raise ValueError(f'duplicate raw price date: {code}')
+        raw_open = raw.set_index('日期')['开盘']
+        expected = group['date'].map(raw_open)
+        if expected.isna().any():
+            raise ValueError(f'missing raw open for executed fill: {code}')
+        if not np.allclose(group['reference_open'], expected, rtol=1e-6, atol=1e-5):
+            raise ValueError(f'raw fill reference price differs from raw open: {code}')
+        open_errors.extend(np.abs(group['reference_open'] - expected).tolist())
+
+    actions = pd.read_csv(archive / 'raw_corporate_action_events.csv')
+    taxes = pd.read_csv(archive / 'raw_dividend_tax_lots.csv')
+    report = {
+        'days': len(daily), 'fills': len(fills), 'buy_fills': len(buys),
+        'max_daily_component_error': float(component_error),
+        'max_nav_error': float(nav_error),
+        'max_raw_open_error': float(max(open_errors, default=0.0)),
+        'corporate_action_events': len(actions), 'dividend_tax_lots': len(taxes),
+        'dividend_tax': float(taxes['tax'].sum()),
+    }
+    name = 'raw_account_audit.json'
+    (archive / name).write_text(json.dumps(report, ensure_ascii=False, indent=2,
+                                           allow_nan=False) + '\n', encoding='utf-8')
+    return name
+
+
 def write_execution_audits(target, archive):
     """Run point-of-use price/entitlement checks against a sealed run's outputs."""
     target, archive = Path(target).resolve(), Path(archive).resolve()
+    if os.environ.get('QUANT_RAW_EXECUTION') == '1':
+        report = write_raw_account_audit(target, archive)
+        return {'raw_account_audit': {'source': str(Path(__file__).resolve()),
+                                     'sha256': _sha256_file(__file__), 'report': report}}
     audit_tools = {}
     for script_name, report_name, extra_args in (
         ('audit_qfq_lot_sizes.py', 'raw_lot_audit.json',
@@ -334,6 +391,42 @@ def run(target, risk_limits=False):
         env['QUANT_ACCOUNT_LIMITS'] = '1'
     else:
         env.pop('QUANT_ACCOUNT_LIMITS', None)
+    supplemental = {}
+    if env.get('QUANT_RAW_ACTION_TERMS'):
+        terms_path = Path(env['QUANT_RAW_ACTION_TERMS']).expanduser().resolve()
+        if not terms_path.is_file():
+            raise FileNotFoundError(terms_path)
+        supplemental['raw_action_terms'] = {
+            'path': str(terms_path), 'sha256': _sha256_file(terms_path),
+        }
+    if env.get('QUANT_SIGNAL_REPLAY') == '1':
+        replay_source = env.get('QUANT_SIGNAL_REPLAY_FROM')
+        if not replay_source:
+            raise ValueError('QUANT_SIGNAL_REPLAY requires QUANT_SIGNAL_REPLAY_FROM')
+        source_dir = Path(replay_source).expanduser().resolve()
+        target_dir = target / 'strategy/rolling_validation_results'
+        replay_files = {}
+        for name in ('backtest_signals.csv', 'backtest_signals.csv.store.parquet',
+                     'backtest_signals.csv.store.json', 'backtest_signals.csv.inputs.json',
+                     'execution_context.pkl', '.signal_code_fp'):
+            source = source_dir / name
+            copied = target_dir / name
+            if not source.is_file():
+                if name in ('backtest_signals.csv', 'execution_context.pkl'):
+                    raise FileNotFoundError(source)
+                continue
+            if not copied.is_file():
+                raise FileNotFoundError(f'sealed replay input not copied: {copied}')
+            source_digest = _sha256_file(source)
+            target_digest = _sha256_file(copied)
+            if source_digest != target_digest:
+                raise RuntimeError(f'sealed signal replay copy differs: {name}')
+            replay_files[name] = {'sha256': target_digest, 'size': copied.stat().st_size}
+        supplemental['signal_replay'] = {
+            'source': str(source_dir), 'files': replay_files,
+        }
+        env['QUANT_SIGNAL_REPLAY_SHA256'] = replay_files['backtest_signals.csv']['sha256']
+    manifest['supplemental_inputs'] = supplemental
     before, records = input_stamp(env=env, root=target)
     # The execution-environment scan covers the same sealed file set. Compare
     # its content identity directly instead of reading every file a second time
@@ -362,6 +455,15 @@ def run(target, risk_limits=False):
                                 stderr=subprocess.STDOUT)
     if result.returncode:
         raise RuntimeError(f'research run failed (rc={result.returncode}): {log}')
+    if 'raw_action_terms' in supplemental:
+        record = supplemental['raw_action_terms']
+        if _sha256_file(record['path']) != record['sha256']:
+            raise RuntimeError('issuer terms changed during research run')
+    if 'signal_replay' in supplemental:
+        replay_dir = target / 'strategy/rolling_validation_results'
+        for name, record in supplemental['signal_replay']['files'].items():
+            if _sha256_file(replay_dir / name) != record['sha256']:
+                raise RuntimeError(f'sealed signal replay input changed during run: {name}')
     after, after_records = input_stamp(env=env, root=target)
     unchanged = before == after and content_id(after_records) == seal['sha256']
     (target / f'{label}_input_stamp.json').write_text(json.dumps(
@@ -371,7 +473,9 @@ def run(target, risk_limits=False):
     results = target / 'strategy/rolling_validation_results'
     archive = target / label
     archive.mkdir(exist_ok=True)
-    for name in ['equity_curve.csv', 'portfolio_selections.csv', 'trade_realized.csv', 'regime_state.csv', 'execution_fills.csv']:
+    for name in ['equity_curve.csv', 'portfolio_selections.csv', 'trade_realized.csv',
+                 'regime_state.csv', 'execution_fills.csv', 'raw_account_daily.csv',
+                 'raw_corporate_action_events.csv', 'raw_dividend_tax_lots.csv']:
         p = results / name
         if p.exists():
             shutil.copy2(p, archive / name)

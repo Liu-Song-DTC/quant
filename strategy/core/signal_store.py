@@ -35,7 +35,7 @@ class SignalStore:
             return self._get_from_df(code, date)
         return self._store.get((code, date))
 
-    def finalize(self, csv_path, membership_map=None):
+    def finalize(self, csv_path, membership_map=None, sealed_replay=False):
         """从CSV加载信号到DataFrame，释放dict内存。
 
         调用后 SignalStore 进入只读模式，_store dict 被释放。
@@ -87,7 +87,18 @@ class SignalStore:
         stat = source.stat()
         identity = {'version': 1, 'csv_stat': [stat.st_size, stat.st_mtime_ns], 'columns': use_cols}
         frame = None
-        if cache.exists() and meta.exists():
+        if sealed_replay:
+            if not cache.is_file() or not meta.is_file():
+                raise RuntimeError('sealed signal replay requires its columnar cache')
+            try:
+                cached_identity = json.loads(meta.read_text())
+                if (cached_identity.get('version') != identity['version']
+                        or cached_identity.get('columns') != identity['columns']):
+                    raise ValueError('sealed signal cache schema differs from CSV')
+                frame = pd.read_parquet(cache, columns=use_cols).astype(effective_dtypes)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                raise RuntimeError('sealed signal replay cache is unreadable') from exc
+        elif cache.exists() and meta.exists():
             try:
                 if json.loads(meta.read_text()) == identity:
                     frame = pd.read_parquet(cache, columns=use_cols).astype(effective_dtypes)

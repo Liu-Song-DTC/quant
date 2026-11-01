@@ -32,7 +32,7 @@ from core.industry_mapping import INDUSTRY_KEYWORDS, build_fine_industry_map
 from core.market_regime_detector import MarketRegimeDetector
 from core.stock_pool import get_stock_pool, get_exclusion_set
 from core.cmap_hist import resolve_hist_path as _resolve_cmap_hist
-from core.execution_context import load_context, save_context
+from core.execution_context import load_context, load_sealed_context, save_context
 
 # 情绪分析集成
 try:
@@ -2292,11 +2292,44 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         _events = pd.read_pickle(_events_file)
         if not {'code', 'ex_date'}.issubset(_events.columns):
             raise ValueError('raw arm corporate event table missing code/ex_date')
+        _event_keys = set()
         for _event in _events[['code', 'ex_date']].itertuples(index=False):
             _day = pd.Timestamp(_event.ex_date).date()
+            _code = str(_event.code).zfill(6)
+            _event_keys.add((_code, _day))
             if calendar[0].date() <= _day <= calendar[-1].date():
-                _held_action_guard[_day].add(str(_event.code).zfill(6))
-        print('原价执行研究臂: 未核实公司行动入账前, 持仓跨事件将拒绝回测')
+                _held_action_guard[_day].add(_code)
+        _raw_action_terms = {}
+        _raw_record_actions = _action_defaultdict(list)
+        _terms_file = os.environ.get('QUANT_RAW_ACTION_TERMS')
+        if _terms_file:
+            if os.environ.get('QUANT_RAW_CASH_POLICY') != 'next_session_after_payment':
+                raise ValueError('raw arm requires explicit next_session_after_payment cash policy')
+            from core.raw_corporate_action_ledger import IssuerAction
+            _terms = pd.read_csv(_terms_file, dtype={'code': str})
+            _required = {'code', 'record_date', 'ex_date', 'shareholder_bonus',
+                         'shareholder_cash', 'cash_payment_date', 'bonus_trading_date'}
+            if not _required.issubset(_terms.columns):
+                raise ValueError(f'raw issuer terms missing columns: {_required - set(_terms.columns)}')
+            for _row in _terms.itertuples(index=False):
+                _code = str(_row.code).zfill(6)
+                _ex = pd.Timestamp(_row.ex_date).date()
+                if (_code, _ex) not in _event_keys:
+                    raise ValueError(f'issuer term has no sealed provider event: {_code}/{_ex}')
+                _payment = pd.Timestamp(_row.cash_payment_date)
+                _later = calendar[calendar > _payment]
+                _available = _later[0].date() if len(_later) else datetime.max.date()
+                _action = IssuerAction(
+                    _code, _row.record_date, _row.ex_date,
+                    float(_row.shareholder_bonus), float(_row.shareholder_cash),
+                    _row.cash_payment_date, _available,
+                    None if pd.isna(_row.bonus_trading_date) else _row.bonus_trading_date)
+                _raw_action_terms[(_code, _ex)] = _action
+                _raw_record_actions[_action.record_date].append(_action)
+            print(f'原价公司行动: {len(_raw_action_terms)} 条发行人条款; '
+                  '现金在发放后的下一交易日才可动用')
+        else:
+            print('原价执行研究臂: 未核实公司行动入账前, 持仓跨事件将拒绝回测')
 
     def _execution_gap_ratio(i, j, filled, opening, previous_close):
         if raw_execution_arm:
@@ -2330,11 +2363,15 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     print("运行回测 ...")
     cash = float(initial_cash)
     positions = np.zeros(len(stock_codes), dtype=np.int32)
+    if raw_execution_arm:
+        from core.raw_corporate_action_ledger import RawCorporateActionLedger
+        _raw_account = RawCorporateActionLedger(cash)
     nav = np.full(n_dates, np.nan)
     daily_ret = np.full(n_dates - 1, np.nan)
     executed_exposure = np.zeros(n_dates, dtype=np.float64)
     executed_n_pos = np.zeros(n_dates, dtype=np.int32)
     selections = []
+    _raw_daily = []
     cost_tracker = {}
     _entry_dates = {}     # code -> 首次建仓日期
     _realized_trades = []  # 逐笔平仓审计
@@ -2351,6 +2388,36 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         })
     _trade_invested = defaultdict(float)
     _trade_received = defaultdict(float)
+
+    def _sync_raw_account(action_events=()):
+        nonlocal cash
+        if not raw_execution_arm:
+            return
+        cash = _raw_account.cash
+        for _j, _code in enumerate(stock_codes):
+            positions[_j] = _raw_account.shares.get(_code, 0)
+        for _event in action_events:
+            _code = _event['code']
+            _j = code_to_idx[_code]
+            if _event['event'] == 'ex_entitlement':
+                if _trade_invested.get(_code, 0) <= 0:
+                    raise RuntimeError(f'entitlement has no open raw trade: {_code}/{date}')
+                _trade_received[_code] += _event['cash_amount']
+                _action = _raw_action_terms[(_code, _event['date'])]
+                if _code in cost_tracker:
+                    _old_shares, _old_avg = cost_tracker[_code]
+                    if _old_shares != _event['record_shares']:
+                        raise RuntimeError(f'raw cost and entitlement shares diverge: {_code}/{date}')
+                    cost_tracker[_code] = [_old_shares,
+                        (_old_avg - _action.cash_per_share) / (1.0 + _action.bonus_per_share)]
+            elif _event['event'] == 'bonus_tradable' and _code in cost_tracker:
+                cost_tracker[_code][0] = int(positions[_j])
+
+    def _raw_fill(code, side, shares, price, fees):
+        nonlocal cash
+        tax = _raw_account.fill(code, side, int(shares), float(price), float(fees))
+        cash = _raw_account.cash
+        return tax
 
     def _log_realized(code, date, sell_px):
         """全仓退出时记录逐笔交易 (口径与历史trade_realized.csv一致: ret=exit_px/avg_cost-1)"""
@@ -2378,7 +2445,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                    'buy_limit_up_skip': 0, 'sell_limit_down_skip': 0,
                    'sell_tplus1_blocked': 0, 'buy_cash_insufficient': 0,
                    'gap_buy_penalized': 0, 'gap_sell_penalized': 0,
-                   'tranche_filled': 0, 'tranche_cash_insufficient': 0}
+                   'tranche_filled': 0, 'tranche_cash_insufficient': 0,
+                   'buy_raw_lot_skipped': 0}
 
     # T+1 结算：当日买入的股票不可卖出
     tplus1_enabled = config.get('cost_model', {}).get('t_plus_1_enabled', True)
@@ -2392,12 +2460,17 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         px_today = close_px[i]
         ok = tradable[i]
         if raw_execution_arm:
+            _sync_raw_account(_raw_account.advance(date))
             for _code in _held_action_guard.get(date, ()):
                 _j = code_to_idx.get(_code)
-                if _j is not None and positions[_j] > 0:
+                if (_j is not None and positions[_j] > 0 and
+                        (_code, date) not in _raw_action_terms):
                     raise RuntimeError(f'raw execution requires issuer settlement terms before '
                                        f'processing held corporate action: {_code}/{date}')
             held = positions > 0
+            for _code, _count in _raw_account.restricted_bonus.items():
+                if _count:
+                    held[code_to_idx[_code]] = True
             # A traded QFQ session with no raw close is a data gap, not a
             # suspension. Marking a position with yesterday's close here
             # would silently suppress its actual daily gain or loss.
@@ -2453,9 +2526,15 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     sell_px = sell_px * 0.97  # 跳空低开超板阈: 成交价再折让
                     _fill_stats['gap_sell_penalized'] += 1
                 impact = _impact(_adv_matrix[i, j], positions[j], sell_px)
-                proceeds = float(positions[j]) * sell_px * (1.0 - COMMISSION - _STAMP_ARR[i] - impact)
-                cash += proceeds
-                _record_fill(code, date, 'SELL', positions[j], sell_px, impact, _STAMP_ARR[i], float(open_today[j]))
+                _sell_shares = int(positions[j])
+                _sell_fees = _sell_shares * sell_px * (COMMISSION + _STAMP_ARR[i] + impact)
+                if raw_execution_arm:
+                    _dividend_tax = _raw_fill(code, 'SELL', _sell_shares, sell_px, _sell_fees)
+                    proceeds = _sell_shares * sell_px - _sell_fees - _dividend_tax
+                else:
+                    proceeds = _sell_shares * sell_px - _sell_fees
+                    cash += proceeds
+                _record_fill(code, date, 'SELL', _sell_shares, sell_px, impact, _STAMP_ARR[i], float(open_today[j]))
                 _trade_received[code] += proceeds
                 _log_realized(code, date, sell_px)
                 positions[j] = 0
@@ -2491,9 +2570,15 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                         sell_px = sell_px * 0.97
                         _fill_stats['gap_sell_penalized'] += 1
                     impact = _impact(_adv_matrix[i, j], abs(diff), sell_px)
-                    proceeds = abs(diff) * sell_px * (1.0 - COMMISSION - _STAMP_ARR[i] - impact)
-                    cash += proceeds
-                    _record_fill(code, date, 'SELL', abs(diff), sell_px, impact, _STAMP_ARR[i], openx)
+                    _sell_shares = int(abs(diff))
+                    _sell_fees = _sell_shares * sell_px * (COMMISSION + _STAMP_ARR[i] + impact)
+                    if raw_execution_arm:
+                        _dividend_tax = _raw_fill(code, 'SELL', _sell_shares, sell_px, _sell_fees)
+                        proceeds = _sell_shares * sell_px - _sell_fees - _dividend_tax
+                    else:
+                        proceeds = _sell_shares * sell_px - _sell_fees
+                        cash += proceeds
+                    _record_fill(code, date, 'SELL', _sell_shares, sell_px, impact, _STAMP_ARR[i], openx)
                     _trade_received[code] += proceeds
                     positions[j] = target_shares
                     # 减仓: 减少成本追踪股数 (均价不变)
@@ -2545,6 +2630,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     cost = diff * buy_px * (1.0 + COMMISSION + impact)
                     _buy_plan.append((code, j, buy_px, target_shares, curr_shares, diff, impact, cost))
                     _total_buy_cost += cost
+                elif raw_execution_arm and diff > 0:
+                    _fill_stats['buy_raw_lot_skipped'] += 1
 
             # 现金不足时按比例缩放所有买入
             _buy_scale = 1.0
@@ -2557,7 +2644,11 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 if scaled_diff >= 100:
                     scaled_cost = scaled_diff * buy_px * (1.0 + COMMISSION + impact)
                     if scaled_cost <= cash + 1e-6:
-                        cash -= scaled_cost
+                        if raw_execution_arm:
+                            _raw_fill(code, 'BUY', scaled_diff, buy_px,
+                                      scaled_diff * buy_px * (COMMISSION + impact))
+                        else:
+                            cash -= scaled_cost
                         _record_fill(code, date, 'BUY', scaled_diff, buy_px, impact, 0., float(open_today[j]))
                         _trade_invested[code] += scaled_cost
                         positions[j] = curr_shares + scaled_diff
@@ -2581,6 +2672,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                         _fill_stats['buy_cash_insufficient'] += 1
                 else:
                     _fill_stats['buy_cash_insufficient'] += 1
+                    if raw_execution_arm:
+                        _fill_stats['buy_raw_lot_skipped'] += 1
             _pending = None  # 挂单执行完毕
 
             # 分段建仓(实验): 第二段限价单检查 — 当日low触及限价 → min(开盘,限价)成交
@@ -2608,7 +2701,11 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                         if buy_shares < 100:
                             _fill_stats['tranche_cash_insufficient'] += 1
                             continue  # 现金不足, 挂单保留
-                    cash -= buy_shares * unit
+                    if raw_execution_arm:
+                        _raw_fill(code, 'BUY', buy_shares, fill_px,
+                                  buy_shares * fill_px * (COMMISSION + impact))
+                    else:
+                        cash -= buy_shares * unit
                     _record_fill(code, date, 'BUY', buy_shares, fill_px, impact, 0., min(float(open_px[i, j]), _lp))
                     _trade_invested[code] += buy_shares * unit
                     positions[j] += buy_shares
@@ -2627,11 +2724,51 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     else:
                         _pending_limits[code][1] = _rem
 
+        if raw_execution_arm:
+            if abs(cash - _raw_account.cash) > 1e-7 or any(
+                    positions[_j] != _raw_account.shares.get(_code, 0)
+                    for _j, _code in enumerate(stock_codes)):
+                raise RuntimeError(f'raw execution account diverged after fills: {date}')
+            for _action in _raw_record_actions.get(date, ()):
+                if _raw_account.shares.get(_action.code, 0) > 0:
+                    _captured = _raw_account.capture_at_record_close(_action)
+                    _raw_account.action_log.append({
+                        'date': date, 'code': _action.code, 'event': 'record_close',
+                        'record_shares': _captured['record_shares'],
+                        'bonus_shares': _captured['bonus_shares'],
+                        'cash_amount': _captured['cash_dividend'],
+                    })
+
         # 当前持仓市值 (开盘成交后, 按当日收盘价计)
+        _restricted_value = 0.0
+        if raw_execution_arm:
+            _restricted_value = float(sum(
+                _count * float(px_today[code_to_idx[_code]])
+                for _code, _count in _raw_account.restricted_bonus.items() if _count))
         pos_value = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
-        nav[i] = cash + pos_value
+        pos_value += _restricted_value
+        nav[i] = cash + pos_value + (_raw_account.cash_receivable if raw_execution_arm else 0.0)
+        if raw_execution_arm:
+            _raw_close = {
+                _code: float(px_today[code_to_idx[_code]])
+                for _code in set(_raw_account.shares) | set(_raw_account.restricted_bonus)
+                if _raw_account.shares.get(_code, 0) + _raw_account.restricted_bonus.get(_code, 0)
+            }
+            _ledger_equity = _raw_account.equity(_raw_close)
+            if abs(nav[i] - _ledger_equity) > 1e-6:
+                raise RuntimeError(f'raw NAV and ledger equity diverge: {date}')
+            _raw_daily.append({
+                'date': str(date), 'cash': cash,
+                'cash_receivable': _raw_account.cash_receivable,
+                'tradable_value': pos_value - _restricted_value,
+                'restricted_bonus_value': _restricted_value,
+                'nav': nav[i],
+            })
         executed_exposure[i] = pos_value / max(nav[i], 1.0)
-        executed_n_pos[i] = int(np.count_nonzero(positions))
+        executed_n_pos[i] = int(sum(
+            1 for _code in set(_raw_account.shares) | set(_raw_account.restricted_bonus)
+            if _raw_account.shares.get(_code, 0) + _raw_account.restricted_bonus.get(_code, 0) > 0
+        )) if raw_execution_arm else int(np.count_nonzero(positions))
         if i > 0:
             daily_ret[i - 1] = (nav[i] - nav[i - 1]) / max(nav[i - 1], 1.0)
             # 波动率控制喂数 — A批修复(2026-08-30 review): 旧代码只在死的Backtrader路径调用,
@@ -2648,6 +2785,12 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             if positions[j] > 0:
                 cur_pos[stock_codes[j]] = float(positions[j]) * float(px_today[j])
                 prices[stock_codes[j]] = float(px_today[j])
+        if raw_execution_arm:
+            for _code, _count in _raw_account.restricted_bonus.items():
+                if _count:
+                    _value = _count * float(px_today[code_to_idx[_code]])
+                    cur_pos[_code] = cur_pos.get(_code, 0.0) + _value
+                    prices[_code] = float(px_today[code_to_idx[_code]])
         # 分段建仓(实验): 限价单余量计入持仓市值, 防止下个调仓日开盘回补吃掉限价窗口
         if tranche_enabled and _pending_limits:
             for code, (_lp, _rem, _ei) in _pending_limits.items():
@@ -2658,7 +2801,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         try:
             target = strategy.generate_positions(
                 date=date, universe=universe, current_positions=cur_pos,
-                cash=cash, prices=prices, cost=cost_tracker)
+                cash=cash + (_raw_account.cash_receivable if raw_execution_arm else 0.0),
+                prices=prices, cost=cost_tracker)
         except Exception as e:
             import traceback
             print(f" [选股异常] date={date}: {e}")
@@ -2685,7 +2829,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         if target:
             _target_total = sum(target.values())
             _cur_pos_value = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
-            _available = cash + _cur_pos_value  # max deployable = cash + current holdings
+            _available = cash + _cur_pos_value - (_restricted_value if raw_execution_arm else 0.0)
             if _target_total > _available * 0.98:
                 _scale = (_available * 0.98) / max(_target_total, 1.0)
                 target = {c: v * _scale for c, v in target.items()}
@@ -2815,6 +2959,16 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             'date', 'code', 'side', 'shares', 'price', 'gross_notional',
             'commission', 'stamp_tax', 'impact_cost', 'price_adjustment_cost',
         ]).to_csv(os.path.join(os.path.dirname(_eq_path), 'execution_fills.csv'), index=False)
+        if raw_execution_arm:
+            _raw_dir = os.path.dirname(_eq_path)
+            pd.DataFrame(_raw_daily).to_csv(
+                os.path.join(_raw_dir, 'raw_account_daily.csv'), index=False)
+            pd.DataFrame(_raw_account.action_log, columns=[
+                'date', 'code', 'event', 'record_shares', 'bonus_shares', 'cash_amount',
+            ]).to_csv(os.path.join(_raw_dir, 'raw_corporate_action_events.csv'), index=False)
+            pd.DataFrame(_raw_account.tax_log, columns=[
+                'date', 'code', 'acquired', 'shares', 'gross_dividend', 'rate', 'tax',
+            ]).to_csv(os.path.join(_raw_dir, 'raw_dividend_tax_lots.csv'), index=False)
         # Always distinguish actual holdings after simulated fills from portfolio targets.
         # A target above 100% can be reduced by the executor's cash constraint.
         _rs = getattr(getattr(strategy, 'portfolio', None), '_dbg', {}).get('positions_dist', [])
@@ -2834,7 +2988,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             'annual_max_drawdown': annual_mdd,
             'final_value': final_nav, 'selections': selections,
             'n_dates': n_dates, 'realized_trades': _realized_trades,
-            'fill_stats': _fill_stats, 'execution_fills': _execution_fills}
+            'fill_stats': _fill_stats, 'execution_fills': _execution_fills,
+            'raw_account_daily': _raw_daily,
+            'raw_action_events': _raw_account.action_log if raw_execution_arm else [],
+            'raw_dividend_tax_lots': _raw_account.tax_log if raw_execution_arm else []}
 
 
 if __name__ == "__main__":
@@ -2915,10 +3072,21 @@ if __name__ == "__main__":
     # 复用已有信号CSV(仅portfolio/执行变更时), 否则重新生成
     _signals_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 'rolling_validation_results', 'backtest_signals.csv')
-    _execution_context = load_context(_signals_csv)
-    if os.path.exists(_signals_csv) and not _signals_stale(_signals_csv) and _execution_context is not None:
-        print(f"复用已有信号: {_signals_csv}")
-        strategy.signal_store.finalize(_signals_csv, membership_map=membership_map)
+    _sealed_signal_replay = os.environ.get('QUANT_SIGNAL_REPLAY') == '1'
+    if _sealed_signal_replay:
+        _replay_sha256 = os.environ.get('QUANT_SIGNAL_REPLAY_SHA256')
+        if not _replay_sha256:
+            raise RuntimeError('sealed signal replay requires content identity')
+        _execution_context = load_sealed_context(_signals_csv, _replay_sha256)
+    else:
+        _execution_context = load_context(_signals_csv)
+    if _sealed_signal_replay and (not os.path.exists(_signals_csv) or _execution_context is None):
+        raise RuntimeError('sealed signal replay requires signals and execution context')
+    if _sealed_signal_replay or (os.path.exists(_signals_csv) and
+            not _signals_stale(_signals_csv) and _execution_context is not None):
+        print(f"复用已有信号: {_signals_csv} (封存回放={_sealed_signal_replay})")
+        strategy.signal_store.finalize(_signals_csv, membership_map=membership_map,
+                                       sealed_replay=_sealed_signal_replay)
         strategy.index_data = _execution_context['index_data']
         strategy.industry_stock_counts = _execution_context['industry_stock_counts']
     else:
