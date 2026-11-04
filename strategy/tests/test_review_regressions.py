@@ -758,7 +758,7 @@ class CausalityTests(unittest.TestCase):
 class ExecutionTests(unittest.TestCase):
     def replay(self, closes, volumes=None, goals=None, *, raw_opens=None,
                raw_closes=None, raw_arm=False, action_day=None,
-               missing_raw_day=None, action_terms=None):
+               missing_raw_day=None, action_terms=None, code='600000'):
         # Execute the real engine function with fixture data, isolated output paths
         # and a tiny strategy whose decisions are known in advance.
         src = Path(__file__).resolve().parents[1] / 'bt_execution.py'
@@ -775,22 +775,22 @@ class ExecutionTests(unittest.TestCase):
             pd.DataFrame({'datetime': dates, 'open': [10.] * len(dates),
                           'low': np.minimum(closes, 10), 'close': closes,
                           'volume': volumes if volumes is not None else [100000.] * len(dates),
-                          'amount': [100000000.] * len(dates)}).to_csv(data / '600000_qfq.csv', index=False)
-            raw = root / 'raw/600000'; raw.mkdir(parents=True)
+                          'amount': [100000000.] * len(dates)}).to_csv(data / f'{code}_qfq.csv', index=False)
+            raw = root / 'raw' / code; raw.mkdir(parents=True)
             raw_opens = raw_opens if raw_opens is not None else [10.] * len(dates)
             raw_closes = raw_closes if raw_closes is not None else closes
-            pd.DataFrame({'股票代码': ['600000'] * len(dates), '日期': dates,
+            pd.DataFrame({'股票代码': [code] * len(dates), '日期': dates,
                           '开盘': raw_opens, '最高': np.maximum(raw_opens, raw_closes),
                           '最低': np.minimum(raw_opens, raw_closes),
                           '收盘': raw_closes}).drop(index=[missing_raw_day] if missing_raw_day is not None else []).to_csv(raw / 'none.csv', index=False)
             event_folder = root / 'data/alternative_data'; event_folder.mkdir(parents=True)
-            events = pd.DataFrame({'code': ['600000'] if action_day is not None else [],
+            events = pd.DataFrame({'code': [code] if action_day is not None else [],
                                    'ex_date': [dates[action_day]] if action_day is not None else []})
             events.to_pickle(event_folder / 'events_table.pkl')
             terms_path = None
             if action_terms is not None:
                 terms = {
-                    'code': '600000', 'record_date': dates[action_day - 1],
+                    'code': code, 'record_date': dates[action_day - 1],
                     'ex_date': dates[action_day], 'shareholder_bonus': 0.0,
                     'shareholder_cash': 0.0,
                     'cash_payment_date': dates[action_day],
@@ -801,7 +801,7 @@ class ExecutionTests(unittest.TestCase):
                     terms['bonus_trading_date'] = dates[action_day]
                 terms_path = root / 'issuer_terms.csv'
                 pd.DataFrame([terms]).to_csv(terms_path, index=False)
-            targets = goals or {5: {'600000': 10000}, 6: {}}
+            targets = goals or {5: {code: 10000}, 6: {}}
             state = SimpleNamespace(update_returns=lambda x: None, _dbg={})
             seen = []
             def generate(**kw):
@@ -836,6 +836,16 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(buys), 1)
         self.assertEqual(buys[0]['shares'], 700)
         self.assertEqual(result['fill_stats']['gap_buy_penalized'], 0)
+
+    def test_raw_arm_uses_star_market_minimum_and_one_share_increment(self):
+        rejected, _ = self.replay([10.] * 10, raw_arm=True, code='688258',
+                                  goals={5: {'688258': 1990}, 6: {}})
+        self.assertFalse([row for row in rejected['execution_fills'] if row['side'] == 'BUY'])
+        accepted, _ = self.replay([10.] * 10, raw_arm=True, code='688258',
+                                  goals={5: {'688258': 2020}, 6: {}})
+        buys = [row for row in accepted['execution_fills'] if row['side'] == 'BUY']
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(buys[0]['shares'], 201)
 
     def test_raw_arm_does_not_admit_stock_without_raw_close(self):
         result, seen = self.replay([10.] * 10, raw_arm=True, missing_raw_day=6)

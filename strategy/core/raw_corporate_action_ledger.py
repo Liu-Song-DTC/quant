@@ -88,8 +88,9 @@ class RawCorporateActionLedger:
             raise ValueError('invalid raw fill')
         dividend_tax = 0.0
         if side == 'BUY':
-            if shares % 100:
-                raise ValueError('buy quantity must be a 100-share lot')
+            from .trading_lots import valid_buy_shares
+            if not valid_buy_shares(code, shares):
+                raise ValueError('buy quantity violates board minimum or lot size')
             cost = shares * raw_price + fees
             if cost > self.cash + 1e-8:
                 raise ValueError('insufficient cash')

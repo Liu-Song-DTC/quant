@@ -727,12 +727,8 @@ def _normalize_code(code: str) -> str:
 
 def _lot_shares(code: str, amount: float, price: float) -> int:
     """整手规则: 科创板(688/689)最小200股+1股递增, 其余100股整手. 返回0=不足最小申报."""
-    if price <= 0:
-        return 0
-    if code.startswith(('688', '689')):
-        return int(amount / price) if amount / price >= 200 else 0
-    s = int(amount / price / 100) * 100
-    return s if s >= 100 else 0
+    from core.trading_lots import buy_shares_for_budget
+    return buy_shares_for_budget(code, amount, price)
 
 
 def main():

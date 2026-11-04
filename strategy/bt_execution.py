@@ -2067,6 +2067,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     """向量化回测 — 替换 backtrader 逐 bar 循环。策略逻辑完全不变。"""
     import numpy as np
     from tqdm import tqdm
+    from core.trading_lots import buy_shares_for_budget, valid_buy_shares
     # Execution-only research arm: QFQ is still used for signals and
     # ex-rights-aware limit/gap checks. Unverified held actions abort below.
     raw_execution_arm = os.environ.get('QUANT_RAW_EXECUTION') == '1'
@@ -2549,7 +2550,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 if np.isnan(open_today[j]):
                     continue
                 openx = float(open_today[j])
-                target_shares = int(tv / openx / 100) * 100
+                target_shares = (buy_shares_for_budget(code, tv, openx)
+                                 if raw_execution_arm else int(tv / openx / 100) * 100)
                 curr_shares = int(positions[j])
                 diff = target_shares - curr_shares
                 if diff <= -100:  # 减仓 → 释放现金
@@ -2611,15 +2613,17 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                         print(f"[GAP] 买 {code} {date} gap={_gap:+.4f} thr={_gap_thr_arr[j]:.3f}", flush=True)
                     buy_px = buy_px * 1.03  # 跳空高开超板阈: 成交价再折让
                     _fill_stats['gap_buy_penalized'] += 1
-                target_shares = int(tv / buy_px / 100) * 100
+                target_shares = (buy_shares_for_budget(code, tv, buy_px)
+                                 if raw_execution_arm else int(tv / buy_px / 100) * 100)
                 curr_shares = int(positions[j])
                 diff = target_shares - curr_shares
-                if diff >= 100:
+                if diff >= 100 and (not raw_execution_arm or valid_buy_shares(code, diff)):
                     # 分段建仓(实验): 开盘回补取代限价单(撤单, 防超买)
                     if tranche_enabled and code in _pending_limits:
                         _pending_limits.pop(code, None)
                     # 新入场拆段: 首段开盘, 余量挂限价单(需两段各>=1手)
-                    if tranche_enabled and curr_shares == 0 and diff >= 200:
+                    if (tranche_enabled and curr_shares == 0 and diff >= 200
+                            and not (raw_execution_arm and code.startswith(('688', '689')))):
                         first = max(int(diff * tranche_ratio / 100) * 100, 100)
                         rem = diff - first
                         if rem >= 100:
@@ -2640,8 +2644,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             _buy_plan.sort(key=lambda x: -x[5])  # sort by diff descending
             for (code, j, buy_px, target_shares, curr_shares, diff, impact, cost) in _buy_plan:
                 _fill_stats['buy_attempted'] += 1
-                scaled_diff = max(int(diff * _buy_scale / 100) * 100, 0)
-                if scaled_diff >= 100:
+                scaled_diff = (buy_shares_for_budget(code, diff * _buy_scale * buy_px, buy_px)
+                               if raw_execution_arm else max(int(diff * _buy_scale / 100) * 100, 0))
+                if scaled_diff >= 100 and (not raw_execution_arm or valid_buy_shares(code, scaled_diff)):
                     scaled_cost = scaled_diff * buy_px * (1.0 + COMMISSION + impact)
                     if scaled_cost <= cash + 1e-6:
                         if raw_execution_arm:
