@@ -156,6 +156,18 @@ def fetch_one(code):
         s = s if np.isfinite(s) else 0.0
         D = D if np.isfinite(D) else 0.0
         rows.append((code, pd.Timestamp(r['除权除息日']), s, D))
+    if os.path.exists(f):
+        with open(f, 'rb') as handle:
+            previous_rows = pickle.load(handle)
+        previous_by_date = {entry[1]: entry for entry in previous_rows}
+        for index, row in enumerate(rows):
+            previous = previous_by_date.get(row[1])
+            if previous is not None and not np.allclose(
+                    row[2:], previous[2:], rtol=0, atol=1e-12, equal_nan=True):
+                print(f'[来源改值守卫] {code}@{row[1]}: '
+                      f'旧(s,D)={previous[2:]} 新(s,D)={row[2:]} '
+                      '⇒ 保留旧条款并待人工核查', flush=True)
+                rows[index] = previous
     _dump(f, rows)
     return len(rows)
 
