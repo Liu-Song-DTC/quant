@@ -290,6 +290,7 @@ def prepare(name, target_mode=None, workers=None, snapshot_from=None, legacy_con
 def write_raw_account_audit(target, archive):
     import numpy as np
     import pandas as pd
+    from core.trading_lots import valid_buy_shares
 
     daily = pd.read_csv(archive / 'raw_account_daily.csv', dtype={'date': str})
     curve = pd.read_csv(archive / 'equity_curve.csv', dtype={'date': str})
@@ -305,7 +306,9 @@ def write_raw_account_audit(target, archive):
     if not fills['date'].is_monotonic_increasing:
         raise ValueError('raw fills must be chronological')
     buys = fills[fills['side'] == 'BUY']
-    if (fills['shares'] <= 0).any() or (buys['shares'] % 100 != 0).any():
+    if (fills['shares'] <= 0).any() or any(
+            not valid_buy_shares(code, int(shares))
+            for code, shares in zip(buys['code'], buys['shares'])):
         raise ValueError('invalid raw fill share count')
     direction = np.where(fills['side'] == 'BUY', 1.0, -1.0)
     fills['reference_open'] = (fills['price'] - direction *

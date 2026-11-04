@@ -156,14 +156,14 @@ class SnapshotTests(unittest.TestCase):
                       'nav': [1000.0, 1010.0]}).to_csv(archive / 'raw_account_daily.csv', index=False)
         pd.DataFrame({'date': dates, 'nav': [1000.0, 1010.0]}).to_csv(
             archive / 'equity_curve.csv', index=False)
-        pd.DataFrame({'date': [dates[0]], 'code': ['000001'], 'side': ['BUY'], 'shares': [100],
-                      'price': [10.05], 'price_adjustment_cost': [5.0]}).to_csv(
+        pd.DataFrame({'date': [dates[0]], 'code': ['688258'], 'side': ['BUY'], 'shares': [201],
+                      'price': [10.05], 'price_adjustment_cost': [10.05]}).to_csv(
             archive / 'execution_fills.csv', index=False)
         pd.DataFrame(columns=['date', 'code', 'event', 'record_shares',
                               'bonus_shares', 'cash_amount']).to_csv(
             archive / 'raw_corporate_action_events.csv', index=False)
         pd.DataFrame(columns=['tax']).to_csv(archive / 'raw_dividend_tax_lots.csv', index=False)
-        raw = self.root / 'data/stock_data/raw_data/000001/none.csv'
+        raw = self.root / 'data/stock_data/raw_data/688258/none.csv'
         raw.parent.mkdir(parents=True)
         raw.write_text('日期,开盘\n2026-01-05,10.00\n', encoding='utf-8')
         with patch.dict(os.environ, {'QUANT_RAW_EXECUTION': '1'}, clear=True):
@@ -173,6 +173,11 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(report['max_raw_open_error'], 0.0)
         self.assertEqual(report['max_nav_error'], 0.0)
         self.assertFalse((archive / 'raw_lot_audit.json').exists())
+        pd.DataFrame({'date': [dates[0]], 'code': ['688258'], 'side': ['BUY'], 'shares': [100],
+                      'price': [10.05], 'price_adjustment_cost': [5.0]}).to_csv(
+            archive / 'execution_fills.csv', index=False)
+        with self.assertRaisesRegex(ValueError, 'invalid raw fill share count'):
+            review.write_raw_account_audit(self.root, archive)
 
     def test_mtime_only_change_preserves_content_identity(self):
         before, _ = review.input_stamp({})
