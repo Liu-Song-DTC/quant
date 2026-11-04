@@ -2829,7 +2829,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         if target:
             _target_total = sum(target.values())
             _cur_pos_value = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0)))
-            _available = cash + _cur_pos_value - (_restricted_value if raw_execution_arm else 0.0)
+            _available = cash + _cur_pos_value
             if _target_total > _available * 0.98:
                 _scale = (_available * 0.98) / max(_target_total, 1.0)
                 target = {c: v * _scale for c, v in target.items()}

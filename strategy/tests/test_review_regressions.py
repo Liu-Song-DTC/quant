@@ -893,6 +893,23 @@ class ExecutionTests(unittest.TestCase):
         self.assertLess(result['realized_trades'][0]['ret'], 0)
         self.assertLess(result['realized_trades'][0]['pnl'], 0)
 
+    def test_restricted_bonus_does_not_reduce_spendable_budget_twice(self):
+        goals = {5: {'600000': 20000}, 6: {'600000': 11700},
+                 7: {'600000': 100000}, 8: {}, 9: {}}
+        executions = []
+        for bonus in (0.0, 0.5):
+            terms = {'shareholder_bonus': bonus}
+            if bonus:
+                terms['bonus_trading_date'] = '2026-01-14'
+            result, _ = self.replay(
+                [10.] * 10, goals=goals, raw_opens=[20.] * 7 + [13.] * 3,
+                raw_closes=[20.] * 7 + [13.] * 3, raw_arm=True,
+                action_day=7, action_terms=terms)
+            executions.append([fill['shares'] for fill in result['execution_fills']
+                               if fill['side'] == 'BUY' and fill['date'] == '2026-01-13'])
+        self.assertTrue(executions[0])
+        self.assertEqual(executions[0], executions[1])
+
     def test_open_fill_does_not_depend_on_same_day_close_or_low_volume(self):
         closes = [10.] * 10; closes[6] = 1.5
         vols = [100000.] * 10; vols[6] = 50
