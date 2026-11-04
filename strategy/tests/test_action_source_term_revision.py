@@ -31,6 +31,27 @@ class ActionSourceRevisionTests(unittest.TestCase):
                 self.assertEqual(pickle.load(handle), prior)
             self.assertIn('来源改值守卫', str(output.call_args_list))
 
+    def test_nonempty_response_keeps_missing_old_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parts = Path(directory)
+            prior = [('300953', pd.Timestamp('2024-05-28'), 0.0, .2),
+                     ('300953', pd.Timestamp('2025-06-13'), .4, .3)]
+            with (parts / '300953.pkl').open('wb') as handle:
+                pickle.dump(prior, handle)
+            response = pd.DataFrame({
+                '除权除息日': ['2025-06-13'],
+                '送转股份-送转总比例': [4.0],
+                '现金分红-现金分红比例': [3.0],
+            })
+            with patch.object(actions, 'PART', str(parts)), \
+                 patch.object(actions, 'MAX_AGE', 0), \
+                 patch.object(actions.ak, 'stock_fhps_detail_em', return_value=response), \
+                 patch('builtins.print') as output:
+                self.assertEqual(actions.fetch_one('300953'), 2)
+            with (parts / '300953.pkl').open('rb') as handle:
+                self.assertEqual(set(pickle.load(handle)), set(prior))
+            self.assertIn('来源撤回守卫', str(output.call_args_list))
+
 
 if __name__ == '__main__':
     unittest.main()

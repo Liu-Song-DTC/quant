@@ -168,6 +168,13 @@ def fetch_one(code):
                       f'旧(s,D)={previous[2:]} 新(s,D)={row[2:]} '
                       '⇒ 保留旧条款并待人工核查', flush=True)
                 rows[index] = previous
+    if os.path.exists(f):
+        old_dates = {entry[1] for entry in rows}
+        withdrawn = [entry for entry in previous_rows if entry[1] not in old_dates]
+        if withdrawn:
+            print(f'[来源撤回守卫] {code}: 非空响应缺少 {len(withdrawn)} 个旧除权日 '
+                  '⇒ 保留旧条款并待人工核查', flush=True)
+            rows.extend(withdrawn)
     _dump(f, rows)
     return len(rows)
 
