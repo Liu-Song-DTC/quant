@@ -120,7 +120,10 @@ def _calibrate_stock_worker(args):
     df.rename(columns={k: v for k, v in col_map.items() if k in df.columns}, inplace=True)
 
     if 'datetime' in df.columns:
-        stock_dates = sorted(df['datetime'].tolist())
+        # Keep labels and all OHLCV arrays on the same chronological row order.
+        df.sort_values('datetime', inplace=True, kind='stable')
+        df.reset_index(drop=True, inplace=True)
+        stock_dates = df['datetime'].tolist()
     else:
         stock_dates = sorted(df.index.tolist())
 
@@ -276,6 +279,8 @@ def _calibrate_stock_worker(args):
             current_price = close_arr[idx]
             if current_price > 0:
                 row['future_ret'] = np.float32((future_price - current_price) / current_price)
+                # The label is unavailable until this stock's forward bar closes.
+                row['label_end_date'] = pd.Timestamp(stock_dates[idx + forward_period])
                 results.append(row)
 
     # 清理本只股票在worker中的基本面缓存（防止worker处理多只股票后缓存膨胀到GB级）

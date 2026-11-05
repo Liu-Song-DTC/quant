@@ -68,6 +68,17 @@ def get_calibration_window(backtest_quarter_id, n_quarters=20):
     return start_date, end_date
 
 
+def select_calibration_window(factor_df, calib_start, calib_end, quarter_start):
+    """Use only labels fully observed before the quarter being calibrated."""
+    if 'label_end_date' not in factor_df.columns:
+        raise RuntimeError('标定因子数据缺少 label_end_date；旧缓存必须重建')
+    dates = pd.to_datetime(factor_df['date'])
+    label_ends = pd.to_datetime(factor_df['label_end_date'])
+    mask = ((dates >= calib_start) & (dates <= calib_end)
+            & (label_ends < quarter_start))
+    return factor_df.loc[mask].copy()
+
+
 def _to_native(obj):
     """递归转换 numpy 类型为 Python 原生类型"""
     import numpy as np
@@ -174,15 +185,14 @@ def main():
 
     for q_id in all_quarters:
         calib_start, calib_end = get_calibration_window(q_id, n_quarters=20)
+        q_start, q_end = quarter_date_range(q_id)
         if calib_end > max_calib_end:
             calib_end = max_calib_end
 
         print(f"\n[{q_id}] 标定窗口: {calib_start.date()} ~ {calib_end.date()}")
 
         # 切片因子数据
-        window_df = factor_df[
-            (factor_df['date'] >= calib_start) & (factor_df['date'] <= calib_end)
-        ].copy()
+        window_df = select_calibration_window(factor_df, calib_start, calib_end, q_start)
         if len(window_df) < 10000:
             print(f"  跳过: 标定窗口数据不足 ({len(window_df)} 行)")
             continue
@@ -212,7 +222,6 @@ def main():
 
         save_quarter_config(industry_config, q_id, output_dir)
 
-        q_start, q_end = quarter_date_range(q_id)
         quarter_index[q_id] = {
             'start': str(q_start.date()),
             'end': str(q_end.date()),
