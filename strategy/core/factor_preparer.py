@@ -20,7 +20,7 @@ _worker_concept_calc = None
 
 from .config_loader import load_config
 from .fundamental import FundamentalData
-from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor, board_limit_up_pct
+from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor, compute_fundamental_score, board_limit_up_pct
 from scipy.special import erfinv
 
 
@@ -88,23 +88,17 @@ def _preload_fundamental_cache(fd, code, dates):
                 revenue_growth = _parse_pct(row.get('营业总收入-同比增长'))
                 gross_margin = _parse_pct(row.get('销售毛利率'))
 
-                # 综合评分
-                fund_score = 0.0
-                if roe is not None:
-                    fund_score += min(roe * 100, 30)
-                if profit_growth is not None:
-                    if profit_growth > 0.5: fund_score += 25
-                    elif profit_growth > 0.2: fund_score += 15
-                    elif profit_growth > 0: fund_score += 5
+                # 与信号引擎共用同一套 [0, 1] 基本面评分，避免旧的
+                # 0–90 分口径被 compress_fundamental_factor 截断到两个极值。
                 eps = row.get('每股收益')
                 if eps is not None:
                     try:
                         eps = float(eps)
-                        if eps > 0: fund_score += min(eps * 10, 20)
-                    except (ValueError, TypeError): pass
-                if revenue_growth is not None:
-                    if revenue_growth > 0.3: fund_score += 15
-                    elif revenue_growth > 0.1: fund_score += 10
+                    except (ValueError, TypeError):
+                        eps = None
+                fund_score = compute_fundamental_score(
+                    roe=roe, profit_growth=profit_growth,
+                    revenue_growth=revenue_growth, eps=eps)
 
                 # cf_to_profit
                 cf_to_profit = None

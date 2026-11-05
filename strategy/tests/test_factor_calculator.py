@@ -4,11 +4,15 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import numpy as np
+import pandas as pd
+from types import SimpleNamespace
 from core.factor_calculator import (
     calculate_indicators,
     compute_composite_factors,
     compress_fundamental_factor,
+    compute_fundamental_score,
 )
+from core.factor_preparer import _preload_fundamental_cache
 
 
 def _make_arrays(n: int = 200):
@@ -77,6 +81,21 @@ def test_compress_fundamental_factor():
 
     result2 = compress_fundamental_factor(0.95, 'fund_score')
     assert isinstance(result2, float)
+
+
+def test_prepared_fundamental_score_matches_signal_scale():
+    report = pd.DataFrame([{
+        '数据可用日期': '20250115', '净资产收益率': '12%',
+        '净利润-同比增长': '25%', '营业总收入-同比增长': '18%',
+        '每股收益': 0.6, '所处行业': '测试行业',
+    }])
+    fd = SimpleNamespace(stock_data={'000001': report})
+    cache, _ = _preload_fundamental_cache(fd, '000001', [pd.Timestamp('2025-01-16')])
+    expected = compute_fundamental_score(
+        roe=0.12, profit_growth=0.25, revenue_growth=0.18, eps=0.6)
+    actual = cache[pd.Timestamp('2025-01-16')]['fund_score']
+    assert actual == expected
+    assert 0 < actual < 1
 
 
 def test_calculate_indicators_volume_metrics():
