@@ -91,12 +91,12 @@ def main():
     # 只消费概念inception之后的归属行; 标定无gate时新概念权重被前视行稀释
     # (中报类4概念gate_share仅0.040, 96%样本在概念成立之前)。
     incep_path = os.path.join(BASE_DIR, '..', 'data', 'concept_inception.pkl')
-    concept_inception = None
-    if os.path.exists(incep_path):
-        with open(incep_path, 'rb') as f:
-            raw_inc = pickle.load(f)
-        concept_inception = {k: pd.Timestamp(v) for k, v in raw_inc.items()}
-        print(f"  PIT gate: concept_inception {len(concept_inception)}概念已加载")
+    if not os.path.exists(incep_path):
+        raise RuntimeError('缺少 concept_inception.pkl，不能标定历史概念因子')
+    with open(incep_path, 'rb') as f:
+        raw_inc = pickle.load(f)
+    concept_inception = {k: pd.Timestamp(v) for k, v in raw_inc.items()}
+    print(f"  PIT gate: concept_inception {len(concept_inception)}概念已加载")
 
     calibration_results = calibrate_industry_regime(
         window_df, candidate_factors, concept_map=concept_map,
