@@ -13,6 +13,7 @@
 import sys
 import os
 import gc
+import pickle
 import yaml
 import numpy as np
 import pandas as pd
@@ -161,6 +162,12 @@ def main():
         return
     factor_df['date'] = pd.to_datetime(factor_df['date'])
 
+    inception_path = os.path.join(base_dir, '..', 'data', 'concept_inception.pkl')
+    if not os.path.exists(inception_path):
+        raise RuntimeError('缺少 concept_inception.pkl，不能标定历史概念因子')
+    with open(inception_path, 'rb') as f:
+        concept_inception = {k: pd.Timestamp(v) for k, v in pickle.load(f).items()}
+
     backtest_start = pd.Timestamp('2021-01-01')
     backtest_end = pd.Timestamp('2026-06-30')
     # 避免forward_period导致的未来数据泄漏：标定窗口不能在factor_df最后日期-forward_period之后
@@ -203,7 +210,8 @@ def main():
 
         # 标定
         calibration_results = calibrate_industry_regime(
-            window_df, candidate_factors, concept_map=concept_map)
+            window_df, candidate_factors, concept_map=concept_map,
+            concept_inception=concept_inception)
 
         n_industries = len(calibration_results)
         if n_industries == 0:
@@ -211,7 +219,8 @@ def main():
             continue
 
         industry_config = select_best_factors(
-            calibration_results, window_df, concept_map=concept_map)
+            calibration_results, window_df, concept_map=concept_map,
+            concept_inception=concept_inception)
 
         # 统计
         n_with_neutral = sum(1 for v in industry_config.values() if 'factors' in v)

@@ -78,9 +78,9 @@ def main():
     calib_end = pd.Timestamp('2026-09-30')     # 季度前一天
     print(f"\n[{q_id}] 标定窗口: {calib_start.date()} ~ {calib_end.date()}")
 
-    window_df = factor_df[
-        (factor_df['date'] >= calib_start) & (factor_df['date'] <= calib_end)
-    ].copy()
+    from analysis.quarterly_calibrate import select_calibration_window
+    window_df = select_calibration_window(
+        factor_df, calib_start, calib_end, pd.Timestamp('2026-10-01'))
     if len(window_df) < 10000:
         print(f"  跳过: 标定窗口数据不足 ({len(window_df)} 行)")
         return

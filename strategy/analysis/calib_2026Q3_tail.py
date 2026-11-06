@@ -15,6 +15,7 @@ signal_engine._resolve_factor_config 对 2026Q3 返回 None → 全部回退全�
 import sys
 import os
 import gc
+import pickle
 import yaml
 import pandas as pd
 
@@ -67,23 +68,31 @@ def main():
     calib_end = pd.Timestamp('2026-06-30')     # 季度前一天
     print(f"\n[{q_id}] 标定窗口: {calib_start.date()} ~ {calib_end.date()}")
 
-    window_df = factor_df[
-        (factor_df['date'] >= calib_start) & (factor_df['date'] <= calib_end)
-    ].copy()
+    from analysis.quarterly_calibrate import select_calibration_window
+    window_df = select_calibration_window(
+        factor_df, calib_start, calib_end, pd.Timestamp('2026-07-01'))
     if len(window_df) < 10000:
         print(f"  跳过: 标定窗口数据不足 ({len(window_df)} 行)")
         return
     print(f"  数据: {len(window_df)} 行, {window_df['code'].nunique()} 只股票, "
           f"{window_df['date'].nunique()} 天")
 
+    inception_path = os.path.join(BASE_DIR, '..', 'data', 'concept_inception.pkl')
+    if not os.path.exists(inception_path):
+        raise RuntimeError('缺少 concept_inception.pkl，不能标定历史概念因子')
+    with open(inception_path, 'rb') as f:
+        concept_inception = {k: pd.Timestamp(v) for k, v in pickle.load(f).items()}
+
     calibration_results = calibrate_industry_regime(
-        window_df, candidate_factors, concept_map=concept_map)
+        window_df, candidate_factors, concept_map=concept_map,
+        concept_inception=concept_inception)
     if len(calibration_results) == 0:
         print("  跳过: 无有效行业标定结果")
         return
 
     industry_config = select_best_factors(
-        calibration_results, window_df, concept_map=concept_map)
+        calibration_results, window_df, concept_map=concept_map,
+        concept_inception=concept_inception)
 
     n_neutral = sum(1 for v in industry_config.values() if 'factors' in v)
     n_bull = sum(1 for v in industry_config.values() if 'bull_factors' in v)
