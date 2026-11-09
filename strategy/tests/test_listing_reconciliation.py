@@ -98,7 +98,7 @@ class ListingGateIntegrationTests(unittest.TestCase):
                 'datetime,open,close,high,low,volume,amount\n'
                 '2026-10-28,1.0,1.0,1.0,1.0,1.0,1.0\n', encoding='utf-8')
             (raw / 'sh000001').mkdir()
-            (meta / 'listed_codes_1028.csv').write_text(
+            (meta / f'listed_codes_{__import__("datetime").date.today():%m%d}.csv').write_text(
                 '\n'.join(f'{i:06d}' for i in range(4000)) + '\n', encoding='utf-8')
             with patch.object(cdf, 'BT_DIR', bt), \
                     patch.object(cdf, 'PROJECT', root), \
@@ -129,7 +129,7 @@ class ListingGateIntegrationTests(unittest.TestCase):
                 '2026-10-28,1.0,1.0,1.0,1.0,1.0,1.0\n', encoding='utf-8')
             (raw / 'sh000001').mkdir()
             codes = [f'{i:06d}' for i in range(4000)]
-            (meta / 'listed_codes_1028.csv').write_text(
+            (meta / f'listed_codes_{__import__("datetime").date.today():%m%d}.csv').write_text(
                 '\n'.join(codes) + '\n', encoding='utf-8')
             stale_allow = meta / 'stale.txt'
             stale_allow.write_text('000399 退市股末bar滞后\n', encoding='utf-8')
