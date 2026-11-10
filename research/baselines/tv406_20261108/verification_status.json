@@ -1,7 +1,7 @@
 {
   "historical_signal_replay_verified": true,
   "clean_full_regeneration_verified": false,
-  "clean_full_regeneration_status": "running",
+  "clean_full_regeneration_status": "deferred_until_tomorrow_at_user_request",
   "historical_total_return": 4.067649525086798,
   "source_files": 489,
   "source_strategy_sha256": {
@@ -502,5 +502,6 @@
     "python_sources_parse": true,
     "targeted_tests_passed": 54,
     "clean_regeneration_complete": false
-  }
+  },
+  "user_requested_defer_recorded_at": "2026-11-10T22:15:06.700675"
 }
