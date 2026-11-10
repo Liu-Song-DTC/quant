@@ -49,6 +49,12 @@ def compress_fundamental_factor(raw_value: float, factor_name: str) -> float:
     """
     if raw_value is None or (isinstance(raw_value, float) and np.isnan(raw_value)):
         return 0.0
+    # Ratios enter here; retain the baseline curves in percentage points.
+    if factor_name in {
+        'fund_profit_growth', 'fund_revenue_growth', 'fund_roe',
+        'fund_gross_margin', 'fund_debt_ratio', 'fund_pg_improve', 'fund_rg_improve',
+    }:
+        raw_value *= 100.0
     compressors = {
         'fund_score': lambda v: np.tanh((np.clip(v, 0, 1.0) - 0.5) * 3),  # [0,1.0]→[-0.9,0.9]
         'fund_profit_growth': lambda v: np.tanh(np.clip(v, -100, 100)),

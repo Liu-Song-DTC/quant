@@ -1,0 +1,39 @@
+{
+  "factor_selection": {},
+  "factor_family": {},
+  "buy_signals": 938209,
+  "buy_by_buy_point": {
+    "8": 53099,
+    "0": 592663,
+    "2": 14537,
+    "6": 38373,
+    "5": 19416,
+    "4": 59855,
+    "9": 7988,
+    "1": 112506,
+    "7": 32939,
+    "3": 6833
+  },
+  "buy_by_factor_family": {
+    "REV": 53099,
+    "OTHER": 885110
+  },
+  "ml_predictions_total": 1656928,
+  "ml_predictions_active": 1656928,
+  "ml_validation_ic": 0.09648689603241133,
+  "alt_hits": {
+    "northbound": 2717,
+    "margin": 2717,
+    "dragon_tiger": 1782
+  },
+  "fill_stats": {},
+  "risk_events": {
+    "hds_triggered": false,
+    "clb_triggered": false,
+    "clb_max_losses": 0
+  },
+  "warnings": [
+    "DYN因子命中率<1%，动态因子选择几乎无效",
+    "无结构买入占比63% (>35%), B4/B5未生效或覆盖不足"
+  ]
+}

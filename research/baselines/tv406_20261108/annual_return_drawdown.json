@@ -1,0 +1,80 @@
+{
+  "source": "/mnt/d/quant/.review_runs/arm_pct_main_final_compat_20261108/corrected/equity_curve.csv",
+  "source_sha256": "1031a928be5e578e11f21499896ec3022b7ea4b7f2b878e013ea67b190216db1",
+  "basis": "Archived TV 406.76% signal-replay account; not yet clean regeneration. Annual return uses prior year end NAV; annual drawdown resets high water to prior year end NAV and uses within-year closes. Net NAV includes simulated execution costs.",
+  "total_return": 4.067649525086798,
+  "annual": [
+    {
+      "year": 2021,
+      "start_date": "2021-01-04",
+      "end_date": "2021-12-31",
+      "opening_nav": 250000.0,
+      "closing_nav": 411348.05822283565,
+      "return": 0.6453922328913426,
+      "within_year_max_drawdown": -0.08081237605327474,
+      "drawdown_peak": "2021-08-16",
+      "drawdown_trough": "2021-09-29",
+      "sessions": 243
+    },
+    {
+      "year": 2022,
+      "start_date": "2022-01-04",
+      "end_date": "2022-12-30",
+      "opening_nav": 411348.05822283565,
+      "closing_nav": 505369.18374963274,
+      "return": 0.22856829793484512,
+      "within_year_max_drawdown": -0.09125558461940309,
+      "drawdown_peak": "2022-01-10",
+      "drawdown_trough": "2022-01-27",
+      "sessions": 242
+    },
+    {
+      "year": 2023,
+      "start_date": "2023-01-03",
+      "end_date": "2023-12-29",
+      "opening_nav": 505369.18374963274,
+      "closing_nav": 498316.7498093428,
+      "return": -0.013955013813790051,
+      "within_year_max_drawdown": -0.17619572938200379,
+      "drawdown_peak": "2023-02-14",
+      "drawdown_trough": "2023-05-09",
+      "sessions": 242
+    },
+    {
+      "year": 2024,
+      "start_date": "2024-01-02",
+      "end_date": "2024-12-31",
+      "opening_nav": 498316.7498093428,
+      "closing_nav": 635602.4319822917,
+      "return": 0.27549883126640795,
+      "within_year_max_drawdown": -0.15162077137480512,
+      "drawdown_peak": "2024-05-07",
+      "drawdown_trough": "2024-07-25",
+      "sessions": 242
+    },
+    {
+      "year": 2025,
+      "start_date": "2025-01-02",
+      "end_date": "2025-12-31",
+      "opening_nav": 635602.4319822917,
+      "closing_nav": 911028.2046350507,
+      "return": 0.43333026872438474,
+      "within_year_max_drawdown": -0.159317350214652,
+      "drawdown_peak": "2025-03-26",
+      "drawdown_trough": "2025-04-08",
+      "sessions": 243
+    },
+    {
+      "year": 2026,
+      "start_date": "2026-01-05",
+      "end_date": "2026-10-28",
+      "opening_nav": 911028.2046350507,
+      "closing_nav": 1266912.3812716994,
+      "return": 0.39064013037797496,
+      "within_year_max_drawdown": -0.13266908563956592,
+      "drawdown_peak": "2026-06-22",
+      "drawdown_trough": "2026-07-09",
+      "sessions": 196
+    }
+  ]
+}

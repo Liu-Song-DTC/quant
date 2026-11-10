@@ -1,0 +1,105 @@
+{
+  "passed": true,
+  "post_input_audit_pending": false,
+  "five_financial_artifacts_byte_identical": false,
+  "all_execution_fills_byte_identical": true,
+  "all_selection_dates_codes_scores_and_trade_identity_fields_exact": true,
+  "rounded_money_cents_identical": true,
+  "proof": {
+    "equity_curve.csv": {
+      "rows": 1408,
+      "byte_equal": false,
+      "main_sha256": "1031a928be5e578e11f21499896ec3022b7ea4b7f2b878e013ea67b190216db1",
+      "reference_sha256": "6a92f721d04bb3e84fc5ec26c3c9469817cd784c20bc61ec3934eefd91dbf6a0",
+      "bounded_fields": {
+        "nav": {
+          "different_text_rows": 1261,
+          "max_absolute_difference": 2.7939677238464355e-09,
+          "absolute_tolerance": 1e-07
+        },
+        "daily_ret": {
+          "different_text_rows": 967,
+          "max_absolute_difference": 4.822531263215524e-16,
+          "absolute_tolerance": 1e-12
+        }
+      },
+      "all_other_fields_exact": true
+    },
+    "portfolio_selections.csv": {
+      "rows": 172,
+      "byte_equal": false,
+      "main_sha256": "50e48bab1406340d19f20c7c0818d0e66497ed6080d350c8f9c16b81e3e18ecc",
+      "reference_sha256": "1880eea1a9284fcf7e487f53cee88a4f3b579927e24e0b2d5379c0b71a453664",
+      "bounded_fields": {
+        "weight": {
+          "different_text_rows": 120,
+          "max_absolute_difference": 8.604228440844963e-16,
+          "absolute_tolerance": 1e-12
+        }
+      },
+      "all_other_fields_exact": true
+    },
+    "execution_fills.csv": {
+      "rows": 2504,
+      "byte_equal": true,
+      "main_sha256": "c6bf812983b99c3a203ab741561469f8a6194fe7d336f51fef0fc7cc9626259a",
+      "reference_sha256": "c6bf812983b99c3a203ab741561469f8a6194fe7d336f51fef0fc7cc9626259a",
+      "bounded_fields": {},
+      "all_other_fields_exact": true
+    },
+    "trade_realized.csv": {
+      "rows": 172,
+      "byte_equal": false,
+      "main_sha256": "e97ecc2a6ee53b6e12248f1314a5baf1658c9569aa94f7bdc0c0dfa9bbd0c175",
+      "reference_sha256": "d33428d42218150971efd85ff733f2ab2a4fa25eabafaf3c0d9454d7a4ffdd9b",
+      "bounded_fields": {
+        "ret": {
+          "different_text_rows": 77,
+          "max_absolute_difference": 4.440892098500626e-16,
+          "absolute_tolerance": 1e-12
+        },
+        "pnl": {
+          "different_text_rows": 85,
+          "max_absolute_difference": 1.1641532182693481e-10,
+          "absolute_tolerance": 1e-07
+        },
+        "proceeds": {
+          "different_text_rows": 85,
+          "max_absolute_difference": 1.1641532182693481e-10,
+          "absolute_tolerance": 1e-07
+        }
+      },
+      "all_other_fields_exact": true
+    },
+    "regime_state.csv": {
+      "rows": 1408,
+      "byte_equal": false,
+      "main_sha256": "a86370469a9a600d05d3b5b2c29ae7a8acf7bb4be063a4f289de434d59592240",
+      "reference_sha256": "284cd0113ee71976cf7fad14a069132b564b79dca13f21a68e823b6b7f0ab48d",
+      "bounded_fields": {
+        "exposure": {
+          "different_text_rows": 934,
+          "max_absolute_difference": 2.3314683517128287e-15,
+          "absolute_tolerance": 1e-12
+        },
+        "target_exposure": {
+          "different_text_rows": 920,
+          "max_absolute_difference": 2.220446049250313e-15,
+          "absolute_tolerance": 1e-12
+        }
+      },
+      "all_other_fields_exact": true
+    }
+  },
+  "source_attribution": {
+    "preexisting_main_change": "QFQ proceeds changed from gross*(1-c-s-i) to gross-gross*(c+s+i) in both full-sale and reduction paths",
+    "mathematically_same_cashflow": true,
+    "float_expression_probe_sell_events": 2077,
+    "float_expression_probe_max_abs_difference": 5.820766091346741e-11,
+    "probe_note": "Impact recovered from stored fees; illustrative expression probe, not a reconstruction of original runtime intermediate bits",
+    "main_bt_sha256": "616e9dc09224c4cab9b9ef23dfaa795b5009f15d8ddb7aef007affbc3cf809f1",
+    "reference_bt_sha256": "1652f099baf3a1c0456d408357cb60b5fc81b2a03b96a9bf0347838d93a17373",
+    "main_arithmetic_modified_for_parity": false
+  },
+  "strict_no_lookahead_certified": false
+}

@@ -35,6 +35,7 @@ from .signal import Signal
 from .signal_store import SignalStore
 from .config_loader import load_config
 from .industry_mapping import INDUSTRY_KEYWORDS, get_industry_category
+from .fundamental_units import parse_percent_points
 from .factor_calculator import calculate_indicators as calc_indicators, compute_composite_factors, compress_fundamental_factor, board_limit_up_pct
 from .multi_timeframe import MultiTimeframeAnalyzer
 from .gate_scorer import compute_all_gates, compute_gate_quality
@@ -1503,6 +1504,10 @@ class SignalEngine:
         pre_discount_score = score.copy()  # 纯因子分快照, 不含基本面加成
         fund_mask = s['fundamental_score'] > 0
         score[fund_mask] += s['fundamental_score'][fund_mask] * self.fundamental_weight
+        # Location calibrated on pre-2021 PIT pools; apply only after the calibration window.
+        calibration_mask = (fund_mask & (np.asarray(pd.to_datetime(dates)) >= np.datetime64('2021-01-01'))
+                            if dates is not None else np.zeros_like(fund_mask, dtype=bool))
+        score[calibration_mask] += 0.3641060497319204 * self.fundamental_weight
 
         # === 2. 门控质量系数 ===
         limit_pct = board_limit_up_pct(code)
@@ -2252,9 +2257,9 @@ class SignalEngine:
         if val is None:
             return None
         try:
-            if isinstance(val, str):
-                return float(val.strip('%')) / 100
-            return float(val)
+            if factor_name == 'fund_eps':
+                return float(val.strip('%') if isinstance(val, str) else val)
+            return parse_percent_points(val)
         except (ValueError, TypeError):
             return None
 
@@ -2704,9 +2709,15 @@ class SignalEngine:
             if val is None:
                 return None
             try:
-                if isinstance(val, str):
-                    return float(val.strip('%')) / 100
-                return float(val)
+                return parse_percent_points(val)
+            except (ValueError, TypeError):
+                return None
+
+        def _parse_eps(val):
+            if val is None:
+                return None
+            try:
+                return float(val.strip('%') if isinstance(val, str) else val)
             except (ValueError, TypeError):
                 return None
 
@@ -2714,7 +2725,7 @@ class SignalEngine:
             roe=_parse_pct(row.get('净资产收益率')),
             profit_growth=_parse_pct(row.get('净利润-同比增长')),
             revenue_growth=_parse_pct(row.get('营业总收入-同比增长')),
-            eps=_parse_pct(row.get('每股收益')),
+            eps=_parse_eps(row.get('每股收益')),
         )
 
     def _get_industry_category(self, code, current_date) -> str:

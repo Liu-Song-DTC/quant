@@ -1,4 +1,5 @@
 # core/fundamental.py
+from .fundamental_units import parse_percent_points
 import pandas as pd
 import numpy as np
 import logging
@@ -243,9 +244,7 @@ class FundamentalData:
         if growth is None:
             return None
         try:
-            if isinstance(growth, str):
-                return float(growth.strip('%')) / 100
-            return float(growth)
+            return parse_percent_points(growth)
         except Exception:
             return None
 
@@ -265,9 +264,7 @@ class FundamentalData:
         if growth is None:
             return None
         try:
-            if isinstance(growth, str):
-                return float(growth.strip('%')) / 100
-            return float(growth)
+            return parse_percent_points(growth)
         except Exception:
             return None
 
@@ -280,9 +277,7 @@ class FundamentalData:
         if roe is None:
             return None
         try:
-            if isinstance(roe, str):
-                return float(roe.strip('%')) / 100
-            return float(roe)
+            return parse_percent_points(roe)
         except Exception:
             return None
 
@@ -406,9 +401,7 @@ class FundamentalData:
         if debt is None:
             return None
         try:
-            if isinstance(debt, str):
-                return float(debt.strip('%')) / 100
-            return float(debt)
+            return parse_percent_points(debt)
         except Exception:
             return None
 
@@ -421,9 +414,7 @@ class FundamentalData:
         if margin is None:
             return None
         try:
-            if isinstance(margin, str):
-                return float(margin.strip('%')) / 100
-            return float(margin)
+            return parse_percent_points(margin)
         except Exception:
             return None
 
@@ -480,9 +471,7 @@ class FundamentalData:
             if val is None:
                 return None
             try:
-                if isinstance(val, str):
-                    return float(val.strip('%')) / 100
-                return float(val)
+                return parse_percent_points(val)
             except Exception:
                 return None
 
@@ -506,9 +495,7 @@ class FundamentalData:
             if val is None:
                 return None
             try:
-                if isinstance(val, str):
-                    return float(val.strip('%')) / 100
-                return float(val)
+                return parse_percent_points(val)
             except Exception:
                 return None
 

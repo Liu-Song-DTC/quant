@@ -20,6 +20,7 @@ _worker_concept_calc = None
 
 from .config_loader import load_config
 from .fundamental import FundamentalData
+from .fundamental_units import parse_percent_points
 from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor, compute_fundamental_score, board_limit_up_pct
 from scipy.special import erfinv
 
@@ -129,15 +130,8 @@ def _preload_fundamental_cache(fd, code, dates):
 
 
 def _parse_pct(val):
-    """解析百分比值"""
-    if val is None:
-        return None
-    try:
-        if isinstance(val, str):
-            return float(val.strip('%')) / 100.0
-        return float(val)
-    except (ValueError, TypeError):
-        return None
+    """解析百分比值，保留旧缺失语义。"""
+    return parse_percent_points(val)
 
 
 def _compute_stock_factors_worker(args):
@@ -290,6 +284,7 @@ _FACTOR_CODE_FILES = [
     'core/industry_chain.py',
     'core/alternative_data.py',
     'core/fundamental.py',
+    'core/fundamental_units.py',
     'core/market_regime_detector.py',
     'core/bom_chain.py',
     'core/gate_scorer.py',

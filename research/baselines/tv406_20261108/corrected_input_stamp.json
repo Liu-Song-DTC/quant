@@ -1,0 +1,67 @@
+{
+  "before": {
+    "sha256": "a4eeed439b66ceb3ce236deaa1f85132fcd2f697852e3a06d06cd98af288ea5e",
+    "files": 34171,
+    "data_path": "/mnt/d/quant/.review_runs/alt_preobs_proxy_20261031/data/stock_data/backtrader_data",
+    "adjustment_mode": {
+      "state": "qfq_only",
+      "qfq_files": 5353,
+      "hfq_files": 0,
+      "mixed_code_count": 0,
+      "mixed_codes": []
+    },
+    "environment": {
+      "POOL_TODATE": null,
+      "QUANT_ACCOUNT_LIMITS": null,
+      "QUANT_CONCEPT_MAP": null,
+      "QUANT_CONCEPT_MAP_HIST": null,
+      "QUANT_DATA_PATH": "/mnt/d/quant/.review_runs/alt_preobs_proxy_20261031/data/stock_data/backtrader_data",
+      "QUANT_EDGE_ASOF": null,
+      "QUANT_MARKET_ALT_WEIGHT": null,
+      "QUANT_REBAL_PHASE": null,
+      "QUANT_STAR_EXCLUDE": null
+    },
+    "environment_hashes": {
+      "QUANT_ALT_NO_AUTOREFRESH": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "QUANT_ALT_VERSIONS_REQUIRED": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "QUANT_LIQ_DATA_DIR": "9da3e06513a0204c9ba25614c6d13f2bbeb933386e1797cf17f3da130acf55b1",
+      "QUANT_QFEAT_DATA_DIR": "9da3e06513a0204c9ba25614c6d13f2bbeb933386e1797cf17f3da130acf55b1",
+      "QUANT_SIGNAL_REPLAY": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "QUANT_SIGNAL_REPLAY_FROM": "d5a33214481acbb31e96313b187821bfe4d1869268880add7f3cc96a6b71c78a",
+      "QUANT_SIGNAL_REPLAY_SHA256": "a7cd8311c7e5b6d3811ac425710d1ee9f9b15cf5e27095096bbaed726c7b05e7"
+    }
+  },
+  "after": {
+    "sha256": "a4eeed439b66ceb3ce236deaa1f85132fcd2f697852e3a06d06cd98af288ea5e",
+    "files": 34171,
+    "data_path": "/mnt/d/quant/.review_runs/alt_preobs_proxy_20261031/data/stock_data/backtrader_data",
+    "adjustment_mode": {
+      "state": "qfq_only",
+      "qfq_files": 5353,
+      "hfq_files": 0,
+      "mixed_code_count": 0,
+      "mixed_codes": []
+    },
+    "environment": {
+      "POOL_TODATE": null,
+      "QUANT_ACCOUNT_LIMITS": null,
+      "QUANT_CONCEPT_MAP": null,
+      "QUANT_CONCEPT_MAP_HIST": null,
+      "QUANT_DATA_PATH": "/mnt/d/quant/.review_runs/alt_preobs_proxy_20261031/data/stock_data/backtrader_data",
+      "QUANT_EDGE_ASOF": null,
+      "QUANT_MARKET_ALT_WEIGHT": null,
+      "QUANT_REBAL_PHASE": null,
+      "QUANT_STAR_EXCLUDE": null
+    },
+    "environment_hashes": {
+      "QUANT_ALT_NO_AUTOREFRESH": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "QUANT_ALT_VERSIONS_REQUIRED": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "QUANT_LIQ_DATA_DIR": "9da3e06513a0204c9ba25614c6d13f2bbeb933386e1797cf17f3da130acf55b1",
+      "QUANT_QFEAT_DATA_DIR": "9da3e06513a0204c9ba25614c6d13f2bbeb933386e1797cf17f3da130acf55b1",
+      "QUANT_SIGNAL_REPLAY": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "QUANT_SIGNAL_REPLAY_FROM": "d5a33214481acbb31e96313b187821bfe4d1869268880add7f3cc96a6b71c78a",
+      "QUANT_SIGNAL_REPLAY_SHA256": "a7cd8311c7e5b6d3811ac425710d1ee9f9b15cf5e27095096bbaed726c7b05e7"
+    }
+  },
+  "unchanged": true
+}
