@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "nav_max_absolute_yuan": 0.0,
+  "reference_total_return": 4.067649525086798,
+  "actual_total_return": 4.0676495250867974,
+  "execution_fills.csv": "matches",
+  "portfolio_selections.csv": "matches",
+  "trade_realized.csv": "matches"
+}

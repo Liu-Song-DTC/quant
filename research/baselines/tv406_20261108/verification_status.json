@@ -1,7 +1,7 @@
 {
   "historical_signal_replay_verified": true,
-  "clean_full_regeneration_verified": false,
-  "clean_full_regeneration_status": "deferred_until_tomorrow_at_user_request",
+  "clean_full_regeneration_verified": true,
+  "clean_full_regeneration_status": "verified",
   "historical_total_return": 4.067649525086798,
   "source_files": 489,
   "source_strategy_sha256": {
@@ -495,13 +495,98 @@
     "strategy/tests/test_fundamental_score_location.py": "ca256f69f8d452199d84dbe2ea52abc8c1fff47fc6d16dba1c5c5220a82c326d",
     "strategy/tests/test_portfolio_strategy_weight_order.py": "c0869a63b051dcc1bfc77be886104194178aa82507296a14f2b23aae484b5370"
   },
-  "validation_note": "Historical 406.76% used frozen predictions/signals. Fresh factor/model/prediction/signal regeneration is running and its result is not yet known.",
-  "current_rebuild_state_local": "logs/tv406_clean_rebuild_20261110_state.json",
+  "validation_note": "Same archived source and sealed inputs regenerated factors, all models, predictions and signals; account parity verified.",
+  "current_rebuild_state_local": "logs/tv406_clean_rebuild_20261111_state.json",
   "publication_checks": {
     "source_files_sha256_matched": 489,
     "python_sources_parse": true,
     "targeted_tests_passed": 54,
-    "clean_regeneration_complete": false
+    "clean_regeneration_complete": true,
+    "clean_regeneration_account_parity": true,
+    "full_signal_content_identity": true
   },
-  "user_requested_defer_recorded_at": "2026-11-10T22:15:06.700675"
+  "clean_full_regeneration_checked_at": "2026-11-11T11:37:50.983594",
+  "clean_run_source_files_matched": 489,
+  "clean_result": {
+    "account": {
+      "start": "2021-01-04",
+      "end": "2026-10-28",
+      "days": 1408,
+      "final_nav": 1266912.3812716994,
+      "total_return": 4.0676495250867974,
+      "annual_return": 0.33731591440296693,
+      "max_drawdown": -0.17619572938200379,
+      "sharpe": 1.4799004464076901,
+      "closed_trades": 172,
+      "trade_win_rate": 0.5348837209302325,
+      "trade_mean_return": 0.03349647231827668,
+      "trade_return_basis": "net_lifecycle_cashflow",
+      "profit_factor": 2.661547825550542,
+      "realized_pnl_ex_best_trade": 876298.963528923,
+      "net_trade_win_rate_ex_best_trade": 0.5321637426900585,
+      "net_trade_mean_return_ex_best_trade": 0.030923818174801405
+    },
+    "full_days_after_buy": {
+      "1": {
+        "samples": 172,
+        "wins": 86,
+        "net_win_rate": 0.5,
+        "mean_net_return": 0.005537642689847415,
+        "blocked_exits_retained": 0
+      },
+      "3": {
+        "samples": 172,
+        "wins": 77,
+        "net_win_rate": 0.4476744186046512,
+        "mean_net_return": 0.004136960161029665,
+        "blocked_exits_retained": 3
+      },
+      "5": {
+        "samples": 172,
+        "wins": 74,
+        "net_win_rate": 0.43023255813953487,
+        "mean_net_return": 0.00426673660975201,
+        "blocked_exits_retained": 0
+      }
+    },
+    "reference": "/mnt/d/quant/.review_runs/arm_pct_main_final_compat_20261108",
+    "label_basis": "Actual filled entry; buy day0; full 1/3/5 trading days after buy; net estimated exit marks",
+    "strict_no_lookahead_certified": false,
+    "limitation": "Same sealed historical proxies; previously researched period"
+  },
+  "clean_parity": {
+    "passed": true,
+    "nav_max_absolute_yuan": 0.0,
+    "reference_total_return": 4.067649525086798,
+    "actual_total_return": 4.0676495250867974,
+    "execution_fills.csv": "matches",
+    "portfolio_selections.csv": "matches",
+    "trade_realized.csv": "matches"
+  },
+  "full_signal_content_identity": {
+    "checked_at": "2026-11-11T11:29:11.101532",
+    "passed": true,
+    "original_rows": 6873693,
+    "fresh_rows": 6873693,
+    "columns": 41,
+    "original_codes": 5321,
+    "fresh_codes": 5321,
+    "missing_codes": [],
+    "extra_codes": [],
+    "different_code_count": 0,
+    "differences": [],
+    "original_canonical_sha256": "82817729b76fd07c5b1c09db7fee308bc05b940ce55f62991f06f325a17384c3",
+    "fresh_canonical_sha256": "82817729b76fd07c5b1c09db7fee308bc05b940ce55f62991f06f325a17384c3",
+    "elapsed_seconds": 59.4449432399997,
+    "canonicalization": "Per-stock/date chronological column streams; numeric float64 little-endian, canonical NaN and unsigned zero; UTF-8 length-prefixed nonmissing text. Independent of worker completion order and Parquet chunk boundaries. Not byte equality of differently ordered files.",
+    "scope": "All unfiltered generated signal rows/fields. Does not replace account parity or pre/post sealed-input validation. Processing uses 65536-row batches rather than loading two full tables.",
+    "production_changed": false
+  },
+  "clean_input_sha256": "c6712feaf112ad5770bf65dd184df237d73d4e638cc9603d8bfcd5e1a71e8754",
+  "strict_no_lookahead_certified": false,
+  "inherited_limitations": [
+    "Historical proxy/vintage limitations of the sealed data remain.",
+    "Archived source retains previously reviewed observation-time issues including R06; reproducibility is not a strict no-lookahead certification."
+  ],
+  "previous_user_requested_defer_recorded_at": "2026-11-10T22:15:06.700675"
 }

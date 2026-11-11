@@ -1,0 +1,47 @@
+{
+  "account": {
+    "start": "2021-01-04",
+    "end": "2026-10-28",
+    "days": 1408,
+    "final_nav": 1266912.3812716994,
+    "total_return": 4.0676495250867974,
+    "annual_return": 0.33731591440296693,
+    "max_drawdown": -0.17619572938200379,
+    "sharpe": 1.4799004464076901,
+    "closed_trades": 172,
+    "trade_win_rate": 0.5348837209302325,
+    "trade_mean_return": 0.03349647231827668,
+    "trade_return_basis": "net_lifecycle_cashflow",
+    "profit_factor": 2.661547825550542,
+    "realized_pnl_ex_best_trade": 876298.963528923,
+    "net_trade_win_rate_ex_best_trade": 0.5321637426900585,
+    "net_trade_mean_return_ex_best_trade": 0.030923818174801405
+  },
+  "full_days_after_buy": {
+    "1": {
+      "samples": 172,
+      "wins": 86,
+      "net_win_rate": 0.5,
+      "mean_net_return": 0.005537642689847415,
+      "blocked_exits_retained": 0
+    },
+    "3": {
+      "samples": 172,
+      "wins": 77,
+      "net_win_rate": 0.4476744186046512,
+      "mean_net_return": 0.004136960161029665,
+      "blocked_exits_retained": 3
+    },
+    "5": {
+      "samples": 172,
+      "wins": 74,
+      "net_win_rate": 0.43023255813953487,
+      "mean_net_return": 0.00426673660975201,
+      "blocked_exits_retained": 0
+    }
+  },
+  "reference": "/mnt/d/quant/.review_runs/arm_pct_main_final_compat_20261108",
+  "label_basis": "Actual filled entry; buy day0; full 1/3/5 trading days after buy; net estimated exit marks",
+  "strict_no_lookahead_certified": false,
+  "limitation": "Same sealed historical proxies; previously researched period"
+}

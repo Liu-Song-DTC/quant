@@ -1,0 +1,19 @@
+{
+  "checked_at": "2026-11-11T11:29:11.101532",
+  "passed": true,
+  "original_rows": 6873693,
+  "fresh_rows": 6873693,
+  "columns": 41,
+  "original_codes": 5321,
+  "fresh_codes": 5321,
+  "missing_codes": [],
+  "extra_codes": [],
+  "different_code_count": 0,
+  "differences": [],
+  "original_canonical_sha256": "82817729b76fd07c5b1c09db7fee308bc05b940ce55f62991f06f325a17384c3",
+  "fresh_canonical_sha256": "82817729b76fd07c5b1c09db7fee308bc05b940ce55f62991f06f325a17384c3",
+  "elapsed_seconds": 59.4449432399997,
+  "canonicalization": "Per-stock/date chronological column streams; numeric float64 little-endian, canonical NaN and unsigned zero; UTF-8 length-prefixed nonmissing text. Independent of worker completion order and Parquet chunk boundaries. Not byte equality of differently ordered files.",
+  "scope": "All unfiltered generated signal rows/fields. Does not replace account parity or pre/post sealed-input validation. Processing uses 65536-row batches rather than loading two full tables.",
+  "production_changed": false
+}
