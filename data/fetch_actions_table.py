@@ -27,6 +27,7 @@ import glob
 import pickle
 import argparse
 import urllib.request
+from collections import Counter, defaultdict
 import numpy as np
 from multiprocessing import Pool
 import pandas as pd
@@ -65,6 +66,36 @@ def _part_has_rows(f):
         return len(pickle.load(open(f, 'rb'))) > 0
     except Exception:
         return False
+
+
+def _merge_saved_events(code, rows, old_rows):
+    """Freeze each published date's complete event group, including multiplicity.
+
+    A date is not an event identifier: several distributions can share one
+    ex-date. Replacing individual rows using a date->row map duplicates the
+    last distribution and corrupts the total entitlement.
+    """
+    previous, incoming = defaultdict(list), defaultdict(list)
+    for row in old_rows:
+        previous[pd.Timestamp(row[1])].append(row)
+    for row in rows:
+        incoming[pd.Timestamp(row[1])].append(row)
+    result = []
+    for day in sorted(previous.keys() | incoming.keys()):
+        if day not in previous:
+            result.extend(incoming[day])
+            continue
+        if day not in incoming:
+            print(f'[来源撤回守卫] {code}@{day.date()}: '
+                  '保留该日期全部旧事件', flush=True)
+        elif Counter(tuple(r[2:]) for r in previous[day]) != Counter(
+                tuple(r[2:]) for r in incoming[day]):
+            print(f'[来源改值守卫] {code}@{day.date()}: '
+                  f'旧条款组={[r[2:] for r in previous[day]]} '
+                  f'新条款组={[r[2:] for r in incoming[day]]} '
+                  '⇒ 保留完整旧条款组并待人工核查', flush=True)
+        result.extend(previous[day])
+    return result
 
 
 def _api_says_empty(code, timeout=15):
@@ -157,24 +188,9 @@ def fetch_one(code):
         D = D if np.isfinite(D) else 0.0
         rows.append((code, pd.Timestamp(r['除权除息日']), s, D))
     if os.path.exists(f):
-        with open(f, 'rb') as handle:
-            previous_rows = pickle.load(handle)
-        previous_by_date = {entry[1]: entry for entry in previous_rows}
-        for index, row in enumerate(rows):
-            previous = previous_by_date.get(row[1])
-            if previous is not None and not np.allclose(
-                    row[2:], previous[2:], rtol=0, atol=1e-12, equal_nan=True):
-                print(f'[来源改值守卫] {code}@{row[1]}: '
-                      f'旧(s,D)={previous[2:]} 新(s,D)={row[2:]} '
-                      '⇒ 保留旧条款并待人工核查', flush=True)
-                rows[index] = previous
-    if os.path.exists(f):
-        old_dates = {entry[1] for entry in rows}
-        withdrawn = [entry for entry in previous_rows if entry[1] not in old_dates]
-        if withdrawn:
-            print(f'[来源撤回守卫] {code}: 非空响应缺少 {len(withdrawn)} 个旧除权日 '
-                  '⇒ 保留旧条款并待人工核查', flush=True)
-            rows.extend(withdrawn)
+        with open(f, 'rb') as fh:
+            old_rows = pickle.load(fh)
+        rows = _merge_saved_events(code, rows, old_rows)
     _dump(f, rows)
     return len(rows)
 
