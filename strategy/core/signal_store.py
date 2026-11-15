@@ -249,6 +249,9 @@ class SignalStore:
         """从 DataFrame 行构建 Signal 对象。"""
         from .signal import Signal
 
+        if isinstance(row, pd.Series) and row.dtype == object and row.index.is_unique:
+            row = dict(zip(row.index, row.to_numpy(copy=False)))
+
         def _f(key, default=0.0):
             v = row.get(key)
             if pd.isna(v) if not isinstance(v, (bool, str)) else v is None:

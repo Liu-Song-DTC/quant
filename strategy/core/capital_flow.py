@@ -45,8 +45,16 @@ def _rolling_mean(arr: np.ndarray, window: int) -> np.ndarray:
 def _ema_smooth(arr: np.ndarray, alpha: float) -> np.ndarray:
     """EMA平滑 (Numba JIT)"""
     result = arr.copy()
+    if len(result) and not np.isfinite(result[0]):
+        result[0] = np.nan
     for i in range(1, len(arr)):
-        result[i] = alpha * arr[i] + (1 - alpha) * result[i - 1]
+        if not np.isfinite(arr[i]):
+            result[i] = np.nan
+        elif not np.isfinite(result[i - 1]):
+            # 未知值不补零、不回填；后续首个有效观测重启平滑。
+            result[i] = arr[i]
+        else:
+            result[i] = alpha * arr[i] + (1 - alpha) * result[i - 1]
     return result
 
 
@@ -56,8 +64,14 @@ def _rolling_sum(arr: np.ndarray, window: int) -> np.ndarray:
     result = np.full(n, np.nan)
     if n < window:
         return result
-    cs = np.cumsum(np.insert(arr.astype(float), 0, 0))
-    result[window - 1:] = cs[window:] - cs[:-window]
+    values = arr.astype(float)
+    known = np.isfinite(values)
+    cs = np.cumsum(np.insert(np.where(known, values, 0.), 0, 0))
+    counts = np.cumsum(np.insert(known.astype(np.int64), 0, 0))
+    sums = cs[window:] - cs[:-window]
+    # 仅完整有效窗口可出值，避免预热NaN污染此后所有累积和。
+    ready = counts[window:] - counts[:-window] == window
+    result[window - 1:] = np.where(ready, sums, np.nan)
     return result
 
 

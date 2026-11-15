@@ -16,7 +16,9 @@ class FundamentalReportMemoTests(unittest.TestCase):
         path=Path(__file__).resolve().parents[1]/'core/factor_preparer.py'
         tree=ast.parse(path.read_text())
         functions={node.name:node for node in tree.body if isinstance(node,ast.FunctionDef)}
-        ns={'pd':pd,'np':np,'__package__':'core'}
+        from core.factor_calculator import compute_fundamental_score
+        ns={'pd':pd,'np':np,'__package__':'core',
+            'compute_fundamental_score':compute_fundamental_score}
         imports=[node for node in tree.body if isinstance(node,ast.ImportFrom)
                  and node.module=='fundamental_units']
         exec(compile(ast.Module(body=imports+[functions['_parse_pct']],type_ignores=[]),str(path),'exec'),ns)

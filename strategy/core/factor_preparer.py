@@ -20,6 +20,7 @@ _worker_concept_calc = None
 
 from .config_loader import load_config
 from .fundamental import FundamentalData
+from .fundamental_units import parse_percent_points
 from .factor_calculator import calculate_indicators, compute_composite_factors, get_default_params, compress_fundamental_factor, compute_fundamental_score, board_limit_up_pct
 from scipy.special import erfinv
 
@@ -129,15 +130,8 @@ def _preload_fundamental_cache(fd, code, dates):
 
 
 def _parse_pct(val):
-    """解析百分比值"""
-    if val is None:
-        return None
-    try:
-        if isinstance(val, str):
-            return float(val.strip('%')) / 100.0
-        return float(val)
-    except (ValueError, TypeError):
-        return None
+    """解析百分比值，保留旧缺失语义。"""
+    return parse_percent_points(val)
 
 
 def _compute_stock_factors_worker(args):
@@ -283,6 +277,10 @@ _FACTOR_CODE_FILES = [
     'core/factor_preparer.py',
     'core/input_identity.py',
     'core/factor_calculator.py',
+    'core/capital_flow.py',
+    'core/news_sentiment.py',
+    'core/fractal_observation_kernel.py',
+    'core/b2_observation.py',
     'core/factor_neutralizer.py',
     'core/multi_timeframe.py',
     'core/concept_heat.py',
@@ -290,6 +288,7 @@ _FACTOR_CODE_FILES = [
     'core/industry_chain.py',
     'core/alternative_data.py',
     'core/fundamental.py',
+    'core/fundamental_units.py',
     'core/market_regime_detector.py',
     'core/bom_chain.py',
     'core/gate_scorer.py',
@@ -438,38 +437,48 @@ def _raw_code_fingerprint() -> str:
 # 此指纹用于信号复用门禁: 代码变则强制重生成信号, 杜绝混搭代码态。
 _SIGNAL_CODE_FILES = _FACTOR_CODE_FILES + [
     'core/signal_engine.py',
+    'core/divergence_detector.py',
+    'core/alt_data_versions.py',
     'core/ml_predictor.py',
     'core/forward_targets.py',
     'bt_execution.py',
 ]
 
 
-def _signal_code_fingerprint() -> str:
-    """信号代码指纹: 信号生成路径 (因子+信号引擎+ML+执行入口) 的 (mtime_ns+size)。
+def _update_signal_source_identity(h, base):
+    """Shared content-based source/config/policy identity, excluding data roles.
 
-    与因子缓存键用的 _code_fingerprint 不同: 覆盖执行层三文件 (不在因子缓存键内,
-    改它们不应使因子缓存失效, 但必须使信号CSV失效 — 信号复用门禁据此判断)。
+    The execution entry adds data-location identities separately. Keep this
+    list and policy handling common to its reuse gate and preparer diagnostics.
     """
-    import hashlib
-    h = hashlib.md5()
-    base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     for rel in _SIGNAL_CODE_FILES:
         p = os.path.join(base, rel)
         if rel == 'config/factor_config.yaml':
             h.update(f"{rel}|{_yaml_stripped_digest(p)};".encode('utf-8'))
             continue
-        try:
-            st = os.stat(p)
-            h.update(f"{rel}|{st.st_mtime_ns}|{st.st_size};".encode('utf-8'))
-        except OSError:
-            h.update(f"{rel}|MISSING;".encode('utf-8'))
-    # 2026-10-20: 行为钩子必须计入指纹 — QUANT_EDGE_ASOF=off(全样本边, 对照臂)
-    # 改变 concept_heat 因子值, 但代码/mtime 不变 ⇒ 门禁不可见 ⇒ 静默复用生产信号
-    # = 假臂。同款先例: pit_map0531(QUANT_CONCEPT_MAP 不可见)、E-B1v2(warmup 走
-    # sidecar)。只在 env **非空**时混入: 生产态(未设)指纹不变, 零扰动。
-    _ea = os.environ.get('QUANT_EDGE_ASOF', '')
-    if _ea:
-        h.update(f"env.QUANT_EDGE_ASOF|{_ea};".encode('utf-8'))
+        h.update(f"{rel}|{_file_content_digest(p)};".encode('utf-8'))
+    quarterly = os.path.join(base, 'config', 'quarterly_factors')
+    try:
+        for name in sorted(os.listdir(quarterly)):
+            path = os.path.join(quarterly, name)
+            h.update(f"config/quarterly_factors/{name}|{_file_content_digest(path)};".encode('utf-8'))
+    except OSError:
+        h.update(b'config/quarterly_factors|MISSING;')
+    for name in ('QUANT_EDGE_ASOF', 'QUANT_ALT_ZERO_PREOBSERVED_MARKET',
+                 'QUANT_MARKET_ALT_WEIGHT'):
+        h.update(f"env.{name}|{os.environ.get(name)!r};".encode('utf-8'))
+
+
+def _signal_code_fingerprint() -> str:
+    """Content-based source/config/policy identity for diagnostic logging.
+
+    The execution reuse gate additionally includes resolved data locations.
+    Signal-only dependencies do not enter the raw-factor dependency list.
+    """
+    import hashlib
+    h = hashlib.md5()
+    base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    _update_signal_source_identity(h, base)
     return h.hexdigest()[:8]
 
 

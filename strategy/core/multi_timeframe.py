@@ -327,8 +327,8 @@ class MultiTimeframeAnalyzer:
         n_daily: int,
     ) -> np.ndarray:
         """使用 searchsorted 建立日线→高级别bar的映射（向量化）"""
-        bar_dt = pd.DatetimeIndex(bar_end_dates).asi8
-        daily_dt = daily_dates.asi8
+        bar_dt = pd.DatetimeIndex(bar_end_dates).as_unit('ns').asi8
+        daily_dt = daily_dates.as_unit('ns').asi8
 
         # searchsorted: 找到每日对应的最后一个bar
         mapping = np.searchsorted(bar_dt, daily_dt, side='right') - 1

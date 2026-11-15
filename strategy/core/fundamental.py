@@ -1,4 +1,5 @@
 # core/fundamental.py
+from .fundamental_units import parse_percent_points
 import pandas as pd
 import numpy as np
 import logging
@@ -176,7 +177,18 @@ class FundamentalData:
             except TypeError:
                 mask = None  # 混合类型比较异常 → 回退旧路径(旧路径同样会抛)
             if mask is not None:
-                out = sorted_df[mask]
+                # Boolean selection copies every column. A contiguous run can
+                # use a slice; pandas3 Copy-on-Write preserves caller isolation.
+                # Keep the original path on older pandas and noncontiguous masks.
+                if int(pd.__version__.split('.')[0]) >= 3:
+                    positions = np.flatnonzero(mask)
+                    if (len(positions) and
+                            positions[-1] - positions[0] + 1 == len(positions)):
+                        out = sorted_df.iloc[int(positions[0]):int(positions[-1]) + 1]
+                    else:
+                        out = sorted_df[mask]
+                else:
+                    out = sorted_df[mask]
                 self._avail_memo = (code, current_date, out)
                 return out
 
@@ -243,9 +255,7 @@ class FundamentalData:
         if growth is None:
             return None
         try:
-            if isinstance(growth, str):
-                return float(growth.strip('%')) / 100
-            return float(growth)
+            return parse_percent_points(growth)
         except Exception:
             return None
 
@@ -265,9 +275,7 @@ class FundamentalData:
         if growth is None:
             return None
         try:
-            if isinstance(growth, str):
-                return float(growth.strip('%')) / 100
-            return float(growth)
+            return parse_percent_points(growth)
         except Exception:
             return None
 
@@ -280,9 +288,7 @@ class FundamentalData:
         if roe is None:
             return None
         try:
-            if isinstance(roe, str):
-                return float(roe.strip('%')) / 100
-            return float(roe)
+            return parse_percent_points(roe)
         except Exception:
             return None
 
@@ -406,9 +412,7 @@ class FundamentalData:
         if debt is None:
             return None
         try:
-            if isinstance(debt, str):
-                return float(debt.strip('%')) / 100
-            return float(debt)
+            return parse_percent_points(debt)
         except Exception:
             return None
 
@@ -421,9 +425,7 @@ class FundamentalData:
         if margin is None:
             return None
         try:
-            if isinstance(margin, str):
-                return float(margin.strip('%')) / 100
-            return float(margin)
+            return parse_percent_points(margin)
         except Exception:
             return None
 
@@ -480,9 +482,7 @@ class FundamentalData:
             if val is None:
                 return None
             try:
-                if isinstance(val, str):
-                    return float(val.strip('%')) / 100
-                return float(val)
+                return parse_percent_points(val)
             except Exception:
                 return None
 
@@ -506,9 +506,7 @@ class FundamentalData:
             if val is None:
                 return None
             try:
-                if isinstance(val, str):
-                    return float(val.strip('%')) / 100
-                return float(val)
+                return parse_percent_points(val)
             except Exception:
                 return None
 

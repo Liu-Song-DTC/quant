@@ -236,7 +236,7 @@ def _has_fundamental_flaw(fd, code, date):
     - 数据缺失/异常 → False (fail-open, 与减持/解禁过滤同策略)
 
     fd: FundamentalData 提供者 (as-of: 只取 数据可用日期 <= date 的报告).
-    量纲: get_profit_growth 当前CSV为百分制裸float(如 -30.0 = -30%), 字符串'%'路径返回分数.
+    量纲: get_profit_growth 返回比例，-0.30 = -30%。
     """
     try:
         profit = fd.get_profit(code, date)
@@ -258,7 +258,7 @@ def _has_fundamental_flaw(fd, code, date):
     if pf is not None and pf < 0:
         # 亏损股: 只在亏损扩大时排除; 收窄(growth>=0)或数据缺失 → 放行
         return gf is not None and gf < 0
-    if gf is not None and gf < -30.0:
+    if gf is not None and gf < -0.30:
         return True
     return False
 
@@ -2338,6 +2338,20 @@ class PortfolioConstructor:
             if _mf_skip_codes:
                 self._dbg['mf_skip_marked'] = self._dbg.get('mf_skip_marked', 0) + len(_mf_skip_codes)
 
+        # Preserve original day-gate inputs; adjust candidate utility before slot selection.
+        if self._multi_strategy.enabled and qualified:
+            ms_mult = self._multi_strategy.compute_weights(qualified, signal_store, market_regime, drawdown)
+            for c in qualified:
+                mult = ms_mult.get(c['code'], 1.0)
+                if mult <= 0.05:
+                    c['effective_score'] -= 10.0
+                else:
+                    c['effective_score'] *= mult
+            qualified = [c for c in qualified if c['effective_score'] > -5.0]
+            _bp2_reserved = [c for c in _bp2_reserved if c['effective_score'] > -5.0]
+
+        qualified.sort(key=lambda x: (-x['_locked'], -x['effective_score']))
+
         # === 纯score排序选股 ===
         # E-G1: bp2专用通道保底槽 — 先于常规排序占位。score对bp2无区分度,
         # 内部按score排≈随机但稳定; 槽数受bp2_channel_slots与n_positions双限
@@ -2427,17 +2441,7 @@ class PortfolioConstructor:
 
         # === 多策略后处理: 按子策略评分调整有效得分 → 可能重排 ===
         if self._multi_strategy.enabled and selected:
-            ms_mult = self._multi_strategy.compute_weights(
-                selected, signal_store, market_regime, drawdown)
-            for c in selected:
-                mult = ms_mult.get(c['code'], 1.0)
-                if mult <= 0.05:
-                    c['effective_score'] -= 10.0  # 强制排到末尾
-                else:
-                    c['effective_score'] *= mult
             selected.sort(key=lambda x: -x['effective_score'])
-            # 移除被强制拒绝的
-            selected = [c for c in selected if c['effective_score'] > -5.0]
 
         # 更新累计入选追踪
         for c in selected:

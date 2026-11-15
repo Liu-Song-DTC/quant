@@ -192,34 +192,10 @@ def _signal_code_fingerprint() -> str:
     自己的_code代码指纹 — 两者覆盖不同, 因子缓存不关心信号引擎)。
     """
     import hashlib
-    import re
     h = hashlib.md5()
     base = os.path.dirname(os.path.abspath(__file__))
-    # 代码文件: 因子9文件(yaml单独处理) + 信号引擎 + ML + 本入口
-    # 内容寻址 (md5 of bytes, 不用 mtime): touch 不再bust缓存; 跨树可比 (研究
-    # worktree 里的同内容文件指纹一致 ⇒ 身份闸不必再走 iso 副本)。
-    from core.factor_preparer import _file_content_digest
-    for rel in [f for f in _FACTOR_CODE_FILES if f != 'config/factor_config.yaml'] + [
-            'core/signal_engine.py',
-            'core/ml_predictor.py',
-            'core/forward_targets.py',
-            'bt_execution.py',
-    ]:
-        p = os.path.join(base, rel)
-        h.update(f"{rel}|{_file_content_digest(p)};".encode('utf-8'))
-    # factor_config.yaml: 剥掉组合/执行层节后哈希 (共用factor_preparer的
-    # _yaml_stripped_digest — 豁免节清单单一来源, 避免两处漂移)。
-    _yaml_digest = _yaml_stripped_digest(os.path.join(base, 'config', 'factor_config.yaml'))
-    h.update(f"config/factor_config.yaml|{_yaml_digest};".encode('utf-8'))
-    # 季度标定权重: 信号权重强绑定 (E-D2教训), 全部23个季度文件计入
-    # 内容寻址 (mtime 口径会让跨树比较必然失败: 同内容文件在研究区的 mtime 全不同)
-    _qdir = os.path.join(base, 'config', 'quarterly_factors')
-    try:
-        for _qn in sorted(os.listdir(_qdir)):
-            _qp = os.path.join(_qdir, _qn)
-            h.update(f"config/quarterly_factors/{_qn}|{_file_content_digest(_qp)};".encode('utf-8'))
-    except OSError:
-        h.update('config/quarterly_factors|MISSING;'.encode('utf-8'))
+    from core.factor_preparer import _update_signal_source_identity
+    _update_signal_source_identity(h, base)
     # 2026-10-16: 概念映射计入指纹(**内容级**, 非 mtime)。
     # 教训(假臂, 实测): `_signals_stale` 的数据新鲜度检查是**单向**的 — 只问
     # "有没有比信号 CSV 更新的数据文件"。把概念映射换成一份**更旧**的
@@ -257,10 +233,6 @@ def _signal_code_fingerprint() -> str:
     # 信号被静默复用 ⇒ 臂只换了成交价不换选股 = 半假臂。路径变了必须重生成。
     # ★realpath 归一 (2026-10-25): 研究区软链 ⇒ 同一份数据 ⇒ 同一指纹 (跨树可比)。
     h.update(f"data_path|{os.path.realpath(DATA_PATH)};".encode('utf-8'))
-    # Market-level alternative score adjustment changes generated signals; include
-    # its research override in the cache identity to prevent stale signal reuse.
-    _market_alt_weight = os.environ.get('QUANT_MARKET_ALT_WEIGHT')
-    h.update(f"market_alt_weight_env|{_market_alt_weight!r};".encode('utf-8'))
     return h.hexdigest()[:8]
 
 
@@ -289,6 +261,7 @@ def _signal_data_fingerprint():
         Path(__file__).resolve().parent / 'config/large_cap_whitelist.txt',
         *[data / 'alternative_data' / name for name in (
             'northbound_daily.pkl', 'margin_daily.pkl', 'dragon_tiger_history.pkl', 'dragon_tiger.pkl')],
+        data / 'alternative_data/alt_versions',
     ]
     history = _resolve_cmap_hist()
     if history:
@@ -849,7 +822,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
     """
 
     global _LIMIT_DATA, _ml_total_preds, _ml_val_ic
-    all_items = os.listdir(DATA_PATH)
+    all_items = sorted(os.listdir(DATA_PATH))
     stock_codes = []
 
     # === Phase 0: 扫描文件构建路径映射（不加载数据，避免 ~200MB stock_data_dict） ===

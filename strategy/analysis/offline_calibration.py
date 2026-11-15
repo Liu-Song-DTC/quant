@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config_loader import load_config
 from core.fundamental import FundamentalData
+from core.fundamental_units import parse_percent_points
 from core.factor_calculator import (
     calculate_indicators, compute_composite_factors,
     compress_fundamental_factor, get_default_params,
@@ -177,8 +178,7 @@ def _calibrate_stock_worker(args):
                     def _pct(v):
                         if v is None: return None
                         try:
-                            if isinstance(v, str): return float(v.strip('%')) / 100
-                            return float(v)
+                            return parse_percent_points(v)
                         except Exception: return None
 
                     roe = _pct(row.get('净资产收益率'))

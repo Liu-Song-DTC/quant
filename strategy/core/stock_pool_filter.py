@@ -62,12 +62,12 @@ class StockPoolFilter:
         """检查股票是否满足基本面条件"""
         # ROE
         roe = self.fundamental_data.get_roe(code, date)
-        if roe is None or roe < self.min_roe:
+        if roe is None or roe < self.min_roe / 100.0:
             return False
 
         # 净利润增长
         profit_growth = self.fundamental_data.get_profit_growth(code, date)
-        if profit_growth is None or profit_growth < self.min_profit_growth:
+        if profit_growth is None or profit_growth < self.min_profit_growth / 100.0:
             return False
 
         return True
@@ -84,17 +84,17 @@ class StockPoolFilter:
         # ROE评分 (最高40分)
         roe = self.fundamental_data.get_roe(code, date)
         if roe is not None:
-            score += min(roe, 40)
+            score += min(roe * 100.0, 40)
 
         # 净利润增长评分 (最高30分)
         profit_growth = self.fundamental_data.get_profit_growth(code, date)
         if profit_growth is not None:
-            score += min(profit_growth / 2, 30)
+            score += min(profit_growth * 100.0 / 2, 30)
 
         # 营业收入增长评分 (最高20分)
         revenue_growth = self.fundamental_data.get_revenue_growth(code, date)
         if revenue_growth is not None:
-            score += min(revenue_growth / 3, 20)
+            score += min(revenue_growth * 100.0 / 3, 20)
 
         # 每股收益评分 (最高10分)
         eps = self.fundamental_data.get_eps(code, date)

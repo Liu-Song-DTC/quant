@@ -2242,7 +2242,7 @@ def get_structure_stop_price(
 
 # ==================== 13. 底部分型质量分析 ====================
 
-def analyze_bottom_fractal(
+def _legacy_analyze_bottom_fractal(
     close: np.ndarray,
     high: np.ndarray,
     low: np.ndarray,
@@ -2417,6 +2417,209 @@ def analyze_bottom_fractal(
         'bottom_fractal_ema_dist': fx_ema_dist,
     }
 
+@njit(cache=True, fastmath=False)
+def _perf_clip_scalar(value, lower, upper):
+    if value < lower:
+        return float(lower)
+    if value > upper:
+        return float(upper)
+    return float(value)
+
+@njit(cache=True, fastmath=False)
+def _perf_direction_mode(values):
+    negative = 0
+    positive = 0
+    for value in values:
+        if value == -1:
+            negative += 1
+        elif value == 1:
+            positive += 1
+    return -1 if negative >= positive else 1
+
+@njit(cache=True, fastmath=False, error_model='numpy')
+def _perf_compiled_quality(close: np.ndarray, high: np.ndarray, low: np.ndarray, volume: np.ndarray, ema20: np.ndarray, ema60: np.ndarray, macd_hist: np.ndarray, bottom_fractals: np.ndarray, stroke_direction: np.ndarray, vol_sma20: np.ndarray) -> Dict[str, np.ndarray]:
+    """
+    底部分型质量分析.
+
+    对每个底部分型计算多维质量评分:
+    1. 分型强度 (25%): 中间K线低点相对邻居的下探深度 + 形态清晰度
+    2. 均量确认 (10%): 分型处放量 vs 20日均量 = 恐慌抛售/ capitulation
+    3. 前日量比 (15%): volume/volume[-1], >=3x = 量在价先, 强反转信号
+    4. EMA位置 (15%): 低于EMA20的深度 = 超卖程度
+    5. MACD背离 (20%): 价格新低但MACD柱上升 = 底背离
+    6. 笔转折对齐 (15%): 分型是否位于向下笔结束/向上笔开始处
+
+    质量分数从分型发生日开始指数衰减（半衰期约5根K线）。
+
+    Returns:
+        bottom_fractal_quality: 综合质量 [0, 1]，从分型日向后衰减
+        bottom_fractal_strength: 原始分型强度 [0, 1]
+        bottom_fractal_vol_ratio: 分型处量比 (vs 20日均量)
+        bottom_fractal_vol_spike: 分型处相对前日放量倍数
+        bottom_fractal_ema_dist: 分型处低于EMA20的距离
+    """
+    n = len(close)
+    fx_quality = np.zeros(n)
+    fx_strength = np.zeros(n)
+    fx_vol_ratio = np.zeros(n)
+    fx_vol_spike = np.zeros(n)
+    fx_ema_dist = np.zeros(n)
+    fx_indices = np.where(bottom_fractals)[0]
+    if len(fx_indices) == 0:
+        return {'bottom_fractal_quality': fx_quality, 'bottom_fractal_strength': fx_strength, 'bottom_fractal_vol_ratio': fx_vol_ratio, 'bottom_fractal_vol_spike': fx_vol_spike, 'bottom_fractal_ema_dist': fx_ema_dist}
+    for fx_idx in fx_indices:
+        if fx_idx < 1 or fx_idx >= n - 1:
+            continue
+        neighbor_low_min = min(low[fx_idx - 1], low[fx_idx + 1])
+        bar_range = high[fx_idx] - low[fx_idx]
+        if bar_range > 1e-10:
+            raw_depth = (neighbor_low_min - low[fx_idx]) / bar_range
+        else:
+            raw_depth = 0.0
+        clarity = 0.0
+        if low[fx_idx] < low[fx_idx - 1] and low[fx_idx] < low[fx_idx + 1]:
+            clarity += 0.5
+        if high[fx_idx] < high[fx_idx - 1] and high[fx_idx] < high[fx_idx + 1]:
+            clarity += 0.5
+        strength_score = _perf_clip_scalar(raw_depth * 3.0 + clarity * 0.3, 0, 1)
+        if not np.isnan(vol_sma20[fx_idx]) and vol_sma20[fx_idx] > 0:
+            vol_ratio_val = volume[fx_idx] / vol_sma20[fx_idx]
+        else:
+            vol_ratio_val = 1.0
+        vol_score = _perf_clip_scalar((vol_ratio_val - 0.5) / 2.0, 0, 1)
+        vol_spike_val = volume[fx_idx] / (volume[fx_idx - 1] + 1e-10)
+        if vol_spike_val >= 3.0:
+            spike_score = 1.0
+        elif vol_spike_val >= 2.0:
+            spike_score = 0.7 + (vol_spike_val - 2.0) * 0.3
+        elif vol_spike_val >= 1.5:
+            spike_score = 0.35 + (vol_spike_val - 1.5) * 0.7
+        elif vol_spike_val >= 1.0:
+            spike_score = vol_spike_val * 0.35
+        else:
+            spike_score = 0.0
+        if not np.isnan(ema20[fx_idx]) and ema20[fx_idx] > 0:
+            ema_dist_val = (ema20[fx_idx] - low[fx_idx]) / ema20[fx_idx]
+        else:
+            ema_dist_val = 0.0
+        ema_score = _perf_clip_scalar(ema_dist_val / 0.08, 0, 1)
+        div_score = 0.0
+        lookback = min(fx_idx, 20)
+        if lookback >= 10 and (not np.isnan(macd_hist[fx_idx])):
+            pre_low = np.min(low[fx_idx - lookback:fx_idx])
+            if low[fx_idx] <= pre_low * 0.995:
+                macd_recent = macd_hist[max(0, fx_idx - 5):fx_idx + 1]
+                macd_earlier = macd_hist[max(0, fx_idx - 10):max(0, fx_idx - 5)]
+                r_mean = np.nanmean(macd_recent)
+                e_mean = np.nanmean(macd_earlier)
+                if not np.isnan(r_mean) and (not np.isnan(e_mean)):
+                    if r_mean > e_mean:
+                        div_ratio = (r_mean - e_mean) / (abs(e_mean) + 1e-10)
+                        div_score = _perf_clip_scalar(div_ratio * 0.5 + 0.3, 0, 1)
+        stroke_score = 0.0
+        pre_slice = stroke_direction[max(0, fx_idx - 3):fx_idx]
+        post_slice = stroke_direction[fx_idx:min(n, fx_idx + 4)]
+        pre_mode = 0
+        post_mode = 0
+        if len(pre_slice) > 0:
+            pv = pre_slice[pre_slice != 0]
+            if len(pv) > 0:
+                pre_mode = _perf_direction_mode(pv)
+        if len(post_slice) > 0:
+            pv = post_slice[post_slice != 0]
+            if len(pv) > 0:
+                post_mode = _perf_direction_mode(pv)
+        if pre_mode == -1 and post_mode == 1:
+            stroke_score = 0.8
+        elif pre_mode == -1:
+            stroke_score = 0.4
+        elif post_mode == 1:
+            stroke_score = 0.3
+        quality = strength_score * 0.25 + vol_score * 0.1 + spike_score * 0.15 + ema_score * 0.15 + div_score * 0.2 + stroke_score * 0.15
+        quality = _perf_clip_scalar(quality, 0, 1)
+        fx_quality[fx_idx] = quality
+        fx_strength[fx_idx] = strength_score
+        fx_vol_ratio[fx_idx] = vol_ratio_val
+        fx_vol_spike[fx_idx] = vol_spike_val
+        fx_ema_dist[fx_idx] = ema_dist_val
+    decay = 0.87
+    for i in range(1, n):
+        inherited = fx_quality[i - 1] * decay
+        if fx_quality[i] < inherited:
+            fx_quality[i] = inherited
+        if fx_strength[i] < fx_strength[i - 1] * decay:
+            fx_strength[i] = fx_strength[i - 1] * decay
+        if fx_vol_spike[i] < fx_vol_spike[i - 1] * decay:
+            fx_vol_spike[i] = fx_vol_spike[i - 1] * decay
+    return {'bottom_fractal_quality': fx_quality, 'bottom_fractal_strength': fx_strength, 'bottom_fractal_vol_ratio': fx_vol_ratio, 'bottom_fractal_vol_spike': fx_vol_spike, 'bottom_fractal_ema_dist': fx_ema_dist}
+
+def analyze_bottom_fractal(close, high, low, volume, ema20, ema60, macd_hist,
+                           bottom_fractals, stroke_direction):
+    """Same scoring/decay algorithm; compile only the validated numeric domain."""
+    args = (close, high, low, volume, ema20, ema60, macd_hist,
+            bottom_fractals, stroke_direction)
+    n = len(close)
+    floats = (close, high, low, volume, ema20, ema60, macd_hist)
+    finite_inputs = (close, high, low, volume, ema20, macd_hist)
+    eligible = (_HAS_NUMBA and n > 0
+                and all(isinstance(a, np.ndarray) and a.ndim == 1 and len(a) == n for a in args)
+                and all(a.dtype == np.float64 for a in floats)
+                and bottom_fractals.dtype == np.bool_
+                and stroke_direction.dtype.kind in 'iu'
+                and all(np.isfinite(a).all() for a in finite_inputs)
+                and np.isin(stroke_direction, [-1, 0, 1]).all()
+                and bottom_fractals.any())
+    if not eligible:
+        return _legacy_analyze_bottom_fractal(*args)
+    return dict(_perf_compiled_quality(*args, _sma(volume, 20)))
+
+
+def _reference_bottom_fractal_asof(close, high, low, volume, ema20, ema60, macd_hist):
+    """Public quality state observed at each daily close.
+
+    Geometric centers and stroke endpoints can change as new bars arrive.
+    A historical array indexed by center therefore cannot also represent what
+    was known at each decision. Keep the existing quality formula, provisional
+    geometry and decay, but retain only the last value of each available prefix.
+
+    Center-index quality for the structural B2 detector remains a separate
+    contract; callers must not substitute these decision-index arrays for it.
+    This straightforward implementation is the causal reference for any later
+    incremental optimization. It retains only one prefix state in memory.
+    """
+    n = len(close)
+    fields = ('bottom_fractal_quality', 'bottom_fractal_strength',
+              'bottom_fractal_vol_ratio', 'bottom_fractal_vol_spike',
+              'bottom_fractal_ema_dist')
+    observed = {key: np.zeros(n) for key in fields}
+    for stop in range(3, n + 1):
+        geometry = detect_strokes(high[:stop], low[:stop], close[:stop])
+        snapshot = analyze_bottom_fractal(
+            close[:stop], high[:stop], low[:stop], volume[:stop],
+            ema20[:stop], ema60[:stop], macd_hist[:stop],
+            geometry['bottom_fractals'], geometry['stroke_direction'])
+        for key in fields:
+            observed[key][stop - 1] = snapshot[key][-1]
+    return observed
+
+
+def analyze_bottom_fractal_asof(close, high, low, volume, ema20, ema60, macd_hist):
+    """Exact numeric dispatch for daily-prefix quality; preserve the oracle."""
+    args = (close, high, low, volume, ema20, ema60, macd_hist)
+    n = len(close)
+    eligible = (_HAS_NUMBA and all(
+        isinstance(a, np.ndarray) and a.ndim == 1 and len(a) == n
+        and a.dtype == np.float64 and a.flags.c_contiguous and np.isfinite(a).all()
+        for a in args))
+    if not eligible:
+        return _reference_bottom_fractal_asof(*args)
+    from .fractal_observation_kernel import quality_prefix_arrays
+    values = quality_prefix_arrays(*args, _sma(volume, 20))
+    fields = ('bottom_fractal_quality', 'bottom_fractal_strength',
+              'bottom_fractal_vol_ratio', 'bottom_fractal_vol_spike',
+              'bottom_fractal_ema_dist')
+    return dict(zip(fields, values))
+
 
 # ==================== 14. 二买检测 (底部分型 + MACD背离) ====================
 
@@ -2431,6 +2634,7 @@ def detect_second_buy_point(
     stroke_direction: np.ndarray,
     strokes: List[Stroke],
     fractal_vis: np.ndarray = None,
+    _macd_windows: np.ndarray = None,
 ) -> Dict[str, np.ndarray]:
     """
     二买 (B2) 检测 — 底部分型 + MACD背离确认.
@@ -2498,8 +2702,8 @@ def detect_second_buy_point(
             continue
         if np.all(np.isnan(macd_recent)) or np.all(np.isnan(macd_earlier)):
             continue
-        r_mean = np.nanmean(macd_recent)
-        e_mean = np.nanmean(macd_earlier)
+        r_mean = np.nanmean(macd_recent) if _macd_windows is None else _macd_windows[i, 0]
+        e_mean = np.nanmean(macd_earlier) if _macd_windows is None else _macd_windows[i, 1]
         if np.isnan(r_mean) or np.isnan(e_mean) or r_mean <= e_mean:
             continue
         # 检查不被已有B1 zone覆盖
@@ -2576,16 +2780,16 @@ def detect_second_buy_point(
             if lookback >= 10:
                 macd_recent = macd_hist[max(0, i-5):i+1]
                 macd_earlier = macd_hist[max(0, i-10):max(0, i-5)]
-                r_mean = np.nanmean(macd_recent)
-                e_mean = np.nanmean(macd_earlier)
+                r_mean = np.nanmean(macd_recent) if _macd_windows is None else _macd_windows[i, 0]
+                e_mean = np.nanmean(macd_earlier) if _macd_windows is None else _macd_windows[i, 1]
                 if not np.isnan(r_mean) and not np.isnan(e_mean) and r_mean > e_mean:
                     div_confirmed = True
 
             # 条件4: MACD比B1时改善（更强的底部确认）
             macd_improved = False
             if b1_idx >= 5:
-                macd_b1 = np.nanmean(macd_hist[max(0, b1_idx-3):b1_idx+1])
-                macd_now = np.nanmean(macd_hist[max(0, i-3):i+1])
+                macd_b1 = np.nanmean(macd_hist[max(0, b1_idx-3):b1_idx+1]) if _macd_windows is None else _macd_windows[b1_idx, 2]
+                macd_now = np.nanmean(macd_hist[max(0, i-3):i+1]) if _macd_windows is None else _macd_windows[i, 2]
                 if not np.isnan(macd_b1) and not np.isnan(macd_now) and macd_now > macd_b1:
                     macd_improved = True
 
@@ -2621,6 +2825,9 @@ def detect_second_buy_point(
                 #   修法: 标在确认 bar。fractal_vis[i] < 0 = 尚未定稿 ⇒ 此刻不可知。
                 _v = int(fractal_vis[i]) if fractal_vis is not None else i
                 if 0 <= _v < n and not second_buy[_v]:
+                    # Support at the geometric center must survive until confirmation.
+                    if np.min(low[i:_v + 1]) <= b1_low * 0.98:
+                        continue
                     second_buy[_v] = True
                     second_buy_conf[_v] = conf
                     b1_ref_idx[_v] = b1_idx
@@ -2832,16 +3039,12 @@ def compute_enhanced_chan_output(
         base['bottom_fractal_ema_dist'] = np.zeros(n)
 
     # 二买检测: 底部分型 + MACD背离 → B2
-    b2_info = detect_second_buy_point(
-        close, high, low,
-        base['bottom_fractals'],
-        base.get('bottom_fractal_quality', np.zeros(len(close))),
-        macd_hist if macd_hist is not None else np.zeros(len(close)),
-        base['buy_point'],
-        base['stroke_direction'],
-        strokes,
-        base['fractal_vis'],
-    )
+    # Retain what the existing B2 detector knew at each decision close.
+    # Historical center-quality revisions must not rewrite earlier decisions.
+    from .b2_observation import compute_second_buy_asof
+    b2_info = compute_second_buy_asof(
+        close, high, low, volume, ema20, ema60, macd_hist,
+        base['buy_point'], base['fractal_vis'], base['bottom_fractals'])
     base['second_buy_point'] = b2_info['second_buy_point']
     base['second_buy_confidence'] = b2_info['second_buy_confidence']
     base['second_buy_b1_ref'] = b2_info['second_buy_b1_ref']
@@ -2946,6 +3149,12 @@ def compute_enhanced_chan_output(
             structure_stop[i] = fixed_stop_buy[i]
 
     base['structure_stop_price'] = structure_stop
+
+    # Publish decision-time state only after structural consumers have finished.
+    # Their center-index inputs must not silently change meaning in this repair.
+    if volume is not None:
+        base.update(analyze_bottom_fractal_asof(
+            close, high, low, volume, ema20, ema60, macd_hist))
 
     return base
 

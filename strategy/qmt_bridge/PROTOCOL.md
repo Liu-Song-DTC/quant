@@ -49,11 +49,12 @@ EXECUTED          当日窗口结束, QMT 写入 + 附 fills 行数摘要。run_
 
 ```
 run_id,seq,stock_code,order_type,price,volume,fill_id,order_status,ts
-20261026,1,688063.SH,BUY,12.34,600,F20261026001,FILLED_ALL,09:25:07
+20261026,1,688063.SH,BUY,12.34,600,F20261026001,FILLED_ALL,2026-10-26 09:25:07
 ```
 
 - **幂等**: QMT 以 `(run_id, fill_id)` 去重, 重跑不重复 append。
 - 废单/部分成交/拒单同样 append, `order_status` 区分 (`REJECTED` / `PARTIAL` / `UNFILLED_CANCEL`)。
+- 有实际成交量的回报，`ts` 必须包含真实成交日期；无时区时按上海本地时间填写，带时区时账簿转为上海日期。禁止只写时分秒，禁止用计划执行日或导入日补猜；无成交的最小拒单/撤单回报可省略时间。
 
 ## 5. QMT 侧执行自检 (下单前逐条, 任一不过 → 拒单+记偏差)
 
