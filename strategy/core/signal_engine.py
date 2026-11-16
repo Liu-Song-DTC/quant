@@ -1401,14 +1401,14 @@ class SignalEngine:
             _mkt_style_conf_arr = regimes.get('style_confidence', np.zeros(n)) if regimes else np.zeros(n)
             _mkt_conf_arr = regimes.get('confidence', np.zeros(n)) if regimes else np.zeros(n)
 
-            # 预计算行业分类（同股票所有 bar 一致，取中点日期）
-            _mid_date = dates[min(n-1, max(60, n//2))]
-            _ind_cat = self._get_industry_category(code, _mid_date)
-            _spec_ind = self._get_specific_industry(code, _mid_date) if code else ''
-            # #352 行业归属 PIT 钩子 (默认关闭, 逐位零改动)。开启后每个 bar 用
-            # current_date 查行业名/具体行业, 消除"整段历史锚在中点日期"的前视;
-            # 默认路径仍用中点值, 保持生产逐位不变。
             _use_pit_ind = os.environ.get('QUANT_INDUSTRY_PIT', '0') == '1'
+            if not _use_pit_ind:
+                # 保留旧默认路径；逐日路径不能先用未来中点预热分类缓存。
+                _mid_date = dates[min(n-1, max(60, n//2))]
+                _ind_cat = self._get_industry_category(code, _mid_date)
+                _spec_ind = self._get_specific_industry(code, _mid_date) if code else ''
+            # 逐日查询修正代码层的时间边界，不证明首版概念映射/财报修订
+            # 代理在历史时点真实可得；相关数据来源限制仍须单独记录。
             if _use_pit_ind and not getattr(self, '_ind_pit_logged', False):
                 print('[hook] QUANT_INDUSTRY_PIT=1: 行业归属逐bar PIT (替代中点锚)')
                 self._ind_pit_logged = True
@@ -2772,10 +2772,19 @@ class SignalEngine:
         #   且"同季度内答案不同"本身违反缓存前提。
         _cur_ts = pd.Timestamp(current_date)
         _cmap, _cmap_ver = _concept_map_asof(_cur_ts)
+        _pit = os.environ.get('QUANT_INDUSTRY_PIT', '0') == '1'
         _ck = f'{code}_{_get_quarter_id(current_date)}_{_cmap_ver}'
         if not hasattr(self, '_spec_ind_cache'):
             self._spec_ind_cache = {}
-        _cached = self._spec_ind_cache.get(_ck)
+        if _pit:
+            # 概念成立日、财报可用日都可能落在季度中间。按日验证缓存命中，
+            # 每只股票只保留最近查询，避免逐日键随回测长度无界增长。
+            _ck = f'pit:{code}'
+            _day_key = (_cur_ts.normalize(), _cmap_ver)
+            _entry = self._spec_ind_cache.get(_ck)
+            _cached = _entry[1] if _entry is not None and _entry[0] == _day_key else None
+        else:
+            _cached = self._spec_ind_cache.get(_ck)
         if _cached is not None:
             return _cached if _cached != '__NONE__' else ''
 
@@ -2850,7 +2859,8 @@ class SignalEngine:
                 except Exception as e:
                     import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()
 
-        self._spec_ind_cache[_ck] = result if result else '__NONE__'
+        _encoded = result if result else '__NONE__'
+        self._spec_ind_cache[_ck] = (_day_key, _encoded) if _pit else _encoded
         return result if result else ''
 
     def _get_fundamental_score(self, code, current_date) -> float:

@@ -1692,7 +1692,11 @@ class PortfolioConstructor:
         # === 产业链聚焦: 找到主导行业, 限定在产业链内选股 ===
         _chain_concepts = None
         _dom_industry = None
-        if len(candidates) >= 3:
+        # Candidate-count/median chain focus is a separate policy, not an
+        # independent measurement of sector capital or persistence. The
+        # default retains the established path; zero isolates this crop when
+        # testing causal industry labels against a pre-buy sector architecture.
+        if len(candidates) >= 3 and os.environ.get('QUANT_CANDIDATE_CHAIN_FOCUS', '1') != '0':
             from .industry_chain import get_chain_concepts, _NO_CHAIN_CONCEPTS
             # 统计各行业候选数量和中位数得分
             _ind_stats = {}
