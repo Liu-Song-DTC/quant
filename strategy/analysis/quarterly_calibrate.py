@@ -48,25 +48,13 @@ def quarter_date_range(quarter_id):
 
 
 def get_calibration_window(backtest_quarter_id, n_quarters=20):
-    """返回用于标定backtest_quarter的20季度窗口"""
-    year = int(backtest_quarter_id[:4])
-    q = int(backtest_quarter_id[5])
-    # 回退n_quarters个季度（1季度 = 3个月，n_quarters*3 = 回到5年前同一季度）
-    total_months_back = n_quarters * 3
-    end_month = (q - 1) * 3 + 3  # 回测季度开始前的最后一个月
-    end_year = year
-    if end_month > 12:  # Q4 → 12月
-        pass  # Q4: end_month=12, start_month=10, fine
-    # 标定窗口结束于回测季度前一天
-    if q == 1:
-        end_date = pd.Timestamp(f"{year}-01-01") - pd.Timedelta(days=1)
-    else:
-        end_date = pd.Timestamp(f"{year}-{(q-1)*3+1:02d}-01") - pd.Timedelta(days=1)
-    # 标定窗口起始 = end_date - n_quarters*3个月
-    start_year = end_date.year - 5
-    start_q = q  # 同季度，5年前
-    start_date = pd.Timestamp(f"{start_year}-{(start_q-1)*3+1:02d}-01")
-    return start_date, end_date
+    """返回回测季度之前完整的 n_quarters 个季度，默认5年。"""
+    if (not isinstance(n_quarters, (int, np.integer))
+            or isinstance(n_quarters, (bool, np.bool_)) or n_quarters < 1):
+        raise ValueError('n_quarters must be a positive integer')
+    quarter_start, _ = quarter_date_range(backtest_quarter_id)
+    start_date = quarter_start - pd.DateOffset(months=int(n_quarters) * 3)
+    return start_date, quarter_start - pd.Timedelta(days=1)
 
 
 def select_calibration_window(factor_df, calib_start, calib_end, quarter_start):
