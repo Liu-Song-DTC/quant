@@ -465,7 +465,7 @@ def _update_signal_source_identity(h, base):
     except OSError:
         h.update(b'config/quarterly_factors|MISSING;')
     for name in ('QUANT_EDGE_ASOF', 'QUANT_ALT_ZERO_PREOBSERVED_MARKET',
-                 'QUANT_MARKET_ALT_WEIGHT'):
+                 'QUANT_MARKET_ALT_WEIGHT', 'QUANT_INDUSTRY_PIT'):
         h.update(f"env.{name}|{os.environ.get(name)!r};".encode('utf-8'))
 
 

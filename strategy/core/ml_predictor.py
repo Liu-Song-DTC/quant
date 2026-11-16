@@ -77,7 +77,7 @@ class MLFactorPredictor:
                          regime_info: dict = None,
                          is_train: bool = False,
                          selection_df: pd.DataFrame = None) -> pd.DataFrame:
-        exclude = {'code', 'date', 'future_ret', 'industry'}
+        exclude = {'code', 'date', 'future_ret', 'industry', 'label_end_date', '__ml_regime_input'}
         base_features = [c for c in df.columns if c not in exclude
                          and df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
 
@@ -137,15 +137,12 @@ class MLFactorPredictor:
                     regime_info['by_date']).fillna(0).to_numpy()
             else:
                 regime_val = regime_info.get('regime', 0)
-            # 支持逐行regime: list/array/Series按行使用, 标量广播
-            if isinstance(regime_val, (list, np.ndarray)):
+            # Row observations must stay aligned; averaging a mismatched
+            # vector can import unrelated states into every historical row.
+            if isinstance(regime_val, (list, tuple, np.ndarray, pd.Series)):
                 regime_arr = np.asarray(regime_val, dtype=float)
-                if len(regime_arr) != len(df):
-                    regime_arr = np.full(len(df), float(np.mean(regime_arr)))
-            elif isinstance(regime_val, pd.Series):
-                regime_arr = regime_val.values.astype(float)
-                if len(regime_arr) != len(df):
-                    regime_arr = np.full(len(df), float(regime_arr.mean()))
+                if regime_arr.ndim != 1 or len(regime_arr) != len(df):
+                    raise ValueError('regime must be one-dimensional and match feature rows')
             else:
                 regime_arr = np.full(len(df), float(regime_val))
             if is_train or self._regime_feature_sources is None:
@@ -237,7 +234,7 @@ class MLFactorPredictor:
     @staticmethod
     def describe_feature_contract(frame: pd.DataFrame, whitelist=None):
         """Report configured versus usable inputs without changing selection."""
-        meta = {'code', 'date', 'future_ret', 'industry'}
+        meta = {'code', 'date', 'future_ret', 'industry', 'label_end_date', '__ml_regime_input'}
         numeric = [c for c in frame.columns if c not in meta
                    and frame[c].dtype in ('float64', 'float32', 'int64', 'int32')]
         requested = list(whitelist) if whitelist else numeric.copy()
@@ -287,6 +284,15 @@ class MLFactorPredictor:
     def _train_impl(self, factor_df: pd.DataFrame,
                     regime_info: dict = None) -> Optional[float]:
         """训练XGBoost模型，返回验证集IC"""
+        if 'label_end_date' in factor_df:
+            self._maturity_dates(factor_df)
+        row_regimes = None
+        if regime_info and 'by_date' not in regime_info:
+            value = regime_info.get('regime', 0)
+            if isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+                row_regimes = np.asarray(value, dtype=float)
+                if row_regimes.ndim != 1 or len(row_regimes) != len(factor_df):
+                    raise ValueError('regime must be one-dimensional and match feature rows')
         try:
             from xgboost import XGBRegressor
         except ImportError:
@@ -304,11 +310,13 @@ class MLFactorPredictor:
                   f"非数值={self.feature_contract['non_numeric']}")
 
         # 只复制数值型特征列
-        exclude_set = {'code', 'date', 'future_ret', 'industry'}
+        exclude_set = {'code', 'date', 'future_ret', 'industry', 'label_end_date', '__ml_regime_input'}
         numeric_cols = [c for c in factor_df.columns if c not in exclude_set
                        and factor_df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
         meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry', 'label_end_date'] if c in factor_df.columns]
         df = factor_df[meta_cols + numeric_cols].copy()
+        if row_regimes is not None:
+            df['__ml_regime_input'] = row_regimes
         availability_cols = self.config.get('ml', {}).get('feature_whitelist') or numeric_cols
         availability_cols = [c for c in availability_cols if c in numeric_cols]
         if not availability_cols:
@@ -355,6 +363,8 @@ class MLFactorPredictor:
         train_mask, val_mask = self.split_masks(df, val_start)
         # 构造交叉因子的截面必须包含当时全部可预测股票。标签不可得（例如
         # 次日涨停买不入）只能排除监督样本，不能提前改变当日特征的排名分母。
+        if row_regimes is not None:
+            regime_info = {'regime': df.pop('__ml_regime_input').to_numpy()}
         df = self.prepare_features(df, regime_info, is_train=True,
                                    selection_df=df.loc[train_mask & df['future_ret'].notna()])
 
@@ -460,26 +470,70 @@ class MLFactorPredictor:
     def time_weights(days_old):
         return np.exp(-np.maximum(np.asarray(days_old, dtype=float), 0.0) / 500.0)
 
+    @staticmethod
+    def _maturity_dates(df):
+        values = df['label_end_date']
+        if (not isinstance(values, pd.Series)
+                or pd.api.types.is_numeric_dtype(values.dtype)):
+            raise ValueError('label_end_date requires explicit datetime values, not numeric timestamps')
+        if not pd.api.types.is_datetime64_any_dtype(values.dtype):
+            present = values.dropna()
+            if any(isinstance(value, (int, float, np.number)) for value in present):
+                raise ValueError('label_end_date requires explicit datetime values, not numeric timestamps')
+        return pd.to_datetime(values, errors='raise')
+
     def split_masks(self, df, validation_start):
         dates = pd.to_datetime(df['date'])
         val_start = pd.Timestamp(validation_start)
         train = dates < val_start
         if 'label_end_date' in df:
-            train &= pd.to_datetime(df['label_end_date']) < val_start
+            train &= self._maturity_dates(df) < val_start
         else:
             # 兼容旧的无标签终止日帧：宁可多隔离，不让相邻收益窗口重叠。
             horizon = int(self.config.get('dynamic_factor', {}).get('forward_period', 10))
             train &= dates < val_start - pd.offsets.BDay(horizon)
         return train, dates >= val_start
 
+    def _validate_prediction_inputs(self, df: pd.DataFrame):
+        """A trained input disappearing is different from a missing cell."""
+        if not df.columns.is_unique:
+            duplicate = df.columns[df.columns.duplicated()].tolist()
+            raise ValueError(f'ML prediction duplicate column: {duplicate}')
+        pairs = {f'cross_{a}_{b}': (a, b) for a, b in self._cross_feature_pairs}
+        required = set()
+
+        def require(name):
+            if name in df.columns:
+                required.add(name)
+            elif name in pairs:
+                for source in pairs[name]:
+                    require(source)
+            elif name.startswith('regime_'):
+                require(name[len('regime_'):])
+            elif name.endswith('__filled'):
+                require(name[:-len('__filled')])
+            else:
+                required.add(name)
+
+        for name in getattr(self, '_trained_features', self.feature_cols):
+            require(name)
+        missing = sorted(required.difference(df.columns))
+        supported = ('float64', 'float32', 'int64', 'int32')
+        unsupported = sorted(f'{name}:{df[name].dtype}' for name in required
+                             if name in df.columns and df[name].dtype not in supported)
+        if missing or unsupported:
+            raise ValueError(f'ML prediction input contract: missing={missing}, '
+                             f'unsupported_dtype={unsupported}')
+
     def predict(self, df: pd.DataFrame,
                 regime_info: dict = None) -> np.ndarray:
         if self.model is None:
             return np.zeros(len(df))
+        self._validate_prediction_inputs(df)
         if 'date' not in df or (df.groupby('date').size() < 2).any():
             raise ValueError('ML截面模型必须联合输入同日多只股票；禁止按单只股票标准化预测')
 
-        exclude_set = {'code', 'date', 'future_ret', 'industry'}
+        exclude_set = {'code', 'date', 'future_ret', 'industry', 'label_end_date', '__ml_regime_input'}
         numeric_cols = [c for c in df.columns if c not in exclude_set
                        and df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
         meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry'] if c in df.columns]
@@ -496,17 +550,13 @@ class MLFactorPredictor:
         # 使用训练时固化的特征列表, 避免prepare_features重建的feature_cols与模型不匹配
         trained_cols = getattr(self, '_trained_features', self.feature_cols)
         valid_features = [c for c in trained_cols if c in df.columns]
+        missing_features = [c for c in trained_cols if c not in df.columns]
+        if missing_features:
+            raise ValueError(f'ML prediction derived features missing={missing_features}')
         if not valid_features:
             return np.zeros(len(df))
 
         X = df[valid_features].replace([np.inf, -np.inf], np.nan).fillna(0).values
-        # 补齐缺失特征列: 训练时63特征, 预测时可能只有32个基础因子 → 缺失列填0
-        if len(valid_features) < len(trained_cols):
-            full_X = np.zeros((len(df), len(trained_cols)))
-            col_to_idx = {c: i for i, c in enumerate(trained_cols)}
-            for j, c in enumerate(valid_features):
-                full_X[:, col_to_idx[c]] = X[:, j]
-            X = full_X
         # Ensemble预测: 3个模型取均值
         if hasattr(self, '_ensemble_models') and self._ensemble_models:
             preds = np.zeros(len(df))
@@ -566,7 +616,14 @@ class MLFactorPredictor:
             }))
 
     def load_model(self, path: str):
-        """从文件加载ensemble模型"""
+        """Replace state only after every member and metadata field is valid."""
+        import copy
+        candidate = copy.copy(self)
+        candidate.__dict__ = self.__dict__.copy()
+        candidate._load_model_impl(path)
+        self.__dict__ = candidate.__dict__
+
+    def _load_model_impl(self, path: str):
         from xgboost import XGBRegressor
         import hashlib
         from pathlib import Path
@@ -574,9 +631,19 @@ class MLFactorPredictor:
         meta_path = path + '.meta'
         with open(meta_path, 'rb') as f:
             data = pickle.load(f)
+        if not isinstance(data, dict) or 'cross_feature_pairs' not in data:
+            raise ValueError('invalid ensemble metadata: missing cross_feature_pairs')
         n_models = data.get('n_models', 3)
         if not isinstance(n_models, int) or n_models < 1 or not data.get('feature_cols'):
             raise ValueError('invalid ensemble metadata')
+        feature_cols = data['feature_cols']
+        trained = data.get('trained_features', feature_cols)
+        if (not isinstance(feature_cols, list) or not isinstance(trained, list)
+                or not trained or any(not isinstance(c, str) for c in feature_cols + trained)
+                or len(set(feature_cols)) != len(feature_cols)
+                or len(set(trained)) != len(trained)
+                or not set(trained).issubset(feature_cols)):
+            raise ValueError('invalid ensemble feature schema')
         preprocessing = data.get('preprocessing')
         if preprocessing is not None:
             required = {'version', 'feature_whitelist', 'use_cross_features', 'use_regime_features',
@@ -593,6 +660,8 @@ class MLFactorPredictor:
             if expected is not None and hashlib.sha256(payload).hexdigest() != expected.get(str(i)):
                 raise ValueError(f'ensemble member checksum mismatch: {_mp}')
             _m.load_model(bytearray(payload))
+            if _m.n_features_in_ != len(trained):
+                raise ValueError('ensemble feature schema does not match model dimensions')
             members.append(_m)
         self.feature_cols = data['feature_cols']
         self._trained_features = data.get('trained_features', data['feature_cols'])

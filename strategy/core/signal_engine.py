@@ -2303,6 +2303,7 @@ class SignalEngine:
         industry = (self._get_specific_industry(code, current_date)
                     if (code and current_date) else '')
         industry_cfg = INDUSTRY_FACTOR_CONFIG.get(industry) if industry else None
+        qcfg = None
 
         # 熊市: trend_score<0或regime=-1时激活季度标定bear_factors
         # 2022实证: 阴跌不触发regime=-1, 需trend_score补充检测
@@ -2338,6 +2339,8 @@ class SignalEngine:
 
         # P1: FactorLibrary (IC store or YAML fallback)
         if not scoring_factors and lib is not None:
+            if qcfg is None:
+                qcfg = _resolve_factor_config(current_date) if current_date else {}
             scoring_factors = lib.get_scoring_factors(
                 industry or '', as_of_date=current_date,
                 fallback_config=qcfg)

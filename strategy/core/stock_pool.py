@@ -149,6 +149,46 @@ def _is_non_stock_series(df) -> bool:
     return bool(ratio.median() < NON_STOCK_VWAP_RATIO)
 
 
+def _prefix_nonstock_flags(df) -> np.ndarray:
+    """Apply the scalar content classifier using only each observed prefix.
+
+    Two heaps retain the same median, including infinite ratios. Pandas'
+    expanding median drops infinities, unlike the scalar classifier.
+    """
+    import heapq
+
+    flags = np.zeros(len(df), dtype=bool)
+    if 'amount' not in df.columns or 'volume' not in df.columns:
+        return flags
+    amt = pd.to_numeric(df['amount'], errors='coerce').to_numpy(dtype=float)
+    vol = pd.to_numeric(df['volume'], errors='coerce').to_numpy(dtype=float)
+    close = pd.to_numeric(df['close'], errors='coerce').to_numpy(dtype=float)
+    valid = (~np.isnan(amt) & ~np.isnan(vol) & ~np.isnan(close)
+             & (vol > 0) & (close > 0))
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+        ratios = (amt / (vol * 100.0)) / close
+    lower, upper = [], []
+    observed = 0
+    for i, ratio in enumerate(ratios):
+        if valid[i]:
+            observed += 1
+            # The scalar valid-count includes rows whose arithmetic becomes
+            # NaN, while Series.median excludes those NaN ratios.
+            if not np.isnan(ratio):
+                if not lower or ratio <= -lower[0]:
+                    heapq.heappush(lower, -ratio)
+                else:
+                    heapq.heappush(upper, ratio)
+                if len(lower) > len(upper) + 1:
+                    heapq.heappush(upper, -heapq.heappop(lower))
+                elif len(upper) > len(lower):
+                    heapq.heappush(lower, -heapq.heappop(upper))
+        if observed >= 20 and lower:
+            median = (-lower[0] + upper[0]) / 2.0 if len(lower) == len(upper) else -lower[0]
+            flags[i] = median < NON_STOCK_VWAP_RATIO
+    return flags
+
+
 def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
                             bse_exclude: bool = True, cache_key: str = None,
                             relax_floor: float = 1.0,
@@ -240,10 +280,9 @@ def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
         except Exception:
             continue
         dt = pd.to_datetime(df['datetime'])
-        if _is_non_stock_series(df):
-            # Fix#44: 指数/海外股以裸数字代码存在, 前缀守卫抓不到 (与get_stock_pool同规则)
+        nonstock_flags = _prefix_nonstock_flags(df)
+        if len(nonstock_flags) and nonstock_flags[-1]:
             non_stock_skipped += 1
-            continue
         if code.startswith('688'):
             min_amount = 40_000_000
             min_vol = 300_000
@@ -260,6 +299,8 @@ def get_pool_membership_map(boundaries, data_dir=None, min_price: float = 2.0,
             # searchsorted定位截断点 (dt升序)
             cut = int(np.searchsorted(dt.values, np.datetime64(b), side='right'))
             if cut < 60:
+                continue
+            if nonstock_flags[cut - 1]:
                 continue
             last_close = df['close'].iloc[cut - 1]
             if pd.isna(last_close) or last_close < min_price:

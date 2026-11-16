@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 STRATEGY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(STRATEGY))
@@ -60,6 +61,16 @@ class SignalDependencyFingerprintTests(unittest.TestCase):
         path.write_text(path.read_text()+'\n# changed observation-time implementation\n')
         self.assertNotEqual(self.signal(), signal)
         self.assertNotEqual(self.raw(), raw)
+
+    def test_industry_clock_policy_invalidates_signals_without_changing_raw(self):
+        # The exported industry changes portfolio grouping, so it cannot share
+        # a signal identity with the midpoint-clock policy. Raw factors do not
+        # consume this switch and must retain their own identity.
+        with patch.dict(os.environ, {'QUANT_INDUSTRY_PIT': '0'}):
+            signal, raw = self.signal(), self.raw()
+        with patch.dict(os.environ, {'QUANT_INDUSTRY_PIT': '1'}):
+            self.assertNotEqual(self.signal(), signal)
+            self.assertEqual(self.raw(), raw)
 
 
 if __name__ == '__main__':
