@@ -991,12 +991,16 @@ def main():
 
     # 显式人工裁定: 核对真实券商账户后确认某笔挂单未成交。程序不替用户假定成交。
     if args.ack_stale_unresolved:
+        if account.get('last_date') and str(account['last_date'])[:10] > str(target_date)[:10]:
+            raise RuntimeError('不能用过去日期覆盖当前实盘状态')
         _keys = [k.strip() for k in args.ack_stale_unresolved.split(',') if k.strip()]
         _acked = acknowledge_orders(account, _keys,
                                     reason='操作员核对真实券商账户后确认未成交')
-        commit_json_files({ACCOUNT_FILE: account},
-                          os.path.join(_PROJECT_DIR, '.live_state_journal.json'))
-        print(f'  [台账] 已人工确认未成交并落盘: {_acked}')
+        if not args.dry_run:
+            # 已消费的新回报同时改变现金与真实持仓，必须作为同一事务落盘。
+            commit_json_files({POSITIONS_FILE: prev_positions, ACCOUNT_FILE: account},
+                              os.path.join(_PROJECT_DIR, '.live_state_journal.json'))
+        print(f'  [台账] 已人工确认未成交{" [dry-run，不落盘]" if args.dry_run else "并落盘"}: {_acked}')
 
     # 未终结挂单: 无回报既不代表成交也不代表撤单 ⇒ 拒绝假定成交, 也不自动过期。
     _unresolved = unresolved_orders(account, before=target_date)
