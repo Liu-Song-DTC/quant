@@ -71,6 +71,41 @@ def read_stock(args):
         size=after.st_size,mtime_ns=after.st_mtime_ns)
 
 
+def calendar_sector_features(sectors, market):
+    """Use exchange-session windows and preserve missing observations.
+
+    Each sector starts at its first observed date. A sector introduced later
+    cannot manufacture historical keys or values before it was observed.
+    """
+    calendar = pd.DatetimeIndex(market.date.sort_values().unique())
+    if market.date.duplicated().any() or sectors.duplicated(['sector', 'date']).any():
+        raise ValueError('Duplicate market or sector dates')
+    observed_dates = pd.DatetimeIndex(sectors.date.unique())
+    if not observed_dates.isin(calendar).all():
+        raise ValueError('Sector date absent from market calendar')
+    parts = []
+    context = market.set_index('date')
+    for name, part in sectors.groupby('sector', sort=True):
+        dates = calendar[calendar >= part.date.min()]
+        frame = part.set_index('date').reindex(dates)
+        frame.index.name = 'date'
+        frame['sector'] = name
+        frame['benchmark_return'] = context.benchmark_return.reindex(dates)
+        frame['market_equalweight_return'] = context.equal_weight_return.reindex(dates)
+        frame['excess_log_return'] = np.log1p(frame.ret_1d) - np.log1p(frame.benchmark_return)
+        frame['market_excess_log_return'] = np.log1p(frame.ret_1d) - np.log1p(frame.market_equalweight_return)
+        for horizon in (5, 20):
+            frame[f'relative_compound_{horizon}d'] = np.expm1(
+                frame.excess_log_return.rolling(horizon, min_periods=horizon).sum())
+            frame[f'relative_to_market_{horizon}d'] = np.expm1(
+                frame.market_excess_log_return.rolling(horizon, min_periods=horizon).sum())
+        positive = frame.excess_log_return.gt(0).where(frame.excess_log_return.notna())
+        frame['positive_relative_days_5'] = positive.rolling(5, min_periods=5).sum()
+        frame['amount_share_vs20'] = frame.amount_share / frame.amount_share.rolling(20, min_periods=20).mean()
+        parts.append(frame.reset_index())
+    return pd.concat(parts, ignore_index=True)
+
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',required=True,type=Path)
     p.add_argument('--start',default='2026-09-01');p.add_argument('--end',default='2026-11-13')
@@ -79,6 +114,7 @@ def main():
     cfg=yaml.safe_load((ROOT/'strategy/config/factor_config.yaml').read_text())
     history=ROOT/'data/concept_map_history.pkl'; inception=ROOT/'data/concept_inception.pkl'
     versions=sorted(pickle.loads(history.read_bytes())['versions'],key=lambda v:str(v['date']))
+    computation_start=max(pd.Timestamp(a.start)-pd.Timedelta(days=60),pd.Timestamp(versions[0]['date']))
     inceptions={k:pd.Timestamp(v) for k,v in pickle.loads(inception.read_bytes()).items()}
     engine=ROOT/'strategy/core/signal_engine.py'
     node=next(n for n in ast.parse(engine.read_text()).body if isinstance(n,ast.Assign)
@@ -87,17 +123,19 @@ def main():
     protected={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in
         [Path(__file__),ROOT/'strategy/core/stock_pool.py',engine,history,inception,ROOT/'strategy/config/factor_config.yaml']}
     save(out/'manifest.json',dict(source_sha256=protected,start=a.start,end=a.end,
-        computation_start='2026-08-01',workers=a.workers,production_policy_changed=False,
+        computation_start=str(computation_start.date()),workers=a.workers,production_policy_changed=False,
         old_computed_cache_reused=False,future_labels_read=False,buy_flags_read=False,
         inputs='Current QFQ prices, actual turnover amounts, dated concept-map snapshots; no candidate-derived sector universe.',
         limitations=['Concept snapshots use supplied version dates; not a certification of original collection/publication time.',
             'Market mother universe includes ST; no uncertified historical limit-up/down counts.',
             'Overlapping concept amount shares cannot be added together. No true cash-flow interpretation.',
             'Previously researched dates are descriptive, not untouched out-of-sample evaluation.'],
+        feature_clock='5/20 global market sessions; missing sector observations remain unknown, not skipped or filled with zero.',
+        benchmarks='Report both Shanghai-index-relative and all-stock-equal-weight-relative strength; do not choose a benchmark after labels.',
         excluded_theme_substrings=excluded))
     data=ROOT/'data/stock_data/backtrader_data'
     bounds=_monthly_boundaries(pd.Timestamp('2021-01-01'),pd.Timestamp(a.end))
-    tasks=[(f.name[:-8],str(f),'2026-08-01',a.end,bounds,float(cfg['stock_pool']['pool_relax_floor']))
+    tasks=[(f.name[:-8],str(f),str(computation_start.date()),a.end,bounds,float(cfg['stock_pool']['pool_relax_floor']))
            for f in sorted(data.glob('*_qfq.csv')) if asset(f.name[:-8])]
     state(out,'reading_all_stock_prices',total=len(tasks))
     parts=[]; differences=[]; stamps=[]
@@ -131,7 +169,8 @@ def main():
         part=part.set_index('code');total=float(part.amount.sum())
         market_rows.append(dict(date=day,stocks=len(part),amount=total,
             advancing_fraction=float(part.ret_1d.gt(0).mean()),declining_fraction=float(part.ret_1d.lt(0).mean()),
-            above_ma20_fraction=float(part.above_ma20.mean()),benchmark_return=float(benchmark.loc[day])))
+            above_ma20_fraction=float(part.above_ma20.mean()),benchmark_return=float(benchmark.loc[day]),
+            equal_weight_return=float(part.ret_1d.mean())))
         for name,members in maps[key].items():
             if inceptions.get(name,pd.Timestamp.min)>day:continue
             matched=part.loc[part.index.intersection(members)]
@@ -142,16 +181,7 @@ def main():
                 advancing_fraction=float(matched.ret_1d.gt(0).mean()),
                 above_ma20_fraction=float(matched.above_ma20.mean()),
                 benchmark_return=float(benchmark.loc[day])))
-    sectors=pd.DataFrame(rows).sort_values(['sector','date'])
-    sectors['excess_log_return']=np.log1p(sectors.ret_1d)-np.log1p(sectors.benchmark_return)
-    group=sectors.groupby('sector',sort=False)
-    for horizon in (5,20):
-        sectors[f'relative_compound_{horizon}d']=np.expm1(group.excess_log_return.transform(
-            lambda s:s.rolling(horizon,min_periods=horizon).sum()))
-    sectors['positive_relative_days_5']=group.excess_log_return.transform(
-        lambda s:s.gt(0).astype(float).rolling(5,min_periods=5).sum())
-    sectors['amount_share_vs20']=sectors.amount_share/group.amount_share.transform(
-        lambda s:s.rolling(20,min_periods=20).mean())
+    sectors=calendar_sector_features(pd.DataFrame(rows),pd.DataFrame(market_rows))
     sectors=sectors.loc[sectors.date.between(a.start,a.end)]
     sectors.to_parquet(out/'sector_context.parquet',index=False)
     pd.DataFrame(market_rows).to_csv(out/'market_context.csv',index=False)
