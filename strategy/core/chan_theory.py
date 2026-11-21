@@ -22,6 +22,7 @@ import bisect
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
+from .buy_point_origin import BuyPointOrigin as _BuyOrigin
 
 
 def pivot_visible_idx(p) -> int:
@@ -1058,6 +1059,8 @@ def detect_buy_sell_points(
         pivot_position: 相对中枢的位置 (-1=下方, 0=内部, 1=上方)
     """
     buy_point = np.zeros(n_bars, dtype=int)
+    # Observation only: record the branch that actually wins existing priority.
+    buy_point_origin = np.zeros(n_bars, dtype=np.int16)
     sell_point = np.zeros(n_bars, dtype=int)
     buy_confidence = np.zeros(n_bars)
     sell_confidence = np.zeros(n_bars)
@@ -1184,6 +1187,7 @@ def detect_buy_sell_points(
                 if not qual_ok:
                     continue  # 量能不达标, 不标记B3
                 buy_point[i] = 3
+                buy_point_origin[i] = _BuyOrigin.B3_BREAKOUT_PULLBACK
                 b3_trend_rank[i] = p_rank
                 b3_trend_confirmed[i] = p_trend_ok
                 breakout_pct = (_h[breakout_bar] - p.zg) / p.zg
@@ -1283,6 +1287,7 @@ def detect_buy_sell_points(
             if div_strength > 0.10:
                 if pivot_position[i] == -1 and buy_point[i] == 0:
                     buy_point[i] = 1
+                    buy_point_origin[i] = _BuyOrigin.B1_PIVOT_DIVERGENCE
                     dist_pct = (last_pivot.zd - close[i]) / (close[i] + 1e-10)
                     base_conf = 0.35 + down_count * 0.10 + div_strength * 0.3
                     buy_confidence[i] = min(0.9, base_conf + dist_pct * 10)
@@ -1308,6 +1313,7 @@ def detect_buy_sell_points(
                 vol_ok = vol_bounce > vol_pre * 1.1 if vol_pre > 0 else True
             if dd_from_high > 0.15 and bounce_3d > 0.02 and was_below_ma and vol_ok:
                 buy_point[idx] = 1
+                buy_point_origin[idx] = _BuyOrigin.B1_DRAWDOWN_VOLUME_REBOUND
                 buy_confidence[idx] = float(np.clip(0.30 + dd_from_high * 0.5 + bounce_3d * 3, 0.25, 0.7))
 
     # === B1扩展: 缺口反转 — 跳空高开放量突破下跌趋势 ===
@@ -1325,6 +1331,7 @@ def detect_buy_sell_points(
                 vol_ok = volume[idx] > avg_vol_20 * 1.0 if avg_vol_20 > 0 else True
             if gap_up > 0.02 and pre_trend < -0.03 and vol_ok:
                 buy_point[idx] = 1
+                buy_point_origin[idx] = _BuyOrigin.B1_CLOSE_REBOUND
                 buy_confidence[idx] = float(np.clip(0.30 + gap_up * 5, 0.25, 0.7))
 
     # === B1扩展: 横盘突破 — 中枢震荡后向上突破ZG ===
@@ -1343,6 +1350,7 @@ def detect_buy_sell_points(
             continue
         if close[i] > last_p.zg and pivot_position[i] == 1:
             buy_point[i] = 3  # 突破中枢上沿→B3,非B1
+            buy_point_origin[i] = _BuyOrigin.B3_PIVOT_CONSOLIDATION_BREAKOUT
             breakout_pct = (close[i] - last_p.zg) / last_p.zg
             buy_confidence[i] = float(np.clip(0.30 + breakout_pct * 8, 0.25, 0.65))
 
@@ -1440,6 +1448,7 @@ def detect_buy_sell_points(
             if (is_pulling_back and near_ma and vol_ok and not_extended
                     and has_fractal and macd_ok):
                 buy_point[idx] = 4
+                buy_point_origin[idx] = _BuyOrigin.B4_TREND_MA20_PULLBACK
                 trend_score = min(1.0, (ma20[idx] / (ma60[idx] + 1e-10) - 1.0) * 8)
                 pullback_score = max(0.0, -mom_5d_val * 8) if mom_5d_val < 0 else 0.05
                 base_conf = 0.30 + trend_score * 0.3 + pullback_score * 0.25
@@ -1485,6 +1494,7 @@ def detect_buy_sell_points(
             if (was_below and near_or_above_ma20 and ma20_turning_up and
                 mild_momentum and vol_confirm and not_chasing_b5 and had_pullback):
                 buy_point[idx] = 5
+                buy_point_origin[idx] = _BuyOrigin.B5_MA20_TURN_AND_CROSS
                 # 置信度: MA20斜率+量比+金叉新鲜度
                 slope_score = min(1.0, (ma20_b5[idx] / (ma20_b5[idx-5] + 1e-10) - 1.0) * 50)
                 vol_score = min(1.0, volume[idx] / (vol_ma20_b5[idx] + 1e-10) - 0.9) if vol_ma20_b5 is not None else 0.5
@@ -1525,6 +1535,10 @@ def detect_buy_sell_points(
 
             if ma_bull_b6 and touch_ma and had_rally and is_up_day and bounce_3d and vol_ok_b6:
                 buy_point[idx] = 6
+                _ma60_support = near_ma60 and close[idx] > ma60_b6[idx]
+                buy_point_origin[idx] = (_BuyOrigin.B6_MA20_AND_MA60_PULLBACK
+                    if near_ma20 and _ma60_support else _BuyOrigin.B6_MA20_PULLBACK
+                    if near_ma20 else _BuyOrigin.B6_MA60_PULLBACK)
                 dist_score = 1.0 - abs(close[idx]-ma20_b6[idx])/(ma20_b6[idx]+1e-10)*10
                 buy_confidence[idx] = float(np.clip(0.30 + dist_score * 0.2 + bounce_3d * 3, 0.20, 0.70))
 
@@ -1559,6 +1573,9 @@ def detect_buy_sell_points(
                 if (in_pivot or near_zd) and wide_enough and ok_dir:
                     if idx > p.end_idx and idx < p.end_idx + 30:
                         buy_point[idx] = 7
+                        buy_point_origin[idx] = (_BuyOrigin.B7_RANGE_AND_NEAR_SUPPORT
+                            if in_pivot and near_zd else _BuyOrigin.B7_RANGE_ONLY
+                            if in_pivot else _BuyOrigin.B7_NEAR_SUPPORT_ONLY)
                         # ZD越近置信度越高
                         zd_dist = abs(close[idx] - p.zd) / (p.zd + 1e-10)
                         buy_confidence[idx] = float(np.clip(0.40 - zd_dist * 5, 0.20, 0.65))
@@ -1597,6 +1614,9 @@ def detect_buy_sell_points(
 
             if (vol_contracting or tight_range) and breakout_vol and price_breakout and close_above_ma20:
                 buy_point[idx] = 8
+                buy_point_origin[idx] = (_BuyOrigin.B8_CONTRACTION_AND_TIGHT_RANGE
+                    if vol_contracting and tight_range else _BuyOrigin.B8_CONTRACTION_ONLY
+                    if vol_contracting else _BuyOrigin.B8_TIGHT_RANGE_ONLY)
                 breakout_pct = (close[idx] - close[idx-1]) / (close[idx-1] + 1e-10) if idx > 0 else 0.02
                 buy_confidence[idx] = float(np.clip(0.25 + breakout_pct * 5 + (1 if vol_contracting else 0) * 0.10, 0.15, 0.65))
 
@@ -1630,6 +1650,7 @@ def detect_buy_sell_points(
             turning_up = close[idx] > close[idx-1] if idx > 0 else False
             if above_support and vol_ok and turning_up:
                 buy_point[idx] = 9
+                buy_point_origin[idx] = _BuyOrigin.B9_LIMIT_UP_PULLBACK
                 days_pullback = idx - lu_idx
                 pullback_depth = (lu_close - pullback_low) / (lu_close + 1e-10)
                 conf = float(np.clip(0.35 + (3 - days_pullback) * 0.08 - pullback_depth * 3, 0.20, 0.70))
@@ -1637,6 +1658,7 @@ def detect_buy_sell_points(
 
     return {
         'buy_point': buy_point,
+        'buy_point_origin': buy_point_origin,
         'sell_point': sell_point,
         'buy_confidence': buy_confidence,
         'sell_confidence': sell_confidence,
@@ -1783,6 +1805,7 @@ def compute_chan_signal(
 
         # 买卖点
         'buy_point': bsp_info['buy_point'],
+        'buy_point_origin': bsp_info['buy_point_origin'],
         'sell_point': bsp_info['sell_point'],
         'buy_confidence': bsp_info['buy_confidence'],
         'sell_confidence': bsp_info['sell_confidence'],
@@ -2658,12 +2681,14 @@ def detect_second_buy_point(
     second_buy = np.zeros(n, dtype=bool)
     second_buy_conf = np.zeros(n)
     b1_ref_idx = np.full(n, -1, dtype=int)
+    second_buy_origin = np.zeros(n, dtype=np.int16)
 
     if n < 60:
         return {
             'second_buy_point': second_buy,
             'second_buy_confidence': second_buy_conf,
             'second_buy_b1_ref': b1_ref_idx,
+            'second_buy_origin': second_buy_origin,
         }
 
     # Step 1: 找到所有 B1 zone (连续 buy_point==1 的bar归为一个zone)
@@ -2719,6 +2744,7 @@ def detect_second_buy_point(
             'second_buy_point': second_buy,
             'second_buy_confidence': second_buy_conf,
             'second_buy_b1_ref': b1_ref_idx,
+            'second_buy_origin': second_buy_origin,
         }
 
     # Step 3: 对每个B1 zone，向前扫描B2
@@ -2831,12 +2857,15 @@ def detect_second_buy_point(
                     second_buy[_v] = True
                     second_buy_conf[_v] = conf
                     b1_ref_idx[_v] = b1_idx
+                    second_buy_origin[_v] = (_BuyOrigin.B2_EXPLICIT_B1_ZONE
+                        if buy_point[b1_idx] == 1 else _BuyOrigin.B2_IMPLICIT_FRACTAL_MACD_ZONE)
                 break  # 每个B1只标记第一个符合条件的B2
 
     return {
         'second_buy_point': second_buy,
         'second_buy_confidence': second_buy_conf,
         'second_buy_b1_ref': b1_ref_idx,
+        'second_buy_origin': second_buy_origin,
     }
 
 
@@ -3048,10 +3077,12 @@ def compute_enhanced_chan_output(
     base['second_buy_point'] = b2_info['second_buy_point']
     base['second_buy_confidence'] = b2_info['second_buy_confidence']
     base['second_buy_b1_ref'] = b2_info['second_buy_b1_ref']
+    base['second_buy_origin'] = b2_info['second_buy_origin']
 
     # 合并 B2 (second_buy_point → buy_point) 以替代已删除的crude B2循环
     b2_mask = b2_info['second_buy_point'] & (base['buy_point'] == 0)
     base['buy_point'] = np.where(b2_mask, 2, base['buy_point'])
+    base['buy_point_origin'] = np.where(b2_mask, b2_info['second_buy_origin'], base['buy_point_origin'])
     # B2置信度: 仅填充尚未有置信度的位置
     b2_conf_mask = b2_mask & (base['buy_confidence'] == 0)
     base['buy_confidence'] = np.where(b2_conf_mask, b2_info['second_buy_confidence'], base['buy_confidence'])

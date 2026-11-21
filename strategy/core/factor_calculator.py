@@ -689,12 +689,16 @@ def calculate_indicators(
 
     # === 买卖点（三类买卖点 + 二买 + B3趋势元数据）===
     result['buy_point'] = chan_result['buy_point']
+    # Provenance is intentionally absent from compute_composite_factors:
+    # these categories must not silently become numeric ML/ranking features.
+    result['buy_point_origin'] = chan_result['buy_point_origin']
     result['sell_point'] = chan_result['sell_point']
     result['buy_confidence'] = chan_result['buy_confidence']
     result['sell_confidence'] = chan_result['sell_confidence']
     result['second_buy_point'] = chan_result.get('second_buy_point', np.zeros(n, dtype=bool))
     result['second_buy_confidence'] = chan_result.get('second_buy_confidence', np.zeros(n))
     result['second_buy_b1_ref'] = chan_result.get('second_buy_b1_ref', np.full(n, -1, dtype=int))
+    result['second_buy_origin'] = chan_result.get('second_buy_origin', np.zeros(n, dtype=np.int16))
     result['second_sell_point'] = chan_result.get('second_sell_point', np.zeros(n, dtype=bool))
     result['second_sell_confidence'] = chan_result.get('second_sell_confidence', np.zeros(n))
     result['second_sell_s1_ref'] = chan_result.get('second_sell_s1_ref', np.full(n, -1, dtype=int))

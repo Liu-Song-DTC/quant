@@ -36,7 +36,8 @@ def _finite_macd_windows(values):
 
 
 def empty_observation():
-    return dict(second_buy_point=False,second_buy_confidence=0.,second_buy_b1_ref=-1)
+    return dict(second_buy_point=False,second_buy_confidence=0.,second_buy_b1_ref=-1,
+                second_buy_origin=0)
 
 
 def observe_second_buy_at(close,high,low,volume,ema20,ema60,macd_hist,primary_buy_point,index,
@@ -66,7 +67,7 @@ def compute_second_buy_asof(close,high,low,volume,ema20,ema60,macd_hist,
     """Retain the current-close output on each confirmed bottom-fractal clock."""
     n=len(close)
     result=dict(second_buy_point=np.zeros(n,dtype=bool),second_buy_confidence=np.zeros(n),
-                second_buy_b1_ref=np.full(n,-1,dtype=int))
+                second_buy_b1_ref=np.full(n,-1,dtype=int),second_buy_origin=np.zeros(n,dtype=np.int16))
     if n<60 or volume is None:return result
     macd_windows = _finite_macd_windows(macd_hist)
     clocks=np.unique(fractal_vis[bottom_fractals])

@@ -281,6 +281,7 @@ _FACTOR_CODE_FILES = [
     'core/news_sentiment.py',
     'core/fractal_observation_kernel.py',
     'core/b2_observation.py',
+    'core/buy_point_origin.py',  # 信号来源标签的定义也必须随缓存版本固定。
     'core/factor_neutralizer.py',
     'core/multi_timeframe.py',
     'core/concept_heat.py',

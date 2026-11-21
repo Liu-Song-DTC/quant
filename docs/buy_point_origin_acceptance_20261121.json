@@ -1,0 +1,24 @@
+{
+  "change": "Native buy-point origin metadata only",
+  "public_signal_schema_changed": false,
+  "trading_policy_changed": false,
+  "model_features_changed": false,
+  "origin_values": "Categorical identities; primary branch priority is preserved and secondary B2 origin is kept separately. Unknown legacy provenance stays unknown.",
+  "staged_tree_test": {
+    "base_commit": "55a28593a71f5e456a45666173b75e55068d9784",
+    "passed": true,
+    "tests": 11,
+    "subtests": 6,
+    "command": "PYTHONPATH=strategy:strategy/tests python -m pytest -q strategy/tests/test_buy_point_origin.py strategy/tests/test_b2_confirmation_support.py",
+    "scope": "Independent staged source export without untracked research modules."
+  },
+  "prior_equivalence_evidence": {
+    "passed": true,
+    "stocks": 6,
+    "bars": 8212,
+    "preexisting_indicator_fields": 192,
+    "scope": "All preexisting indicator arrays, composite factor columns and public signal fields exact; observational origin arrays allowed only internally. Fixed stored ML predictions; no account rerun.",
+    "proof_sha256": "de652ee10450ae3aec67060909d5a7e7b79bcf40f8df13bb6bac59b265cee5b9"
+  },
+  "excluded": "Unpromoted score ordering, exit, admission and position-sizing experiments; this commit makes no return-improvement claim."
+}

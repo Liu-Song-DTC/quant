@@ -43,6 +43,16 @@ class B2ConfirmationSupportTests(unittest.TestCase):
         expected = .30 + .5*.25 + .20 + .10 + .05 + (102.-99.)/(99.+1e-10)*.5
         self.assertEqual(result['second_buy_confidence'][88], expected)
 
+    def test_origin_is_implicit_until_an_explicit_B1_zone_exists(self):
+        from core.buy_point_origin import BuyPointOrigin
+        implicit = self.calculate()
+        self.assertEqual(implicit['second_buy_origin'][88], BuyPointOrigin.B2_IMPLICIT_FRACTAL_MACD_ZONE)
+        self.buy[80] = 1
+        explicit = self.calculate()
+        self.assertEqual(explicit['second_buy_origin'][88], BuyPointOrigin.B2_EXPLICIT_B1_ZONE)
+        for field in ('second_buy_point', 'second_buy_confidence', 'second_buy_b1_ref'):
+            np.testing.assert_array_equal(implicit[field], explicit[field])
+
     def test_support_breach_during_confirmation_delay_invalidates_event(self):
         for bar in [86, 87, 88]:
             with self.subTest(bar=bar):
