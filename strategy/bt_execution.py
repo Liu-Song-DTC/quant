@@ -2062,84 +2062,115 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     code_to_idx = {c: i for i, c in enumerate(stock_codes)}
     idx_to_code = {i: c for i, c in enumerate(stock_codes)}
 
-    print(f"构建价格矩阵: {n_dates}天 × {len(stock_codes)}股 ...")
-    close_px = np.full((n_dates, len(stock_codes)), np.nan, dtype=np.float32)
-    open_px = np.full_like(close_px, np.nan)  # B批修复(B3): T+1开盘成交价
-    low_px = np.full_like(close_px, np.nan)  # 分段建仓(2026-10-10): 限价单触发用当日最低价
-    volume_m = np.zeros_like(close_px)
-    amount_m = np.zeros_like(close_px)  # 真实成交额(元) — 文件自带列, 宇宙闸用(2026-10-17)
-    raw_close_m = np.full_like(close_px, np.nan)  # #348: none.csv 真实收盘, 2元闸用
-    if raw_execution_arm:
-        raw_open_m = np.full_like(close_px, np.nan)
-        raw_low_m = np.full_like(close_px, np.nan)
-    tradable = np.zeros_like(close_px, dtype=bool)
-
-    from core.stock_pool import _is_non_stock_series
-    _nonstock = []  # #349: 非个股序列(指数/海外股)死列清单
-    for j, code in enumerate(tqdm(stock_codes, desc="loading")):
-        fp = os.path.join(DATA_PATH, f'{code}_qfq.csv')
-        if not os.path.exists(fp):
-            continue
-        df = pd.read_csv(fp, usecols=['datetime', 'open', 'low', 'close', 'volume', 'amount'])
-        df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
-        df = df.dropna(subset=['datetime'])
-        df = df.set_index('datetime')
-        df = df[df.index >= pd.Timestamp(fromdate)]
-        df = df[df.index <= pd.Timestamp(todate)]
-        # #349 (2026-10-23): 矩阵宇宙此前只按文件名排 sh000001 — sh000852/399006 +
-        # 27个裸代码指数/海外股仍以死列进矩阵 (实测 signals/selections/trade_realized
-        # ∩ 非个股 = 0; 池层 Fix#44 已拦). 装载时用 stock_pool._is_non_stock_series
-        # 同源 VWAP 恒等式判别, 整列剔除. 恒等证明 = iso 臂逐位复现 anchor.
-        if _is_non_stock_series(df):
-            _nonstock.append(code)
-            continue
-        # #348: 读 none.csv 真实收盘 (窗口过滤, 重复日期去重, 无 ffill — 停牌日 NaN
-        # ⇒ 该日不可交易, 与实盘"无价行⇒排除"一致). 失败/缺文件 ⇒ 全 NaN ⇒ 兜底 VWAP.
-        _rp = os.path.join(RAW_DATA_PATH, code, 'none.csv')
-        if os.path.exists(_rp):
-            if raw_execution_arm:
-                from core.raw_execution_prices import load_raw_ohlc
-                _raw_bars = load_raw_ohlc(_rp, calendar)
-                raw_open_m[:, j] = _raw_bars['open'].values.astype(np.float32)
-                raw_low_m[:, j] = _raw_bars['low'].values.astype(np.float32)
-                raw_close_m[:, j] = _raw_bars['close'].values.astype(np.float32)
-            else:
-                try:
-                    _rd = pd.read_csv(_rp, encoding='utf-8-sig')
-                    _rd.columns = [str(c).strip().lstrip('\ufeff') for c in _rd.columns]
-                    if '日期' in _rd.columns and '收盘' in _rd.columns:
-                        _rc = pd.Series(pd.to_numeric(_rd['收盘'], errors='coerce').values,
-                                        index=pd.DatetimeIndex(
-                                            pd.to_datetime(_rd['日期'], errors='coerce')))
-                        _rc = _rc[_rc.index.notna()]
-                        _rc = _rc[~_rc.index.duplicated()]
-                        _rc = _rc[(_rc.index >= pd.Timestamp(fromdate)) &
-                                  (_rc.index <= pd.Timestamp(todate))]
-                        raw_close_m[:, j] = _rc.reindex(calendar).values.astype(np.float32)
-                except Exception as _e:
-                    print(f"  [raw收盘读取失败] {code}: {type(_e).__name__} {_e}")
-        elif raw_execution_arm:
-            raise FileNotFoundError(f'raw execution arm missing price source: {_rp}')
-        df = df.reindex(calendar)
-        close_px[:, j] = df['close'].ffill().values.astype(np.float32)
-        # 估值可沿用最后收盘，成交必须有当天真实开盘，不能前向填充停牌开盘价。
-        open_px[:, j] = df['open'].where(df['volume'] > 0).values.astype(np.float32)
-        low_px[:, j] = df['low'].ffill().values.astype(np.float32)
-        volume_m[:, j] = df['volume'].fillna(0).values.astype(np.float32)
-        amount_m[:, j] = pd.to_numeric(df['amount'], errors='coerce').fillna(0).values.astype(np.float32)
-    del df
-    if _nonstock:  # #349: 死列剔除 — 逐列矩阵无跨列消费, 索引重编号自洽
-        _keep = [j for j, c in enumerate(stock_codes) if c not in set(_nonstock)]
-        stock_codes = [stock_codes[j] for j in _keep]
-        close_px, open_px, low_px = close_px[:, _keep], open_px[:, _keep], low_px[:, _keep]
-        volume_m, amount_m = volume_m[:, _keep], amount_m[:, _keep]
-        raw_close_m = raw_close_m[:, _keep]
+    _quote_snapshot = None
+    _quote_cached = None
+    _quote_cache_path = os.environ.get('QUANT_EXECUTION_QUOTE_CACHE', '')
+    if _quote_cache_path:
+        if raw_execution_arm or os.environ.get('QUANT_SIGNAL_REPLAY') != '1':
+            raise ValueError('Execution quote snapshot requires sealed QFQ replay')
+        from core.execution_quote_snapshot import ExecutionQuoteSnapshot, FIELDS as _QUOTE_FIELDS
+        from pathlib import Path as _QuotePath
+        import time as _quote_time
+        _quote_started = _quote_time.perf_counter()
+        _quote_snapshot = ExecutionQuoteSnapshot(
+            _quote_cache_path, DATA_PATH, RAW_DATA_PATH, stock_codes, calendar, fromdate, todate,
+            [__file__, _QuotePath(__file__).parent / 'core/stock_pool.py',
+             _QuotePath(__file__).parent / 'core/execution_quote_snapshot.py',
+             _QuotePath(__file__).parent / 'core/input_identity.py'])
+        _quote_cached = _quote_snapshot.load()
+        print(f"[execution-quotes] {'HIT' if _quote_cached is not None else 'MISS'} "
+              f"key={_quote_snapshot.key} validation_seconds={_quote_time.perf_counter()-_quote_started:.3f}")
+    _quote_cache_hit = _quote_cached is not None
+    if _quote_cache_hit:
+        _quote_arrays, stock_codes, _nonstock = _quote_cached
+        close_px, open_px, low_px, volume_m, amount_m, raw_close_m = (
+            _quote_arrays[name] for name in _QUOTE_FIELDS)
+        del _quote_arrays, _quote_cached
+    else:
+        print(f"构建价格矩阵: {n_dates}天 × {len(stock_codes)}股 ...")
+        close_px = np.full((n_dates, len(stock_codes)), np.nan, dtype=np.float32)
+        open_px = np.full_like(close_px, np.nan)  # B批修复(B3): T+1开盘成交价
+        low_px = np.full_like(close_px, np.nan)  # 分段建仓(2026-10-10): 限价单触发用当日最低价
+        volume_m = np.zeros_like(close_px)
+        amount_m = np.zeros_like(close_px)  # 真实成交额(元) — 文件自带列, 宇宙闸用(2026-10-17)
+        raw_close_m = np.full_like(close_px, np.nan)  # #348: none.csv 真实收盘, 2元闸用
         if raw_execution_arm:
-            raw_open_m, raw_low_m = raw_open_m[:, _keep], raw_low_m[:, _keep]
-        code_to_idx = {c: i for i, c in enumerate(stock_codes)}
-        idx_to_code = {i: c for i, c in enumerate(stock_codes)}
-        print(f"矩阵宇宙: 剔除非个股序列 {len(_nonstock)} 个 (Fix#44 同源判别, #349) "
-              f"-> {len(stock_codes)} 列")
+            raw_open_m = np.full_like(close_px, np.nan)
+            raw_low_m = np.full_like(close_px, np.nan)
+        tradable = np.zeros_like(close_px, dtype=bool)
+
+        from core.stock_pool import _is_non_stock_series
+        _nonstock = []  # #349: 非个股序列(指数/海外股)死列清单
+        for j, code in enumerate(tqdm(stock_codes, desc="loading")):
+            fp = os.path.join(DATA_PATH, f'{code}_qfq.csv')
+            if not os.path.exists(fp):
+                continue
+            df = pd.read_csv(fp, usecols=['datetime', 'open', 'low', 'close', 'volume', 'amount'])
+            df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+            df = df.dropna(subset=['datetime'])
+            df = df.set_index('datetime')
+            df = df[df.index >= pd.Timestamp(fromdate)]
+            df = df[df.index <= pd.Timestamp(todate)]
+            # #349 (2026-10-23): 矩阵宇宙此前只按文件名排 sh000001 — sh000852/399006 +
+            # 27个裸代码指数/海外股仍以死列进矩阵 (实测 signals/selections/trade_realized
+            # ∩ 非个股 = 0; 池层 Fix#44 已拦). 装载时用 stock_pool._is_non_stock_series
+            # 同源 VWAP 恒等式判别, 整列剔除. 恒等证明 = iso 臂逐位复现 anchor.
+            if _is_non_stock_series(df):
+                _nonstock.append(code)
+                continue
+            # #348: 读 none.csv 真实收盘 (窗口过滤, 重复日期去重, 无 ffill — 停牌日 NaN
+            # ⇒ 该日不可交易, 与实盘"无价行⇒排除"一致). 失败/缺文件 ⇒ 全 NaN ⇒ 兜底 VWAP.
+            _rp = os.path.join(RAW_DATA_PATH, code, 'none.csv')
+            if os.path.exists(_rp):
+                if raw_execution_arm:
+                    from core.raw_execution_prices import load_raw_ohlc
+                    _raw_bars = load_raw_ohlc(_rp, calendar)
+                    raw_open_m[:, j] = _raw_bars['open'].values.astype(np.float32)
+                    raw_low_m[:, j] = _raw_bars['low'].values.astype(np.float32)
+                    raw_close_m[:, j] = _raw_bars['close'].values.astype(np.float32)
+                else:
+                    try:
+                        _rd = pd.read_csv(_rp, encoding='utf-8-sig')
+                        _rd.columns = [str(c).strip().lstrip('\ufeff') for c in _rd.columns]
+                        if '日期' in _rd.columns and '收盘' in _rd.columns:
+                            _rc = pd.Series(pd.to_numeric(_rd['收盘'], errors='coerce').values,
+                                            index=pd.DatetimeIndex(
+                                                pd.to_datetime(_rd['日期'], errors='coerce')))
+                            _rc = _rc[_rc.index.notna()]
+                            _rc = _rc[~_rc.index.duplicated()]
+                            _rc = _rc[(_rc.index >= pd.Timestamp(fromdate)) &
+                                      (_rc.index <= pd.Timestamp(todate))]
+                            raw_close_m[:, j] = _rc.reindex(calendar).values.astype(np.float32)
+                    except Exception as _e:
+                        print(f"  [raw收盘读取失败] {code}: {type(_e).__name__} {_e}")
+            elif raw_execution_arm:
+                raise FileNotFoundError(f'raw execution arm missing price source: {_rp}')
+            df = df.reindex(calendar)
+            close_px[:, j] = df['close'].ffill().values.astype(np.float32)
+            # 估值可沿用最后收盘，成交必须有当天真实开盘，不能前向填充停牌开盘价。
+            open_px[:, j] = df['open'].where(df['volume'] > 0).values.astype(np.float32)
+            low_px[:, j] = df['low'].ffill().values.astype(np.float32)
+            volume_m[:, j] = df['volume'].fillna(0).values.astype(np.float32)
+            amount_m[:, j] = pd.to_numeric(df['amount'], errors='coerce').fillna(0).values.astype(np.float32)
+        del df
+        if _nonstock:  # #349: 死列剔除 — 逐列矩阵无跨列消费, 索引重编号自洽
+            _keep = [j for j, c in enumerate(stock_codes) if c not in set(_nonstock)]
+            stock_codes = [stock_codes[j] for j in _keep]
+            close_px, open_px, low_px = close_px[:, _keep], open_px[:, _keep], low_px[:, _keep]
+            volume_m, amount_m = volume_m[:, _keep], amount_m[:, _keep]
+            raw_close_m = raw_close_m[:, _keep]
+            if raw_execution_arm:
+                raw_open_m, raw_low_m = raw_open_m[:, _keep], raw_low_m[:, _keep]
+            code_to_idx = {c: i for i, c in enumerate(stock_codes)}
+            idx_to_code = {i: c for i, c in enumerate(stock_codes)}
+            print(f"矩阵宇宙: 剔除非个股序列 {len(_nonstock)} 个 (Fix#44 同源判别, #349) "
+                  f"-> {len(stock_codes)} 列")
+
+        if _quote_snapshot is not None:
+            _quote_snapshot.save(dict(zip(_QUOTE_FIELDS,
+                (close_px, open_px, low_px, volume_m, amount_m, raw_close_m))), stock_codes, _nonstock)
+    code_to_idx = {c: i for i, c in enumerate(stock_codes)}
+    idx_to_code = {i: c for i, c in enumerate(stock_codes)}
 
     # 预计算滚动ADV矩阵（20日回溯，shift(1)排除当日，无前视偏差）
     # volume单位为手, ×100转股数(与下单股数同口径, 否则participation高估100x)

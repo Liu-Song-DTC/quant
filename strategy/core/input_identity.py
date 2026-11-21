@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 
 def file_content_sha256(path, optional=False):
@@ -30,6 +32,31 @@ def file_content_sha256(path, optional=False):
     return digest.hexdigest()
 
 
+def _hash_role_entries(roles):
+    """Hash independent files in bounded parallelism, retain logical order.
+
+    Each file still uses the complete byte hash and replacement checks above.
+    At most eight reads and sixteen pending roles exist; no digest is cached.
+    """
+    def calculate(role):
+        name, key, path, optional = role
+        return name, key, file_content_sha256(path, optional=optional)
+
+    roles = iter(roles)
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix='input-sha') as executor:
+        pending = deque()
+        for _ in range(16):
+            role = next(roles, None)
+            if role is None:
+                break
+            pending.append(executor.submit(calculate, role))
+        while pending:
+            yield pending.popleft().result()
+            role = next(roles, None)
+            if role is not None:
+                pending.append(executor.submit(calculate, role))
+
+
 def factor_input_identity(stock_file_map, financial_path=None, extra_paths=()):
     """Hash logical roles and bytes, independent of checkout location/mtime.
 
@@ -38,24 +65,23 @@ def factor_input_identity(stock_file_map, financial_path=None, extra_paths=()):
     missing files. No persistent size/mtime digest cache is used.
     """
     entries = []
-    for code, path in sorted(stock_file_map.items()):
-        entries.append(('price', str(code), file_content_sha256(path)))
+    entries.extend(_hash_role_entries(('price', str(code), path, False)
+                                      for code, path in sorted(stock_file_map.items())))
     if financial_path is not None:
         directory = Path(financial_path)
         if not directory.is_dir():
             raise FileNotFoundError(f'financial directory missing: {directory}')
         entries.append(('financial_directory', '', 'present'))
         # FundamentalData scans only immediate CSV files, not hidden backup trees.
-        for path in sorted(directory.glob('*.csv')):
-            entries.append(('financial', path.name, file_content_sha256(path)))
+        entries.extend(_hash_role_entries(('financial', path.name, path, False)
+                                          for path in sorted(directory.glob('*.csv'))))
     for index, value in enumerate(extra_paths):
         path = Path(value)
         role = f'extra:{index}'
         if path.is_dir():
             entries.append((role, '', 'directory'))
-            for member in sorted(path.rglob('*')):
-                if member.is_file():
-                    entries.append((role, member.relative_to(path).as_posix(), file_content_sha256(member)))
+            entries.extend(_hash_role_entries((role, member.relative_to(path).as_posix(), member, False)
+                                              for member in sorted(path.rglob('*')) if member.is_file()))
         else:
             entries.append((role, '', file_content_sha256(path, optional=True)))
     payload = json.dumps(entries, ensure_ascii=False, separators=(',', ':')).encode('utf-8')

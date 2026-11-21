@@ -1,0 +1,70 @@
+{
+  "scope": "Opt-in sealed-signal QFQ execution matrix snapshot and bounded parallel content hashing; no trading conditions changed. Default execution remains cold.",
+  "isolated_staged_tests": {
+    "tests": 19,
+    "passed": true,
+    "log_sha256": "64f20dadb3821c27594cb74b54d780b2cefe6ac834fce0526bec3b7f4fa74fd2"
+  },
+  "staged_loader_validation": {
+    "staged_tree": "e810d808a94a4afb7b400f12bcda5d0e3a5976e3",
+    "cold_loader_ast_equal": true,
+    "observations": [
+      {
+        "mode": "disabled",
+        "byte_layout_index_equal": true,
+        "excluded": [
+          "399006"
+        ]
+      },
+      {
+        "mode": "cold",
+        "byte_layout_index_equal": true,
+        "excluded": [
+          "399006"
+        ]
+      },
+      {
+        "mode": "warm",
+        "byte_layout_index_equal": true,
+        "excluded": [
+          "399006"
+        ]
+      }
+    ],
+    "scope": "Actual staged loader extraction: disabled/cold/warm, missing bars, zero-volume open, duplicated raw dates, missing raw file, non-stock exclusion; byte/layout and index-map equality to prior HEAD. Full-account equivalence receipt is recorded separately."
+  },
+  "prior_full_account_acceptance": {
+    "source_receipt_sha256": "56feec71f5d588f558dbead181f9888c23c1731ebb41cfbdd181c20913422688",
+    "passed": true,
+    "files": {
+      "equity_curve.csv": {
+        "rows": 1420,
+        "byte_equal": true,
+        "sha256": "befc89d71d29b934fce4b2e5500b19688752c6341751bd781cbc854924d150ee"
+      },
+      "portfolio_selections.csv": {
+        "rows": 169,
+        "byte_equal": true,
+        "sha256": "763aeb764467d50ecb6a8172422ff750e9b525b048e916142fa08dddb2d78c8b"
+      },
+      "trade_realized.csv": {
+        "rows": 169,
+        "byte_equal": true,
+        "sha256": "048807d7e81ce825ec0b055327febdeb4075dda1d8f67b16ea1d99bfb27242d1"
+      },
+      "regime_state.csv": {
+        "rows": 1420,
+        "byte_equal": true,
+        "sha256": "8a8c74553a98a6e67a703ecf938a23b72b5792a1e63728b9eb43f7c62ab2fbb0"
+      },
+      "execution_fills.csv": {
+        "rows": 2106,
+        "byte_equal": true,
+        "sha256": "a7fcc2bdc703cde29779d2596ed69b350aa38798325c9597447c1523095e3140"
+      }
+    },
+    "metrics_equal": true,
+    "scope": "Full 1420-session sealed-signal account, exact fills/selections/trades/NAV/regime/metrics. Does not claim fresh factor/signal-generation acceleration."
+  },
+  "limitations": "Does not accelerate fresh factor/signal generation. No new ranking, admission, position-sizing or exit policy promoted."
+}

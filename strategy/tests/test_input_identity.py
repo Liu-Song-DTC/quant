@@ -1,4 +1,6 @@
 import os
+import hashlib
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -12,6 +14,41 @@ from core.input_identity import (factor_input_identity, file_content_sha256,
 
 
 class InputIdentityTests(unittest.TestCase):
+    def test_parallel_hash_keeps_sorted_roles_and_recursive_optional_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            financial = root/'financial'; financial.mkdir()
+            extras = root/'extras'; extras.mkdir()
+            (extras/'nested').mkdir()
+            prices = {}
+            for number in reversed(range(40)):
+                path = root/f'{number:06}.csv'
+                path.write_bytes(f'price:{number}'.encode())
+                prices[f'{number:06}'] = path
+            (financial/'a.csv').write_bytes(b'financial')
+            (financial/'ignored.txt').write_bytes(b'ignored')
+            (extras/'nested/value').write_bytes(b'payload')
+            def digest(path):
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+            entries = [('price', code, digest(path)) for code, path in sorted(prices.items())]
+            entries += [('financial_directory', '', 'present'),
+                        ('financial', 'a.csv', digest(financial/'a.csv')),
+                        ('extra:0', '', 'directory'),
+                        ('extra:0', 'nested/value', digest(extras/'nested/value')),
+                        ('extra:1', '', None)]
+            expected = hashlib.sha256(json.dumps(entries, ensure_ascii=False,
+                                      separators=(',', ':')).encode()).hexdigest()
+            self.assertEqual(factor_input_identity(prices, financial, [extras, root/'absent']), expected)
+
+    def test_parallel_required_missing_and_broken_optional_symlink_raise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(FileNotFoundError):
+                factor_input_identity({'000001': root/'missing.csv'})
+            (root/'broken').symlink_to(root/'absent')
+            with self.assertRaises(FileNotFoundError):
+                factor_input_identity({}, extra_paths=[root/'broken'])
+
     def fixture(self, root):
         root.mkdir()
         (root/'price.csv').write_text('date,close\n20261026,10.0\n')
