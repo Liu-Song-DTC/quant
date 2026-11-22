@@ -320,6 +320,8 @@ class PortfolioConstructor:
         portfolio_stop_loss=None,
         rebalance_interval=10,
     ):
+        from .deployment_profile import activate_profile
+        activate_profile()
         config = load_config()
         portfolio_config = config.get_portfolio_config()
         # 宏观数据: M1/社融/两融 领先指标
@@ -597,7 +599,8 @@ class PortfolioConstructor:
         if _timing_points not in ('all', '2'):
             raise ValueError('Fresh-buy research scope must be all or native B2 (2)')
         self._research_fresh_buy_points = None if _timing_points == 'all' else frozenset({2})
-        if self._research_fresh_buy_priority and os.environ.get('QUANT_SIGNAL_REPLAY') != '1':
+        from .deployment_profile import accepted465_active
+        if self._research_fresh_buy_priority and os.environ.get('QUANT_SIGNAL_REPLAY') != '1' and not accepted465_active():
             raise ValueError('Fresh-buy priority is a sealed-account research control')
         self._conditional_candidate_order = None
         _soft_strategy_unity = os.environ.get('QUANT_RESEARCH_SOFT_STRATEGY_UNITY', '0')
@@ -621,7 +624,7 @@ class PortfolioConstructor:
                 (_b1_origin_scope!='all' and _preserve_b1_origin!='1')):
             raise ValueError('B1 ranking scope requires a known origin and origin-preserving ordering')
         if _conditional_table:
-            if os.environ.get('QUANT_SIGNAL_REPLAY') != '1' or self.score_rank_source != 'legacy':
+            if (os.environ.get('QUANT_SIGNAL_REPLAY') != '1' and not accepted465_active()) or self.score_rank_source != 'legacy':
                 raise ValueError('Conditional ordering requires sealed legacy-score replay')
             from .conditional_candidate_order import ConditionalCandidateOrder
             self._conditional_candidate_order = ConditionalCandidateOrder(
@@ -630,7 +633,7 @@ class PortfolioConstructor:
                 b1_block_consensus=_b1_block_consensus=='1',
                 b1_origin_scope=_b1_origin_scope)
         self._last_no_add_intents = {}
-        if self._research_add_confirmation and os.environ.get('QUANT_SIGNAL_REPLAY') != '1':
+        if self._research_add_confirmation and os.environ.get('QUANT_SIGNAL_REPLAY') != '1' and not accepted465_active():
             raise ValueError('Added-capital confirmation is a sealed-account research control')
         # 臂钩子(2026-10-16): QUANT_MAX_POSITIONS 覆写槽位上限, 默认空=逐位零改动.
         # 动机 — mp4 于 10/14 在**旧结构**下采纳(fec1/ea2/slk180 三个槽位家族旋钮尚未落地):

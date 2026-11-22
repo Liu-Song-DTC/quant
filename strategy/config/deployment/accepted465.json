@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "name": "accepted465",
+  "accepted_source_commit": "7af796015db64108d1ac37ef45b9d9ba83d5aaf7",
+  "historical_acceptance": {
+    "return_pct": 465.5553322787046,
+    "max_drawdown_pct": 14.614515165693653,
+    "data_end": "2026-11-13",
+    "scope": "Regenerated primary signals and original sealed ranking; historical exploration, not future-return guarantee."
+  },
+  "fixed_policy": {
+    "QUANT_RESEARCH_FRESH_BUY_PRIORITY": "1",
+    "QUANT_RESEARCH_FRESH_BUY_POINTS": "2",
+    "QUANT_RESEARCH_ADD_CONFIRMATION": "1",
+    "QUANT_B2_CONTEXT_PROFIT_GUARD": "1",
+    "QUANT_RESEARCH_PRESERVE_B1_ORIGIN": "1",
+    "QUANT_RESEARCH_B1_BLOCK_CONSENSUS": "0",
+    "QUANT_RESEARCH_B1_ORIGIN_SCOPE": "close_rebound_not_open_gap",
+    "QUANT_INDUSTRY_PIT": "0",
+    "QUANT_ALT_MANIFEST_SNAPSHOT": "1"
+  },
+  "ranking": {
+    "path": "strategy/artifacts/accepted465/conditional_predictions.parquet",
+    "sha256": "5d29178d589e828354b24f303a87ce67bb31a66d5d0e0369be012dd7fc2584e6",
+    "last_prediction_date": "2026-09-18",
+    "missing_coverage": "Preserve the complete original same-type/timing group, as accepted. Do not extend predictions implicitly."
+  },
+  "peer_context": "data/research/accepted465_peer_context",
+  "live_accounting": "Only actual broker reports change inventory and commit profit-guard first fills.",
+  "config_sha256_without_todate": "ef812af24f916b31773635d6723d4370b1b032f7ac431dd2611de71f083b61f8"
+}

@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 import datetime
 import os
+from core.deployment_profile import activate_profile, accepted465_active
+_DEPLOYMENT_PROFILE = activate_profile()
 # Backtests consume the published data snapshot; only data/refresh_all.sh may
 # download alternative inputs. Prevent on-demand refresh from mutating a run.
 if __name__ == '__main__':
@@ -821,6 +823,8 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
     stock_file_map过滤用union池(任何边界曾入池的码保留全史), 信号消费端按日闸。
     """
 
+    # Preserve the same per-date membership contract for the live consumer.
+    strategy.pool_membership_map = membership_map
     global _LIMIT_DATA, _ml_total_preds, _ml_val_ic
     all_items = sorted(os.listdir(DATA_PATH))
     stock_codes = []
@@ -2109,7 +2113,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     # Execution-only research arm: QFQ is still used for signals and
     # ex-rights-aware limit/gap checks. Unverified held actions abort below.
     raw_execution_arm = os.environ.get('QUANT_RAW_EXECUTION') == '1'
-    if _add_confirmation and (raw_execution_arm or os.environ.get('QUANT_SIGNAL_REPLAY') != '1'):
+    if _add_confirmation and (raw_execution_arm or
+            (os.environ.get('QUANT_SIGNAL_REPLAY') != '1' and not accepted465_active())):
         raise ValueError('Added-capital confirmation requires sealed QFQ account replay')
     if raw_execution_arm and _preserve_carry_shares:
         raise ValueError('Carry-share experiment requires the validated QFQ execution contract')
@@ -2357,22 +2362,20 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     # 而误杀最重的 2021 恰是决定终值 NAV 的那一年。
     # 正解: 用文件自带的 amount 列(真实成交额, 元) + raw VWAP = amount/(手×100);
     # 两者缺失时退回复权口径兜底(仅 1993~2015 老数据 + 末日, 回测窗口内≈0)。
-    _proxy_value = close_px * volume_m * 100.0  # 旧口径, 仅作 amount 缺失兜底
-    daily_value = np.where(amount_m > 0, amount_m, _proxy_value).astype(np.float32)
-    # 20日滚动均值: 用 pandas rolling (沿 time axis=0)
-    dv = pd.DataFrame(daily_value, index=calendar, columns=stock_codes)
-    avg_daily_value = dv.rolling(20, min_periods=5).mean().shift(1).values
-    _vwap_px = np.where((amount_m > 0) & (volume_m > 0),
-                        amount_m / np.maximum(volume_m * 100.0, 1.0),
-                        close_px).astype(np.float32)
+    from core.decision_universe import compute_tradable_universe
+    _universe = compute_tradable_universe(
+        close_px, volume_m, amount_m, raw_close_m, calendar, stock_codes)
+    daily_value = _universe.daily_value
+    avg_daily_value = _universe.avg_daily_value
+    _vwap_px = _universe.vwap_px
     # #348 (2026-10-23): 2元闸与实盘对齐 — 实盘读 none.csv 真实收盘
     # (generate_trade_orders.py:840); 回测此前用 VWAP, 全期翻转 2,157/6.88M 格
     # (0.03%, probe gate2_flip_1023), 锚点决策日交集 0. 真实收盘缺失逐格退回
     # VWAP 口径 (9d18716 兜底), 不退复权价.
-    _raw_px = np.where(np.isnan(raw_close_m), _vwap_px, raw_close_m)
+    _raw_px = _universe.raw_px
     _n_rc = int((~np.isnan(raw_close_m)).sum())
     print(f"2元闸口径(#348): 真实收盘 {_n_rc:,} 格 / 兜底VWAP {raw_close_m.size - _n_rc:,} 格")
-    tradable = (~np.isnan(close_px)) & (_raw_px > 2.0) & (volume_m > 100) & (avg_daily_value > 5e6)
+    tradable = _universe.tradable
     execution_available = np.isfinite(open_px) & (open_px > 0)
     if raw_execution_arm:
         # A QFQ bar without a matching raw bar cannot enter a raw-price

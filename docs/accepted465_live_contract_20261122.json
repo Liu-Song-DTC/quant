@@ -1,0 +1,40 @@
+{
+  "accepted_reference_commit": "7af796015db64108d1ac37ef45b9d9ba83d5aaf7",
+  "historical_return_pct": 465.5553322787046,
+  "historical_max_drawdown_pct": 14.614515165693653,
+  "historical_data_end": "2026-11-13",
+  "latest_signal_date": "2026-11-20",
+  "planned_execution_date": "2026-11-23",
+  "shared_decision_entry": "core.strategy.Strategy.generate_positions",
+  "shared_components": [
+    "core.decision_universe.compute_tradable_universe",
+    "SignalStore.finalize membership_map from execution_context",
+    "core.portfolio.PortfolioConstructor",
+    "core.candidate_timing.prioritize_new_source_buys",
+    "core.conditional_candidate_order.ConditionalCandidateOrder",
+    "core.entry_confirmation.cap_blocked_addition",
+    "core.profit_guard.B2ContextProfitGuard"
+  ],
+  "profile": "strategy/config/deployment/accepted465.json",
+  "ranking_domain_extended": false,
+  "forecast_missing_day_policy": "Original whole-group fallback; retain relative order. Last archived prediction2026-09-18.",
+  "new_algorithm_optimization": false,
+  "cold_run_command": ".venv/bin/python -u strategy/tools/run_accepted465_live.py --execution-date 2026-11-23",
+  "signal_cache_reuse": false,
+  "broker_state": "Live adapter consumes actual reports; no simulated positions copied.",
+  "qualification_equivalence": "Original float32 matrices, pandas rolling20/min5/shift1, raw>2, volume>100, prior ADV>5m preserved exactly.",
+  "tests": {
+    "shared_policy_suite": "201 passed",
+    "release_and_data_publication_suite": "128 passed,12 subtests",
+    "peer_context_overlap_source_rows": 25979,
+    "peer_context_overlap_stock_days": 5195,
+    "peer_context_max_numeric_difference": 0
+  },
+  "not_claimed": [
+    "A new full-account return on Nov22 refreshed inputs",
+    "Independent out-of-sample profitability",
+    "Real broker fills or orders already executed"
+  ],
+  "histcells_review": "logs/alt_refresh_repair_20261122/history_cells_attribution.json;74 groups lack exact Nov3 row-value backup, core raw andBT history unchanged.",
+  "github_code_push_authorized": true
+}

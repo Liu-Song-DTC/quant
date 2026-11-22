@@ -41,7 +41,8 @@ def save_context(strategy, signals_path):
     path = context_path(signals_path)
     context = {'version': 1, 'signals_stat': (stat.st_size, stat.st_mtime_ns),
                'index_data': strategy.index_data,
-               'industry_stock_counts': getattr(strategy, 'industry_stock_counts', {})}
+               'industry_stock_counts': getattr(strategy, 'industry_stock_counts', {}),
+               'membership_map': getattr(strategy, 'pool_membership_map', None)}
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.')
     try:
         with os.fdopen(fd, 'wb') as stream:

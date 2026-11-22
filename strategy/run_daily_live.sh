@@ -16,6 +16,7 @@
 #   出单产物: /mnt/d/quant/trade_orders.json (计划；实际持仓只按券商回报更新)
 set -eE -o pipefail
 cd /mnt/d/quant
+export QUANT_TRADING_PROFILE=${QUANT_TRADING_PROFILE:-accepted465}
 exec 9>.daily_chain.lock
 flock -n 9 || { echo '已有每日链正在运行，拒绝并发刷新/回测/出单'; exit 3; }
 PY=.venv/bin/python
