@@ -1,5 +1,6 @@
 """Focused presentation checks using the real source market-state method."""
 
+import ast
 from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from analysis.bear_plan_presentation import present_bear_plan
+from core.execution_ledger import queue_orders
 from core.portfolio import PortfolioConstructor
 from core.signal import Signal
 from core.signal_store import SignalStore
@@ -202,3 +204,71 @@ def test_timestamp_api_date_reads_exact_daily_store_keys():
     store = SignalStore()
     store.set('000001', DAY, Signal(buy=True, score=.5))
     assert present(store=store, day=pd.Timestamp(DAY))['watchlist'][0]['signal_date'] == str(DAY)
+
+
+@pytest.fixture(scope='module')
+def entry_cash_gate():
+    """Compile the real cash gate without importing/running the live entry."""
+    source = Path(__file__).resolve().parents[1] / 'generate_trade_orders.py'
+    tree = ast.parse(source.read_text())
+    main = next(node for node in tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == 'main')
+    lot_shares = next(node for node in tree.body
+                      if isinstance(node, ast.FunctionDef) and node.name == '_lot_shares')
+    start = next(i for i, node in enumerate(main.body)
+                 if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == '_sell_proceeds'
+                         for target in node.targets))
+    end = next(i for i in range(start, len(main.body))
+               if isinstance(main.body[i], ast.If)
+               and isinstance(main.body[i].test, ast.Compare)
+               and isinstance(main.body[i].test.left, ast.Name)
+               and main.body[i].test.left.id == '_buy_total')
+    return compile(ast.Module(body=[lot_shares, *main.body[start:end + 1]],
+                              type_ignores=[]), str(source), 'exec')
+
+
+@pytest.mark.parametrize(
+    'action,held,cash,expected_target,expected_amount,expected_quantity',
+    [('open', 0, 5000, 500, 5000, 500),
+     ('adjust', 500, 2000, 700, 2000, 200)],
+    ids=['open_cash_5000', 'held_500_add_cash_2000'],
+)
+def test_entry_cash_scaling_syncs_order_schema_and_ledger(
+        entry_cash_gate, action, held, cash, expected_target,
+        expected_amount, expected_quantity):
+    code, price, original_target = '000001', 10., 1000
+    positions = {code: dict(shares=held, amount=held * price)} if held else {}
+    positions_before = deepcopy(positions)
+    order = dict(stock_code=code + '.SZ', action=action, price=price,
+                 amount=int(original_target * price), shares=original_target,
+                 order_amount=int((original_target - held) * price),
+                 order_shares=original_target - held)
+    if action == 'adjust':
+        order['prev_shares'] = held
+    account = dict(cash=cash)
+    scope = dict(
+        orders=[order], prev_positions=positions, account=account,
+        prices={code: price}, total_equity=held * price + cash,
+        new_positions={code: dict(shares=original_target,
+                                 amount=int(original_target * price))},
+    )
+    exec(entry_cash_gate, scope)
+    assert scope['orders'] == [order]
+    assert order['shares'] == expected_target
+    assert order['amount'] == int(expected_target * price)
+    assert order['order_shares'] == expected_quantity
+    assert order['order_amount'] == expected_amount
+    assert order['weight_pct'] == round(order['amount'] / scope['total_equity'], 4)
+    assert scope['new_positions'][code] == dict(
+        shares=expected_target, amount=int(expected_target * price))
+
+    queue_orders(account, scope['orders'], positions, DAY,
+                 execution_date='2026-11-23')
+    pending = account['pending_orders'][order['order_id']]
+    assert pending['side'] == 'BUY'
+    assert pending['quantity'] == expected_quantity
+    assert pending['planned_amount'] == expected_amount
+    assert order['order_quantity'] == expected_quantity
+    assert order['order_planned_amount'] == expected_amount
+    assert positions == positions_before and account['cash'] == cash

@@ -1388,6 +1388,9 @@ def main():
             _amt = int(_shares * _price)
             o['amount'] = _amt
             o['shares'] = _shares  # 2026-10-13: 现金闸缩放后同步shares/weight_pct(否则打印与金额失同步)
+            _previous_shares = int(prev_positions.get(_code, {}).get('shares', 0) or 0)
+            o['order_shares'] = int(_shares) - _previous_shares
+            o['order_amount'] = int(o['order_shares'] * _price)
             if total_equity:
                 o['weight_pct'] = round(_amt / total_equity, 4)
             new_positions[_code]['amount'] = _amt
