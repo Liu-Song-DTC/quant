@@ -16,6 +16,7 @@ import os
 import pickle
 from datetime import date as date_type
 from pathlib import Path
+from .alternative_manifest_snapshot import manifest_exists
 
 # 只读审计开关 (2026-09-20): QUANT_ALT_NO_AUTOREFRESH=1 时, 任何已存在的缓存
 # 一律视为新鲜(不重拉/不写pkl/不碰网络), 直接从缓存读取。
@@ -120,7 +121,7 @@ class AlternativeDataProvider:
         from .alt_data_versions import resolve_asof
         source = self.data_dir / filename
         manifest = self.data_dir / 'alt_versions' / (source.stem + '.json')
-        if not manifest.exists():
+        if not manifest_exists(manifest):
             canonical = Path(__file__).resolve().parents[2] / 'data' / 'alternative_data'
             production_or_research = (self.data_dir.resolve() == canonical.resolve()
                                       or '.review_runs' in self.data_dir.parts)

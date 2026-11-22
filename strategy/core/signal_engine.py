@@ -52,6 +52,7 @@ from .multi_timeframe import MultiTimeframeAnalyzer
 from .gate_scorer import compute_all_gates, compute_gate_quality
 from .bom_chain import compute_stock_bom_score
 from .pipeline_logger import plog
+from .alternative_manifest_snapshot import guarded_signal_generation
 from .cmap_hist import resolve_hist_path
 import yaml
 import os
@@ -347,8 +348,9 @@ class SignalEngine:
         # 另类数据开关 (2026-09-17 0g裁决: dragon_tiger前视artifact关闭)
         alt_cfg = config_loader.get('alternative_data', {})
         self.dragon_tiger_enabled = alt_cfg.get('dragon_tiger_enabled', True)
-        # 市场级北向/两融只做绝对分数偏移，不改变同日截面排序；保留原默认，
-        # 同时允许隔离实验关闭/扫描该择时偏移。
+        # 市场级北向/两融在BOM缩放之前施加同日公共偏移。后续BOM乘数
+        # 因股而异，所以最终排序仍可能改变；同时也会影响绝对准入/退出阈值。
+        # 保留原默认，允许隔离实验关闭该偏移。
         _market_alt_override = __import__('os').environ.get('QUANT_MARKET_ALT_WEIGHT')
         self.market_alt_adjustment_weight = float(
             _market_alt_override if _market_alt_override is not None
@@ -683,6 +685,7 @@ class SignalEngine:
             print(f"  {label:<12} → final: {r:+.4f}")
         print("=" * 52 + "\n")
 
+    @guarded_signal_generation
     def generate(self, code: str, market_data: pd.DataFrame, signal_store: SignalStore,
                  latest_only: bool = False):
         """生成信号（向量化批处理：收集标量→数组装配→向量化阈值→买卖判定）
@@ -701,6 +704,7 @@ class SignalEngine:
             return
 
         indicators = self._calculate_indicators(market_data, code)
+        _trace_concept_observations = [None] * len(dates)
         # 注入真实题材热度 (逐bar计算，避免前视偏差)
         try:
             from .concept_heat import get_calculator
@@ -714,6 +718,7 @@ class SignalEngine:
                     calc.set_daily_data(bar_date)
                     last_date = bar_date
                 heat_arr[i] = calc.get_concept_heat(code)
+                _trace_concept_observations[i] = plog.concept_input_observation(calc, code, float(heat_arr[i]))
             indicators['concept_heat'] = heat_arr
         except Exception as e:
             logger.warning(f"[ConceptHeat] {code}: 题材热度注入失败 ({e}), 使用默认0.5")
@@ -744,6 +749,14 @@ class SignalEngine:
         buy_thresholds, sell_thresholds = self._compute_dynamic_thresholds(
             result['adjusted_score'], result['risk_regime']
         )
+        plog.detail('signal_threshold_policy', code=code, window=400,
+                    history_start=dates[0], history_end=dates[-1], history_bars=n,
+                    window_unit='stock_observation_bars', minimum_history=100,
+                    quantile=self._buy_threshold_pct, exclude_current=True,
+                    decision_valid_mask_applied=False, nan_inputs_excluded=True,
+                    default_buy=self.buy_threshold, default_sell=self.sell_threshold,
+                    factor_quality_gate_enabled=self.fqg_enabled,
+                    scope='Actual threshold input includes numeric scores from invalid decision bars; source flags and portfolio eligibility remain separate')
 
         # ===== Phase 4: 买卖判定 + 构造Signal对象 =====
         valid = result['valid']
@@ -781,6 +794,26 @@ class SignalEngine:
                     _chan_buy_signal=False, _chan_sell_signal=False, _dist_ma20=0.0,
                     _gate_quality=0.5,
                 )
+                plog.log_signal(False, False, 0.0, 0.5, valid=False)
+                plog.detail('signal_invalid', date=date, code=code,
+                            reason='warmup_under60' if i < 60 else 'invalid_score_inputs',
+                            threshold_score_input=float(result['adjusted_score'][i]),
+                            threshold_nan_excluded=bool(np.isnan(result['adjusted_score'][i])),
+                            threshold_nonfinite_input=not bool(np.isfinite(result['adjusted_score'][i])),
+                            buy_threshold=float(buy_thresholds[i]), sell_threshold=float(sell_thresholds[i]),
+                            factor_input_valid=bool(result['_trace_factor_valid'][i]),
+                            ml_prediction_available=bool(result['ml_prediction_available'][i]),
+                            ml_prediction_asof=result['_trace_ml_asof'][i],
+                            ml_coverage_policy=getattr(self, 'ml_coverage_policy', 'factor_fallback'),
+                            invalid_causes={
+                                'warmup_under60': i < 60,
+                                'factor_inputs_invalid': not bool(result['_trace_factor_valid'][i]),
+                                'required_ml_prediction_missing': bool(self.ml_enabled and
+                                    getattr(self, 'ml_coverage_policy', 'factor_fallback') == 'require_prediction'
+                                    and not result['ml_prediction_available'][i])},
+                            factor_lineage=result['_trace_source_lineage'][i],
+                            concept_observation=_trace_concept_observations[i],
+                            factor_name=sig.factor_name)
                 signal_store.set(code, date, sig)
                 continue
 
@@ -794,9 +827,8 @@ class SignalEngine:
             dist_ma20 = float(result['_dist_ma20'][i])
             hard_reject = bool(result['_hard_rejects'][i])
 
-            # 使用门控调整后的分数
-            gate_score = float(result['adjusted_score'][i])
-            score = gate_score
+            # 评分和门控质量分别参与信号判定。
+            score = float(result['adjusted_score'][i])
             gate_q = float(result['_gate_quality'][i])  # 提前提取，买卖信号共用
 
             vol_oc = float(_safe_get_arr(indicators, 'vol_opening_confirm', n, 0.0)[i])
@@ -843,11 +875,10 @@ class SignalEngine:
             _price_ok = price_above_ma20 if not has_structure else True
             buy = (not hard_reject and not np.isnan(score) and _score_ok and
                    _price_ok and price_not_extended and struct_ok)
+            _trace_buy_base = buy
 
             # 回测诊断: 记录买入信号
             if buy:
-                plog.log_signal(True, False, score, gate_q, bp_buy,
-                                str(result['industry'][i]), str(result['factor_name'][i]))
                 try:
                     if self._diag is None:
                         from analysis.backtest_diagnostics import get_diagnostics
@@ -863,14 +894,23 @@ class SignalEngine:
             _has_chan_structure = (bp_buy >= 1 and chan_buy_sig) or _has_bottom_div
             if buy and _trend_type == -2 and not _has_chan_structure:
                 buy = False
+                plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and _trend_type == -2 and (not _has_chan_structure)'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=867, final=False)
+            _trace_buy_after_trend = buy
 
             # === 因子质量门控: 禁止低质量因子生成买入信号 ===
+            _trace_fqg_evaluation = None
             if buy and self.fqg_enabled:
                 is_star = code.startswith('688')
 
                 _raw_fn = str(result['factor_name'][i])
+                _trace_fqg_evaluation = {'path': 'star_exempt' if is_star else 'not_classified',
+                                         'raw_factor': _raw_fn, 'passed': buy,
+                                         'tag': None, 'effective_threshold': None}
                 if not is_star and _raw_fn in ('V41', 'NONE'):
                     buy = False
+                    _trace_fqg_evaluation = {'path': 'raw_factor_reject', 'raw_factor': _raw_fn,
+                                             'passed': buy, 'tag': None, 'effective_threshold': None}
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and self.fqg_enabled', "not is_star and _raw_fn in ('V41', 'NONE')"], conditions_scope='lexical_branch_path_at_branch_entry', source_line=875, final=False)
                 elif not is_star:
                     _has_fund = bool(result['has_fundamental'][i])
                     _has_style = bool(float(result['style_confidence'][i]) > 0.3)
@@ -896,11 +936,17 @@ class SignalEngine:
                     _is_banned = _tag in self.fqg_banned
                     if _is_banned:
                         buy = False
+                        _trace_fqg_evaluation = {'path': 'banned_exact_tag', 'raw_factor': _raw_fn,
+                                                 'tag': _tag, 'passed': buy, 'effective_threshold': None}
+                        plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and self.fqg_enabled', "not (not is_star and _raw_fn in ('V41', 'NONE'))", 'not is_star', '_is_banned'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=900, final=False)
                     else:
                         _is_premium = _tag in self.fqg_premium
                         if _is_premium:
                             if score < buy_th * 0.80:
                                 buy = False
+                                plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and self.fqg_enabled', "not (not is_star and _raw_fn in ('V41', 'NONE'))", 'not is_star', 'not (_is_banned)', '_is_premium', 'score < buy_th * 0.8'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=905, final=False)
+                            _trace_fqg_evaluation = {'path': 'premium_exact_tag', 'raw_factor': _raw_fn,
+                                                     'tag': _tag, 'passed': buy, 'effective_threshold': buy_th * 0.80}
                         else:
                             _restricted_mult = 1.0
                             for _rs, _rm in self.fqg_restricted.items():
@@ -909,7 +955,20 @@ class SignalEngine:
                             # 所有因子必须过buy_threshold(含_T默认因子)
                             if score < buy_th * max(_restricted_mult, 1.0):
                                 buy = False
+                                plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and self.fqg_enabled', "not (not is_star and _raw_fn in ('V41', 'NONE'))", 'not is_star', 'not (_is_banned)', 'not (_is_premium)', 'score < buy_th * max(_restricted_mult, 1.0)'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=913, final=False)
+                            _trace_fqg_evaluation = {'path': 'restricted_substring_or_default', 'raw_factor': _raw_fn,
+                                                     'tag': _tag, 'passed': buy,
+                                                     'restricted_multiplier': max(_restricted_mult, 1.0),
+                                                     'effective_threshold': buy_th * max(_restricted_mult, 1.0)}
 
+            if _trace_fqg_evaluation is not None:
+                plog.detail('signal_factor_quality', date=date, code=code,
+                            score=score, base_buy_threshold=buy_th,
+                            evaluation=_trace_fqg_evaluation,
+                            confirmation_count_including_score_vote=int(result['n_buy_systems'][i]),
+                            scope='Actual semantic-tag gate; count includes blended-score vote and two same-OHLCV proxies')
+
+            _trace_buy_after_factor_quality = buy
             # 趋势确认已由 Gate 4 (Trend Direction) 处理
 
             # 妖股保护: 涨停股忽略缠论卖出信号（暴力拉升中的顶背离是假信号）
@@ -921,39 +980,45 @@ class SignalEngine:
             # 跌停保护: 跌停股禁止买入
             if _is_limit_down_stock:
                 buy = False
+                plog.detail('signal_rule_reject', date=date, code=code, conditions=['_is_limit_down_stock'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=925, final=False)
+            _trace_buy_after_limit = buy
 
             # 龙虎榜独立买点: 机构大买(>0.3) + SL>=2门控(需清晰结构确认)
             if _dt_sig > 0.3 and not hard_reject and not _is_limit_down_stock:
                 _bp0_sl = int(result['signal_level'][i])
                 _bp0_pass = _bp0_sl >= 2
-                plog.log_buy_point_gate('BP0', not _bp0_pass)
+                plog.log_buy_point_gate('BP0', not _bp0_pass, date=date, code=code)
                 if _bp0_pass:
                     buy = True
+            _trace_buy_after_dragon_tiger = buy
 
             # === B3 质量门控: SL=0 WR=32%, TT=-2 WR=8% (数据驱动) ===
             if buy and bp_buy == 3 and self.b3_gate_enabled:
                 _b3_sl = int(result['signal_level'][i])
                 _b3_tt = int(result['trend_type'][i])
                 _b3_reject = _b3_sl < 1 or _b3_tt < 0
-                plog.log_buy_point_gate('B3', _b3_reject)
+                plog.log_buy_point_gate('B3', _b3_reject, date=date, code=code)
                 if _b3_reject:
                     buy = False
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 3 and self.b3_gate_enabled', '_b3_reject'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=942, final=False)
 
             # === B2 质量门控 (基于divergence_strength, IC=+0.031) ===
             if buy and bp_buy == 2:
                 _b2_div = float(result['chan_divergence_strength'][i])
                 _b2_reject = _b2_div < self.chan_b2_min_div_strength
-                plog.log_buy_point_gate('B2', _b2_reject)
+                plog.log_buy_point_gate('B2', _b2_reject, date=date, code=code)
                 if _b2_reject:
                     buy = False
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 2', '_b2_reject'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=950, final=False)
 
             # === BP8 质量门控: signal_level=0胜率仅39.1%, 过滤无结构突破 ===
             if buy and bp_buy == 8 and self.bp8_gate_enabled:
                 _b8_sl = int(result['signal_level'][i])
                 _b8_reject = _b8_sl < self.chan_bp8_min_signal_level
-                plog.log_buy_point_gate('BP8', _b8_reject)
+                plog.log_buy_point_gate('BP8', _b8_reject, date=date, code=code)
                 if _b8_reject:
                     buy = False
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 8 and self.bp8_gate_enabled', '_b8_reject'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=958, final=False)
 
             # === B4 质量门控: SL>=2 + trend_type>=0 (TT=-2的670个信号WR=37%污染) ===
             if buy and bp_buy == 4 and self.b4_gate_enabled:
@@ -961,31 +1026,35 @@ class SignalEngine:
                 _b4_conf = float(result['buy_confidence'][i]) if 'buy_confidence' in result else 0.35
                 _b4_tt = int(result['trend_type'][i])
                 _b4_reject = _b4_sl < self.chan_b4_min_signal_level or _b4_conf < self.chan_b4_min_confidence or _b4_tt < 0
-                plog.log_buy_point_gate('B4', _b4_reject)
+                plog.log_buy_point_gate('B4', _b4_reject, date=date, code=code)
                 if _b4_reject:
                     buy = False
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 4 and self.b4_gate_enabled', '_b4_reject'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=968, final=False)
 
             # === B1 质量门控: SL=0 WR=40% MR=-1.07%, SL>=2 WR=50.8% (数据驱动) ===
             if buy and bp_buy == 1 and self.b1_gate_enabled:
                 _b1_sl = int(result['signal_level'][i])
                 _b1_reject = _b1_sl < self.chan_b1_min_signal_level
-                plog.log_buy_point_gate('B1', _b1_reject)
+                plog.log_buy_point_gate('B1', _b1_reject, date=date, code=code)
                 if _b1_reject:
                     buy = False
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 1 and self.b1_gate_enabled', '_b1_reject'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=976, final=False)
 
             # === BP7 质量门控: 质量最高买点(WR=55.6%)但SL=0占17%(WR=42%/MR=-1.19%)未过滤 ===
             if buy and bp_buy == 7 and self.bp7_gate_enabled:
                 _b7_sl = int(result['signal_level'][i])
                 _b7_reject = _b7_sl < self.chan_bp7_min_signal_level
-                plog.log_buy_point_gate('BP7', _b7_reject)
+                plog.log_buy_point_gate('BP7', _b7_reject, date=date, code=code)
                 if _b7_reject:
                     buy = False
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 7 and self.bp7_gate_enabled', '_b7_reject'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=984, final=False)
 
             # === BP6 质量门控: 均线回踩, 占10.7%信号, WR=49.6%低于平均 ===
             if buy and bp_buy == 6 and self.bp6_reject_all:
                 # D实验(2026-08-30): 整族摘除(全拒绝), 两抽取+72.7~88.5pp, Sharpe+0.169~0.186
-                plog.log_buy_point_gate('BP6', True)
+                plog.log_buy_point_gate('BP6', True, date=date, code=code)
                 buy = False
+                plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 6 and self.bp6_reject_all'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=990, final=False)
 
             if buy and bp_buy == 6 and self.bp6_gate_enabled:
                 _b6_sl = int(result['signal_level'][i])
@@ -993,17 +1062,19 @@ class SignalEngine:
                 _b6_reject = _b6_sl < self.chan_bp6_min_signal_level
                 if self.chan_bp6_min_trend_type > -2:
                     _b6_reject = _b6_reject or _b6_tt < self.chan_bp6_min_trend_type
-                plog.log_buy_point_gate('BP6', _b6_reject)
+                plog.log_buy_point_gate('BP6', _b6_reject, date=date, code=code)
                 if _b6_reject:
                     buy = False
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 6 and self.bp6_gate_enabled', '_b6_reject'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=1000, final=False)
 
             # === B5 质量门控: 趋势启动, 占4.3%信号, 待数据验证 ===
             if buy and bp_buy == 5 and self.b5_gate_enabled:
                 _b5_sl = int(result['signal_level'][i])
                 _b5_reject = _b5_sl < self.chan_b5_min_signal_level
-                plog.log_buy_point_gate('B5', _b5_reject)
+                plog.log_buy_point_gate('B5', _b5_reject, date=date, code=code)
                 if _b5_reject:
                     buy = False
+                    plog.detail('signal_rule_reject', date=date, code=code, conditions=['buy and bp_buy == 5 and self.b5_gate_enabled', '_b5_reject'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=1008, final=False)
 
             # MA60止损: 跌破MA60且score转负 → 强制卖出
             ma60_stop = (close_p < ma60_v) and score < 0 and close_p > 0 and ma60_v > 0
@@ -1014,9 +1085,6 @@ class SignalEngine:
             sell_confirmed = sell_confirmed or (gate_q < 0.55 and score < 0)
             sell_confirmed = sell_confirmed or (score < -0.20 and gate_q < 0.75)
             sell = not np.isnan(score) and (score < sell_th or (score < 0 and sell_confirmed))
-
-            if sell:
-                plog.log_signal(False, True, score, gate_q, 0)
 
             # 因子标签
             factor_tags = []
@@ -1096,6 +1164,120 @@ class SignalEngine:
                 _dist_ma20=dist_ma20,
                 _gate_quality=float(result['_gate_quality'][i]),
             )
+            plog.log_signal(buy, sell, score, gate_q, bp_buy, sig.industry, sig.factor_name)
+            plog.detail('signal_decision' if buy or sell else 'signal_neutral',
+                            date=date, code=code, bar_index=i, buy=buy, sell=sell,
+                            score=score, factor_value=sig.factor_value, factor_name=sig.factor_name,
+                            factor_lineage=result['_trace_source_lineage'][i],
+                            concept_observation=_trace_concept_observations[i],
+                            industry=sig.industry, chan_buy_point=sig.chan_buy_point,
+                            bi_buy_point=sig.bi_buy_point, signal_level=sig.signal_level,
+                            divergence=sig.chan_divergence_type,
+                            decision_state={
+                                name: getattr(sig, name)
+                                for name in ('chan_structure_score', 'mtf_alignment_score',
+                                             'trend_type', 'dist_ma60', 'max_dd_20d',
+                                             'risk_vol', 'exhaustion_risk', 'mom_60d',
+                                             'volume_ratio', 'daily_return', 'stroke_phase')},
+                            raw_structure_observations={
+                                name: (None if indicators.get(name) is None else indicators[name][i])
+                                for name in ('bottom_divergence', 'top_divergence',
+                                             'hidden_bottom_divergence', 'hidden_top_divergence',
+                                             'bottom_fractal_quality', 'bottom_fractal_vol_spike',
+                                             'buy_confidence', 'sell_confidence', 'buy_point_origin',
+                                             'second_buy_point', 'second_buy_confidence', 'second_buy_b1_ref',
+                                             'second_buy_origin',
+                                             'second_sell_point', 'second_sell_confidence', 'second_sell_s1_ref',
+                                             'structure_stop_price',
+                                             'confirmed_buy', 'confirmed_sell')},
+                            public_confirmation_votes={
+                                'primary_non_B5': sig.chan_buy_point > 0 and sig.chan_buy_point != 5,
+                                'bi_buy': sig.bi_buy_point > 0,
+                                'positive_level': sig.signal_level >= 1,
+                                'public_bottom_label': sig.chan_divergence_type in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2'),
+                                'scope': 'Inputs shared by existing portfolio confirmation; not independent evidence'},
+                            hard_reject=hard_reject, structure_present=has_structure,
+                            score_ok=_score_ok, price_ok=_price_ok, price_not_extended=price_not_extended,
+                            struct_ok=struct_ok, dist_ma20=dist_ma20, max_dist=max_dist,
+                            factor_score=sig.factor_score, ml_score=sig.ml_score,
+                            score_components={
+                                'factor_clipped': float(result['pre_discount_score'][i]),
+                                'after_fundamental': float(result['_trace_before_ml'][i]),
+                                'after_ml': float(result['_trace_after_ml'][i]),
+                                'after_alternative': float(result['_trace_before_bom'][i]),
+                                'bom_quality': float(bom_score[i]),
+                                'bom_multiplier': float(0.7 + 0.6 * bom_score[i]),
+                                'final': score,
+                                'scope': 'Actual sequential snapshots; differences are component contributions, not causal profits'},
+                            fundamental_adjustment={
+                                'raw_score': float(result['_trace_fundamental_score'][i]),
+                                'weight': self.fundamental_weight,
+                                'positive_only': True,
+                                'raw_increment': (float(result['_trace_fundamental_score'][i]) * self.fundamental_weight
+                                                  if result['_trace_fundamental_score'][i] > 0 else 0.0),
+                                'calibration_increment': (0.3641060497319204 * self.fundamental_weight
+                                                          if result['_trace_fundamental_calibration_mask'][i] else 0.0),
+                                'scope': 'Separate public financial bonus; fundamental inputs may also occur inside the factor recipe'},
+                            alternative_adjustment={
+                                'provider_available': self._alt_data is not None,
+                                'northbound_raw': result['_trace_alt_northbound'][i],
+                                'margin_raw': result['_trace_alt_margin'][i],
+                                'market_pair_finite': bool(result['_trace_alt_market_finite'][i]),
+                                'market_weight': self.market_alt_adjustment_weight,
+                                'market_applied_increment': float(result['_trace_alt_market_increment'][i]),
+                                'dragon_tiger_enabled': self.dragon_tiger_enabled,
+                                'dragon_tiger_raw': result['_trace_alt_dragon_tiger'][i],
+                                'dragon_tiger_finite': bool(result['_trace_alt_dragon_tiger_finite'][i]),
+                                'dragon_tiger_applied_increment': float(result['_dt_signal'][i] * 0.30),
+                                'source_lag_calendar_days': 1,
+                                'snapshot_observed_by': date,
+                                'raw_data_coverage': 'unknown_from_numeric_provider_api',
+                                'prefix_error': result['_trace_alt_prefix_error'],
+                                'scope': 'Null raw means unqueried/nonfinite. Finite query results can include provider default zeros and do not certify source coverage. Applied increments preserve partial-failure behavior; prefix error may belong to another date.'},
+                            signal_confidence=sig.signal_confidence,
+                            signal_confidence_scope='Heuristic diagnostic, not calibrated win probability or portfolio confidence filter',
+                            factor_quality_evaluation=_trace_fqg_evaluation,
+                            price_proxy_confirmation={
+                                'capital_flow_score': sig.capital_flow_score,
+                                'capital_flow_direction': int(result['_trace_cf_direction'][i]),
+                                'news_sentiment_score': sig.news_sentiment_score,
+                                'news_sentiment_direction': int(result['_trace_ns_direction'][i]),
+                                'count_including_score_vote': n_buy,
+                                'scope': 'Same OHLCV proxies; count can affect FQG tag, not an independent vote certificate'},
+                            admission_path={
+                                'base': _trace_buy_base,
+                                'after_downtrend_rule': _trace_buy_after_trend,
+                                'after_factor_quality': _trace_buy_after_factor_quality,
+                                'after_limit_rule': _trace_buy_after_limit,
+                                'after_dragon_tiger_override': _trace_buy_after_dragon_tiger,
+                                'after_buy_point_rules': buy},
+                            sell_path={
+                                'score_negative': bool(score < 0),
+                                'score_below_dynamic_threshold': bool(score < sell_th),
+                                'confirmed_structure_sell': bool(chan_sell_sig and sl <= -1),
+                                'ma60_stop': bool(ma60_stop),
+                                'weak_gate_and_negative_score': bool(gate_q < 0.55 and score < 0),
+                                'low_score_and_weak_gate': bool(score < -0.20 and gate_q < 0.75),
+                                'sell_confirmed': bool(sell_confirmed),
+                                'final': bool(sell)},
+                            ml_prediction_available=bool(result['ml_prediction_available'][i]),
+                            ml_prediction_asof=result['_trace_ml_asof'][i],
+                            ml_blend_active=bool(self.ml_enabled and abs(sig.ml_score) > 0.01),
+                            ml_blend_weight=self.ml_blend_weight,
+                            ml_coverage_policy=getattr(self, 'ml_coverage_policy', 'factor_fallback'),
+                            gate_quality=sig._gate_quality,
+                            gate_dimensions=result['_trace_gate_grades'][i].tolist(),
+                            gate_dimension_order=['chan_structure', 'weekly_monthly', 'concept_heat', 'daily_trend'],
+                            gate_used_for_scoring=False,
+                            decision_close=close_p, ma20=ma20_v, ma60=ma60_v,
+                            price_above_ma20=price_above_ma20, price_above_ma60=price_above_ma60,
+                            structure_exempts_ma20=has_structure,
+                            weekly_trend_up=sig.weekly_trend_up, monthly_trend_up=sig.monthly_trend_up,
+                            ma_trend_up=sig.ma_trend_up, mtf_alignment=sig.mtf_alignment_score,
+                            mtf_discount=sig.mtf_discount_factor,
+                            nearest_support_pct=sig.nearest_support_pct,
+                            nearest_resistance_pct=sig.nearest_resistance_pct,
+                            buy_threshold=buy_th, sell_threshold=sell_th)
             signal_store.set(code, date, sig)
 
         # 显式释放中间数组，避免大规模循环中GC延迟导致内存堆积
@@ -1324,6 +1506,17 @@ class SignalEngine:
                 _sc = calc._stock_concepts
             scores = compute_stock_bom_score(code, _sc, fundamentals={code: fund} if fund else None)
             result = scores.get('bom_quality_score', 0.3)
+            plog.bom_source(date, code, quality=result, components=scores,
+                            concepts=_sc.get(code, []),
+                            concept_version=calc._version_for(date) if date is not None else None,
+                            concept_provenance='version_lookup_inherits_provider_fallback_policy',
+                            report_period=row.get('报告期') if date is not None and fund is not None else None,
+                            report_available_date=row.get('数据可用日期') if date is not None and fund is not None else None,
+                            normalized_roe=roe if date is not None and fund is not None else None,
+                            normalized_gross_margin=gm if date is not None and fund is not None else None,
+                            roe_imputed=roe is None if date is not None and fund is not None else None,
+                            gross_margin_imputed=gm is None if date is not None and fund is not None else None,
+                            fundamentals_used=fund, fallback=False)
             if result > 0.30:
                 d['hit'] += 1
             else:
@@ -1334,6 +1527,8 @@ class SignalEngine:
             d['sum_score'] += result
         except Exception:
             result = 0.3
+            plog.bom_source(date, code, quality=result, fallback=True,
+                            reason='BOM_query_or_calculation_exception', components=None)
             d['miss'] += 1
         self._bom_cache[key] = result
         return result
@@ -1386,6 +1581,7 @@ class SignalEngine:
         profit_dec = np.zeros(n, dtype=bool)
         style_score = np.zeros(n)
         spec_ind = np.full(n, '', dtype=object)
+        _trace_source_lineage = [None] * n
 
         # 始终使用逐bar完整因子选择, 回测和实盘逻辑一致
         if False:  # 旧 latest_only 快速路径 — 已删除 (§36审计 2026-10-24)
@@ -1443,6 +1639,19 @@ class SignalEngine:
                     continue
 
                 fn, fv, risk_info, is_ind_f = factor_result
+                _trace_source_lineage[i] = ({
+                    'route': 'fixed_default' if self.factor_mode == 'fixed' else self.factor_mode,
+                    'terms': risk_info.get('_trace_scoring_terms'),
+                    'weighted_sum_before_clip': risk_info.get('_trace_weighted_sum'),
+                    'clipped_value': fv,
+                    'configured_terms': risk_info.get('_trace_configured_terms'),
+                    'used_terms': risk_info.get('_trace_used_terms'),
+                    'configuration_route': risk_info.get('_trace_configuration_route'),
+                    'scoring_industry': risk_info.get('_trace_scoring_industry'),
+                    'export_industry': _spec_ind_i,
+                    'fundamental_cache_active': risk_info.get('_trace_fund_cache_active'),
+                    'formula': 'sum(direction * input * weight), clipped to [-1,1]',
+                } if risk_info and '_trace_scoring_terms' in risk_info else None)
                 valid[i] = True
                 mkt_regime[i] = _mkt_regime_i
                 mkt_extreme[i] = _mkt_ext_arr[i]
@@ -1455,6 +1664,16 @@ class SignalEngine:
                 if _bp_arr[i] == 8 and self.bp8_rev60_override:
                     fname[i] = 'REV60'
                     fval[i] = np.tanh(-_mom60_arr[i] * 2)
+                    _trace_source_lineage[i] = {
+                        'route': 'REV60_replaces_default',
+                        'terms': [{'factor': 'mom_60d', 'input_source': 'same_stock_close_60',
+                                   'input': float(_mom60_arr[i]), 'direction': -1,
+                                   'weight': 1.0, 'contribution': float(fval[i])}],
+                        'formula': 'tanh(-2*mom_60d)',
+                        'clipped_value': float(fval[i]),
+                        'replaced_factor_name': fn,
+                        'replaced_factor_value': fv,
+                    }
                 else:
                     fname[i] = fn
                     fval[i] = fv
@@ -1493,22 +1712,18 @@ class SignalEngine:
             'fundamental_score': fund_score, 'has_fundamental': has_fund,
             'profit_declining': profit_dec, 'style_factor_score': style_score,
             'specific_industry': spec_ind,
+            '_trace_source_lineage': _trace_source_lineage,
         }
 
     def _vectorized_score_assembly(self, s: dict, ind: dict, n: int, code: str = '',
                                     dates: np.ndarray = None, bom_score: float = 0.3) -> dict:
-        """向量化分数装配（门控版）：factor × gate_quality 替代6层乘法叠加。
+        """装配因子、基本面、ML、另类数据及 BOM 调整后的分数。
 
-        新架构:
-          1. 纯因子值归一化 → score [-1, 1]
-          2. 4门控Grade → gate_quality [0, 1]
-          3. adjusted_score = score * gate_quality
-          4. ML预测融合 → adjusted_score = (1-w)*score + w*ml_pred
-          5. 不再做 Chan/MTF/共振 逐层乘法调整
-
-        输入 s = _collect_bar_scalars 的输出 + ind指标字典。
+        门控等级和硬拒绝标志单独输出，供信号与组合准入判断。
+        s 来自 _collect_bar_scalars，ind 提供指标数组。
         """
         valid = s['valid']
+        _trace_factor_valid = valid.copy()
 
         # === 1. 纯因子分数（因子值已在[-1,1]，无需/10压缩） ===
         score = np.clip(s['factor_value'], -10.0, 10.0)
@@ -1545,10 +1760,12 @@ class SignalEngine:
 
         # === 3. Gate仅做二元准入, gate_quality(IC≈0)不参与评分 ===
         adjusted_score = score
+        _trace_before_ml = adjusted_score.copy()
 
         # === 3.4 ML预测融合：XGBoost非线性因子组合 ===
         ml_normalized = np.zeros(n)  # 默认无ML
         ml_prediction_available = np.zeros(n, dtype=bool)
+        _trace_ml_asof = np.full(n, np.datetime64('NaT'), dtype='datetime64[ns]')
         # 预计算dict路径(回测) 或 直接predict路径(实盘)
         has_ml_model = self.ml_predictor is not None and self.ml_predictor.is_trained()
         if self.ml_enabled and dates is not None and code:
@@ -1569,10 +1786,12 @@ class SignalEngine:
                         ml_finite = np.isfinite(ml_lookup_values)
                         ml_prediction_available[ml_lookup_rows[ml_finite]] = True
                         ml_pred_series[ml_lookup_rows[ml_finite]] = ml_lookup_values[ml_finite]
+                        _trace_ml_asof[ml_lookup_rows[ml_finite]] = ml_dt64[idx[ml_lookup_valid][ml_finite]]
                 else:
                     ml_raw = np.array([self._ml_predictions.get((code_str, d), np.nan) for d in bar_dates])
                     ml_prediction_available = np.isfinite(ml_raw)
                     ml_pred_series[ml_prediction_available] = ml_raw[ml_prediction_available]
+                    _trace_ml_asof[ml_prediction_available] = np.asarray(bar_dates, dtype='datetime64[ns]')[ml_prediction_available]
                 ml_normalized = np.tanh(ml_pred_series * 3)
             elif has_ml_model:
                 # 截面标准化不能对单只股票调用。没有联合截面预测时保留纯因子分，
@@ -1593,8 +1812,18 @@ class SignalEngine:
                 self.ml_blend_weight * ml_normalized[ml_active]
             )
 
+        _trace_after_ml = adjusted_score.copy()
         # === 3.6 另类数据调整：龙虎榜个股 + 北向/融资市场级 ===
         dt_signal = np.zeros(n)
+        # Capture existing queries only. No provider calls or decision inputs
+        # are introduced by these diagnostics, including partial failures.
+        _trace_alt_northbound = np.full(n, np.nan)
+        _trace_alt_margin = np.full(n, np.nan)
+        _trace_alt_market_finite = np.zeros(n, dtype=bool)
+        _trace_alt_market_increment = np.zeros(n)
+        _trace_alt_dragon_tiger = np.full(n, np.nan)
+        _trace_alt_dragon_tiger_finite = np.zeros(n, dtype=bool)
+        _trace_alt_prefix_error = None
         if self._alt_data is None:
             try:
                 from .alternative_data import get_provider
@@ -1613,12 +1842,16 @@ class SignalEngine:
                     # decision day D (the vendor often publishes D-1 on D).
                     observed_by = _perf_scalar_datetime(dates[i]).date()
                     nb = self._alt_data.get_northbound_signal(prev_date, observed_by=observed_by)
+                    _trace_alt_northbound[i] = nb
                     mg = self._alt_data.get_margin_signal(prev_date, observed_by=observed_by)
+                    _trace_alt_margin[i] = mg
+                    _trace_alt_market_finite[i] = np.isfinite(nb) and np.isfinite(mg)
                     alt_market[i] = ((nb * 0.6 + mg * 0.4)
                                      * self.market_alt_adjustment_weight)
                 # NaN 兜底：replace NaN with 0 before adding to adjusted_score
                 alt_market = np.nan_to_num(alt_market, nan=0.0)
                 adjusted_score += alt_market
+                _trace_alt_market_increment = alt_market.copy()
 
                 # 记录另类数据命中（北向/融资市场级信号）
                 if self._diag is not None and abs(alt_market[-1]) > 0.001:
@@ -1632,12 +1865,15 @@ class SignalEngine:
                         dt_sig = self._alt_data.get_dragon_tiger_signal(
                             code, (_perf_scalar_datetime(dates[i]) - pd.Timedelta(days=1)).date(),
                             observed_by=_perf_scalar_datetime(dates[i]).date())
+                        _trace_alt_dragon_tiger[i] = dt_sig
+                        _trace_alt_dragon_tiger_finite[i] = np.isfinite(dt_sig)
                         if abs(dt_sig) > 0.01:
                             dt_signal[i] = dt_sig
                             adjusted_score[i] += dt_sig * 0.30
                             if self._diag is not None and i == n - 1:
                                 self._diag.record_alt_data(dragon_tiger=True)
             except Exception as e:
+                _trace_alt_prefix_error = type(e).__name__
                 import traceback; print(f"[ERR] " + __file__ + ":" + str(e)); traceback.print_exc()  # 另类数据失败不影响主流程
 
         # === 4. 常用字段 ===
@@ -1736,6 +1972,7 @@ class SignalEngine:
                 div_type[i] = f'bi{bi_buy[i]}_seg{buy_point_raw[i]}_buy'
 
         # === 6.5 BOM产业链质量乘数: 中位BOM(0.5)→1.0, 高BOM(1.0)→+30%, 低BOM(0.3)→-12% ===
+        _trace_before_bom = adjusted_score.copy()
         bom_mult_arr = 0.7 + 0.6 * np.asarray(bom_score, dtype=float)  # B批修复(B2): bom_score现为逐bar数组
         adjusted_score *= bom_mult_arr
 
@@ -1753,6 +1990,22 @@ class SignalEngine:
         # === 7. 组装返回 ===
         return {
             'valid': valid,
+            '_trace_gate_grades': gate_grades,
+            '_trace_ml_asof': _trace_ml_asof,
+            '_trace_before_ml': _trace_before_ml,
+            '_trace_fundamental_score': s['fundamental_score'],
+            '_trace_fundamental_calibration_mask': calibration_mask,
+            '_trace_after_ml': _trace_after_ml,
+            '_trace_alt_northbound': _trace_alt_northbound,
+            '_trace_alt_margin': _trace_alt_margin,
+            '_trace_alt_market_finite': _trace_alt_market_finite,
+            '_trace_alt_market_increment': _trace_alt_market_increment,
+            '_trace_alt_dragon_tiger': _trace_alt_dragon_tiger,
+            '_trace_alt_dragon_tiger_finite': _trace_alt_dragon_tiger_finite,
+            '_trace_alt_prefix_error': _trace_alt_prefix_error,
+            '_trace_before_bom': _trace_before_bom,
+            '_trace_factor_valid': _trace_factor_valid,
+            '_trace_source_lineage': s.get('_trace_source_lineage', [None] * n),
             'score': score,
             'adjusted_score': adjusted_score,
             'pre_discount_score': pre_discount_score,
@@ -1787,6 +2040,8 @@ class SignalEngine:
             'resonance_systems': n_buy,  # 买入侧系统共振数（与factor_tag R{n}一致）
             'capital_flow_score': cf_score,
             'news_sentiment_score': ns_score,
+            '_trace_cf_direction': cf_dir,
+            '_trace_ns_direction': ns_dir,
             'trend_type': trend_type_raw,
             'chan_pivot_zg': _safe_get_arr(ind, 'chan_pivot_zg', n, np.nan),
             'chan_pivot_zd': _safe_get_arr(ind, 'chan_pivot_zd', n, np.nan),
@@ -1887,10 +2142,10 @@ class SignalEngine:
                     _dyn_qual = result[2].get('dyn_quality', 0) if result[2] else 0
                     plog.log_factor_sel(result[0], True, specific_industry or 'unknown', _dyn_qual, 0)
                     return result
-                # 动态选择失败
-                if self.factor_mode == 'dynamic' and not self.factor_fallback_to_fixed:
-                    self._stats['dynamic_fallback_none'] += 1
-                    return None
+            # 选择器关闭、缺少日期或查不到因子，都服从同一个回退开关。
+            if self.factor_mode == 'dynamic' and not self.factor_fallback_to_fixed:
+                self._stats['dynamic_fallback_none'] += 1
+                return None
 
         # reweight模式: 走静态因子选择路径, 但使用walk-forward IC调整权重
         # fixed/both/reweight模式: 走标准静态路径
@@ -2304,6 +2559,7 @@ class SignalEngine:
                     if (code and current_date) else '')
         industry_cfg = INDUSTRY_FACTOR_CONFIG.get(industry) if industry else None
         qcfg = None
+        _trace_configuration_route = 'none'
 
         # 熊市: trend_score<0或regime=-1时激活季度标定bear_factors
         # 2022实证: 阴跌不触发regime=-1, 需trend_score补充检测
@@ -2311,21 +2567,26 @@ class SignalEngine:
             qcfg = _resolve_factor_config(current_date) if current_date else {}
             q_cfg = qcfg.get(industry) if industry else None
             if q_cfg and q_cfg.get('bear_factors'):
+                _trace_configuration_route = 'quarter_bear'
                 # 季度标定熊市因子 — 针对当前季度的最优防御组合
                 factors = q_cfg['bear_factors']
                 weights_cfg = q_cfg.get('bear_weights', [])
             elif industry_cfg and industry_cfg.get('bear_factors'):
+                _trace_configuration_route = 'global_bear'
                 factors = industry_cfg['bear_factors']
                 weights_cfg = industry_cfg.get('bear_weights', [])
             elif industry_cfg:
+                _trace_configuration_route = 'global_neutral_fallback_in_bear'
                 factors = industry_cfg.get('factors', [])
                 weights_cfg = industry_cfg.get('weights', [])
             else:
                 factors, weights_cfg = [], []
         elif regime == 1 and industry_cfg and industry_cfg.get('bull_factors'):
+            _trace_configuration_route = 'global_bull'
             factors = industry_cfg['bull_factors']
             weights_cfg = industry_cfg.get('bull_weights', [])
         elif industry_cfg:
+            _trace_configuration_route = 'global_neutral'
             factors = industry_cfg.get('factors', [])
             weights_cfg = industry_cfg.get('weights', [])
         else:
@@ -2339,6 +2600,7 @@ class SignalEngine:
 
         # P1: FactorLibrary (IC store or YAML fallback)
         if not scoring_factors and lib is not None:
+            _trace_configuration_route = 'factor_library_asof'
             if qcfg is None:
                 qcfg = _resolve_factor_config(current_date) if current_date else {}
             scoring_factors = lib.get_scoring_factors(
@@ -2347,9 +2609,11 @@ class SignalEngine:
 
         # P2: IC缓存或无库回退
         if not scoring_factors:
+            _trace_configuration_route = 'global_IC_cache'
             scoring_factors = self._get_cached_scoring_factors(current_date) if current_date else []
         # P3: 硬编码兜底
         if not scoring_factors:
+            _trace_configuration_route = 'hardcoded_default'
             mom_dir = -1 if regime == -1 else 1
             scoring_factors = [
                 ('trend_lowvol', 0.30, 1), ('relative_strength', 0.25, 1),
@@ -2357,22 +2621,41 @@ class SignalEngine:
             ]
 
         score = 0.0
+        _trace_scoring_terms = []
         for item in scoring_factors[:5]:
             fn, weight = item[0], item[1]
             direction = item[2] if len(item) >= 3 else 1
             fv = float('nan')
+            _trace_input_source = 'cross_sectional_rank'
+            _trace_missing = False
+            _trace_raw_observation = None
             if code and current_date:
                 fv = self._lookup_rank(code, current_date, fn)
             if np.isnan(fv):
                 if fn.startswith('fund_'):
+                    _trace_input_source = 'fundamental_getter'
                     fv = self._get_fundamental_factor_value(code, current_date, fn)
+                    _trace_missing = fv is None
                     if fv is None:
                         fv = 0.0
                 else:
+                    _trace_input_source = 'indicator_or_default'
+                    _trace_raw_observation = plog.factor_input_observation(ind.get(fn), idx)
+                    _trace_missing = not _trace_raw_observation['available']
                     fv = self._safe_get(ind, fn, idx, 0.0)
+            _trace_unsigned_value = fv
             if direction < 0:
                 fv = -fv
             score += fv * weight
+            _trace_scoring_terms = [*_trace_scoring_terms, {
+                'factor': fn, 'input_source': _trace_input_source,
+                'missing_default': _trace_missing,
+                'indicator_observation': _trace_raw_observation,
+                'nonfinite_input': not bool(np.isfinite(_trace_unsigned_value)),
+                'input': float(_trace_unsigned_value),
+                'direction': -1 if direction < 0 else 1, 'direction_parameter': direction,
+                'weight': float(weight), 'contribution': float(fv * weight),
+            }]
             if abs(weight) > 0.001:
                 factor_names.append(fn)
 
@@ -2380,7 +2663,14 @@ class SignalEngine:
         factor_name = '+'.join(factor_names[:3]) if factor_names else 'REV'
 
         factor_value = float(np.clip(score, -1.0, 1.0))
-        risk_info = {'is_high_vol': False}
+        risk_info = {'is_high_vol': False,
+                     '_trace_scoring_terms': _trace_scoring_terms,
+                     '_trace_weighted_sum': score,
+                     '_trace_configuration_route': _trace_configuration_route,
+                     '_trace_scoring_industry': industry,
+                     '_trace_fund_cache_active': bool(getattr(self, '_has_fund_data_cache', False)),
+                     '_trace_configured_terms': len(scoring_factors),
+                     '_trace_used_terms': min(5, len(scoring_factors))}
         return factor_name, factor_value, risk_info
 
     def _load_ic_cache(self):

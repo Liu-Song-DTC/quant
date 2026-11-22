@@ -14,9 +14,12 @@
 """
 
 import time
+import sys
+import math
 import numpy as np
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Tuple
+from .decision_journal import DecisionJournal
 
 
 class StageTracker:
@@ -29,11 +32,25 @@ class StageTracker:
         self._max_samples = 5000
         self._start_time = time.time()
         self._last_flush = time.time()
+        self.population: Dict[str, dict] = {}
 
     def count(self, key: str, n: int = 1):
         self.counters[key] += n
 
     def sample(self, key: str, value: float):
+        if value is None or not math.isfinite(value):
+            self.counters[f'nonfinite_{key}'] += 1
+            return
+        value = float(value)
+        p = self.population.setdefault(key, {'n': 0, 'mean': 0.0, 'm2': 0.0,
+                                              'min': value, 'max': value, 'below_07': 0})
+        p['n'] += 1
+        delta = value - p['mean']
+        p['mean'] += delta / p['n']
+        p['m2'] += delta * (value - p['mean'])
+        p['min'] = min(p['min'], value)
+        p['max'] = max(p['max'], value)
+        p['below_07'] += int(value < 0.7)
         if len(self.samples[key]) < self._max_samples:
             self.samples[key].append(value)
 
@@ -52,11 +69,13 @@ class StageTracker:
         for k, vals in self.samples.items():
             if vals:
                 arr = np.array(vals)
+                p = self.population[k]
                 s[f'{k}_dist'] = {
-                    'n': len(arr), 'mean': round(float(arr.mean()), 5),
-                    'std': round(float(arr.std()), 5),
-                    'min': round(float(arr.min()), 5),
-                    'max': round(float(arr.max()), 5),
+                    'n': p['n'], 'mean': round(p['mean'], 5),
+                    'std': round(float(np.sqrt(max(0., p['m2'] / p['n']))), 5),
+                    'min': round(p['min'], 5), 'max': round(p['max'], 5),
+                    'below_07': p['below_07'],
+                    'quantile_sample_n': len(arr), 'quantile_scope': 'first_bounded_observations',
                     'p50': round(float(np.percentile(arr, 50)), 5),
                     'p90': round(float(np.percentile(arr, 90)), 5),
                 }
@@ -65,6 +84,7 @@ class StageTracker:
     def reset(self):
         self.counters.clear()
         self.samples.clear()
+        self.population.clear()
         self._last_flush = time.time()
 
 
@@ -85,6 +105,102 @@ class PipelineLogger:
         self._alerts: List[str] = []
         self._seq = 0  # 序号递增
         self._verbosity = 2  # 0=quiet, 1=summary, 2=detail
+        self.journal = DecisionJournal()
+        self._exit_trigger_evidence = {}
+
+    def detail(self, event, date=None, code=None, **payload):
+        if 'source_line' in payload and self.journal.enabled:
+            # Literal line numbers drift when the caller is edited. Retain the
+            # old annotation, but make the recorded location navigable.
+            payload['declared_source_line'] = payload['source_line']
+            try:
+                frame = sys._getframe(1)
+                try:
+                    payload['source_line'] = frame.f_lineno
+                    payload['source_file'] = frame.f_code.co_filename
+                    payload['source_line_basis'] = 'runtime_call'
+                finally:
+                    del frame
+            except (AttributeError, ValueError):
+                payload['source_line_basis'] = 'unverified_annotation'
+        # Observational only: keep concrete triggers alongside the historical
+        # generic "stop_loss" caller label. Several requests may coexist; the
+        # latest event is not asserted to be the sole cause of a later fill.
+        trigger = payload.get('reason') if event == 'position_exit_trigger' else payload.get('trigger_reason') if event == 'position_exit_rule' else None
+        if trigger and code is not None:
+            records = self._exit_trigger_evidence.setdefault(code, deque(maxlen=8))
+            records.append(dict(date=str(date if date is not None else self.journal.decision_date)[:10],
+                                reason=trigger, event=event, source_line=payload.get('source_line'),
+                                source_file=payload.get('source_file'),
+                                source_line_basis=payload.get('source_line_basis')))
+        self.journal.event(event, date=date, code=code, **payload)
+
+    def bom_source(self, date, code, **payload):
+        """Emit provenance transitions, keeping only the current stock's signature."""
+        signature=(code,repr(payload))
+        if getattr(self,'_bom_trace_signature',None)!=signature:
+            self.detail('bom_source_transition',date=date,code=code,**payload)
+            self._bom_trace_signature=signature
+
+    def decision_day(self, date, **payload):
+        self._exit_trigger_evidence.clear()
+        self.journal.decision_date = date
+        self.detail('decision_day', date=date, **payload)
+
+    def candidate(self, date, code, stage, passed, reason='', sig=None, **payload):
+        values = {}
+        if sig is not None:
+            for key in ('buy', 'sell', 'score', 'factor_value', 'factor_name', 'industry',
+                        'chan_buy_point', 'bi_buy_point', 'chan_sell_point', 'signal_level',
+                        'chan_divergence_type', 'chan_divergence_strength', 'trend_type',
+                        'ma_trend_up', 'ml_score', 'pre_discount_score', 'adjusted_score',
+                        'risk_vol', 'gate_quality', 'bom_quality_score'):
+                values[key] = getattr(sig, key, None)
+            values['gate_quality'] = getattr(sig, '_gate_quality', values.get('gate_quality'))
+        self.detail('candidate', date=date, code=code, stage=stage, passed=bool(passed),
+                    reason=reason, signal=values, **payload)
+
+    @staticmethod
+    def factor_input_observation(values, index):
+        """Describe the untouched indicator input; never supplies a score value."""
+        if values is None:
+            return {'available': False, 'reason': 'column_missing_or_none', 'raw_value': None}
+        try:
+            value = float(values[index])
+        except (TypeError, IndexError, KeyError, ValueError, OverflowError):
+            return {'available': False, 'reason': 'unreadable_or_out_of_bounds', 'raw_value': None}
+        if not math.isfinite(value):
+            return {'available': False, 'reason': 'nonfinite', 'raw_value': None}
+        return {'available': True, 'reason': 'observed', 'raw_value': value}
+
+    @staticmethod
+    def concept_input_observation(calculator, code, heat):
+        """Read the existing snapshot only; observation failures never affect heat."""
+        values = {'heat': heat, 'membership_count': None, 'quote_count': None,
+                  'finite_quote_count': None, 'mean_known_ema_return': None,
+                  'max_chain_prior': None, 'map_version': None, 'coverage': 'unknown'}
+        try:
+            mapping = getattr(calculator, '_stock_concepts', None)
+            scores = getattr(calculator, '_concept_scores', None)
+            values['map_version'] = getattr(calculator, '_cmap_cur', None)
+            if not isinstance(mapping, dict) or not isinstance(scores, dict):
+                return values
+            concepts = mapping.get(code, [])
+            quotes = [scores[c] for c in concepts if c in scores]
+            finite = [float(v) for v in quotes
+                      if isinstance(v, (int, float, np.number)) and math.isfinite(float(v))]
+            values.update(membership_count=len(concepts), quote_count=len(quotes),
+                          finite_quote_count=len(finite),
+                          mean_known_ema_return=float(np.mean(finite)) if finite else None,
+                          coverage=('no_membership' if not concepts else
+                                    'no_market_quotes' if not scores else
+                                    'members_but_no_quotes' if not quotes else 'has_quotes'))
+            chain = getattr(calculator, '_chain_signals', None)
+            if isinstance(chain, dict):
+                values['max_chain_prior'] = max((chain.get(c, 0.0) for c in concepts), default=0.0)
+        except Exception as error:
+            values['observation_error'] = type(error).__name__
+        return values
 
     def stage(self, name: str) -> StageTracker:
         if name not in self.stages:
@@ -113,9 +229,18 @@ class PipelineLogger:
 
     def log_signal(self, buy: bool, sell: bool, score: float,
                    gate_quality: float, buy_point: int = 0,
-                   industry: str = '', factor_name: str = ''):
-        """记录单条信号 (含因子名用于归因)"""
+                   industry: str = '', factor_name: str = '', valid: bool = True):
+        """一次调用对应一个最终Signal；中性及无效行也计数，不重复计买卖同现行。"""
         s = self.stage('signal_gen')
+        s.incr('total_bars')
+        if not valid:
+            s.incr('invalid_bars')
+            return
+        s.incr('valid_bars')
+        if not buy and not sell:
+            s.incr('neutral_bars')
+        if buy and sell:
+            s.incr('buy_sell_overlap_bars')
         if buy:
             s.incr('buy_signals')
             s.sample('buy_score', score)
@@ -129,13 +254,12 @@ class PipelineLogger:
         if sell:
             s.incr('sell_signals')
             s.sample('sell_score', score)
-        s.incr('total_bars')
         s.sample('score', score)
         s.sample('gate_quality', gate_quality)
 
     def log_gate_dimensions(self, g1: float, g2: float, g3: float, g4: float,
                             gate_quality: float, passed: bool):
-        """记录Gate四维分项质量 (per bar)"""
+        """每次股票装配仅采最新bar；完整逐bar值在signal_decision事件。"""
         s = self.stage('gate_filter')
         for i, (name, val) in enumerate([('G1', g1), ('G2', g2), ('G3', g3), ('G4', g4)], 1):
             s.sample(f'{name}_grade', val)
@@ -143,12 +267,33 @@ class PipelineLogger:
         if not passed:
             s.incr('hard_reject_count')
 
-    def log_exit_reason(self, code: str, reason: str, pnl_pct: float = 0.0, days_held: int = 0):
+    def signal_store_summary(self, frame, source):
+        """主进程只读汇总实际消费行，避免把worker局部统计当成全局统计。"""
+        buy=frame['buy'].fillna(False).astype(bool)
+        sell=frame['sell'].fillna(False).astype(bool)
+        record=dict(source=source,rows=len(frame),buy=int(buy.sum()),sell=int(sell.sum()),
+                    overlap=int((buy&sell).sum()),neutral=int((~buy&~sell).sum()),
+                    scope='Final store rows after membership masking; not the legacy pre-filter diagnostic counter.',
+                    generation_details_available=source=='fresh_generation')
+        self.detail('signal_store_summary',**record)
+        print(f"[SIGNAL_FINAL] source={source} rows={len(frame)} buy={record['buy']} "
+              f"sell={record['sell']} overlap={record['overlap']} neutral={record['neutral']}")
+
+    def log_exit_reason(self, code: str, reason: str, pnl_pct: float = 0.0, days_held: int = None):
         """记录持仓退出原因 (止损/止盈/信号卖出/换仓)"""
         s = self.stage('portfolio')
         s.incr(f'exit_{reason}')
         s.sample(f'exit_pnl_{reason}', pnl_pct)
-        s.sample('exit_days_held', days_held)
+        if days_held is not None:
+            s.sample('exit_days_held', days_held)
+        current_day = str(self.journal.decision_date)[:10]
+        trigger_evidence = [dict(row) for row in self._exit_trigger_evidence.get(code, ())
+                            if row['date'] == current_day]
+        self.detail('exit_intent', code=code, reason=reason, reported_pnl_pct=pnl_pct,
+                    days_held=days_held, pnl_basis='caller_estimate_not_realized_cashflow',
+                    trigger_evidence=trigger_evidence, reason_scope='legacy_caller_label',
+                    trigger_evidence_scope='Last8 recorded same-day triggers for this code; full events remain in journal',
+                    executed=False, execution_scope='Request only; fill and cash PnL require execution ledger reconciliation')
 
     def log_regime_execution(self, regime: int, daily_ret: float, nav: float):
         """记录分市场状态的执行表现"""
@@ -157,12 +302,15 @@ class PipelineLogger:
         s.sample(f'ret_{regime_name}', daily_ret)
         s.incr(f'days_{regime_name}')
 
-    def log_buy_point_gate(self, bp_name: str, rejected: bool):
+    def log_buy_point_gate(self, bp_name: str, rejected: bool, *, date=None, code=None):
         """记录买点门控通过/拒绝 (9门控: B1/B2/B3/B4/B5/BP6/BP7/BP8/BP0龙虎榜)"""
         s = self.stage('gate_filter')
         s.incr(f'bp_{bp_name}_checked')
         if rejected:
             s.incr(f'bp_{bp_name}_rejected')
+        self.detail('signal_buy_point_gate', date=date, code=code,
+                    buy_point=bp_name, rejected=rejected,
+                    scope='executed branch result; later rules may override; see final signal')
 
     def log_data_quality(self, code: str, issue: str):
         """记录数据质量问题 (缺失/异常值)"""
@@ -208,6 +356,8 @@ class PipelineLogger:
         if is_held:
             s.incr('held_retained')
         s.incr(f'ind_{industry}')
+        self.detail('portfolio_selected', code=code, score=score, weight=weight,
+                    industry=industry, rank_pct=rank_pct, is_held=is_held)
 
     def log_execution(self, buy_filled: int = 0, sell_filled: int = 0,
                       buy_attempted: int = 0, sell_attempted: int = 0,
@@ -230,13 +380,15 @@ class PipelineLogger:
     def log_backtest_daily(self, date, nav: float, drawdown: float,
                            n_positions: int, exposure: float,
                            daily_ret: float = 0.0):
-        """记录每日回测状态（每20个交易日汇总一次）"""
+        """记录每个交易日的实际账户状态，与输出账表逐日核对。"""
         s = self.stage('execution')
         s.sample('daily_nav', nav)
         s.sample('daily_drawdown', drawdown)
         s.sample('daily_n_positions', n_positions)
         s.sample('daily_exposure', exposure)
         s.sample('daily_return', daily_ret)
+        self.detail('account_day', date=date, nav=nav, drawdown=drawdown,
+                    n_positions=n_positions, exposure=exposure, daily_return=daily_ret)
 
     # ── 输出 ──
 
@@ -283,7 +435,10 @@ class PipelineLogger:
             total = counters.get('total_bars', 1)
             buy = counters.get('buy_signals', 0)
             sell = counters.get('sell_signals', 0)
-            print(f"  信号生成: total_bars={total}  buy={buy} ({100*buy/max(total,1):.2f}%)  "
+            print(f"  最终信号行: total_bars={total} valid={counters.get('valid_bars', 0)} "
+                  f"invalid={counters.get('invalid_bars', 0)} neutral={counters.get('neutral_bars', 0)} "
+                  f"buy_sell_overlap={counters.get('buy_sell_overlap_bars', 0)} "
+                  f"buy={buy} ({100*buy/max(total,1):.2f}%)  "
                   f"sell={sell} ({100*sell/max(total,1):.2f}%)")
             if 'buy_score_dist' in snap:
                 d = snap['buy_score_dist']
@@ -320,6 +475,7 @@ class PipelineLogger:
                     print(f"    {ind}: {cnt}")
 
         elif name == 'gate_filter':
+            print('  Gate维度摘要：每只股票装配最新bar样本；逐bar明细以decision trace为准。')
             # Gate分项质量分布 (4系统门控)
             for g_name in ['G1', 'G2', 'G3', 'G4']:
                 key = f'{g_name}_grade_dist'
@@ -330,7 +486,7 @@ class PipelineLogger:
             if 'composite_gate_quality_dist' in snap:
                 d = snap['composite_gate_quality_dist']
                 print(f"  综合gate_quality: mean={d['mean']:.3f} p50={d['p50']:.3f} "
-                      f"<0.7={100*sum(1 for x in self.stages.get('gate_filter',StageTracker('')).samples.get('composite_gate_quality',[]) if x<0.7)/max(d['n'],1):.1f}%")
+                      f"<0.7={100*d['below_07']/max(d['n'],1):.1f}%")
             hard_rejects = counters.get('hard_reject_count', 0)
             print(f"  Hard拒绝: {hard_rejects}")
 
@@ -415,7 +571,8 @@ class PipelineLogger:
                 print(f"  每日状态: n={d['n']} NAV range=[{d['min']:.0f}, {d['max']:.0f}]")
             if 'daily_drawdown_dist' in snap:
                 d = snap['daily_drawdown_dist']
-                print(f"  回撤分布: mean={d['mean']*100:.1f}% max={d['max']*100:.1f}% p90={d['p90']*100:.1f}%")
+                print(f"  回撤分布: mean={d['mean']*100:.1f}% 最深={d['min']*100:.1f}% "
+                      f"p90={d['p90']*100:.1f}% (分位数基于{d['quantile_sample_n']}条样本)")
 
         elif name == 'data_quality':
             issues = sorted(
@@ -453,6 +610,7 @@ class PipelineLogger:
         for s in self.stages.values():
             s.reset()
         self._alerts.clear()
+        self._exit_trigger_evidence.clear()
 
 
 # ── 全局单例 ──

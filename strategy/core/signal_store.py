@@ -4,6 +4,22 @@ import numpy as np
 from collections import OrderedDict
 
 
+def _code_membership_mask(codes, members):
+    """Exact string membership without NumPy's object-array pairwise scans.
+
+    Non-string inputs retain np.isin's coercion and missing-value semantics.
+    Float columns, row ordering and dated universe boundaries are untouched.
+    """
+    values = list(members)
+    string_types = (str, np.str_)
+    if (all(type(value) in string_types for value in values)
+            and all(type(code) in string_types for code in codes)):
+        allowed = frozenset(values)
+        return np.fromiter((code in allowed for code in codes),
+                           dtype=bool, count=len(codes))
+    return np.isin(codes, values)
+
+
 class SignalStore:
     """信号存储 — 内存高效的两阶段设计。
 
@@ -145,7 +161,7 @@ class SignalStore:
                 if len(_rows) == 0:
                     continue
                 _codes = _codes_all[_rows]
-                _keep[_rows] = (np.isin(_codes, list(membership_map[_b]))
+                _keep[_rows] = (_code_membership_mask(_codes, membership_map[_b])
                                 | np.isin(_codes, list(_IDX_CODES)))
             # 首边界之前的日期: 指数保留, 其余丢弃 (正常构造下应为空)
             _pre = _b_idx < 0

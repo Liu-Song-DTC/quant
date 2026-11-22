@@ -1106,6 +1106,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                 _val_ics = []
                 _total_preds = 0
                 _last_good_predictor = None
+                _trace_active_model_key = None
                 _reused_chunks = 0
                 # 性能(2026-10-09): 预测结果向量化累积为数组列表, 替代3.2M次逐条dict插入
                 # (~1GB峰值dict + ~2-4min构建) — 落盘时直接concat建表
@@ -1161,11 +1162,13 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                         if _c_outcome == 'trained_good':
                             _val_ics.append(_c_val_ic)
                             _last_good_predictor = _c_model
+                            _trace_active_model_key = _cache_key
                             _consecutive_reuse = 0
                             if _c_model_path:
                                 _ml_model_path = _c_model_path
                         elif _c_outcome == 'reuse_forced':
                             _last_good_predictor = _c_model
+                            _trace_active_model_key = _cache_key
                             _consecutive_reuse = 0
                         elif _c_outcome in ('reuse_prev', 'reuse_chain_exceeded'):
                             _reused_chunks += 1
@@ -1198,6 +1201,14 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                             _ml_dates_list.append(np.asarray(_c_preds['date'].values, dtype='datetime64[ns]'))
                             _ml_preds_list.append(np.asarray(_c_preds['ml_pred'].values))
                         _total_preds += sum(1 for d in chunk_dates if d in _fd_date_set)
+                        plog.detail('ml_chunk_model', date=first_pred_date,
+                                    source='cache', chunk_index=chunk_idx, cache_key=_cache_key,
+                                    outcome=_c_outcome, validation_ic=_c_val_ic,
+                                    active_model_key=_trace_active_model_key,
+                                    prediction_start=first_pred_date, prediction_end=chunk_dates[-1],
+                                    prediction_rows=len(_c_preds), consecutive_reuse=_consecutive_reuse,
+                                    model_path_hint=_c_model_path, target_mode=_target_mode,
+                                    source_scope='cache prediction bytes checked; active key tracks selected model across observed chunks')
                         continue
 
                     _d0_ts = pd.Timestamp(first_pred_date)
@@ -1209,8 +1220,20 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                     if 'label_end_date' in _ml_df:
                         train_mask &= pd.to_datetime(_ml_df['label_end_date']) < first_pred_date
                     train_df = _ml_df[train_mask]
+                    plog.detail('ml_training_window', date=first_pred_date,
+                                chunk_index=chunk_idx, cache_key=_cache_key, target_mode=_target_mode,
+                                window_start=train_start, purge_end_exclusive=_purge_end,
+                                label_end_before=first_pred_date if 'label_end_date' in _ml_df else None,
+                                label_end_contract_present='label_end_date' in _ml_df,
+                                raw_training_rows=len(train_df),
+                                minimum_raw_training_rows=50000, forward_calendar_sessions=_fp_days,
+                                train_window_calendar_days=_train_window,
+                                retrain_sampled_dates=_retrain_freq,
+                                prediction_start=first_pred_date, prediction_end=chunk_dates[-1],
+                                previous_active_model_key=_trace_active_model_key)
 
                     if len(train_df) < 50000:
+                        plog.detail('ml_chunk_model', date=first_pred_date, source='fresh', chunk_index=chunk_idx, cache_key=_cache_key, outcome='skipped_insufficient_rows', raw_training_rows=len(train_df), active_model_key=_trace_active_model_key, prediction_rows=0, target_mode=_target_mode)
                         print(f"  chunk {chunk_idx}: 训练样本不足({len(train_df)}), 跳过")
                         continue
 
@@ -1223,6 +1246,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                         if _last_good_predictor is None:
                             if val_ic is not None and val_ic > 0:
                                 print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} < {_min_val_ic}, 跳过")
+                            plog.detail('ml_chunk_model', date=first_pred_date, source='fresh', chunk_index=chunk_idx, cache_key=_cache_key, outcome='skipped_no_accepted_model', validation_ic=val_ic, min_validation_ic=_min_val_ic, active_model_key=None, prediction_rows=0, target_mode=_target_mode)
                             continue
                         if _consecutive_reuse < _max_reuse:
                             # 验证失败不能整段跳过: 预测断档会让实盘信号
@@ -1239,6 +1263,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                             print(f"  chunk {chunk_idx}: 验证IC={val_ic:.4f} <{_min_val_ic}, "
                                   f"连续复用{_consecutive_reuse}次达上限, 采用新模型")
                             _last_good_predictor = ml_predictor
+                            _trace_active_model_key = _cache_key
                             _consecutive_reuse = 0
                             _chunk_outcome = 'reuse_forced'
                         else:
@@ -1252,6 +1277,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                     else:
                         _val_ics.append(val_ic)
                         _last_good_predictor = ml_predictor
+                        _trace_active_model_key = _cache_key
                         _consecutive_reuse = 0
                         _chunk_outcome = 'trained_good'
                         strategy_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1274,6 +1300,16 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
                         _ml_preds_list.append(np.asarray(preds))
                     _total_preds += sum(1 for d in chunk_dates
                                         if d in _fd_date_set)
+                    plog.detail('ml_chunk_model', date=first_pred_date,
+                                source='fresh', chunk_index=chunk_idx, cache_key=_cache_key,
+                                outcome=_chunk_outcome, validation_ic=val_ic, min_validation_ic=_min_val_ic,
+                                active_model_key=_trace_active_model_key,
+                                prediction_start=first_pred_date, prediction_end=chunk_dates[-1],
+                                prediction_rows=sum(len(_trace_codes) for _trace_codes in _ml_codes_list[_n0:]),
+                                consecutive_reuse=_consecutive_reuse, target_mode=_target_mode,
+                                trained_feature_count=len(getattr(ml_predictor, '_trained_features', [])),
+                                validation_summary=getattr(ml_predictor, 'validation_summary', None),
+                                source_scope='training verdict IC may belong to rejected new fit; active key identifies actual prediction model')
                     # A+C(2026-10-10): 本chunk产物入缓存(skip不缓存), 下次同态复用
                     _ml_chunk_save(_cache_key, chunk_idx, _chunk_outcome, val_ic,
                                    ml_predictor if _chunk_outcome in ('trained_good', 'reuse_forced') else None,
@@ -1686,6 +1722,7 @@ def add_data_and_signal(cerebro, strategy, fundamental_data=None, membership_map
 
     # === 从CSV加载信号到 DataFrame-backed SignalStore（节省 ~800MB 内存） ===
     strategy.signal_store.finalize(signals_output_path, membership_map=membership_map)
+    plog.signal_store_summary(strategy.signal_store._df, 'fresh_generation')
 
     # 释放不再需要的大对象
     del stock_items
@@ -2041,9 +2078,49 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     import numpy as np
     from tqdm import tqdm
     from core.trading_lots import buy_shares_for_budget, valid_buy_shares
+    from core.entry_admission import EntryAdmission, B2HoldingThesis
+    from core.profit_guard import DailyExitContext, B2ContextProfitGuard
+    _entry_admission = EntryAdmission(os.environ.get('QUANT_ENTRY_ADMISSION', 'off'), DATA_PATH, str(fromdate))
+    _pending_admission = {}
+    _preserve_carry_shares = os.environ.get('QUANT_PRESERVE_CARRY_SHARES', '0') == '1'
+    _pending_carry = {}
+    _add_confirmation = os.environ.get('QUANT_RESEARCH_ADD_CONFIRMATION', '0') == '1'
+    _pending_no_add = {}
+    from core.entry_confirmation import cap_blocked_addition
+    _b2_thesis = (B2HoldingThesis(EntryAdmission('b2_native_floor', DATA_PATH, str(fromdate)))
+                  if os.environ.get('QUANT_B2_THESIS_EXIT', '0') == '1' else None)
+    _pending_b2_thesis = {}
+    _b2_profit_guard_enabled = os.environ.get('QUANT_B2_CONTEXT_PROFIT_GUARD', '0') == '1'
+    _b2_profit_guard = None
+    _pending_b2_profit_guard = {}
+    if _b2_thesis is not None:
+        strategy.portfolio.b2_holding_thesis = _b2_thesis
+    plog.detail('execution_run_start', fromdate=str(fromdate), todate=str(todate),
+                initial_cash=initial_cash, commission=COMMISSION, data_path=DATA_PATH,
+                source_path=__file__, signal_rows_source='rolling_validation_results/backtest_signals.csv',
+                historical_contract='Daily close decisions, next-session opening fills; persisted fields follow the explicit CSV/store schema. Fresh source journals retain additional provenance.',
+                frozen_signal_limit='A replay cannot reconstruct fields absent from its serialized signal schema; missing remains unknown.')
+    plog.detail('execution_policy', preserve_carry_shares=_preserve_carry_shares,
+                incremental_capital_confirmation=_add_confirmation,
+                sector_density_denominator_categories=len(getattr(strategy, 'industry_stock_counts', {})),
+                sector_density_denominator_total=sum(getattr(strategy, 'industry_stock_counts', {}).values()),
+                sector_recovery_enabled=getattr(strategy.portfolio, 'v_recovery_enabled', False),
+                sector_tilt_environment=os.environ.get('QUANT_SECTOR_TILT', '0'))
     # Execution-only research arm: QFQ is still used for signals and
     # ex-rights-aware limit/gap checks. Unverified held actions abort below.
     raw_execution_arm = os.environ.get('QUANT_RAW_EXECUTION') == '1'
+    if _add_confirmation and (raw_execution_arm or os.environ.get('QUANT_SIGNAL_REPLAY') != '1'):
+        raise ValueError('Added-capital confirmation requires sealed QFQ account replay')
+    if raw_execution_arm and _preserve_carry_shares:
+        raise ValueError('Carry-share experiment requires the validated QFQ execution contract')
+    if _b2_thesis is not None:
+        if raw_execution_arm:
+            raise ValueError('B2 thesis experiment requires its validated QFQ structure basis')
+    if raw_execution_arm and _entry_admission.mode != 'off':
+        raise ValueError('B2 admission experiment requires the same adjusted-price basis as its frozen structure')
+    if _b2_profit_guard_enabled:
+        if raw_execution_arm or _b2_thesis is not None:
+            raise ValueError('B2 profit guard requires a separate QFQ account experiment')
 
     # 1. 构建价格矩阵
     stock_codes = sorted([f.replace('_qfq.csv', '') for f in os.listdir(DATA_PATH)
@@ -2058,6 +2135,12 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     if n_dates < 2:
         raise ValueError('回测至少需要两个有效交易日')
     strategy.portfolio._trading_calendar = calendar
+    if _b2_profit_guard_enabled:
+        _b2_profit_context_path = os.environ.get('QUANT_B2_PROFIT_CONTEXT', '')
+        if not _b2_profit_context_path:
+            raise ValueError('B2 profit guard requires a sealed all-market peer context')
+        _b2_profit_guard = B2ContextProfitGuard(DailyExitContext(DATA_PATH, _b2_profit_context_path, calendar, str(fromdate)))
+        strategy.portfolio.b2_profit_guard = _b2_profit_guard
     _STAMP_ARR = np.where(calendar.values < np.datetime64('2023-08-28'), 0.001, 0.0005).astype(np.float64)  # 印花税分档: 2023-08-28前万10后万5 (9/22成本审计)
     code_to_idx = {c: i for i, c in enumerate(stock_codes)}
     idx_to_code = {i: c for i, c in enumerate(stock_codes)}
@@ -2171,6 +2254,12 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 (close_px, open_px, low_px, volume_m, amount_m, raw_close_m))), stock_codes, _nonstock)
     code_to_idx = {c: i for i, c in enumerate(stock_codes)}
     idx_to_code = {i: c for i, c in enumerate(stock_codes)}
+    if _quote_snapshot is not None:
+        plog.detail('execution_quote_snapshot', key=_quote_snapshot.key, path=str(_quote_snapshot.path),
+                    hit=_quote_cache_hit,
+                    source_columns=len(_quote_snapshot.codes), columns=len(stock_codes),
+                    excluded=_nonstock, bytes=_quote_snapshot.path.stat().st_size,
+                    seconds=_quote_time.perf_counter()-_quote_started)
 
     # 预计算滚动ADV矩阵（20日回溯，shift(1)排除当日，无前视偏差）
     # volume单位为手, ×100转股数(与下单股数同口径, 否则participation高估100x)
@@ -2203,10 +2292,18 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     _tr_env = os.environ.get('QUANT_TRANCHE')
     if _tr_env not in (None, ''):
         tranche_enabled = _tr_env not in ('0', 'false', 'False')
+    if _add_confirmation and tranche_enabled:
+        raise ValueError('Added-capital confirmation does not combine with tranche orders')
     tranche_ratio = float(os.environ.get('QUANT_TRANCHE_RATIO', '')
                           or config.get('backtest', {}).get('tranche_ratio', 0.5))
     tranche_discount = float(os.environ.get('QUANT_TRANCHE_DISCOUNT', '')
                              or config.get('backtest', {}).get('tranche_discount', 0.05))
+    if _b2_thesis is not None:
+        if tranche_enabled:
+            raise ValueError('B2 thesis experiment does not combine with tranche virtual inventory')
+    if _b2_profit_guard_enabled:
+        if tranche_enabled:
+            raise ValueError('B2 profit guard does not combine with tranche virtual inventory')
 
     def _impact(adv, size, price):
         if not impact_enabled or adv <= 0:
@@ -2391,6 +2488,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             'impact_cost': gross * impact,
             'price_adjustment_cost': float(shares) * (price - reference) * (1 if side == 'BUY' else -1),
         })
+        plog.detail('execution_fill', **_execution_fills[-1],
+                    reference_price=reference, impact_rate=impact, stamp_rate=stamp,
+                    fill_basis='simulated_executed_cashflow')
     _trade_invested = defaultdict(float)
     _trade_received = defaultdict(float)
 
@@ -2440,9 +2540,19 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             'invested': _trade_invested[code], 'proceeds': _trade_received[code],
             'avg_cost': ct[1], 'exit_px': sell_px,
         })
+        plog.detail('trade_realized', date=date, **_realized_trades[-1],
+                    return_basis='net_lifecycle_cashflow_including_adds_and_reductions')
         _entry_dates.pop(code, None)
         _trade_invested.pop(code, None)
         _trade_received.pop(code, None)
+        if _b2_thesis is not None:
+            _trace_closed_thesis = _b2_thesis.closed(code)
+            if _trace_closed_thesis:
+                plog.detail('b2_thesis_closed', date=date, code=code, evidence=_trace_closed_thesis)
+        if _b2_profit_guard is not None:
+            _trace_closed_profit_guard = _b2_profit_guard.closed(code)
+            if _trace_closed_profit_guard:
+                plog.detail('b2_profit_guard_closed', date=date, code=code, evidence=_trace_closed_profit_guard)
 
     # 成交统计
     _fill_stats = {'buy_attempted': 0, 'buy_filled': 0, 'buy_partial': 0,
@@ -2502,6 +2612,11 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         if i > 0 and _pending is not None:
             open_today = open_px[i]
             prev_close = close_px[i - 1]
+            plog.detail('execution_pending_targets', date=date,
+                        signal_date=calendar[i-1].date(), pending_target_values=dict(_pending),
+                        cash_before_open=cash,
+                        held_shares={stock_codes[_trace_j]: int(positions[_trace_j])
+                                     for _trace_j in np.flatnonzero(positions)})
 
             # Step A: 卖出不在目标中的持仓 (全清)
             for j in range(len(stock_codes)):
@@ -2511,15 +2626,19 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 if code in _pending:
                     continue  # 仍在目标中, 交给Step B调整
                 if not execution_available[i, j]:
+                    plog.detail('execution_branch_skip', date=date, code=code, reason='not execution_available[i, j]', phase='opening_execution')
                     continue
                 if np.isnan(open_today[j]):
+                    plog.detail('execution_branch_skip', date=date, code=code, reason='np.isnan(open_today[j])', phase='opening_execution')
                     continue
                 _fill_stats['sell_attempted'] += 1
                 if tplus1_enabled and code in _today_buys:
                     _fill_stats['sell_tplus1_blocked'] += 1
+                    plog.detail('execution_branch_skip', date=date, code=code, reason='tplus1_enabled and code in _today_buys', phase='opening_execution')
                     continue
                 if limit_block_enabled and _limit_down[i, j]:
                     _fill_stats['sell_limit_down_skip'] += 1
+                    plog.detail('execution_branch_skip', date=date, code=code, reason='limit_block_enabled and _limit_down[i, j]', phase='opening_execution')
                     continue  # 跌停无法卖出, 挂单作废
                 sell_px = float(open_today[j])
                 if slip_enabled:
@@ -2550,21 +2669,37 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             for code, tv in _pending.items():
                 j = code_to_idx.get(code)
                 if j is None or not execution_available[i, j]:
+                    plog.detail('execution_branch_skip', date=date, code=code, reason='j is None or not execution_available[i, j]', phase='opening_execution')
                     continue
                 if np.isnan(open_today[j]):
+                    plog.detail('execution_branch_skip', date=date, code=code, reason='np.isnan(open_today[j])', phase='opening_execution')
                     continue
                 openx = float(open_today[j])
                 target_shares = (buy_shares_for_budget(code, tv, openx)
                                  if raw_execution_arm else int(tv / openx / 100) * 100)
                 curr_shares = int(positions[j])
+                if _preserve_carry_shares:
+                    plog.detail('execution_hold_intent', date=date, code=code, phase='sell_plan',
+                                witnessed=code in _pending_carry, currency_target_shares=target_shares,
+                                actual_shares=curr_shares, intent=_pending_carry.get(code))
+                    target_shares = strategy.portfolio.target_shares_for_carry(
+                        code, target_shares, curr_shares, _pending_carry)
+                if _add_confirmation and code in _pending_no_add:
+                    _uncapped_shares = target_shares
+                    target_shares = cap_blocked_addition(target_shares, curr_shares, True)
+                    plog.detail('execution_add_cap', date=date, code=code, phase='sell_plan',
+                                desired_shares=_uncapped_shares, target_shares=target_shares,
+                                current_shares=curr_shares, evidence=_pending_no_add[code])
                 diff = target_shares - curr_shares
                 if diff <= -100:  # 减仓 → 释放现金
                     _fill_stats['sell_attempted'] += 1
                     if tplus1_enabled and code in _today_buys:
                         _fill_stats['sell_tplus1_blocked'] += 1
+                        plog.detail('execution_branch_skip', date=date, code=code, reason='tplus1_enabled and code in _today_buys', phase='opening_execution')
                         continue
                     if limit_block_enabled and _limit_down[i, j]:
                         _fill_stats['sell_limit_down_skip'] += 1
+                        plog.detail('execution_branch_skip', date=date, code=code, reason='limit_block_enabled and _limit_down[i, j]', phase='opening_execution')
                         continue
                     sell_px = openx
                     if slip_enabled:
@@ -2602,12 +2737,25 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             for code, tv in _pending.items():
                 j = code_to_idx.get(code)
                 if j is None or not execution_available[i, j] or not tradable[i - 1, j]:
+                    plog.detail('execution_branch_skip', date=date, code=code, reason='j is None or not execution_available[i, j] or (not tradable[i - 1, j])', phase='opening_execution')
                     continue
                 if np.isnan(open_today[j]):
+                    plog.detail('execution_branch_skip', date=date, code=code, reason='np.isnan(open_today[j])', phase='opening_execution')
                     continue
                 if limit_block_enabled and _limit_up[i, j]:
                     _fill_stats['buy_limit_up_skip'] += 1
+                    plog.detail('execution_rejected', date=date, code=code, side='BUY',
+                                reason='opening_limit_up', target_value=tv,
+                                opening_price=float(open_today[j]), previous_close=float(prev_close[j]))
                     continue  # 涨停无法买入, 挂单作废
+                if code in _pending_admission:
+                    _admission_verdict = _entry_admission.opening_verdict(
+                        _pending_admission[code], float(open_today[j]), int(positions[j]), date)
+                    plog.detail('entry_admission', date=date, code=code,
+                                constraint=_pending_admission[code], verdict=_admission_verdict,
+                                opening_price=float(open_today[j]), current_shares=int(positions[j]))
+                    if not _admission_verdict['allowed']:
+                        continue
                 buy_px = float(open_today[j])
                 if slip_enabled:
                     buy_px *= (1.0 + slip_rate)
@@ -2620,6 +2768,15 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 target_shares = (buy_shares_for_budget(code, tv, buy_px)
                                  if raw_execution_arm else int(tv / buy_px / 100) * 100)
                 curr_shares = int(positions[j])
+                if _preserve_carry_shares:
+                    target_shares = strategy.portfolio.target_shares_for_carry(
+                        code, target_shares, curr_shares, _pending_carry)
+                if _add_confirmation and code in _pending_no_add:
+                    _uncapped_shares = target_shares
+                    target_shares = cap_blocked_addition(target_shares, curr_shares, True)
+                    plog.detail('execution_add_cap', date=date, code=code, phase='buy_plan',
+                                desired_shares=_uncapped_shares, target_shares=target_shares,
+                                current_shares=curr_shares, evidence=_pending_no_add[code])
                 diff = target_shares - curr_shares
                 if diff >= 100 and (not raw_execution_arm or valid_buy_shares(code, diff)):
                     # 分段建仓(实验): 开盘回补取代限价单(撤单, 防超买)
@@ -2638,6 +2795,10 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     cost = diff * buy_px * (1.0 + COMMISSION + impact)
                     _buy_plan.append((code, j, buy_px, target_shares, curr_shares, diff, impact, cost))
                     _total_buy_cost += cost
+                    plog.detail('execution_buy_plan', date=date, code=code, target_value=tv,
+                                current_shares=curr_shares, target_shares=target_shares,
+                                requested_shares=diff, price=buy_px, estimated_cash_cost=cost,
+                                commission_rate=COMMISSION, impact_rate=impact)
                 elif raw_execution_arm and diff > 0:
                     _fill_stats['buy_raw_lot_skipped'] += 1
 
@@ -2645,6 +2806,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
             _buy_scale = 1.0
             if _total_buy_cost > 0 and _total_buy_cost > cash:
                 _buy_scale = cash / _total_buy_cost
+            plog.detail('execution_cash_allocation', date=date, cash=cash,
+                        requested_buy_cost=_total_buy_cost, cash_scale=_buy_scale,
+                        buy_plan_count=len(_buy_plan))
             _buy_plan.sort(key=lambda x: -x[5])  # sort by diff descending
             for (code, j, buy_px, target_shares, curr_shares, diff, impact, cost) in _buy_plan:
                 _fill_stats['buy_attempted'] += 1
@@ -2664,6 +2828,14 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                         _fill_stats['buy_filled'] += 1
                         if curr_shares == 0:
                             _entry_dates[code] = date  # 首次建仓=成交日(开盘)
+                            if _b2_profit_guard is not None:
+                                _trace_filled_profit_guard = _b2_profit_guard.first_fill(code, date, _pending_b2_profit_guard.get(code), scaled_cost / scaled_diff)
+                                if _trace_filled_profit_guard:
+                                    plog.detail('b2_profit_guard_first_fill', date=date, code=code, evidence=_trace_filled_profit_guard)
+                            if _b2_thesis is not None:
+                                _trace_filled_thesis = _b2_thesis.first_fill(code, date, _pending_b2_thesis.get(code))
+                                if _trace_filled_thesis:
+                                    plog.detail('b2_thesis_first_fill', date=date, code=code, evidence=_trace_filled_thesis)
                         # 更新成本追踪: [总股数, 加权均价]
                         if code in cost_tracker:
                             old_s, old_avg = cost_tracker[code]
@@ -2679,11 +2851,18 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                             _today_buys.add(code)
                     else:
                         _fill_stats['buy_cash_insufficient'] += 1
+                        plog.detail('execution_rejected', date=date, code=code, side='BUY',
+                                    reason='scaled_order_exceeds_cash', requested_shares=diff,
+                                    scaled_shares=scaled_diff, cash=cash, required_cash=scaled_cost)
                 else:
                     _fill_stats['buy_cash_insufficient'] += 1
+                    plog.detail('execution_rejected', date=date, code=code, side='BUY',
+                                reason='scaled_order_below_minimum_lot', requested_shares=diff,
+                                scaled_shares=scaled_diff, cash=cash, cash_scale=_buy_scale)
                     if raw_execution_arm:
                         _fill_stats['buy_raw_lot_skipped'] += 1
             _pending = None  # 挂单执行完毕
+            _pending_no_add = {}
 
             # 分段建仓(实验): 第二段限价单检查 — 当日low触及限价 → min(开盘,限价)成交
             if tranche_enabled and _pending_limits:
@@ -2692,6 +2871,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                     j = code_to_idx.get(code)
                     if j is None or not execution_available[i, j] or not tradable[i - 1, j] or positions[j] <= 0:
                         _pending_limits.pop(code, None)  # 已清仓/不可交易 → 撤单
+                        plog.detail('execution_branch_skip', date=date, code=code, reason='j is None or not execution_available[i, j] or (not tradable[i - 1, j]) or (positions[j] <= 0)', phase='opening_execution')
                         continue
                     if np.isnan(open_px[i, j]) or np.isnan(low_px[i, j]):
                         continue
@@ -2807,6 +2987,32 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 if j is not None and positions[j] > 0:
                     cur_pos[code] = cur_pos.get(code, 0.0) + _rem * float(px_today[j])
 
+        for _trace_j in np.flatnonzero((positions > 0) &
+                                      ((volume_m[i] <= 0) | ~execution_available[i])):
+            plog.detail('held_quote_unavailable', date=date, code=stock_codes[_trace_j],
+                        shares=int(positions[_trace_j]), valuation_price=float(px_today[_trace_j]),
+                        marked_value=float(positions[_trace_j]) * float(px_today[_trace_j]),
+                        positive_volume=bool(volume_m[i, _trace_j] > 0),
+                        opening_price_available=bool(execution_available[i, _trace_j]),
+                        scope='Latest available close is valuation; missing quote is not an executable fill or an observed flat-price return')
+
+        if _b2_thesis is not None:
+            _trace_fresh_closes = {
+                _trace_code: float(px_today[code_to_idx[_trace_code]])
+                for _trace_code in cur_pos
+                if volume_m[i, code_to_idx[_trace_code]] > 0
+                and np.isfinite(px_today[code_to_idx[_trace_code]])}
+            for _trace_thesis_row in _b2_thesis.observe(date, cur_pos, _trace_fresh_closes):
+                plog.detail('b2_thesis_observation', date=date, **_trace_thesis_row)
+        if _b2_profit_guard is not None:
+            _trace_profit_fresh_closes = {
+                _trace_code: float(px_today[code_to_idx[_trace_code]])
+                for _trace_code in cur_pos
+                if volume_m[i, code_to_idx[_trace_code]] > 0
+                and np.isfinite(px_today[code_to_idx[_trace_code]])}
+            for _trace_profit_row in _b2_profit_guard.observe(date, cur_pos, _trace_profit_fresh_closes):
+                plog.detail('b2_profit_guard_observation', date=date, **_trace_profit_row)
+
         try:
             target = strategy.generate_positions(
                 date=date, universe=universe, current_positions=cur_pos,
@@ -2875,17 +3081,46 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 print(f' [scale_diag] {_e}')
 
         # 调仓执行 (B批修复B3): 目标只入挂单簿, 次日开盘成交; 当日收盘只决策不成交
+        if _add_confirmation:
+            _pending_no_add = {
+                code: dict(evidence)
+                for code, evidence in strategy.portfolio._last_no_add_intents.items()
+                if cur_pos.get(code, 0) > 0 and (target or {}).get(code, 0) > 0
+            }
+            plog.detail('execution_add_caps_prepared', date=date, intents=_pending_no_add)
+        if _preserve_carry_shares:
+            if tranche_enabled:
+                raise ValueError('Carry-share experiment does not combine with tranche virtual positions')
+            _pending_carry = {}
+            for _carry_code, _carry_intent in getattr(strategy.portfolio, '_last_carry_intents', {}).items():
+                _carry_j = code_to_idx.get(_carry_code)
+                if (_carry_j is not None and positions[_carry_j] > 0 and target
+                        and _carry_code in target and _carry_code in cur_pos
+                        and abs(float(target[_carry_code]) - float(cur_pos[_carry_code])) <= 1e-6
+                        and abs(float(cur_pos[_carry_code]) - float(_carry_intent['held_value'])) <= 1e-6
+                        and abs(float(cur_pos[_carry_code]) - float(positions[_carry_j]) * float(px_today[_carry_j])) <= 1e-6):
+                    _pending_carry[_carry_code] = dict(_carry_intent, shares=int(positions[_carry_j]))
+            plog.detail('execution_hold_intents_prepared', date=date, intents=_pending_carry)
+        if _b2_thesis is not None:
+            _pending_b2_thesis = _b2_thesis.prepare(date, target or {}, cur_pos, strategy.signal_store)
+            plog.detail('b2_thesis_prepared', date=date, constraints=_pending_b2_thesis)
+        if _b2_profit_guard is not None:
+            _pending_b2_profit_guard = _b2_profit_guard.prepare(date, target or {}, cur_pos, strategy.signal_store)
+            plog.detail('b2_profit_guard_prepared', date=date, constraints=_pending_b2_profit_guard)
+        _pending_admission = _entry_admission.prepare(date, target or {}, cur_pos, strategy.signal_store)
+        if _pending_admission:
+            plog.detail('entry_admission_prepared', date=date, constraints=_pending_admission,
+                        mode=_entry_admission.mode)
         _pending = target
 
         # 跟踪回撤
         running_peak = np.maximum.accumulate(nav[:i+1])
         running_dd = (nav[i] - running_peak[-1]) / max(running_peak[-1], 1.0)
-        # 记录每日状态 (每20个交易日采样一次)
-        if i % 20 == 0 or i == n_dates - 1:
-            pos_count = int(np.sum(positions > 0))
-            exposure_val = float(np.dot(positions.astype(np.float64), np.nan_to_num(px_today, 0))) / max(nav[i], 1.0)
-            plog.log_backtest_daily(calendar[i].date(), nav[i], float(running_dd),
-                                    pos_count, exposure_val, float(daily_ret[i-1]) if i > 0 else 0.0)
+        # Full daily observation; these values are never fed back to decisions.
+        pos_count = int(executed_n_pos[i])
+        exposure_val = float(executed_exposure[i])
+        plog.log_backtest_daily(calendar[i].date(), nav[i], float(running_dd),
+                                pos_count, exposure_val, float(daily_ret[i-1]) if i > 0 else 0.0)
 
     # 记录执行成交汇总
     plog.log_execution(
@@ -3096,6 +3331,7 @@ if __name__ == "__main__":
         print(f"复用已有信号: {_signals_csv} (封存回放={_sealed_signal_replay})")
         strategy.signal_store.finalize(_signals_csv, membership_map=membership_map,
                                        sealed_replay=_sealed_signal_replay)
+        plog.signal_store_summary(strategy.signal_store._df, 'signal_replay')
         strategy.index_data = _execution_context['index_data']
         strategy.industry_stock_counts = _execution_context['industry_stock_counts']
     else:

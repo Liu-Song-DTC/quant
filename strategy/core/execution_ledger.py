@@ -8,7 +8,6 @@ import datetime
 import hashlib
 import json
 import math
-import re
 
 TERMINAL = {'FILLED_ALL', 'REJECTED', 'UNFILLED_CANCEL', 'SKIPPED_NOT_ARMED'}
 STATUSES = TERMINAL | {'PARTIAL'}
@@ -114,21 +113,6 @@ def acknowledge_orders(account, keys, reason, operator='operator'):
     return acked
 
 
-def _actual_fill_date(stamp):
-    """Require a real dated fill and normalize aware timestamps to Shanghai."""
-    text = str(stamp or '').strip()
-    if not re.match(r'^\d{4}-\d{2}-\d{2}(?:$|[T ])', text):
-        raise ValueError('execution fill requires a valid dated timestamp')
-    try:
-        observed = datetime.datetime.fromisoformat(text)
-    except ValueError as error:
-        raise ValueError('execution fill requires a valid dated timestamp') from error
-    if observed.tzinfo is not None:
-        shanghai = datetime.timezone(datetime.timedelta(hours=8))
-        observed = observed.astimezone(shanghai)
-    return observed.date().isoformat()
-
-
 def apply_execution_reports(account, positions, reports, commission=0.0005, stamp_tax=0.0005):
     """Validate an entire batch before applying it; fill IDs are idempotent.
 
@@ -193,7 +177,6 @@ def apply_execution_reports(account, positions, reports, commission=0.0005, stam
             order['status'] = 'PENDING'
         if status in {'REJECTED', 'SKIPPED_NOT_ARMED'} and qty:
             raise ValueError('rejected/skipped report cannot contain a fill')
-        actual_fill_date = _actual_fill_date(report.get('ts')) if qty else None
         old = book.get(code, {})
         held = int(old.get('shares', 0))
         if qty and side == 'BUY':
@@ -211,7 +194,7 @@ def apply_execution_reports(account, positions, reports, commission=0.0005, stam
             book[code] = {**old, 'shares': new_qty,
                           'entry_price': (held * float(old.get('entry_price', 0)) + qty * price) / new_qty,
                           'amount': new_qty * price,
-                          'entry_date': old.get('entry_date') or actual_fill_date,
+                          'entry_date': old.get('entry_date') or str(report.get('ts', ''))[:10],
                           'last_price': price}
             acct['cash'] -= spend
         elif qty and side == 'SELL':

@@ -342,6 +342,14 @@ class PortfolioConstructor:
         _es_env = os.environ.get('QUANT_ENTRY_SPEED')
         if _es_env:
             self.entry_speed = float(_es_env)
+        fresh_entry_speed = os.environ.get('QUANT_RESEARCH_FRESH_ENTRY_SPEED')
+        self._research_fresh_entry_speed = None
+        if fresh_entry_speed is not None:
+            if os.environ.get('QUANT_SIGNAL_REPLAY') != '1':
+                raise ValueError('Fresh entry speed requires a sealed research replay')
+            self._research_fresh_entry_speed = float(fresh_entry_speed)
+            if not 0 < self._research_fresh_entry_speed <= 1:
+                raise ValueError('Fresh entry speed must be in (0, 1]')
         self.exit_speed = exit_speed if exit_speed is not None else portfolio_config.get('exit_speed', 0.5)
         self.exit_mode = portfolio_config.get('exit_mode', 'simple')  # simple=仅成本止损让利润奔跑; 其他值启用完整退出栈
         self._rebalance_interval = rebalance_interval
@@ -451,6 +459,12 @@ class PortfolioConstructor:
         self.exhaustion_max_weight = sel_config.get('exhaustion_max_weight', 0.03)
         self.exhaustion_reduce_mult = sel_config.get('exhaustion_reduce_mult', 0.5)
         self.industry_max_weight = sel_config.get('industry_max_weight', 0.35)
+        # 单变量研究：保留信号层BOM乘数，只消融组合层同源加分。默认旧策略。
+        self.bom_portfolio_bonus_enabled = os.environ.get('QUANT_BOM_PORTFOLIO_BONUS', '1') != '0'
+        self.b1_price_confirmation_bonus = float(os.environ.get('QUANT_B1_PRICE_BONUS', '0'))
+        self.preserve_carry_shares = os.environ.get('QUANT_PRESERVE_CARRY_SHARES', '0') == '1'
+        if not np.isfinite(self.b1_price_confirmation_bonus) or self.b1_price_confirmation_bonus < 0:
+            raise ValueError('B1 price confirmation bonus must be finite and nonnegative')
         self.max_per_industry = sel_config.get('max_per_industry', 3)  # ExpB2: 同行业最多N只
         # 臂钩子(2026-10-15): QUANT_RANK_WEIGHT_CAP 覆写单票权重上限, 默认空=逐位零改动.
         # 实证(探针 sel_w, 非 portfolio_selections.csv 的执行层 tv/nav):
@@ -524,7 +538,7 @@ class PortfolioConstructor:
 
         # === 风险平价 ===
         rp_config = config.get('risk_parity', {}) if hasattr(config, 'get') else portfolio_config.get('risk_parity', {})
-        self.risk_parity_enabled = rp_config.get('enabled', False)  # Fix#13: 若启用风险平价，应去掉手动权重上限，让算法自由分配
+        self.risk_parity_enabled = rp_config.get('enabled', False)  # 风险平价仍接受后置单票、行业上限
         self.rp_target_risk = rp_config.get('target_risk_per_stock', 0.10)
         self.rp_max_iterations = rp_config.get('max_iterations', 50)
 
@@ -561,6 +575,63 @@ class PortfolioConstructor:
 
         # === 组合可调参数（从YAML加载，替代硬编码魔数） ===
         pp = portfolio_config.get('params', {})
+        self.score_rank_source = os.environ.get('QUANT_PORTFOLIO_RANK_SOURCE', 'legacy')
+        if self.score_rank_source not in ('legacy', 'ml'):
+            raise ValueError('QUANT_PORTFOLIO_RANK_SOURCE must be legacy or ml')
+        self._b4_confirmation = None
+        _b4_mode = os.environ.get('QUANT_RESEARCH_B4_CONFIRMATION', '')
+        if _b4_mode:
+            from .entry_confirmation import EntryConfirmationTable
+            self._b4_confirmation = EntryConfirmationTable(
+                os.environ['QUANT_RESEARCH_B4_TABLE'],
+                os.environ['QUANT_RESEARCH_B4_TABLE_SHA256'], _b4_mode)
+        _b4_rank_mode = os.environ.get('QUANT_RESEARCH_B4_RANK', '')
+        if _b4_rank_mode not in ('', 'ml'):
+            raise ValueError('QUANT_RESEARCH_B4_RANK must be empty or ml')
+        self._b4_rank_ml = _b4_rank_mode == 'ml'
+        if self._b4_rank_ml and self.score_rank_source != 'legacy':
+            raise ValueError('B4-only rank control requires the legacy global rank')
+        self._research_add_confirmation = os.environ.get('QUANT_RESEARCH_ADD_CONFIRMATION','0') == '1'
+        self._research_fresh_buy_priority = os.environ.get('QUANT_RESEARCH_FRESH_BUY_PRIORITY','0') == '1'
+        _timing_points = os.environ.get('QUANT_RESEARCH_FRESH_BUY_POINTS', 'all')
+        if _timing_points not in ('all', '2'):
+            raise ValueError('Fresh-buy research scope must be all or native B2 (2)')
+        self._research_fresh_buy_points = None if _timing_points == 'all' else frozenset({2})
+        if self._research_fresh_buy_priority and os.environ.get('QUANT_SIGNAL_REPLAY') != '1':
+            raise ValueError('Fresh-buy priority is a sealed-account research control')
+        self._conditional_candidate_order = None
+        _soft_strategy_unity = os.environ.get('QUANT_RESEARCH_SOFT_STRATEGY_UNITY', '0')
+        if (_soft_strategy_unity not in ('0','1') or
+                (_soft_strategy_unity=='1' and os.environ.get('QUANT_SIGNAL_REPLAY')!='1')):
+            raise ValueError('Soft strategy unity requires sealed-account research replay')
+        self._research_soft_strategy_unity = _soft_strategy_unity=='1'
+        self._research_soft_strategy_scope = os.environ.get('QUANT_RESEARCH_SOFT_STRATEGY_SCOPE', 'all')
+        if (self._research_soft_strategy_scope not in ('all', 'fresh', 'held') or
+                (self._research_soft_strategy_scope != 'all' and not self._research_soft_strategy_unity)):
+            raise ValueError('Soft strategy scope requires the sealed-account unity experiment')
+        _conditional_table = os.environ.get('QUANT_RESEARCH_CONDITIONAL_ORDER', '')
+        _preserve_b1_origin = os.environ.get('QUANT_RESEARCH_PRESERVE_B1_ORIGIN', '0')
+        if _preserve_b1_origin not in ('0','1') or (_preserve_b1_origin=='1' and not _conditional_table):
+            raise ValueError('B1 origin preservation requires a configured conditional-order table')
+        _b1_block_consensus = os.environ.get('QUANT_RESEARCH_B1_BLOCK_CONSENSUS', '0')
+        if _b1_block_consensus not in ('0','1') or (_b1_block_consensus=='1' and _preserve_b1_origin!='1'):
+            raise ValueError('B1 block consensus requires origin-preserving conditional ordering')
+        _b1_origin_scope = os.environ.get('QUANT_RESEARCH_B1_ORIGIN_SCOPE', 'all')
+        if (_b1_origin_scope not in ('all','V_reversal','close_rebound_not_open_gap') or
+                (_b1_origin_scope!='all' and _preserve_b1_origin!='1')):
+            raise ValueError('B1 ranking scope requires a known origin and origin-preserving ordering')
+        if _conditional_table:
+            if os.environ.get('QUANT_SIGNAL_REPLAY') != '1' or self.score_rank_source != 'legacy':
+                raise ValueError('Conditional ordering requires sealed legacy-score replay')
+            from .conditional_candidate_order import ConditionalCandidateOrder
+            self._conditional_candidate_order = ConditionalCandidateOrder(
+                _conditional_table, os.environ['QUANT_RESEARCH_CONDITIONAL_ORDER_SHA256'],
+                preserve_b1_origin=_preserve_b1_origin=='1',
+                b1_block_consensus=_b1_block_consensus=='1',
+                b1_origin_scope=_b1_origin_scope)
+        self._last_no_add_intents = {}
+        if self._research_add_confirmation and os.environ.get('QUANT_SIGNAL_REPLAY') != '1':
+            raise ValueError('Added-capital confirmation is a sealed-account research control')
         # 臂钩子(2026-10-16): QUANT_MAX_POSITIONS 覆写槽位上限, 默认空=逐位零改动.
         # 动机 — mp4 于 10/14 在**旧结构**下采纳(fec1/ea2/slk180 三个槽位家族旋钮尚未落地):
         #   面 {3,4,5,6,8}=1,223,502/**1,250,587**/1,173,806/… ⇒ 4 内部峰。
@@ -732,6 +803,8 @@ class PortfolioConstructor:
         self._entry_dates: dict = {}  # {code: date}
         self._peak_prices: dict = {}  # {code: peak_price_since_entry}
         self._entry_reasons: dict = {}  # {code: {buy_point, signal_level, trend_type}}
+        self.b2_holding_thesis = None  # Optional research state, committed by actual fills.
+        self.b2_profit_guard = None  # Optional source-specific exit; default policy unchanged.
         # E-L1: bp2入场仓标记 {code: entry_date} — 独立于_entry_reasons(后者从未被写入, 勿动)
         self._bp2_entry: dict = {}
         self._bp2_today: dict = {}  # 当日选股落点的bp2标记(仅重平衡日填充, 入场追踪循环消费)
@@ -1291,6 +1364,8 @@ class PortfolioConstructor:
         # === 熊市仓位: bear_IC为负→因子反指, 空仓保本金 ===
         if bear_risk:
             self._dbg['empty_return_days'] += 1
+            plog.detail('portfolio_empty', date=date, reason='effective_bear_gate',
+                        universe_count=len(universe), cash=cash, held_codes=list(current_positions))
             return {}  # 熊市因子IC为负, 选股=选亏钱
 
         _regime = 'FAST' if bear_risk_fast else 'NORM'
@@ -1341,32 +1416,38 @@ class PortfolioConstructor:
             sig = signal_store.get(code, date)
             if sig is None:
                 _rej['no_sig'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'no_sig', sig=None, held=code in current_positions)
                 continue
 
             # 信号层过滤: 必须通过买入信号检查（含MA20趋势过滤等）
             if not getattr(sig, 'buy', False):
                 _rej['not_buy'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'not_buy', sig=None, held=code in current_positions)
                 continue
 
             # 减持期过滤(2026-08-25): 股东减持期内不入选
             if _reducing_codes and code in _reducing_codes:
                 _rej['reducing'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'reducing', sig=sig, held=code in current_positions)
                 continue
 
             # 减持计划期过滤(2026-08-27): 预披露~实施完成/届满之间不入选(计划层)
             if _plan_codes and code in _plan_codes:
                 _rej['plan_reducing'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'plan_reducing', sig=sig, held=code in current_positions)
                 continue
 
             # 解禁临近过滤(2026-08-25): 未来30天内大额解禁不入选
             if _unlocking_codes and code in _unlocking_codes:
                 _rej['unlocking'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'unlocking', sig=sig, held=code in current_positions)
                 continue
 
             # 基本面硬伤过滤(2026-09-03 实验#27): 最新报告亏损或利润同比<-30%不入选
             if (self.exclude_fundamental_flaws and self._fundamental_provider
                     and _has_fundamental_flaw(self._fundamental_provider, code, date)):
                 _rej['fund_flaw'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'fund_flaw', sig=sig, held=code in current_positions)
                 continue
 
             # Fix#7: 均值回归退出冷却期 — 防止入场-出场循环
@@ -1378,6 +1459,7 @@ class PortfolioConstructor:
                     days_since = 999
                 if days_since < self.mr_exit_cooldown_days:
                     _rej['cooldown'] += 1
+                    plog.candidate(date, code, 'eligibility', False, 'cooldown', sig=sig, held=code in current_positions)
                     continue
                 else:
                     del self._mr_exit_cooldown[code]  # 冷却期满,清除记录
@@ -1385,12 +1467,14 @@ class PortfolioConstructor:
             factor_value = getattr(sig, 'factor_value', None)
             if factor_value is None or (isinstance(factor_value, float) and np.isnan(factor_value)):
                 _rej['bad_factor'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'bad_factor', sig=sig, held=code in current_positions)
                 continue
 
             # 价格约束：跳过无价格数据或价格异常的股票
             price = prices.get(code, 0)
             if price <= 0:
                 _rej['no_price'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'no_price', sig=sig, held=code in current_positions)
                 continue
             # 100股整手下，100*price必须不超过理想仓位
             # 允许2倍理想仓位（100股整手会导致超配，但至少能买入）
@@ -1399,6 +1483,7 @@ class PortfolioConstructor:
             ideal_per_stock = total_equity / max(1, n_positions)
             if price * 100 > ideal_per_stock * self.ideal_position_max_mult:
                 _rej['too_expensive'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'too_expensive', sig=sig, held=code in current_positions)
                 continue
 
             # === Chan 信号数据 (融合核心) ===
@@ -1416,6 +1501,7 @@ class PortfolioConstructor:
                     or (_regime == 'FAST' and chan_buy in self.bp_reject_fast)):
                 _rej.setdefault('bp_reject', 0)
                 _rej['bp_reject'] += 1
+                plog.candidate(date, code, 'eligibility', False, 'bp_reject', sig=sig, held=code in current_positions)
                 continue
 
             # Gate 统一过滤：cha_sell/trend/B3/放量下跌 均由 4-Gate 系统综合评分
@@ -1439,11 +1525,13 @@ class PortfolioConstructor:
                 if os.environ.get('QUANT_AH_SKIP') == '1' and \
                         str(getattr(sig, 'industry', '') or '') == 'AH股':
                     _rej['ah_skip'] = _rej.get('ah_skip', 0) + 1
+                    plog.candidate(date, code, 'eligibility', False, 'ah_skip', sig=sig, held=code in current_positions)
                     continue
                 # trend_type=2(上涨趋势) 119笔 tW 42.9% vs 其余 62.2% (覆盖52%, 高胜率低覆盖版).
                 if os.environ.get('QUANT_TT_SKIP') == '1' and \
                         int(self._nan_safe(getattr(sig, 'trend_type', 0))) == 2:
                     _rej['tt_skip'] = _rej.get('tt_skip', 0) + 1
+                    plog.candidate(date, code, 'eligibility', False, 'tt_skip', sig=sig, held=code in current_positions)
                     continue
                 # 臂钩子(2026-10-25): 买点桶入场闸. realized-first 证据 (当前锚166笔):
                 # B1一买 n=66 wr71.2% / B4回调 n=44 wr61.4% / B2二买 n=29 wr58.6%
@@ -1456,12 +1544,14 @@ class PortfolioConstructor:
                     _bp_ex_set = {int(_x) for _x in _bp_ex.split(',') if _x.strip().lstrip('-').isdigit()}
                     if int(self._nan_safe(getattr(sig, 'chan_buy_point', 0))) in _bp_ex_set:
                         _rej['bp_exclude'] = _rej.get('bp_exclude', 0) + 1
+                        plog.candidate(date, code, 'eligibility', False, 'bp_exclude', sig=sig, held=code in current_positions)
                         continue
                 _bp_only = os.environ.get('QUANT_BP_ONLY', '').strip()
                 if _bp_only:
                     _bp_only_set = {int(_x) for _x in _bp_only.split(',') if _x.strip().lstrip('-').isdigit()}
                     if int(self._nan_safe(getattr(sig, 'chan_buy_point', 0))) not in _bp_only_set:
                         _rej['bp_only'] = _rej.get('bp_only', 0) + 1
+                        plog.candidate(date, code, 'eligibility', False, 'bp_only', sig=sig, held=code in current_positions)
                         continue
                 div_type = getattr(sig, 'chan_divergence_type', '')
                 div_strength = getattr(sig, 'chan_divergence_strength', 0.0)
@@ -1476,11 +1566,13 @@ class PortfolioConstructor:
                 if self.bp_require_s4 and not _bp_s4:
                     _rej.setdefault('bp_require_s4', 0)
                     _rej['bp_require_s4'] += 1
+                    plog.candidate(date, code, 'eligibility', False, 'bp_require_s4', sig=sig, held=code in current_positions)
                     continue
                 # H-bpC闸: 确认数不足直接拒绝(仅新入场, 旧持仓不受影响)
                 if self.bp_confirm_min > 0 and _bp_confirm < self.bp_confirm_min:
                     _rej.setdefault('bp_confirm', 0)
                     _rej['bp_confirm'] += 1
+                    plog.candidate(date, code, 'eligibility', False, 'bp_confirm', sig=sig, held=code in current_positions)
                     continue
                 # H-bpC4: 四重确认软罚(过选端点弱) — 独立罚变量, 仅新入场
                 if self.bp_c4_penalty > 0 and _bp_confirm == 4:
@@ -1491,6 +1583,7 @@ class PortfolioConstructor:
                         and self._nan_safe(daily_ret) > self.entry_chase_defer:
                     _rej.setdefault('chase_defer', 0)
                     _rej['chase_defer'] += 1
+                    plog.candidate(date, code, 'eligibility', False, 'chase_defer', sig=sig, held=code in current_positions)
                     continue
                 has_chan = (
                     chan_buy > 0 or
@@ -1503,6 +1596,7 @@ class PortfolioConstructor:
                     if (self.entry_chan_gate == 'hard'
                             or (self.entry_chan_gate == 'bearhard' and _regime == 'FAST')):
                         _rej['no_chan'] += 1
+                        plog.candidate(date, code, 'eligibility', False, 'no_chan', sig=sig, held=code in current_positions)
                         continue
                     no_chan_penalty = self.no_chan_penalty
                     # H-bi0: bp0×bi0附加软罚 (笔级零确认=最差桶)
@@ -1530,6 +1624,7 @@ class PortfolioConstructor:
                     if (_zgm == '1' or (_zgm == '3' and _dist > 0.05)
                             or (_zgm == '4' and sl < 3)):
                         _rej['pivot_chase'] = _rej.get('pivot_chase', 0) + 1
+                        plog.candidate(date, code, 'eligibility', False, 'pivot_chase', sig=sig, held=code in current_positions)
                         continue
                     if _zgm == '2':
                         chase_pen = -float(os.environ.get('QUANT_ZG_PEN', '0.20'))
@@ -1554,6 +1649,7 @@ class PortfolioConstructor:
                         and chase_pen < 0
                         and int(self._nan_safe(getattr(sig, 'trend_type', 0))) == 1):
                     _rej['tt1_chase'] = _rej.get('tt1_chase', 0) + 1
+                    plog.candidate(date, code, 'eligibility', False, 'tt1_chase', sig=sig, held=code in current_positions)
                     continue
                 # K-19 BEAR×追高硬拒臂 (2026-09-24实验臂, env默认关闭): regime探针发现
                 # chase细胞毒性BEAR集中 (BEAR 16笔−7.47%/win12% vs NEUT−0.05%/BULL+0.22%,
@@ -1564,6 +1660,7 @@ class PortfolioConstructor:
                         and chase_pen < 0
                         and int(market_regime) == -1):
                     _rej['bear_chase'] = _rej.get('bear_chase', 0) + 1
+                    plog.candidate(date, code, 'eligibility', False, 'bear_chase', sig=sig, held=code in current_positions)
                     continue
 
                 # K-10 ML顶桶门控 (2026-09-23实验臂, env默认关闭): 入场集内ML分
@@ -1646,6 +1743,8 @@ class PortfolioConstructor:
                 'bp_c4_penalty': bp_c4_pen,
             })
             _rej['accepted'] += 1
+            plog.candidate(date, code, 'eligibility', True, sig=sig,
+                           held=code in current_positions, decision_price=price)
             # DEBUG: 跟踪候选因子分布 + ML得分
             fn = getattr(sig, 'factor_name', 'OTHER')
             self._dbg.setdefault(f'factor_sel_{_regime}', {})
@@ -1692,11 +1791,10 @@ class PortfolioConstructor:
         # === 产业链聚焦: 找到主导行业, 限定在产业链内选股 ===
         _chain_concepts = None
         _dom_industry = None
-        # Candidate-count/median chain focus is a separate policy, not an
-        # independent measurement of sector capital or persistence. The
-        # default retains the established path; zero isolates this crop when
-        # testing causal industry labels against a pre-buy sector architecture.
-        if len(candidates) >= 3 and os.environ.get('QUANT_CANDIDATE_CHAIN_FOCUS', '1') != '0':
+        # Keep the accepted default; explicit zero isolates this candidate-
+        # conditioned crop in research, not an independent sector-flow signal.
+        _chain_focus_enabled = os.environ.get('QUANT_CANDIDATE_CHAIN_FOCUS', '1') != '0'
+        if len(candidates) >= 3 and _chain_focus_enabled:
             from .industry_chain import get_chain_concepts, _NO_CHAIN_CONCEPTS
             # 统计各行业候选数量和中位数得分
             _ind_stats = {}
@@ -1741,9 +1839,15 @@ class PortfolioConstructor:
             else:
                 plog.alert(f"产业链: 候选分散, 无主导行业(所有行业均<2只), 退回不限行业")
 
+        plog.detail('candidate_pool_after_chain', date=date,
+                    scope='candidate_conditioned_chain_not_independent_sector_flow',
+                    policy_enabled=_chain_focus_enabled,
+                    dominant_industry=_dom_industry if '_dom_industry' in locals() else None,
+                    candidate_codes=[_trace_c['code'] for _trace_c in candidates],
+                    candidate_count=len(candidates))
         # === 截面排名（全市场 + 行业内混合，正态空间） ===
         # Quantile→Normal变换: 拉大尾部差距，极端值 vs 普通值的区分更显著
-        # 使用 score(含gate_quality乘法+基本面+ML)替代纯factor_value, gate信息参与初筛
+        # 用候选综合分计算全体及行业内排名，门控质量另行用于准入。
         factor_values = np.array([c['score'] for c in candidates])
         rank_pct = pd.Series(factor_values).rank(pct=True)
         cross_normal = _rank_to_normal(rank_pct.values)  # → N(0,1)
@@ -1784,23 +1888,33 @@ class PortfolioConstructor:
         # 2022实证: trend<0有bear_risk时因子IC为负(必须空仓)
         if trend_score >= 0.5:
             target_exposure = self.base_exposure           # 牛市满仓
+            plog.detail('exposure_adjustment', date=date, rule='strong_trend_base', before=None, after=target_exposure, expression='target_exposure = self.base_exposure', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
         elif trend_score > 0:
             target_exposure = 0.50 * self.base_exposure    # 弱牛半仓
+            plog.detail('exposure_adjustment', date=date, rule='weak_positive_trend_base', before=None, after=target_exposure, expression='target_exposure = 0.50 * self.base_exposure', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
         elif trend_score == 0:
             target_exposure = 0.30 * self.base_exposure    # 震荡轻仓
+            plog.detail('exposure_adjustment', date=date, rule='neutral_trend_base', before=None, after=target_exposure, expression='target_exposure = 0.30 * self.base_exposure', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
         else:
             # 趋势为负: 有bear_risk→空仓, 无bear_risk→轻仓抄底回调
             target_exposure = 0.0 if bear_risk else 0.30 * self.base_exposure
+            plog.detail('exposure_adjustment', date=date, rule='negative_trend_base', before=None, after=target_exposure, expression='target_exposure = 0.0 if bear_risk else 0.30 * self.base_exposure', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
 
         # bear_risk双确认→覆盖, 确保极端情况空仓
         if bear_risk:
+            _trace_exposure_before = target_exposure
             target_exposure = 0.0
+            plog.detail('exposure_adjustment', date=date, rule='bear_override', before=_trace_exposure_before, after=target_exposure, expression='target_exposure = 0.0', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
 
         # === 市场缩量降仓: 无量无行情(放松底线) ===
         if index_volume_ratio < 0.5:
+            _trace_exposure_before = target_exposure
             target_exposure = min(target_exposure, 0.35)
+            plog.detail('exposure_adjustment', date=date, rule='very_low_index_volume_cap', before=_trace_exposure_before, after=target_exposure, expression='target_exposure = min(target_exposure, 0.35)', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
         elif index_volume_ratio < 0.7:
+            _trace_exposure_before = target_exposure
             target_exposure = min(target_exposure, 0.50)
+            plog.detail('exposure_adjustment', date=date, rule='low_index_volume_cap', before=_trace_exposure_before, after=target_exposure, expression='target_exposure = min(target_exposure, 0.50)', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
 
         # === Chan强买点熊市豁免: >=2只强买点出现时提高敞口, 但熊市风险下限制豁免力度 ===
         chan_strong_buys = sum(
@@ -1819,7 +1933,9 @@ class PortfolioConstructor:
                 chan_floor = float(_CF_FAST) if _CF_FAST else 0.45  # 原逻辑
             else:
                 chan_floor = float(_CF_NORM) if _CF_NORM else 0.60  # 正常: 不错过底部
+            _trace_exposure_before = target_exposure
             target_exposure = max(target_exposure, chan_floor)
+            plog.detail('exposure_adjustment', date=date, rule='structural_candidate_floor', before=_trace_exposure_before, after=target_exposure, expression='target_exposure = max(target_exposure, chan_floor)', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown, structural_candidates=chan_strong_buys, floor=chan_floor)
 
         # E-LAD1遥测 (2026-09-24, QUANT_EXP_TEL='1'时开, 零行为改动): 敞口阶梯
         # 绑定诊断 — 逐调仓日记录阶梯输入/目标/最终权重和, 输出/tmp/exposure_tel.csv
@@ -1840,14 +1956,18 @@ class PortfolioConstructor:
                 # QUANT_VOL_FLOOR 覆写vol_scale下限 (生产0.75)
                 _VF = float(os.environ.get('QUANT_VOL_FLOOR', '') or 0.75)
                 vol_scale = float(np.clip(self.target_volatility / realized_vol, _VF, 1.0))
+                _trace_exposure_before = target_exposure
                 target_exposure *= vol_scale
+                plog.detail('exposure_adjustment', date=date, rule='realized_volatility_scale', before=_trace_exposure_before, after=target_exposure, expression='target_exposure *= vol_scale', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown, realized_volatility=realized_vol, multiplier=vol_scale)
                 if os.environ.get('QUANT_EXP_TEL', '') == '1' and hasattr(self, '_exp_tel_row'):
                     self._exp_tel_row['vol_scale'] = round(vol_scale, 4)
                     self._exp_tel_row['realized_vol'] = round(realized_vol, 4)
 
         # === 硬止损: 回撤超过阈值时强制降仓（含恢复冷却期）===
         if self.stop_loss_enabled and drawdown > self.portfolio_stop_loss:
+            _trace_exposure_before = target_exposure
             target_exposure = min(target_exposure, self.emergency_exposure)
+            plog.detail('exposure_adjustment', date=date, rule='portfolio_drawdown_cap', before=_trace_exposure_before, after=target_exposure, expression='target_exposure = min(target_exposure, self.emergency_exposure)', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
             if not self._stop_loss_triggered:
                 self._stop_loss_triggered = True
                 self._stop_loss_trigger_date = date  # 记录触发日(自然日)
@@ -1861,8 +1981,10 @@ class PortfolioConstructor:
                         if self._stop_loss_trigger_date is not None and isinstance(date, date_type) else 999)
             if _elapsed < self.stop_loss_recovery_days:
                 _progress = _elapsed / max(self.stop_loss_recovery_days, 1)
+                _trace_exposure_before = target_exposure
                 target_exposure = min(target_exposure, self.emergency_exposure +
                                       (1.0 - self.emergency_exposure) * _progress)
+                plog.detail('exposure_adjustment', date=date, rule='drawdown_recovery_cap', before=_trace_exposure_before, after=target_exposure, expression='target_exposure = min(target_exposure, self.emergency_exposure +\n                                      (1.0 - self.emergency_exposure) * _progress)', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
             else:
                 self._stop_loss_triggered = False
                 self._stop_loss_trigger_date = None
@@ -1886,7 +2008,9 @@ class PortfolioConstructor:
                 if self._clb_losses >= self.clb_threshold:
                     self._clb_triggered = True
                 if self._clb_triggered:
+                    _trace_exposure_before = target_exposure
                     target_exposure *= self.clb_exposure_reduction
+                    plog.detail('exposure_adjustment', date=date, rule='consecutive_loss_scale', before=_trace_exposure_before, after=target_exposure, expression='target_exposure *= self.clb_exposure_reduction', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown, losses=self._clb_losses, wins=self._clb_wins, multiplier=self.clb_exposure_reduction)
                     self.max_single_weight_from_cfg = self._orig_max_single_weight * self.clb_exposure_reduction
             self._prev_equity = total_equity
 
@@ -1902,9 +2026,13 @@ class PortfolioConstructor:
                 _z = (_MS_TODAY - _mu) / _sd
                 if _MS_ASYM:
                     _z = max(_z, 0.0)
+                    _trace_exposure_before = target_exposure
                     target_exposure *= float(np.clip(1.0 + _MS_K * _z, 1.0, 1.15))
+                    plog.detail('exposure_adjustment', date=date, rule='breadth_positive_scale', before=_trace_exposure_before, after=target_exposure, expression='target_exposure *= float(np.clip(1.0 + _MS_K * _z, 1.0, 1.15))', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
                 else:
+                    _trace_exposure_before = target_exposure
                     target_exposure *= float(np.clip(1.0 + _MS_K * _z, 0.85, 1.15))
+                    plog.detail('exposure_adjustment', date=date, rule='breadth_symmetric_scale', before=_trace_exposure_before, after=target_exposure, expression='target_exposure *= float(np.clip(1.0 + _MS_K * _z, 0.85, 1.15))', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown)
 
         # E-LAD1遥测收口: 阶梯全流程后的最终目标敞口
         if os.environ.get('QUANT_EXP_TEL', '') == '1' and hasattr(self, '_exp_tel_row'):
@@ -1945,6 +2073,14 @@ class PortfolioConstructor:
             if c['rank_pct'] > _eff_min_rank
             and c.get('score', 0) >= _eff_min_score
         ]
+        for _trace_c in candidates:
+            plog.candidate(date, _trace_c['code'], 'rank_score_threshold',
+                           _trace_c['rank_pct'] > _eff_min_rank and _trace_c.get('score', 0) >= _eff_min_score,
+                           'rank_or_score_below_threshold' if (_trace_c['rank_pct'] <= _eff_min_rank or
+                               _trace_c.get('score', 0) < _eff_min_score) else '',
+                           sig=_trace_c.get('sig'), rank_pct=_trace_c['rank_pct'],
+                           min_rank=_eff_min_rank, min_score=_eff_min_score,
+                           held=_trace_c['code'] in current_positions)
 
         # 信心过滤: V因子兜底加成
         for c in qualified:
@@ -1954,6 +2090,13 @@ class PortfolioConstructor:
             if '_V' in (fn or ''):
                 confidence += 0.10
             c['confidence'] = np.clip(confidence, 0.75, 1.3)
+            plog.candidate(date, c['code'], 'confidence', c['confidence'] >= self.min_confidence,
+                           'confidence_below_threshold' if c['confidence'] < self.min_confidence else '',
+                           confidence=c['confidence'], threshold=self.min_confidence,
+                           confidence_basis='legacy_factor_name_V_bonus',
+                           source_signal_confidence=getattr(sig, 'signal_confidence', None),
+                           calibrated_win_probability=False,
+                           sig=c.get('sig'), held=c['code'] in current_positions)
 
         qualified = [c for c in qualified if c['confidence'] >= self.min_confidence]
 
@@ -1966,6 +2109,7 @@ class PortfolioConstructor:
                                 # 入场层不可能为bp=0 ⇒ 该统计是误报; 阈值本身保留, 勿据面板占比再调)
         GATE_FLOOR_HOLD = 0.50  # 持仓放宽: gate质量下降不急于清仓
         gate_filtered = []
+        _b4_confirmation_wait_count = 0
         for c in qualified:
             sig = c.get('sig')
             if sig is None:
@@ -1976,31 +2120,59 @@ class PortfolioConstructor:
             tt = getattr(sig, 'trend_type', 0) if sig else 0
             ma_up = getattr(sig, 'ma_trend_up', False) if sig else False
 
+            _b4_confirmation = getattr(self, '_b4_confirmation', None)
+            if bp == 4 and code not in current_positions and _b4_confirmation is not None:
+                _b4_pass, _b4_observation = _b4_confirmation.observation(date, code)
+                plog.candidate(date, code, 'entry_confirmation', _b4_pass,
+                               '' if _b4_pass else 'B4_confirmation_pending', sig=sig, held=False,
+                               confirmation_mode=_b4_confirmation.mode, observation=_b4_observation,
+                               observation_asof=str(date), scope='fresh_B4_only_completed_decision_bar')
+                if not _b4_pass:
+                    _b4_confirmation_wait_count += 1
+                    continue
+
             if code in current_positions:
                 if gate_q < GATE_FLOOR_HOLD:
+                    plog.candidate(date, code, 'common_gate', False, 'held_gate_floor', sig=sig,
+                                   gate_quality=gate_q, threshold=GATE_FLOOR_HOLD, held=True)
                     continue
             else:
                 # E-G1v3: bp2豁免GATE_FLOOR_NEW — 已回退(2026-09-06凌晨): 隔离实验发现
                 # 该豁免是主路径唯一改动, 与通道无关; 需先验证其单独效应再定去留
                 if gate_q < GATE_FLOOR_NEW:
+                    plog.candidate(date, code, 'common_gate', False, 'new_gate_floor', sig=sig,
+                                   gate_quality=gate_q, threshold=GATE_FLOOR_NEW, held=False)
                     continue
 
             # 特定保护（Gates 无法完全覆盖的极端情况）
             if bp == 3 and not ma_up:
+                plog.candidate(date, code, 'common_gate', False, 'B3_without_bull_ma', sig=sig,
+                               held=code in current_positions)
                 continue  # B3需均线多头
             if bp == 2 and tt == -2:
+                plog.candidate(date, code, 'common_gate', False, 'B2_downtrend', sig=sig,
+                               held=code in current_positions)
                 continue  # B2在下跌趋势不可靠
 
             # P0: gate对收益预测力IC≈0, 不再参与评分, 仅做二元安全网(通过硬门槛即可)
             gate_filtered.append(c)
+            plog.candidate(date, code, 'common_gate', True, sig=sig,
+                           gate_quality=gate_q, held=code in current_positions)
             # E-G1: 过gate且无卖点的bp2进入专用通道候选 (免score/rank门槛内卷)
             # v2修正: 有chan_sell_point的持仓必须正常出场, 保底槽不得强制保留
             if c['code'] in _bp2_codes and c.get('chan_sell_point', 0) == 0:
                 _bp2_reserved.append(c)
 
         if len(gate_filtered) == 0:
-            plog.alert(f"portfolio: {len(qualified)} candidates all failed Gate floor at {date}")
-            print(f" [选股] Gate全部淘汰: {len(qualified)}只候选 gate_quality均<门槛, 无法入场")
+            if _b4_confirmation_wait_count:
+                plog.detail('entry_confirmation_empty', date=date,
+                            waiting_B4=_b4_confirmation_wait_count, input_candidates=len(qualified),
+                            other_gate_rejections=len(qualified)-_b4_confirmation_wait_count)
+                print(f" [选股] 无合格候选: B4待确认{_b4_confirmation_wait_count}只, "
+                      f"其他门控淘汰{len(qualified)-_b4_confirmation_wait_count}只")
+            else:
+                plog.alert(f"portfolio: {len(qualified)} candidates all failed Gate floor at {date}")
+                print(f" [选股] {len(qualified)}只候选均未通过公共门控（含质量下限与买点保护）, 无法入场；详见候选拒绝原因")
             return {}
 
         # === 板块共振: 计算行业集中度, 用于后续排序惩罚 ===
@@ -2020,6 +2192,24 @@ class PortfolioConstructor:
         # Gate 1-4已在信号层编码为adjusted_score，组合层只做时序/行业/换手微调
         scores = np.array([c['score'] for c in qualified])
         score_rank = pd.Series(scores).rank(pct=True).values
+        _trace_legacy_ranks = score_rank.copy()
+        if getattr(self, '_b4_rank_ml', False):
+            from .entry_confirmation import rerank_fresh_b4
+            score_rank = rerank_fresh_b4(qualified, score_rank, current_codes)
+            for _i, _c in enumerate(qualified):
+                if _c.get('chan_buy_point') == 4 and _c['code'] not in current_codes:
+                    plog.detail('B4_rank_control', date=date, code=_c['code'],
+                                legacy_rank=float(_trace_legacy_ranks[_i]),
+                                rank=float(score_rank[_i]), ml_score=float(_c['sig'].ml_score),
+                                scope='permute_fresh_B4_existing_rank_values_only')
+        if self.score_rank_source == 'ml':
+            # Isolated research control: keep admission, risk, thresholds and
+            # every subsequent adjustment; change only this ranking input.
+            _ml_rank_values = np.asarray([getattr(c['sig'], 'ml_score', np.nan)
+                                          for c in qualified], dtype=float)
+            if not np.isfinite(_ml_rank_values).all():
+                raise ValueError('ML rank control requires finite qualified-candidate predictions')
+            score_rank = pd.Series(_ml_rank_values).rank(pct=True).values
         pool_median_score = float(np.median(scores)) if len(scores) > 0 else 0.3
 
         # E-A2实验: 新候选(非持仓)中的最强score — 明显强于持仓时取消换手保护/解锁, 允许顶替
@@ -2030,7 +2220,9 @@ class PortfolioConstructor:
 
             rank = float(score_rank[i])
             multiplier = 1.0
+            plog.detail('score_adjustment', date=date, code=c['code'], component='multiplier', value=multiplier, rule='multiplier = 1.0', conditions=[], conditions_scope='lexical_branch_path_at_branch_entry')
             additive = 0.0
+            plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive = 0.0', conditions=[], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # ── 乘法调整（作用于rank） ──
             sig_ref = c.get('sig')
@@ -2042,11 +2234,14 @@ class PortfolioConstructor:
             # 仅极端超买(>60%)做温和降权, 不再一刀切砍半
             if mom_60d > 0.60:
                 multiplier *= 0.85  # 极端超买轻量降权
+                plog.detail('score_adjustment', date=date, code=c['code'], component='multiplier', value=multiplier, rule='multiplier *= 0.85', conditions=['mom_60d > 0.6'], conditions_scope='lexical_branch_path_at_branch_entry')
             elif mom_60d > 0.45:
                 multiplier *= 0.92  # 偏高动量几乎不惩罚
+                plog.detail('score_adjustment', date=date, code=c['code'], component='multiplier', value=multiplier, rule='multiplier *= 0.92', conditions=['not (mom_60d > 0.6)', 'mom_60d > 0.45'], conditions_scope='lexical_branch_path_at_branch_entry')
 
             if dist_ma60 > self.dist_ma60_extended_threshold:
                 multiplier *= self.dist_ma60_extended_mult
+                plog.detail('score_adjustment', date=date, code=c['code'], component='multiplier', value=multiplier, rule='multiplier *= self.dist_ma60_extended_mult', conditions=['dist_ma60 > self.dist_ma60_extended_threshold'], conditions_scope='lexical_branch_path_at_branch_entry')
 
             bp = c.get('chan_buy_point', 0)
             sl = c.get('signal_level', 0)
@@ -2065,69 +2260,90 @@ class PortfolioConstructor:
             # 顶部背离: 2.04数据 top→-6.38%, hidden_top→-4.46%
             if 'top' in div_type_pen.lower():
                 additive -= 0.08
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.08', conditions=["'top' in div_type_pen.lower()"], conditions_scope='lexical_branch_path_at_branch_entry')
             # 利润持续下滑: 基本面恶化
             if profit_d_pen:
                 additive -= 0.10
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.1', conditions=['profit_d_pen'], conditions_scope='lexical_branch_path_at_branch_entry')
             # 放量下跌: ret<-1.5%且vol_ratio>0.5 → 不是健康回调
             if daily_ret_pen < -0.015 and vol_ratio_pen > 0.5:
                 additive -= 0.06
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.06', conditions=['daily_ret_pen < -0.015 and vol_ratio_pen > 0.5'], conditions_scope='lexical_branch_path_at_branch_entry')
             # 涨停附近不追: 接盘风险
             if daily_ret_pen > 0.09:
                 additive -= 0.05
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.05', conditions=['daily_ret_pen > 0.09'], conditions_scope='lexical_branch_path_at_branch_entry')
             # 力竭追高: exhaustion>0.5
             if exhaustion_pen > 0.5:
                 additive -= 0.10
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.1', conditions=['exhaustion_pen > 0.5'], conditions_scope='lexical_branch_path_at_branch_entry')
             # B1需底背离确认
             if bp == 1 and 'bottom' not in div_type_pen.lower():
                 additive -= 0.06
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.06', conditions=["bp == 1 and 'bottom' not in div_type_pen.lower()"], conditions_scope='lexical_branch_path_at_branch_entry')
             # 下跌趋势中加速下行
             if trend_type_pen == -2 and stroke_phase_pen > 0.2 and not (bp == 3 and sl >= 2):
                 additive -= 0.05
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.05', conditions=['trend_type_pen == -2 and stroke_phase_pen > 0.2 and (not (bp == 3 and sl >= 2))'], conditions_scope='lexical_branch_path_at_branch_entry')
             # 非上升趋势+弱势阴跌
             if trend_type_pen != 2 and stroke_phase_pen > 0.2 and daily_ret_pen < 0:
                 additive -= 0.04
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.04', conditions=['trend_type_pen != 2 and stroke_phase_pen > 0.2 and (daily_ret_pen < 0)'], conditions_scope='lexical_branch_path_at_branch_entry')
             # 极端追高: mom>50%且无结构
             if mom_60d > 0.50 and bp == 0:
                 additive -= 0.06
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.06', conditions=['mom_60d > 0.5 and bp == 0'], conditions_scope='lexical_branch_path_at_branch_entry')
             # 严重乖离MA60: dist>45%且无结构
             if dist_ma60 > 0.45 and bp == 0:
                 additive -= 0.06
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive -= 0.06', conditions=['dist_ma60 > 0.45 and bp == 0'], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # B3严重缩量惩罚 (唯一保留的买点特定调整, 有数据支撑)
             if bp == 3:
                 vol_ratio = self._nan_safe(getattr(sig_ref, 'volume_ratio', 0.0))
                 if -0.30 < vol_ratio <= -0.20:
                     additive += self.b3_vol_severe_penalty
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += self.b3_vol_severe_penalty', conditions=['bp == 3', '-0.3 < vol_ratio <= -0.2'], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # 换手保留: 已持仓有交易成本优势, 但弱于候选池中位数时减少保护
             # 用候选池score中位数作基准: 持仓强→保护, 持仓弱→放开让位
             code = c.get('code', '')
             turnover = 0.0
+            plog.detail('score_adjustment', date=date, code=c['code'], component='turnover', value=turnover, rule='turnover = 0.0', conditions=[], conditions_scope='lexical_branch_path_at_branch_entry')
             if c['is_held'] and c['rank_pct'] > hold_threshold:
                 held_score = c.get('score', 0.0)
                 # E-A2: 存在明显更强的新候选(fresh_best > held×r) → 取消保护, 让位顶替
                 # r=2.0 (2026-10-15 采纳; 原硬编码1.15=结构性空转保护, 见 __init__ 注释)
                 if _fresh_best > held_score * _ea2_ratio:
                     turnover = 0.0
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='turnover', value=turnover, rule='turnover = 0.0', conditions=["c['is_held'] and c['rank_pct'] > hold_threshold", '_fresh_best > held_score * _ea2_ratio'], conditions_scope='lexical_branch_path_at_branch_entry')
                 elif held_score > pool_median_score * 1.2:
                     turnover = self.turnover_bonus              # 明显强于中位数 → 保留
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='turnover', value=turnover, rule='turnover = self.turnover_bonus', conditions=["c['is_held'] and c['rank_pct'] > hold_threshold", 'not (_fresh_best > held_score * _ea2_ratio)', 'held_score > pool_median_score * 1.2'], conditions_scope='lexical_branch_path_at_branch_entry')
                 elif held_score > pool_median_score:
                     turnover = self.turnover_bonus * 0.5        # 略强 → 减半保护
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='turnover', value=turnover, rule='turnover = self.turnover_bonus * 0.5', conditions=["c['is_held'] and c['rank_pct'] > hold_threshold", 'not (_fresh_best > held_score * _ea2_ratio)', 'not (held_score > pool_median_score * 1.2)', 'held_score > pool_median_score'], conditions_scope='lexical_branch_path_at_branch_entry')
                 elif held_score > pool_median_score * 0.8:
                     turnover = self.turnover_bonus * 0.15       # 略弱 → 几乎不保护
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='turnover', value=turnover, rule='turnover = self.turnover_bonus * 0.15', conditions=["c['is_held'] and c['rank_pct'] > hold_threshold", 'not (_fresh_best > held_score * _ea2_ratio)', 'not (held_score > pool_median_score * 1.2)', 'not (held_score > pool_median_score)', 'held_score > pool_median_score * 0.8'], conditions_scope='lexical_branch_path_at_branch_entry')
                 else:
                     turnover = 0.0                               # 远弱 → 不保护
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='turnover', value=turnover, rule='turnover = 0.0', conditions=["c['is_held'] and c['rank_pct'] > hold_threshold", 'not (_fresh_best > held_score * _ea2_ratio)', 'not (held_score > pool_median_score * 1.2)', 'not (held_score > pool_median_score)', 'not (held_score > pool_median_score * 0.8)'], conditions_scope='lexical_branch_path_at_branch_entry')
             if c.get('chan_sell_point', 0) > 0:
                 turnover = 0.0
+                plog.detail('score_adjustment', date=date, code=c['code'], component='turnover', value=turnover, rule='turnover = 0.0', conditions=["c.get('chan_sell_point', 0) > 0"], conditions_scope='lexical_branch_path_at_branch_entry')
             if c['is_held'] and c['rank_pct'] <= hold_threshold:
                 c['is_held'] = False
                 turnover = 0.0
+                plog.detail('score_adjustment', date=date, code=c['code'], component='turnover', value=turnover, rule='turnover = 0.0', conditions=["c['is_held'] and c['rank_pct'] <= hold_threshold"], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # B1买点加分: 一买是反转信号, 胜率最高
             if bp == 1 and sl >= 1:
                 additive += 0.08
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += 0.08', conditions=['bp == 1 and sl >= 1'], conditions_scope='lexical_branch_path_at_branch_entry')
             elif bp == 2 and sl >= 2:
                 additive += 0.03  # B2强确认小幅加分
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += 0.03', conditions=['not (bp == 1 and sl >= 1)', 'bp == 2 and sl >= 2'], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # E-K1(2026-09-06): bp2类级加成 — 替代E-G1专用槽的软性方案
             # bp2证据: 12,436笔 hit1 81.8%/mean5 +3.02%(全池48.4%/+0.83%),
@@ -2137,50 +2353,97 @@ class PortfolioConstructor:
             if self.bp2_score_boost > 0 and bp == 2 and c.get('chan_sell_point', 0) == 0 \
                     and not (self.bp2_boost_norm_only and bear_risk_fast):
                 additive += self.bp2_score_boost
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += self.bp2_score_boost', conditions=["self.bp2_score_boost > 0 and bp == 2 and (c.get('chan_sell_point', 0) == 0) and (not (self.bp2_boost_norm_only and bear_risk_fast))"], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # 2026-10-22: S4 底背离软加成 (默认0) — 与硬闸互斥使用
             if self.bp_s4_boost > 0 and getattr(sig_ref, 'chan_divergence_type', '') \
                     in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2'):
                 additive += self.bp_s4_boost
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += self.bp_s4_boost', conditions=["self.bp_s4_boost > 0 and getattr(sig_ref, 'chan_divergence_type', '') in ('bottom', 'bottom_fx', 'bottom_fx_3x', 'B2')"], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # H-bi: bp0笔级一买确认加成 (部分抵消no_chan_penalty -0.20)
             if self.bi1_score_boost > 0 and bp == 0 \
                     and int(self._nan_safe(getattr(sig_ref, 'bi_buy_point', 0))) == 1:
                 additive += self.bi1_score_boost
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += self.bi1_score_boost', conditions=["self.bi1_score_boost > 0 and bp == 0 and (int(self._nan_safe(getattr(sig_ref, 'bi_buy_point', 0))) == 1)"], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # H-bpC3(2026-10-10): 三重确认加成 — 入场bp_c=3: 63.6%胜率/+8.14%均值,
             # 选中0.96× vs bp_c=2的1.62× → 评分对三重确认欠定价(二重主力已定价)
             if self.bp_c3_boost > 0 and c.get('_bp_confirm', 0) == 3:
                 additive += self.bp_c3_boost
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += self.bp_c3_boost', conditions=["self.bp_c3_boost > 0 and c.get('_bp_confirm', 0) == 3"], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # E-K2.5(2026-09-11): 回购类级加成(小回购<1亿, 公告<=30d) — E-K1模式第2例
             if self.repo_score_boost > 0 and self._repo_flag(code, date):
                 additive += self.repo_score_boost
+                plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += self.repo_score_boost', conditions=['self.repo_score_boost > 0 and self._repo_flag(code, date)'], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # BOM质量加分: 高壁垒+高利润个股优先
             bom_score = self._nan_safe(getattr(sig_ref, 'bom_quality_score', 0.3))
-            if bom_score > 0.70:
-                additive += 0.06
-            elif bom_score > 0.55:
-                additive += 0.03
+            if self.bom_portfolio_bonus_enabled:
+                if bom_score > 0.70:
+                    additive += 0.06
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += 0.06', conditions=['self.bom_portfolio_bonus_enabled', 'bom_score > 0.7'], conditions_scope='lexical_branch_path_at_branch_entry')
+                elif bom_score > 0.55:
+                    additive += 0.03
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='additive', value=additive, rule='additive += 0.03', conditions=['self.bom_portfolio_bonus_enabled', 'not (bom_score > 0.7)', 'bom_score > 0.55'], conditions_scope='lexical_branch_path_at_branch_entry')
+            plog.detail('bom_reuse_path', date=date, code=c['code'], quality=bom_score,
+                        portfolio_bonus_enabled=self.bom_portfolio_bonus_enabled,
+                        potential_bonus=0.06 if bom_score > 0.70 else (0.03 if bom_score > 0.55 else 0.0),
+                        signal_path_changed=False)
+
+            # 同一量价假设改作有限排序增量；保留全部原准入，默认0。
+            if self.b1_price_confirmation_bonus > 0 and bp == 1 and c['code'] not in current_positions:
+                if not hasattr(self, '_b1_confirmation_features'):
+                    from .entry_admission import EntryAdmission
+                    self._b1_confirmation_features = EntryAdmission('b1_price_confirmation', _QFEAT_DATA_DIR)
+                _b1_confirmation = self._b1_confirmation_features._b1_confirmation(str(c['code']), str(date))
+                if _b1_confirmation.get('known') and _b1_confirmation.get('confirmed'):
+                    additive += self.b1_price_confirmation_bonus
+                    plog.detail('score_adjustment', date=date, code=c['code'], component='additive',
+                                value=additive, rule='B1 decision-price confirmation bonus',
+                                conditions=["self.b1_price_confirmation_bonus > 0 and bp == 1 and (c['code'] not in current_positions)", "_b1_confirmation.get('known') and _b1_confirmation.get('confirmed')"], conditions_scope='lexical_branch_path_at_branch_entry')
+                plog.detail('entry_confirmation_score', date=date, code=c['code'],
+                            requested_bonus=self.b1_price_confirmation_bonus,
+                            confirmed=bool(_b1_confirmation.get('confirmed', False)),
+                            features=_b1_confirmation, original_eligibility_retained=True,
+                            information_family='existing price-volume; tested recalibration, not independent new information')
 
             # 动量调整: NORM奖励动量, FAST惩罚波动(偏好稳定股)
             if bear_risk_fast:
                 mom_adj = -abs(mom_60d) * 0.10  # FAST: 偏好低波动稳定股
+                plog.detail('score_adjustment', date=date, code=c['code'], component='mom_adj', value=mom_adj, rule='mom_adj = -abs(mom_60d) * 0.1', conditions=['bear_risk_fast'], conditions_scope='lexical_branch_path_at_branch_entry')
             else:
                 mom_adj = (mom_60d - 0.0) * 0.18
+                plog.detail('score_adjustment', date=date, code=c['code'], component='mom_adj', value=mom_adj, rule='mom_adj = (mom_60d - 0.0) * 0.18', conditions=['not (bear_risk_fast)'], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # C实验: 换仓缓冲 — 已持仓δ保护(有卖点不保护), 0=关闭
             # C5c(2026-09-19采纳): 仅盈利持仓受保护, 亏损名让位 — 六臂bracket胜者
             # (732,689/193.08%/1.1961/17.92%, 4-0 vs ref=718,158, 4-0 vs G基线=705,640;
             #  年分解2023/24/26+0.44/+0.48/+1.67pp, 2025 -0.21pp, 2021/22持平)
             repl_buffer = self.replacement_buffer if (c['is_held'] and c.get('chan_sell_point', 0) == 0) else 0.0
+            plog.detail('score_adjustment', date=date, code=c['code'], component='repl_buffer', value=repl_buffer, rule="repl_buffer = self.replacement_buffer if c['is_held'] and c.get('chan_sell_point', 0) == 0 else 0.0", conditions=[], conditions_scope='lexical_branch_path_at_branch_entry')
             _rc = getattr(self, '_a1_raw_cost', {}).get(code)
             if not (_rc and len(_rc) >= 2 and _rc[0] > 0 and prices.get(code, 0) > _rc[1]):
                 repl_buffer = 0.0  # C5c: 仅盈利持仓受保护(亏损名让位)
+                plog.detail('score_adjustment', date=date, code=c['code'], component='repl_buffer', value=repl_buffer, rule='repl_buffer = 0.0', conditions=['not (_rc and len(_rc) >= 2 and (_rc[0] > 0) and (prices.get(code, 0) > _rc[1]))'], conditions_scope='lexical_branch_path_at_branch_entry')
 
             # effective_score: 截面排名 × 乘数 + 数据驱动微调
             c['effective_score'] = rank * multiplier + additive + turnover + repl_buffer + mom_adj + c.get('no_chan_penalty', 0.0) + c.get('chase_penalty', 0.0) + c.get('ml_gate_penalty', 0.0) + c.get('divnone_penalty', 0.0) + c.get('tt1chase_penalty', 0.0) + c.get('ah_penalty', 0.0) + c.get('bp_c4_penalty', 0.0) + c.get('lowsh_penalty', 0.0)
+            plog.detail('candidate_score_components', date=date, code=c['code'],
+                        raw_score=c['score'], rank=rank, multiplier=multiplier,
+                        score_rank_source=self.score_rank_source,
+                        fresh_B4_rank_source=('ml_within_original_rank_values'
+                                              if getattr(self, '_b4_rank_ml', False)
+                                              and c.get('chan_buy_point') == 4 and c['code'] not in current_codes else None),
+                        rank_input_value=float(_ml_rank_values[i]) if self.score_rank_source == 'ml' else float(scores[i]),
+                        legacy_score_rank=float(_trace_legacy_ranks[i]),
+                        additive=additive, turnover=turnover, replacement_buffer=repl_buffer,
+                        momentum_adjustment=mom_adj, effective_score=c['effective_score'],
+                        is_held=c['is_held'], industry=c.get('industry'),
+                        penalties={_trace_key: c.get(_trace_key, 0.0) for _trace_key in
+                            ('no_chan_penalty', 'chase_penalty', 'ml_gate_penalty', 'divnone_penalty',
+                             'tt1chase_penalty', 'ah_penalty', 'bp_c4_penalty', 'lowsh_penalty')})
             if _POOL_DBG_PATH:
                 # 分量快照(只写内存, 不参与任何计算)
                 c['_dbg_score'] = {
@@ -2191,7 +2454,8 @@ class PortfolioConstructor:
                     'eff_scored': c['effective_score'],
                 }
 
-        # 换手约束: 新入场数不超过 max_turnover_ratio × n_positions
+        # 遗留换手观测值；当前席位循环实际执行的是下方 new_entry_cap。
+        # max_new 不参与准入，日志必须区分配置观测值和生效约束。
         max_new = max(1, int(n_positions * self.max_turnover_ratio))
         # 持仓>=min_hold_days才允许被替换
         # 动态锁定: 新信号显著强于入场信号时可提前解锁
@@ -2346,17 +2610,56 @@ class PortfolioConstructor:
         if self._multi_strategy.enabled and qualified:
             ms_mult = self._multi_strategy.compute_weights(qualified, signal_store, market_regime, drawdown)
             for c in qualified:
-                mult = ms_mult.get(c['code'], 1.0)
+                _native_ms_mult = ms_mult.get(c['code'], 1.0)
+                # Isolate soft utility reweighting, retaining hard rejection,
+                # final selected-order logic and all other portfolio controls.
+                _soft_unity = getattr(self, '_research_soft_strategy_unity', False)
+                _soft_scope = getattr(self, '_research_soft_strategy_scope', 'all')
+                _soft_held = c['code'] in current_positions
+                _soft_role_matches = (_soft_scope == 'all' or
+                                      (_soft_scope == 'held' and _soft_held) or
+                                      (_soft_scope == 'fresh' and not _soft_held))
+                _soft_applied = _soft_unity and _soft_role_matches and _native_ms_mult > 0.05
+                mult = 1.0 if _soft_applied else _native_ms_mult
+                _trace_ms_before = c['effective_score']
                 if mult <= 0.05:
                     c['effective_score'] -= 10.0
                 else:
                     c['effective_score'] *= mult
+                plog.detail('multi_strategy_adjustment', date=date, code=c['code'],
+                            before=_trace_ms_before, multiplier=mult,
+                            native_multiplier=_native_ms_mult, research_soft_strategy_unity=_soft_unity,
+                            research_soft_strategy_scope=_soft_scope,
+                            research_soft_strategy_applied=_soft_applied,
+                            after=c['effective_score'],
+                            action='subtract10' if mult <= 0.05 else 'multiply',
+                            survives_score_floor=c['effective_score'] > -5.0,
+                            held=c['code'] in current_positions,
+                            inputs={name: getattr(c.get('sig'), name, None)
+                                    for name in ('signal_level', 'exhaustion_risk',
+                                                 'chan_buy_point', 'chan_sell_point', 'trend_type')},
+                            strategy_weights={name: getattr(self._multi_strategy, name, None)
+                                              for name in ('trend_w', 'rev_w', 'def_w')},
+                            market_regime=market_regime, drawdown_passed=drawdown,
+                            scope='Existing structure/exhaustion inputs reused before slots; not independent new evidence')
             qualified = [c for c in qualified if c['effective_score'] > -5.0]
             _bp2_reserved = [c for c in _bp2_reserved if c['effective_score'] > -5.0]
 
         qualified.sort(key=lambda x: (-x['_locked'], -x['effective_score']))
 
-        # === 纯score排序选股 ===
+        _timing_evidence = None
+        if self._research_fresh_buy_priority:
+            from .candidate_timing import prioritize_new_source_buys
+            qualified, _timing_evidence = prioritize_new_source_buys(
+                qualified, date, self._trading_calendar, signal_store, current_positions,
+                self._research_fresh_buy_points)
+            plog.detail('candidate_timing_order', date=date, **_timing_evidence)
+        if getattr(self, '_conditional_candidate_order', None) is not None:
+            qualified, _conditional_evidence = self._conditional_candidate_order.reorder(
+                qualified, date, current_positions, _timing_evidence)
+            plog.detail('conditional_candidate_order', date=date, **_conditional_evidence)
+
+        # === 纯score排序选股（实验时可在同买点的新仓之间优先新触发信号） ===
         # E-G1: bp2专用通道保底槽 — 先于常规排序占位。score对bp2无区分度,
         # 内部按score排≈随机但稳定; 槽数受bp2_channel_slots与n_positions双限
         # v2修正: 低敞口日(target_exposure<0.5, 集中火力截断区)不占位 —
@@ -2444,6 +2747,22 @@ class PortfolioConstructor:
             self._dbg[key] = self._dbg.get(key, 0) + 1
 
         # === 多策略后处理: 按子策略评分调整有效得分 → 可能重排 ===
+        for _trace_c in qualified:
+            plog.candidate(date, _trace_c['code'], 'ranked_slot_result',
+                           any(_trace_s['code'] == _trace_c['code'] for _trace_s in selected),
+                           '' if any(_trace_s['code'] == _trace_c['code'] for _trace_s in selected)
+                           else 'not_selected_under_rank_lock_day_and_capacity_constraints',
+                           effective_score=_trace_c['effective_score'], locked=_trace_c.get('_locked'),
+                           scoring_is_held=_trace_c.get('is_held'),
+                           account_is_held=_trace_c['code'] in current_positions,
+                           held=_trace_c['code'] in current_positions,
+                           max_positions=n_positions, new_entry_cap=_new_cap, max_new=max_new,
+                           max_new_enforced=False,
+                           new_entry_cap_count_basis='ranking_retention_status_not_executed_fills',
+                           max_per_industry=self.max_per_industry,
+                           day_gates={'ah': _ah_day, 'te_momentum': _temom_day,
+                                      'low_turnover': _lowto_day, 'atr_compression': _atrz_day,
+                                      'dead_weight': _deadw_day})
         if self._multi_strategy.enabled and selected:
             selected.sort(key=lambda x: -x['effective_score'])
 
@@ -2461,7 +2780,9 @@ class PortfolioConstructor:
         min_pos = 1
         if len(selected) < min_pos:
             shortage_ratio = max(0.3, len(selected) / max(min_pos, 1))
+            _trace_exposure_before = target_exposure
             target_exposure *= shortage_ratio
+            plog.detail('exposure_adjustment', date=date, rule='selected_shortage_scale', before=_trace_exposure_before, after=target_exposure, expression='target_exposure *= shortage_ratio', trend=trend_score, bear=bear_risk, index_volume_ratio=index_volume_ratio, drawdown=drawdown, selected_count=len(selected), multiplier=shortage_ratio)
             print(f" [选股] 数量不足: 选中{len(selected)}只 < 最低{min_pos}只"
                   f" → 降级使用(敞口×{shortage_ratio:.1f})")
 
@@ -2473,6 +2794,11 @@ class PortfolioConstructor:
         if target_exposure < 0.50:
             _CM = int(os.environ.get('QUANT_CONC_MIN', '') or 2)
             max_conc = max(_CM, int(target_exposure * 6))
+            plog.detail('allocation_concentration', date=date,
+                        target_exposure=target_exposure, max_concentration=max_conc,
+                        input_codes=[_trace_c['code'] for _trace_c in selected],
+                        removed_codes=[_trace_c['code'] for _trace_c in selected[max_conc:]],
+                        truncation_applied=len(selected) > max_conc)
             if len(selected) > max_conc:
                 selected = selected[:max_conc]
 
@@ -2611,6 +2937,11 @@ class PortfolioConstructor:
         if selected:
             self._dbg['ind_cap']['days'] += 1
             self._dbg['ind_cap']['hits'] += _icap_day
+        plog.detail('allocation_after_caps', date=date,
+                    target_exposure=target_exposure, industry_cap_fraction=_imw,
+                    industries_before_cap=dict(industry_weights_post),
+                    codes=[_trace_c['code'] for _trace_c in selected], weights=list(weights),
+                    sum_weights=float(np.sum(weights)), max_single=max_single)
 
         # 上限执行后不重新归一化：剩余敞口保留为现金，让上限真正绑定
         # 如果归一化，上限约束会被"剩余资金再分配"瓦解
@@ -2623,17 +2954,25 @@ class PortfolioConstructor:
         _force_empty = self._stop_loss_triggered or self._hds_triggered
         _dd_boosted_codes = set()
         for c, w in zip(selected, weights):
+            plog.detail('allocation_candidate', date=date, code=c['code'],
+                        stage='post_cap_input', action='observe', weight=w,
+                        held=current_positions.get(c['code'], 0.0) > 0,
+                        decision_price=c['price'], equity=total_equity,
+                        max_single=max_single, force_empty=_force_empty)
             # F-G流动性倾斜(实验臂, _LIQ_TILT=0时零行为): 低流动性(amt_ratio<1)
             # 加权, mult=1+tilt*(1-min(ar,1)); ar≥1不动. 归一化保留相对再分配.
             if _LIQ_TILT != 0.0:
                 _ar = _liq_amt_ratio(c['code'], date)
                 if _ar is not None and _ar < 1.0:
+                    _trace_weight_before = w
                     w = w * (1.0 + _liq_tilt_eff(drawdown) * (1.0 - _ar))
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='weight_adjustment', action='multiply', rule='liquidity_tilt', before=_trace_weight_before, after=w, amount_ratio=_ar)
             # F-I行业信号密度倾斜(实验臂, QUANT_SECTOR_TILT=1): get_composite_tilt
             # 设计存在但从未被消费(60%密度+40%动量, 动量腿复用路径=1.0) →
             # 纯密度腿 composite∈[0.91,1.09]. 轮动速度>0.55时自动中性.
             if _F_I_TILT and self._sector_rotation is not None:
                 _ct = self._sector_rotation.get_composite_tilt(c.get('industry', ''))
+                plog.detail('allocation_candidate', date=date, code=c['code'], stage='weight_adjustment', action='multiply', rule='sector_tilt', before=w, multiplier=float(_ct), industry=c.get('industry', ''))
                 w = w * float(_ct)
             # G-2(2026-09-23, 实验臂, QUANT_AUG_GATE=0零行为): 8月入场闸 —
             # 全史565笔8月入场mean_ret −1.52%/win 35.2% vs 非8月 +4.06%/58.1%,
@@ -2642,8 +2981,10 @@ class PortfolioConstructor:
             # 软闸: 8月新仓权重×0.5(相对权重保留, 归一化重缩放总敞口至target).
             if _AUG_GATE != '0' and date.month == 8 and current_positions.get(c['code'], 0.0) <= 0:
                 if _AUG_GATE == 'soft':
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='calendar_entry_gate', action='multiply', rule='august_soft', before=w, multiplier=0.5, held=False)
                     w = w * 0.5
                 else:
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='calendar_entry_gate', action='reject', rule='august_hard', weight=w, held=False)
                     continue
             # 全量review(2026-10-07, 实验臂, QUANT_MAR_GATE=0零行为): 3月入场闸 —
             # 信号层全史87,234笔3月buy mean future_ret −1.45% vs 非3月 +1.10%,
@@ -2656,8 +2997,10 @@ class PortfolioConstructor:
             # (0-4) — 3月入场含2022熊腿金矿, 闸掉净毁NAV. 全量review最终REJECT, 闸保留零行为.
             if _MAR_GATE != '0' and date.month == 3 and current_positions.get(c['code'], 0.0) <= 0:
                 if _MAR_GATE == 'soft':
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='calendar_entry_gate', action='multiply', rule='march_soft', before=w, multiplier=0.5, held=False)
                     w = w * 0.5
                 else:
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='calendar_entry_gate', action='reject', rule='march_hard', weight=w, held=False)
                     continue
             # J-2(2026-09-23, 实验臂, QUANT_DD_BOOST=0零行为): 深回撤新仓加注 —
             # 探针J-1: 入场时组合DD≥5%笔 n=107 mean +5.14%/win58.9% vs 其余+3.24%,
@@ -2667,27 +3010,34 @@ class PortfolioConstructor:
             if _DD_BOOST > 0.0 and _regime == 'NORM' and drawdown >= _DD_TIER \
                     and current_positions.get(c['code'], 0.0) <= 0:
                 if _DD_BOOST_ADD == '1':
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='weight_adjustment', action='mark_for_later_cash_boost', rule='drawdown_additive', weight=w, drawdown=drawdown)
                     _dd_boosted_codes.add(c['code'])  # J-2b加性: 归一化后现金出资追加
                 else:
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='weight_adjustment', action='multiply', rule='drawdown_rotation', before=w, multiplier=_DD_BOOST, drawdown=drawdown)
                     w = w * _DD_BOOST  # J-2旋转: 归一化稀释(实测传输≈0)
             # 臂钩子(2026-10-23, QUANT_MRG_TILT=0零行为): 融资拥挤新仓相对加权 —
             # 已入选腿确认信号(依据见 _mrg_crowded 注释), w×(1+tilt) 后续归一化
             # 保持相对再分配(总敞口不变, 非杠杆), 选择集合不变. 仅新仓(非持仓).
             if _MRG_TILT > 0.0 and current_positions.get(c['code'], 0.0) <= 0 \
                     and _mrg_crowded(c['code'], date):
+                plog.detail('allocation_candidate', date=date, code=c['code'], stage='weight_adjustment', action='multiply', rule='margin_crowding', before=w, multiplier=1.0 + _MRG_TILT, held=False)
                 w = w * (1.0 + _MRG_TILT)
                 self._dbg['mrg_tilt'] = self._dbg.get('mrg_tilt', 0) + 1
             val = w * total_equity
             min_lot = c['price'] * 100
             if val < min_lot:
                 if _force_empty:
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='lot_affordability', action='reject', rule='forced_empty_below_one_lot', target_value=val, min_lot=min_lot, weight=w)
                     continue  # 止损/熔断中：真正空仓
                 # 权重不够买1手: 检查是否值得提高至1手
                 if min_lot <= total_equity * max_single * 1.1:
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='lot_affordability', action='raise_to_one_lot', before=val, after=min_lot, allowed_one_lot_value=total_equity * max_single * 1.1)
                     val = min_lot  # 提高到1手
                 else:
                     # 买1手就超过仓位上限, 跳过这只股票
+                    plog.detail('allocation_candidate', date=date, code=c['code'], stage='lot_affordability', action='reject', rule='one_lot_exceeds_cap_allowance', target_value=val, min_lot=min_lot, allowed_one_lot_value=total_equity * max_single * 1.1)
                     continue
+            plog.detail('allocation_candidate', date=date, code=c['code'], stage='pre_renormalization', action='retain_for_final_allocation', weight_before_lot=w, target_value=val, implied_weight=val / total_equity if total_equity > 0 else 0, held=current_positions.get(c['code'], 0.0) > 0)
             desired_value[c['code']] = val
             c['weight'] = val / total_equity if total_equity > 0 else 0
             valid_selected.append(c)
@@ -2784,6 +3134,14 @@ class PortfolioConstructor:
         ]
 
         # 记录选股结果到链路日志
+        plog.detail('portfolio_allocation_final', date=date,
+                    target_exposure=target_exposure, smoothed_exposure=self.current_exposure,
+                    total_equity=total_equity, cash=cash,
+                    industry_cap_fraction=_imw,
+                    selected=[{_trace_key: _trace_c.get(_trace_key) for _trace_key in
+                               ('code', 'industry', 'score', 'effective_score', 'weight', 'is_held',
+                                'chan_buy_point', 'rank_pct')} for _trace_c in selected],
+                    desired_value=dict(desired_value))
         for c in selected:
             code = c.get('code', '')
             plog.log_portfolio_select(
@@ -2932,6 +3290,26 @@ class PortfolioConstructor:
         if hasattr(self, '_v_recovery_dates'):
             self._v_recovery_dates.clear()
 
+    @staticmethod
+    def unchanged_nonrebalance_intents(date, current_positions, desired_value, adjusted, due):
+        """Identify genuine carries, excluding requested reweights/exits/risk cuts."""
+        if due:
+            return {}
+        return {code: {'decision_date': str(date)[:10], 'held_value': float(value),
+                       'intent': 'keep_actual_share_count'}
+                for code, value in current_positions.items()
+                if value > 0 and code not in desired_value and adjusted.get(code, 0) > 0
+                and abs(float(adjusted[code]) - float(value)) <= 1e-6}
+
+    @staticmethod
+    def target_shares_for_carry(code, normal_target, current_shares, intents):
+        """Only a witnessed carry can override currency-to-share conversion."""
+        if code not in intents:
+            return normal_target
+        if int(intents[code]['shares']) != int(current_shares):
+            raise ValueError(f'Actual shares changed after carry intent: {code}')
+        return int(current_shares)
+
     def build(
         self,
         date,
@@ -2955,14 +3333,45 @@ class PortfolioConstructor:
     ):
         """构建目标持仓（外部接口）
 
-        关键设计: 非再平衡日只做个股成本止损, 不做信号止损
+        每日检查已启用的信号退出与风控；再平衡到期时重新选择候选。
+        退出意图、目标仓位与下一交易时点的实际成交分别记录。
         """
+        if self.preserve_carry_shares:
+            self._last_carry_intents = {}
+        if getattr(self,'_research_add_confirmation',False):
+            self._last_no_add_intents = {}
         if os.environ.get('QUANT_LIVE_STATELESS') == '1':
             self._reset_live_state()
         elif os.environ.get('QUANT_LIVE_SMOOTH_RESET') == '1':
             # 诊断臂: 只复现实盘的平滑重置 (每进程 current_exposure 从1.0起步),
             # 其余状态控制 (vol/止损/CLB/入场日期) 保持回测连续语义.
             self.current_exposure = 1.0
+        plog.decision_day(date, universe_count=len(universe), held_codes=list(current_positions),
+                          cash=cash, position_values=dict(current_positions),
+                          index_regime=market_regime, index_trend=trend_score,
+                          bear_risk_input=bear_risk, bear_fast_input=bear_risk_fast,
+                          previous_rebalance=getattr(self, '_last_rebalance_date', None))
+        if plog.journal.enabled:
+            # Capture evidence before any exit branch clears tracking state.
+            # These are existing policy trackers, not asserted actual fill dates.
+            for _trace_code, _trace_value in current_positions.items():
+                _trace_sig = signal_store.get(_trace_code, date) if signal_store is not None else None
+                plog.detail('holding_decision_snapshot', date=date, code=_trace_code,
+                            position_value=_trace_value, decision_quote=prices.get(_trace_code),
+                            execution_cost_tracker=list((cost or {}).get(_trace_code, [])),
+                            cost_basis='Execution [shares, average fill price]; excludes full lifecycle cash flows',
+                            tracked_entry_date=self._entry_dates.get(_trace_code),
+                            selection_entry_date=self._position_entry_dates.get(_trace_code),
+                            tracked_entry_reason=dict(self._entry_reasons.get(_trace_code, {})),
+                            tracked_peak_price=self._peak_prices.get(_trace_code),
+                            source_signal_known=_trace_sig is not None,
+                            source_signal={_key: getattr(_trace_sig, _key, None) for _key in
+                                ('buy','sell','chan_buy_point','chan_sell_point','bi_buy_point',
+                                 'signal_level','score','ml_score','pre_discount_score','_gate_quality')},
+                            exit_mode=self.exit_mode, cost_stop_enabled=self.stock_cost_stop_enabled,
+                            cost_stop_threshold=self.position_stop_loss,
+                            peak_trail_enabled=self.stock_peak_trail_enabled,
+                            scope='Before exit rules; trackers may describe selection rather than actual fills; join execution ledger for realized lifecycle')
         stop_loss_sells = {}
         _exit_tags = {}  # 追踪退出原因 (code -> reason)
         profit_reduce = {}  # 止盈减仓 (code -> target_pct_of_current)
@@ -3025,9 +3434,13 @@ class PortfolioConstructor:
         # === 趋势+熊市双确认强制清仓: 单独trend<0可能是牛市回调===
         # 2024实证: trend<0的51天fwd20=+10.8%(反弹), 需bear_risk过滤
         if trend_score < 0 and bear_risk:
+            plog.detail('market_decision', date=date, allow_new_entries=False,
+                        reason='negative_trend_and_effective_bear', bear_streak=self._bear_streak,
+                        effective_bear=bear_risk, index_trend=trend_score)
             self._dbg['empty_return_days'] += 1
             for code in list(current_positions.keys()):
                 stop_loss_sells[code] = 0.0
+                plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=['trend_score < 0 and bear_risk'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3154, executed=False)
                 _exit_tags[code] = 'trend_bear'
             self._entry_dates.clear()
             self._entry_reasons.clear()
@@ -3045,6 +3458,26 @@ class PortfolioConstructor:
         # (仅探测/浮动用, 不改变任何成本类退出行为)
         _raw_cost = cost if cost else {}
         self._a1_raw_cost = _raw_cost  # A1: _build_desired_value在build外看不到本局部, 经self传递
+        if self.b2_holding_thesis is not None:
+            for _thesis_code, _thesis_evidence in self.b2_holding_thesis.exits_for(date).items():
+                if current_positions.get(_thesis_code, 0) > 0:
+                    stop_loss_sells[_thesis_code] = 0.0
+                    _exit_tags[_thesis_code] = 'B2_frozen_support_invalid'
+                    self._entry_dates.pop(_thesis_code, None)
+                    self._entry_reasons.pop(_thesis_code, None)
+                    self._peak_prices.pop(_thesis_code, None)
+                    self._entry_reason_lost_count.pop(_thesis_code, None)
+                    self._post_sell_tracking.pop(_thesis_code, None)
+                    self._sell_delay_deadline.pop(_thesis_code, None)
+                    plog.detail('b2_thesis_exit_intent', date=date, code=_thesis_code,
+                                evidence=_thesis_evidence, target_value=0.0, executed=False)
+        if self.b2_profit_guard is not None:
+            for _profit_code, _profit_evidence in self.b2_profit_guard.exits_for(date).items():
+                if current_positions.get(_profit_code, 0) > 0:
+                    stop_loss_sells[_profit_code] = 0.0
+                    _exit_tags[_profit_code] = f"B{_profit_evidence['source_chan_buy_point']}_context_profit_protection"
+                    plog.detail('b2_profit_guard_exit_intent', date=date, code=_profit_code,
+                                evidence=_profit_evidence, target_value=0.0, executed=False)
         cost = {} if not self.stock_cost_stop_enabled else cost  # A/B开关: 关闭=空cost屏蔽全部成本类退出(基线), 开启=用执行层cost_tracker
         _eff_stop_loss = self.position_stop_loss
         for code, current_value in current_positions.items():
@@ -3058,6 +3491,10 @@ class PortfolioConstructor:
             # 成本止损: 亏损超过阈值→卖出
             if pnl_pct <= -_eff_stop_loss:
                 stop_loss_sells[code] = 0.0
+                plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=['pnl_pct <= -_eff_stop_loss'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3184, executed=False,
+                            trigger_reason='cost_stop', average_fill_cost=avg_cost,
+                            decision_quote=prices[code], observed_return=pnl_pct,
+                            stop_threshold=_eff_stop_loss, observation_before_tracking_clear=True)
                 _exit_tags[code] = 'cost_stop'
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
@@ -3077,6 +3514,7 @@ class PortfolioConstructor:
                     trail = 0.04 if pnl_pct <= 0 else 0.10
                 if dd_from_peak >= trail:
                     stop_loss_sells[code] = 0.0
+                    plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=['self.stock_peak_trail_enabled and code in self._peak_prices and (self._peak_prices[code] > 0)', 'dd_from_peak >= trail'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3203, executed=False)
                     _exit_tags[code] = 'peak_trail'
                     regime_tag = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
                     self._dbg['peak_trail_hits'] += 1
@@ -3100,6 +3538,7 @@ class PortfolioConstructor:
                     days_held = 0
                 if days_held > 15 and pnl_pct <= -0.05:
                     stop_loss_sells[code] = 0.0
+                    plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=['code in self._entry_dates', 'days_held > 15 and pnl_pct <= -0.05'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3226, executed=False)
                     self._entry_dates.pop(code, None)
                     self._entry_reasons.pop(code, None)
                     self._peak_prices.pop(code, None)
@@ -3113,6 +3552,7 @@ class PortfolioConstructor:
                 trail_threshold = self.trailing_stop_by_bp.get(bp, 0.10) if hasattr(self, 'trailing_stop_by_bp') else 0.10
                 if dd_from_peak >= trail_threshold:
                     stop_loss_sells[code] = 0.0
+                    plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=['code in self._peak_prices and self._peak_prices[code] > 0', 'dd_from_peak >= trail_threshold'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3239, executed=False)
                     self._entry_dates.pop(code, None)
                     self._entry_reasons.pop(code, None)
                     self._peak_prices.pop(code, None)
@@ -3129,6 +3569,7 @@ class PortfolioConstructor:
                             dd = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
                             if dd >= trail_pct:
                                 stop_loss_sells[code] = 0.0
+                                plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=['code in self._entry_dates and cost and (code in cost) and (len(cost[code]) >= 2) and (cost[code][0] > 0)', 'pnl >= profit_level', 'code in self._peak_prices and self._peak_prices[code] > 0', 'dd >= trail_pct'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3255, executed=False)
                                 self._entry_dates.pop(code, None)
                                 self._peak_prices.pop(code, None)
                                 self._entry_reasons.pop(code, None)
@@ -3143,6 +3584,7 @@ class PortfolioConstructor:
                     days_held = 0
                 if days_held > self.dead_money_exit_days and abs(pnl_pct) < self.dead_money_return_band:
                     stop_loss_sells[code] = 0.0
+                    plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=['code in self._entry_dates', 'days_held > self.dead_money_exit_days and abs(pnl_pct) < self.dead_money_return_band'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3269, executed=False)
                     self._entry_dates.pop(code, None)
                     self._peak_prices.pop(code, None)
                     self._entry_reasons.pop(code, None)
@@ -3167,6 +3609,7 @@ class PortfolioConstructor:
                 # 双级别确认卖出 (signal_level <= -3) → 全清
                 if sl <= -3:
                     chan_force_sells[code] = 0.0
+                    plog.detail('position_exit_rule', date=date, code=code, requested=chan_force_sells[code], action_book='chan_force_sells', conditions=['self.chan_tp_enabled', 'sl <= -3'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3293, executed=False)
                     self._entry_dates.pop(code, None)
                     self._peak_prices.pop(code, None)
                     self._entry_reasons.pop(code, None)
@@ -3174,10 +3617,12 @@ class PortfolioConstructor:
                 elif cs == 1:
                     if code not in profit_reduce:
                         profit_reduce[code] = min(self.chan_tp_s1_reduce, 1.0)
+                        plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['self.chan_tp_enabled', 'not (sl <= -3)', 'cs == 1', 'code not in profit_reduce'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3300, executed=False)
                 # S2 (二卖) → 按配置减仓，记录触发价用于跟踪止损
                 elif cs == 2:
                     if code not in profit_reduce:
                         profit_reduce[code] = min(self.chan_tp_s2_reduce, 1.0)
+                        plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['self.chan_tp_enabled', 'not (sl <= -3)', 'not (cs == 1)', 'cs == 2', 'code not in profit_reduce'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3304, executed=False)
                     self._post_sell_tracking[code] = {
                         'trigger_price': prices[code],
                         'reason': 'S2'
@@ -3185,6 +3630,7 @@ class PortfolioConstructor:
                 # S3 (三卖) → 强制清仓
                 elif cs == 3:
                     chan_force_sells[code] = 0.0
+                    plog.detail('position_exit_rule', date=date, code=code, requested=chan_force_sells[code], action_book='chan_force_sells', conditions=['self.chan_tp_enabled', 'not (sl <= -3)', 'not (cs == 1)', 'not (cs == 2)', 'cs == 3'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3311, executed=False)
                     self._entry_dates.pop(code, None)
                     self._peak_prices.pop(code, None)
                     self._entry_reasons.pop(code, None)
@@ -3192,16 +3638,19 @@ class PortfolioConstructor:
                 elif sl == -1 and self.chan_tp_bi_sell_exit:
                     if code not in profit_reduce:
                         profit_reduce[code] = 0.5
+                        plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['self.chan_tp_enabled', 'not (sl <= -3)', 'not (cs == 1)', 'not (cs == 2)', 'not (cs == 3)', 'sl == -1 and self.chan_tp_bi_sell_exit', 'code not in profit_reduce'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3318, executed=False)
             else:
                 # 回退到旧逻辑（无缠论止盈配置时）
                 if sl <= -2 or cs >= 2:
                     chan_force_sells[code] = 0.0
+                    plog.detail('position_exit_rule', date=date, code=code, requested=chan_force_sells[code], action_book='chan_force_sells', conditions=['not (self.chan_tp_enabled)', 'sl <= -2 or cs >= 2'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3322, executed=False)
                     self._entry_dates.pop(code, None)
                     self._peak_prices.pop(code, None)
                     self._entry_reasons.pop(code, None)
                 elif sl == -1 or cs == 1:
                     if code not in profit_reduce:
                         profit_reduce[code] = 0.5
+                        plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['not (self.chan_tp_enabled)', 'not (sl <= -2 or cs >= 2)', 'sl == -1 or cs == 1', 'code not in profit_reduce'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3328, executed=False)
 
         # === 中枢移动止盈：盈利>profit_lock_pct后，跌破中枢下沿即止盈 ===
         if self.exit_mode != 'simple' and self.chan_tp_enabled and self.chan_tp_pivot_trailing:
@@ -3223,6 +3672,7 @@ class PortfolioConstructor:
                                 # 价格跌破中枢下沿(留0.5%缓冲) → 止盈
                                 if current_price < pivot_zd * 0.995:
                                     chan_force_sells[code] = 0.0
+                                    plog.detail('position_exit_rule', date=date, code=code, requested=chan_force_sells[code], action_book='chan_force_sells', conditions=["self.exit_mode != 'simple' and self.chan_tp_enabled and self.chan_tp_pivot_trailing", 'cost and code in cost and (len(cost[code]) >= 2) and (cost[code][0] > 0)', 'pnl_pct > self.chan_tp_profit_lock', 'sig', 'not np.isnan(pivot_zd) and pivot_zd > 0', 'current_price < pivot_zd * 0.995'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3349, executed=False)
                                     self._entry_dates.pop(code, None)
                                     self._entry_reasons.pop(code, None)
                                     self._peak_prices.pop(code, None)
@@ -3237,6 +3687,7 @@ class PortfolioConstructor:
                             )
                             if drawdown > tiered_pct:
                                 profit_reduce[code] = 0.5
+                                plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=["self.exit_mode != 'simple' and self.chan_tp_enabled and self.chan_tp_pivot_trailing", 'cost and code in cost and (len(cost[code]) >= 2) and (cost[code][0] > 0)', 'pnl_pct > self.chan_tp_profit_lock', 'code in self._peak_prices and self._peak_prices[code] > 0', 'drawdown > tiered_pct'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3363, executed=False)
 
         # === 趋势衰减卖出: 盈利后缩量+价格回落 → 减仓（不依赖缠论卖点）===
         for code, current_value in current_positions.items():
@@ -3255,18 +3706,21 @@ class PortfolioConstructor:
                 dd = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
                 if dd > 0.10:
                     profit_reduce[code] = 0.0  # 全清
+                    plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['profit_pct > 0.3 and code in self._peak_prices and (self._peak_prices[code] > 0)', 'dd > 0.1'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3381, executed=False)
                     continue
             # 盈利>20%且从峰值回撤>8% → 止盈50%
             if profit_pct > 0.20 and code in self._peak_prices and self._peak_prices[code] > 0:
                 dd = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
                 if dd > 0.08:
                     profit_reduce[code] = 0.5
+                    plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['profit_pct > 0.2 and code in self._peak_prices and (self._peak_prices[code] > 0)', 'dd > 0.08'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3387, executed=False)
                     continue
             # 盈利>15% + 价格低于前高3% → 趋势衰减减仓50%
             if profit_pct > 0.15 and code in self._peak_prices and self._peak_prices[code] > 0:
                 below_peak = (self._peak_prices[code] - prices[code]) / self._peak_prices[code]
                 if below_peak > 0.03:
                     profit_reduce[code] = 0.5
+                    plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['profit_pct > 0.15 and code in self._peak_prices and (self._peak_prices[code] > 0)', 'below_peak > 0.03'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3393, executed=False)
                     continue
 
         # === 均值回归退出: 持仓中极端乖离 → 减仓/清仓 (非调仓日也生效) ===
@@ -3284,12 +3738,14 @@ class PortfolioConstructor:
             dist_ma60 = self._nan_safe(getattr(sig, 'dist_ma60', 0.0))
             if mom_60d > self.mr_mom60_force:
                 chan_force_sells[code] = 0.0
+                plog.detail('position_exit_rule', date=date, code=code, requested=chan_force_sells[code], action_book='chan_force_sells', conditions=['mom_60d > self.mr_mom60_force'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3410, executed=False)
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
                 self._mr_exit_cooldown[code] = date
             elif dist_ma60 > self.mr_dist60_force:
                 chan_force_sells[code] = 0.0
+                plog.detail('position_exit_rule', date=date, code=code, requested=chan_force_sells[code], action_book='chan_force_sells', conditions=['not (mom_60d > self.mr_mom60_force)', 'dist_ma60 > self.mr_dist60_force'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3416, executed=False)
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
@@ -3297,9 +3753,11 @@ class PortfolioConstructor:
             elif mom_60d > self.mr_mom60_reduce:
                 if code not in profit_reduce:
                     profit_reduce[code] = self.mr_reduce_pct
+                    plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['not (mom_60d > self.mr_mom60_force)', 'not (dist_ma60 > self.mr_dist60_force)', 'mom_60d > self.mr_mom60_reduce', 'code not in profit_reduce'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3423, executed=False)
             elif dist_ma60 > self.mr_dist60_reduce:
                 if code not in profit_reduce:
                     profit_reduce[code] = self.mr_reduce_pct
+                    plog.detail('position_exit_rule', date=date, code=code, requested=profit_reduce[code], action_book='profit_reduce', conditions=['not (mom_60d > self.mr_mom60_force)', 'not (dist_ma60 > self.mr_dist60_force)', 'not (mom_60d > self.mr_mom60_reduce)', 'dist_ma60 > self.mr_dist60_reduce', 'code not in profit_reduce'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3426, executed=False)
 
         # 个股止损检查 - 成本止损 + 时间止损 + 移动止损
         for code, current_value in current_positions.items():
@@ -3328,6 +3786,7 @@ class PortfolioConstructor:
                         _exit_tags[code] = 'sig_sell_delayed'
                         self._sell_delay_deadline.pop(code, None)
                         stop_loss_sells[code] = 0.0
+                        plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=["sig is not None and getattr(sig, 'sell', False)", 'self._sell_delay_days > 0', 'date >= _sd_deadline'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3454, executed=False)
                         self._entry_dates.pop(code, None)
                         self._entry_reasons.pop(code, None)
                         self._peak_prices.pop(code, None)
@@ -3338,7 +3797,9 @@ class PortfolioConstructor:
                 else:
                     stopped = True
                     stop_reason = "sig_sell"
+                    _exit_tags.setdefault(code, stop_reason)
                     stop_loss_sells[code] = 0.0
+                    plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', trigger_reason='sig_sell', conditions=["sig is not None and getattr(sig, 'sell', False)", 'not (self._sell_delay_days > 0)'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3465, executed=False)
                     self._entry_dates.pop(code, None)
                     self._entry_reasons.pop(code, None)
                     self._peak_prices.pop(code, None)
@@ -3352,6 +3813,7 @@ class PortfolioConstructor:
                 _exit_tags[code] = 'sig_sell_delayed'
                 self._sell_delay_deadline.pop(code, None)
                 stop_loss_sells[code] = 0.0
+                plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=["not (sig is not None and getattr(sig, 'sell', False))", '_sd_deadline is not None and date >= _sd_deadline'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3478, executed=False)
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
                 self._peak_prices.pop(code, None)
@@ -3605,7 +4067,18 @@ class PortfolioConstructor:
                         _exit_tags[code] = 'bp2_fade'
 
             if stopped:
+                # Preserve an earlier explicit risk/guard tag, otherwise keep
+                # the actual winning rule instead of reporting generic stop_loss.
+                # This dictionary is consumed only by exit diagnostics below.
+                _exit_tags.setdefault(code, stop_reason)
+                plog.detail('position_exit_trigger', date=date, code=code,
+                            reason=stop_reason, decision_close=current_price,
+                            entry_date=self._entry_dates.get(code),
+                            entry_reason=self._entry_reasons.get(code),
+                            peak_price=self._peak_prices.get(code),
+                            executed=False, scope='exit request before target merge and next-open execution')
                 stop_loss_sells[code] = 0.0
+                plog.detail('position_exit_rule', date=date, code=code, requested=stop_loss_sells[code], action_book='stop_loss_sells', conditions=['stopped'], conditions_scope='lexical_branch_path_at_branch_entry', source_line=3738, executed=False)
                 # 清理追踪状态
                 self._entry_dates.pop(code, None)
                 self._entry_reasons.pop(code, None)
@@ -3656,6 +4129,12 @@ class PortfolioConstructor:
                 bear_risk_fast=bear_risk_fast,
                 severe_bear=severe_bear,
             )
+        plog.detail('rebalance_schedule', date=date, due=_should_rebalance,
+                    hard_drawdown_stop=self._hds_triggered, interval=_rebalance_interval,
+                    interval_unit=self._rebalance_unit,
+                    last_rebalance=getattr(self, '_last_rebalance_date', None),
+                    targets_generated=bool(desired_value), cash=cash,
+                    target_values=dict(desired_value))
 
         # 强制卖出 (止损 + Chan卖出 + 弱势板块)
         for code in stop_loss_sells:
@@ -3706,7 +4185,11 @@ class PortfolioConstructor:
                 continue
 
             if diff > 0:
-                adjusted[code] = current + self.entry_speed * diff
+                speed = self.entry_speed
+                fresh_speed = getattr(self, '_research_fresh_entry_speed', None)
+                if current <= 0 and fresh_speed is not None:
+                    speed = fresh_speed
+                adjusted[code] = current + speed * diff
             else:
                 # 止损卖出
                 adjusted[code] = current + diff
@@ -3745,6 +4228,22 @@ class PortfolioConstructor:
                     # 该持仓全部卖出(最弱优先), 止损覆盖的已置0不会出现在此
                     adjusted[code] = 0.0
 
+        if getattr(self,'_research_add_confirmation',False):
+            from .entry_confirmation import added_capital_confirmation
+            for _add_code,_held_value in current_positions.items():
+                if _held_value<=0 or adjusted.get(_add_code,0)<=0:
+                    continue
+                _add_sig=signal_store.get(_add_code,date)
+                _add_evidence=added_capital_confirmation(
+                    _add_sig,self.bp_weights,self.bp_confirm_min,self.bp_require_s4)
+                _before_add_target=adjusted[_add_code]
+                if not _add_evidence['allowed']:
+                    self._last_no_add_intents[_add_code]=dict(_add_evidence,decision_date=str(date)[:10])
+                plog.detail('portfolio_add_confirmation',date=date,code=_add_code,
+                            current_value=_held_value,requested_target=_before_add_target,
+                            target=adjusted[_add_code],evidence=_add_evidence,
+                            scope='Currency target retained; cap only extra shares at next open to preserve original reductions')
+
         # DEBUG: 记录每期持仓分布
         regime = 'BEAR' if bear_risk else ('FAST' if bear_risk_fast else 'NORM')
         n_pos = sum(1 for v in adjusted.values() if v > 0)
@@ -3779,12 +4278,22 @@ class PortfolioConstructor:
             except Exception:
                 pass
 
+        if self.preserve_carry_shares:
+            self._last_carry_intents = self.unchanged_nonrebalance_intents(
+                date, current_positions, desired_value, adjusted, _should_rebalance)
+            plog.detail('portfolio_hold_intents', date=date, intents=self._last_carry_intents,
+                        scope='Only unchanged existing positions on non-rebalance days; no override of risk cuts or explicit targets')
+
         # 对最终账簿投影，包含未重新入选的旧持仓。留现金，不把削减权重再分回。
         from .portfolio_risk import constrain_targets
         _limits = dict(load_config().get('account_risk_limits', {}) or {})
         if os.environ.get('QUANT_ACCOUNT_LIMITS') == '1':
             _limits['enabled'] = True
         if not _limits.get('enabled', False):
+            plog.detail('portfolio_target_values', date=date, desired_before_smoothing=dict(desired_value),
+                        executable_target_values=dict(adjusted), cash=cash,
+                        equity=total_equity, entry_speed=self.entry_speed, exit_speed=self.exit_speed,
+                        held_codes=list(current_positions))
             return adjusted
         _industries, _scores = {}, {}
         for code in adjusted:
@@ -3792,7 +4301,18 @@ class PortfolioConstructor:
             if sig:
                 _industries[code] = getattr(sig, 'industry', '')
                 _scores[code] = self._nan_safe(getattr(sig, 'score', 0.0))
-        return constrain_targets(adjusted, total_equity, _limits, _industries, _scores)
+        _constrained = constrain_targets(adjusted, total_equity, _limits, _industries, _scores)
+        plog.detail('portfolio_account_limits', date=date, limits=dict(_limits),
+                    equity=total_equity, targets_before=dict(adjusted),
+                    targets_after=dict(_constrained), industries=dict(_industries),
+                    scores=dict(_scores),
+                    released_target_value=sum(adjusted.values()) - sum(_constrained.values()),
+                    scope='Final target projection after smoothing and carry; released target value is not realized cash or a fill')
+        plog.detail('portfolio_target_values', date=date, desired_before_smoothing=dict(desired_value),
+                    executable_target_values=dict(_constrained), cash=cash,
+                    equity=total_equity, entry_speed=self.entry_speed, exit_speed=self.exit_speed,
+                    held_codes=list(current_positions))
+        return _constrained
 
     def print_dbg_summary(self):
         """打印熊市行为调试统计"""

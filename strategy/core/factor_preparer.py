@@ -4,7 +4,7 @@
 
 用于动态因子选择前的数据准备
 
-注意：当 factor_mode='fixed' 时，此模块不参与计算，可跳过以加速回测
+固定因子模式启用ML时仍需本模块；仅fixed且ML关闭时可跳过。
 """
 
 import numpy as np
@@ -153,7 +153,10 @@ def _compute_stock_factors_worker(args):
         stock_dates = sorted(df.index.tolist())
 
     n = len(stock_dates)
-    if n < lookback + forward_period:
+    # 特征只依赖当前及历史bar；未来标签是否成熟由下方单独判断。
+    # idx从0开始，首个合格idx=lookback需要lookback+1条数据。
+    # 不能等待forward_period条未来bar才允许当前特征存在。
+    if n <= lookback:
         return []
 
     # 一次性提取价格数据（float64 → 计算精度优于 float32）
@@ -288,6 +291,7 @@ _FACTOR_CODE_FILES = [
     'core/cmap_hist.py',  # 2026-10-17: 概念PIT钩子解析器 — 改它=改信号输入来源
     'core/industry_chain.py',
     'core/alternative_data.py',
+    'core/alternative_manifest_snapshot.py',
     'core/fundamental.py',
     'core/fundamental_units.py',
     'core/market_regime_detector.py',
