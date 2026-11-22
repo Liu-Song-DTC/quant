@@ -92,9 +92,7 @@ def main(execution_date):
     day=pd.read_csv(index,usecols=['datetime']).datetime.max()[:10]
     if pd.Timestamp(execution_date)<=pd.Timestamp(day):
         raise ValueError('Execution date must follow the completed signal session')
-    peer=Path(os.environ['QUANT_B2_PROFIT_CONTEXT'])
-    peer_manifest=json.loads((peer/'manifest.json').read_text())
-    if peer_manifest['end']<day:raise ValueError('accepted465 peer context is stale')
+    configured_peer=Path(os.environ['QUANT_B2_PROFIT_CONTEXT'])
     out=Path('/mnt/d/quant_research_runs')/('live_accepted465_'+datetime.now().strftime('%Y%m%d_%H%M%S'))
     def stage(name,**fields):
         row=dict(stage=name,at=datetime.now().isoformat(),controller_pid=os.getpid(),
@@ -104,6 +102,11 @@ def main(execution_date):
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         for script in ('strategy/check_data_freshness.py','data/verify_alt_observations.py'):
             subprocess.run([sys.executable,'-B',str(ROOT/script)],cwd=ROOT,check=True)
+        from prepare_accepted465_peers import ensure_peer_context
+        peer=ensure_peer_context(root=ROOT,end=day,current_path=configured_peer)
+        os.environ['QUANT_B2_PROFIT_CONTEXT']=str(peer)
+        if pd.read_csv(index,usecols=['datetime']).datetime.max()[:10]!=day:
+            raise RuntimeError('Index calendar changed while preparing the live inputs')
         layout=prepare_layout(ROOT,ROOT/'data',out)
         policy=dict(QUANT_TRADING_PROFILE='accepted465',QUANT_TODATE=day,
             QUANT_B2_PROFIT_CONTEXT=str(peer),QUANT_DETAIL_TRACE='1',

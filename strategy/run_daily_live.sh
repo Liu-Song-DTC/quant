@@ -124,7 +124,9 @@ set -e
 # 写空 trade_orders.json 并推进实际账户状态；不改历史回测净值。新鲜度门禁已在上一步跑过。
 # 退出码: 0=跳过 / 1=继续完整管线 / 其他=错误即停。
 echo "===== 1.5/4 熊市空仓免算前置闸 ====="
-if [ "$FORCE_FULL" = "1" ]; then
+if [ "$QUANT_TRADING_PROFILE" = "accepted465" ]; then
+  echo "[accepted465] 使用完整共享决策路径；熊市观察名单使用本次有效信号，不走旧免算出单路径"
+elif [ "$FORCE_FULL" = "1" ]; then
   echo "[--force-full] 跳过前置闸, 完整管线照跑 (注意: 熊市+空仓时订单仍将为空, 策略本身不进场)"
 else
 _pre_rc=0
@@ -148,6 +150,14 @@ sed -i "s/^  todate: .*/  todate: '$TODAY'/" strategy/config/factor_config.yaml
 grep -q "^  todate: '$TODAY'" strategy/config/factor_config.yaml \
   || { chain_alert "todate更新失败" "factor_config.yaml todate 未能更新到 $TODAY, 出单链中止"; echo "todate 更新失败!"; exit 1; }
 grep -n "^  todate" strategy/config/factor_config.yaml
+
+if [ "$QUANT_TRADING_PROFILE" = "accepted465" ]; then
+  echo "===== 2.5/4 准备共享退出上下文 (本地数据, 原数学内核) ====="
+  _accepted465_peer_path=$("$PY" -B strategy/tools/prepare_accepted465_peers.py --print-path \
+    2> >(tee -a "logs/accepted465_peers_${TODAY//-/}.log" >&2))
+  export QUANT_B2_PROFIT_CONTEXT="$_accepted465_peer_path"
+  echo "回测与实盘共用退出上下文: $QUANT_B2_PROFIT_CONTEXT"
+fi
 
 echo "===== 3/4 信号重生成 (bt_execution, ~80分钟) ====="
 cd strategy
