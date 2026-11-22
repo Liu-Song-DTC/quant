@@ -1,9 +1,11 @@
 """Bad provider dates must not expose later events to earlier signals."""
 from datetime import date
+import os
 import pickle
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -11,6 +13,14 @@ from strategy.core.alternative_data import AlternativeDataProvider
 
 
 class DragonTigerSignalPitTests(unittest.TestCase):
+    def setUp(self):
+        # These temporary fixtures test event-date filtering without a supplier
+        # manifest. Production manifest enforcement has separate contract tests.
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop('QUANT_ALT_VERSIONS_REQUIRED', None)
+
     def test_malformed_provider_date_does_not_disable_asof_filter(self):
         with tempfile.TemporaryDirectory() as directory:
             provider = AlternativeDataProvider(directory)

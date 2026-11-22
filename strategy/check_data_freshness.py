@@ -138,6 +138,17 @@ def _load_kline_allowlist(expected=None) -> set:
                     continue  # malformed expiry must never grant an exception
                 if expected is not None and expected > deadline:
                     continue
+            last_trades=[field[11:] for field in parts[1:] if field.startswith('last_trade=')]
+            if last_trades:
+                if len(last_trades)!=1:
+                    continue
+                try:
+                    required=date_type.fromisoformat(last_trades[0])
+                    actual=_file_last_bar(BT_DIR / f'{parts[0]}_qfq.csv')[0]
+                    if actual<required.isoformat():
+                        continue  # A halt cannot excuse missing pre-halt sessions.
+                except (OSError,ValueError,IndexError):
+                    continue
             allowed.add(parts[0])
     return allowed
 
@@ -560,7 +571,8 @@ def main():
 
     if fails:
         print(f'\n=== 门禁未通过: {fails} 项硬指标落后 ===')
-        print('请先刷新数据: bash data/refresh_all.sh (另需Windows侧更新K线)')
+        print('请按上方FAIL项补齐数据；生产K线由 data/refresh_all.sh 的AkShare/efinance链路更新。')
+        print('数据已补齐时只重跑校验: bash data/refresh_verify.sh')
         print('节假日误报: 用 --expected 指定上一交易日')
         sys.exit(1)
     print('\n=== 门禁通过: 所有硬指标新鲜 ===')

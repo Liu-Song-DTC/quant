@@ -12,6 +12,13 @@ from strategy.core.alternative_data import AlternativeDataProvider
 
 
 class AlternativeRefreshFailureTests(unittest.TestCase):
+    def setUp(self):
+        # This fixture exercises the dedicated refresh, with all network calls
+        # mocked. A surrounding read-only backtest environment must not skip it.
+        refresh_mode = patch('strategy.core.alternative_data._AUTOREFRESH_OFF', False)
+        refresh_mode.start()
+        self.addCleanup(refresh_mode.stop)
+
     def test_reduction_download_error_keeps_old_cache_but_fails_refresh(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'reduction_records.pkl'

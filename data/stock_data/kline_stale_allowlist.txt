@@ -197,4 +197,22 @@
 601326 秦港股份 2026-10-21 停牌中 (新浪+腾讯双源: 今开/高/低/量全0, 现价=昨收3.57, 时间戳10-21 15:43/16:14)
 002827 高争民爆 2026-10-23 停止交易(退市/长期停牌待复核): 上游在册名册(2026-10-28, 5218只)已不含该码, 末根bar=2026-10-23, 下载器已冻结; 若复牌请移除本行
 605258 协和电子 2026-10-23 停止交易(退市/长期停牌待复核): 上游在册名册(2026-10-28, 5218只)已不含该码, 末根bar=2026-10-23, 下载器已冻结; 若复牌请移除本行
-688121 *ST卓然 2026-10-29起停牌 until=2026-10-30 (上交所公司公告: https://static.sse.com.cn/disclosure/listedinfo/announcement/c/new/2026-10-29/688121_20261029_RG1T.pdf; 截止后需复核)
+688121 *ST卓然 2026-10-29起停牌 until=2026-11-02 (11/03复核: 东财与新浪均无11/02 K线, 东财今开/高低/量为停牌占位符; 次日需复核)
+000831 中国稀土 2026-10-30 停止交易(退市/长期停牌): 上游在册名册已不含该码, 末根bar=2026-10-30; 若复牌请从本文件移除
+002129 TCL中环 2026-10-30 停止交易(退市/长期停牌): 上游在册名册已不含该码, 末根bar=2026-10-30; 若复牌请从本文件移除
+
+000635 公告核实停牌=2026-11-13 最后实际交易日=2026-11-12 until=2026-11-13 仅本次数据日豁免;下一交易日复核 source=https://static.cninfo.com.cn/finalpage/2026-11-13/1225670041.PDF
+
+600185 公告核实停牌=2026-11-12 最后实际交易日=2026-11-11 until=2026-11-13 仅本次数据日豁免;下一交易日复核 source=https://static.cninfo.com.cn/finalpage/2026-11-12/1225667574.PDF
+
+688121 公告核实停牌=2026-10-29 最后实际交易日=2026-10-28 until=2026-11-13 仅本次数据日豁免;下一交易日复核 source=https://static.cninfo.com.cn/finalpage/2026-11-13/1225669558.PDF
+
+688798 公告核实停牌=2026-11-10 最后实际交易日=2026-11-09 until=2026-11-13 仅本次数据日豁免;下一交易日复核 source=https://money.finance.sina.com.cn/corp/view/vCB_AllBulletinDetail.php?id=12698152&stockid=688798
+
+# 2026-11-22公告复核，仅覆盖11月20日数据；必须先补齐停牌前最后交易日，禁止掩盖历史缺口。
+000635 英力特 until=2026-11-20 last_trade=2026-11-12 公告核实停牌;下一交易日须复核 source=https://vip.stock.finance.sina.com.cn/corp/view/vCB_AllBulletinDetail.php?id=12715185&stockid=000635
+002122 ST汇洲 until=2026-11-20 last_trade=2026-11-19 公告核实停牌;下一交易日须复核 source=https://money.finance.sina.com.cn/corp/view/vCB_AllBulletinDetail.php?id=12714981&stockid=002122
+600185 珠免集团 until=2026-11-20 last_trade=2026-11-11 公告核实停牌;下一交易日须复核 source=https://static.cninfo.com.cn/finalpage/2026-11-19/1225677106.PDF
+600567 山鹰国际 until=2026-11-20 last_trade=2026-11-18 公告核实停牌;下一交易日须复核 source=https://notice.10jqka.com.cn/api/pdf/2ab98abac7b11b9f.pdf
+688121 ST卓然 until=2026-11-20 last_trade=2026-10-28 公告核实停牌;下一交易日须复核 source=https://www.sse.com.cn/assortment/stock/list/info/announcement/index.shtml?productId=688121
+688798 艾为电子 until=2026-11-20 last_trade=2026-11-09 公告核实停牌;下一交易日须复核 source=https://pdf.dfcfw.com/pdf/H2_AN202611161831753524_1.pdf

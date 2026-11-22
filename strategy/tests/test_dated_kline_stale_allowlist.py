@@ -11,6 +11,18 @@ import check_data_freshness as fresh
 
 
 class DatedStaleAllowlistTests(unittest.TestCase):
+    def test_halt_cannot_excuse_missing_pre_halt_bars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder=Path(directory);allow=folder/'allow.txt'
+            allow.write_text('002122 halt until=2026-11-20 last_trade=2026-11-19\n')
+            price=folder/'002122_qfq.csv'
+            price.write_text('datetime,open,high,low,close\n2026-11-13,1,1,1,1\n')
+            with patch.object(fresh,'KLINE_ALLOWLIST',allow),patch.object(fresh,'BT_DIR',folder):
+                self.assertEqual(fresh._load_kline_allowlist(date(2026,11,20)),set())
+                price.write_text('datetime,open,high,low,close\n2026-11-19,1,1,1,1\n')
+                self.assertEqual(fresh._load_kline_allowlist(date(2026,11,20)),{'002122'})
+                self.assertEqual(fresh._load_kline_allowlist(date(2026,11,23)),set())
+
     def test_dated_exemption_expires_and_bad_dates_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / 'allow.txt'

@@ -26,8 +26,8 @@ from .alternative_manifest_snapshot import manifest_exists
 _AUTOREFRESH_OFF = os.environ.get('QUANT_ALT_NO_AUTOREFRESH', '') in ('1', 'true', 'yes', 'on')
 
 
-def _require_published_cache(path):
-    if _AUTOREFRESH_OFF and not path.exists():
+def _require_published_cache(path, *, readonly=None):
+    if (_AUTOREFRESH_OFF if readonly is None else readonly) and not path.exists():
         raise FileNotFoundError(f'read-only alternative data cache missing: {path}')
 
 
@@ -41,16 +41,41 @@ def _require_published_cache(path):
 def _atomic_write_bytes(path, data: bytes):
     path = Path(path)
     tmp = path.with_name(path.name + '.tmp')
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    try:
+        tmp.write_bytes(data)
+        _record_published_version(path, tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _atomic_to_pickle(df, path):
     """df.to_pickle 的原子版 — 见 _atomic_write_bytes"""
     path = Path(path)
     tmp = path.with_name(path.name + '.tmp')
-    df.to_pickle(tmp)
-    os.replace(tmp, path)
+    try:
+        df.to_pickle(tmp)
+        _record_published_version(path, tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _record_published_version(path, staged):
+    """Archive new supplier bytes before publishing them to the mutable cache.
+
+    The ordinary daily refresh may record the same bytes again; that is
+    idempotent. A publication interrupted between manifest and source replacement
+    remains detectable by verify_current rather than silently losing its version.
+    """
+    from .alt_data_versions import TABLES, record_snapshot, verify_current
+    if path.name in TABLES:
+        if path.exists():
+            if (path.parent / 'alt_versions' / (path.stem + '.json')).exists():
+                verify_current(path)
+            else:
+                record_snapshot(path)
+        record_snapshot(path, content_from=staged)
 
 
 class AlternativeDataProvider:
@@ -110,6 +135,18 @@ class AlternativeDataProvider:
         self._reduction_plans: pd.DataFrame = None
         self._plan_codes_cache: dict = {}
 
+    def _cache_readonly(self, path):
+        """Published inputs are read-only outside an explicit refresh role."""
+        if _AUTOREFRESH_OFF:
+            return True
+        if self.strict_refresh:
+            return False
+        canonical = Path(__file__).resolve().parents[2] / 'data' / 'alternative_data'
+        return (self.data_dir.resolve() == canonical.resolve()
+                or manifest_exists(self.data_dir / 'alt_versions' / (path.stem + '.json'))
+                or (path.name == 'unlock_schedule.pkl'
+                    and (self.data_dir / 'unlock_schedule_versions.json').exists()))
+
     # ========== 龙虎榜 ==========
 
     def _asof_table(self, filename, date, current, *, prehistory_proxy=True):
@@ -148,10 +185,11 @@ class AlternativeDataProvider:
             institution_buy, institution_sell, top_institution_count
         """
         cache_path = self.data_dir / 'dragon_tiger.pkl'
-        _require_published_cache(cache_path)
+        _readonly = self._cache_readonly(cache_path)
+        _require_published_cache(cache_path, readonly=_readonly)
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_hours < 24 or _AUTOREFRESH_OFF:
+            if _age_hours < 24 or _readonly:
                 self._dragon_tiger = pd.read_pickle(cache_path)
                 return self._dragon_tiger
 
@@ -175,7 +213,7 @@ class AlternativeDataProvider:
     def _ensure_dragon_tiger_history(self):
         """确保龙虎榜历史明细缓存存在, 不存在则从聚合数据构建或自动下载。"""
         history_path = self.data_dir / 'dragon_tiger_history.pkl'
-        _require_published_cache(history_path)
+        _require_published_cache(history_path, readonly=self._cache_readonly(history_path))
         if history_path.exists():
             if self._dt_history is None:
                 import pickle
@@ -357,10 +395,11 @@ class AlternativeDataProvider:
             date, net_flow(净流入/亿), cumulative_flow, sh_flow, sz_flow
         """
         cache_path = self.data_dir / 'northbound_daily.pkl'
-        _require_published_cache(cache_path)
+        _readonly = self._cache_readonly(cache_path)
+        _require_published_cache(cache_path, readonly=_readonly)
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_hours < 24 or _AUTOREFRESH_OFF:
+            if _age_hours < 24 or _readonly:
                 self._northbound = pd.read_pickle(cache_path)
                 return self._northbound
 
@@ -484,10 +523,11 @@ class AlternativeDataProvider:
             margin_change, margin_buy, total_balance
         """
         cache_path = self.data_dir / 'margin_daily.pkl'
-        _require_published_cache(cache_path)
+        _readonly = self._cache_readonly(cache_path)
+        _require_published_cache(cache_path, readonly=_readonly)
         if cache_path.exists():
             _age_hours = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_hours < 24 or _AUTOREFRESH_OFF:
+            if _age_hours < 24 or _readonly:
                 self._margin = pd.read_pickle(cache_path)
                 return self._margin
 
@@ -618,14 +658,15 @@ class AlternativeDataProvider:
         Returns DataFrame: code, name, holder, change_num(万股), change_ratio(占总股本),
                            start_date(变动开始), end_date(变动截止), eitime(公告时刻)"""
         cache_path = self.data_dir / 'reduction_records.pkl'
-        _require_published_cache(cache_path)
+        _readonly = self._cache_readonly(cache_path)
+        _require_published_cache(cache_path, readonly=_readonly)
         old = None
         if cache_path.exists():
             if self._reduction is not None:
                 return self._reduction
             old = pd.read_pickle(cache_path)
             _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_h < 24 or _AUTOREFRESH_OFF:
+            if _age_h < 24 or _readonly:
                 self._reduction = old
                 return old
         try:
@@ -700,12 +741,13 @@ class AlternativeDataProvider:
         """加载限售解禁日程(2021至今+已公告的未来日程).
         Returns DataFrame: code, unlock_date, ratio(占解禁前流通市值比例), shares, market_value, type"""
         cache_path = self.data_dir / 'unlock_schedule.pkl'
-        _require_published_cache(cache_path)
+        _readonly = self._cache_readonly(cache_path)
+        _require_published_cache(cache_path, readonly=_readonly)
         if self._unlock is not None:
             return self._unlock
         if cache_path.exists():
             _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_h < 24 or _AUTOREFRESH_OFF:
+            if _age_h < 24 or _readonly:
                 self._unlock = pd.read_pickle(cache_path)
                 return self._unlock
         try:
@@ -793,14 +835,15 @@ class AlternativeDataProvider:
         Returns DataFrame: code, name, indicator, forecast_type, change_pct(%),
                            predict_value(区间中值), base_value(上年同期), notice_date, report_period"""
         cache_path = self.data_dir / 'yjyg_records.pkl'
-        _require_published_cache(cache_path)
+        _readonly = self._cache_readonly(cache_path)
+        _require_published_cache(cache_path, readonly=_readonly)
         old = None
         if cache_path.exists():
             if self._yjyg is not None:
                 return self._yjyg
             old = pd.read_pickle(cache_path)
             _age_h = (pd.Timestamp.now() - pd.Timestamp.fromtimestamp(cache_path.stat().st_mtime)).total_seconds() / 3600
-            if _age_h < 24 or _AUTOREFRESH_OFF:
+            if _age_h < 24 or _readonly:
                 self._yjyg = old
                 return old
         try:
@@ -963,12 +1006,13 @@ class AlternativeDataProvider:
         if self._reduction_plans is not None:
             return self._reduction_plans
         pkl = self.data_dir / 'reduction_plans.pkl'
-        _require_published_cache(pkl)
+        _readonly = self._cache_readonly(pkl)
+        _require_published_cache(pkl, readonly=_readonly)
         df = pd.read_pickle(pkl) if pkl.exists() else pd.DataFrame()
         today = str(pd.Timestamp.now().date())
         last = df['ann_date'].max() if len(df) else None
         pkl_age_h = (pd.Timestamp.now().timestamp() - pkl.stat().st_mtime) / 3600 if pkl.exists() else 99
-        if not _AUTOREFRESH_OFF and (last is None or last < today or pkl_age_h > 4):
+        if not _readonly and (last is None or last < today or pkl_age_h > 4):
             try:
                 fresh = self._fetch_reduction_plans_recent()
                 if len(fresh):
