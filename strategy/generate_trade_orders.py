@@ -1310,6 +1310,26 @@ def main():
             _kept_orders.append(_order)
         orders = _kept_orders
 
+    _bear_presentation = None
+    if _accepted_bridge is not None:
+        from analysis.bear_plan_presentation import present_bear_plan
+        _bear_presentation = present_bear_plan(
+            target_date, portfolio, bear_risk, universe, signal_store,
+            orders, prev_positions, portfolio.max_positions)
+        _retained_order_ids = {id(order) for order in _bear_presentation['orders']}
+        for _order in orders:
+            if id(_order) not in _retained_order_ids:
+                _code = _order['stock_code'].split('.')[0].zfill(6)
+                if _code in prev_positions:
+                    new_positions[_code] = dict(prev_positions[_code])
+                else:
+                    new_positions.pop(_code, None)
+        orders = _bear_presentation['orders']
+        print(f"[accepted465] {_bear_presentation['watchlist_note']}")
+        for _candidate in _bear_presentation['watchlist']:
+            print(f"  [熊市观察｜禁止买入] {_candidate['signal_date']} "
+                  f"{_candidate['code']} score={_candidate['score']:.6f}")
+
     # ── 0h 现金闸 (2026-09-17): 买单总额 ≤ 可用现金 + 同日卖出回款 ──
     # 实锤: 9/17晨 pos_sum=673,705>50万时 cash=0 仍出320k买单 — build()内部
     # total_equity=cash+pos_sum 随shadow book漂移放大(槽位=equity/20000), 排仓
@@ -1425,6 +1445,8 @@ def main():
         output['trading_profile'] = 'accepted465'
         output['ranking_coverage_policy'] = 'Original whole-group order when archived predictions are missing'
         output['signal_identity'] = _signal_identity
+        output.update({key: value for key, value in _bear_presentation.items()
+                       if key != 'orders'})
     if _cb_result and _cb_result.get('rebalanced'):
         output['cb_sleeve'] = {
             'month': _cb_result['month'],
