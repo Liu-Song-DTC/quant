@@ -745,14 +745,14 @@ def main():
                         help=f'总资金 (默认: {DEFAULT_CASH})')
     parser.add_argument('--dry-run', action='store_true',
                         help='仅打印结果, 不写入文件')
-    parser.add_argument('--bear-reference-report', default=None,
-                        help='配合--dry-run，仅另存禁止执行的熊市参考报告；不提交账户或订单')
     parser.add_argument('--skip-freshness', action='store_true',
                         help='跳过数据新鲜度门禁 (仅调试用, 实盘勿用)')
     parser.add_argument('--force-reset', action='store_true',
                         help='确认持仓全清重选 (仅当核对后确认账户无真实持仓时使用)')
     parser.add_argument('--force-rerun', action='store_true',
                         help='兼容旧参数；同日运行只重放已提交订单，不重新推进状态')
+    parser.add_argument('--replace-empty-bear-plan', action='store_true',
+                        help='仅重建同日原为空且无持仓/挂单的熊市计划，改为正常出单并标注BEAR')
     parser.add_argument('--fills', default=os.path.join(_STRATEGY_DIR, 'qmt_bridge', 'fills_today.csv'),
                         help='券商增量成交/拒单回报 CSV；无回报不改变真实账户')
     parser.add_argument('--deviations', default=os.path.join(_STRATEGY_DIR, 'qmt_bridge', 'deviation_log.csv'),
@@ -761,10 +761,8 @@ def main():
                         help='显式确认未成交的过期挂单, 逗号分隔 run_id:seq；'
                              '仅在核对真实券商账户后使用 (程序不替你假定成交)')
     args = parser.parse_args()
-    if args.bear_reference_report and not args.dry_run:
-        parser.error('--bear-reference-report requires --dry-run')
-    if args.bear_reference_report and not accepted465_active():
-        parser.error('--bear-reference-report requires accepted465')
+    if args.replace_empty_bear_plan and not accepted465_active():
+        parser.error('--replace-empty-bear-plan requires accepted465')
     if accepted465_active() and args.force_reset:
         parser.error('accepted465 uses broker-reconciled inventory; --force-reset is unsupported')
 
@@ -1131,7 +1129,18 @@ def main():
         print(f"  [WARN] {_n_missing} 只持仓无当日行情, 按 entry_price 估值")
     if _last_date and str(_last_date)[:10] > str(target_date)[:10]:
         raise RuntimeError('不能用过去日期覆盖当前实盘状态')
-    if _same_day and not args.dry_run:
+    if args.replace_empty_bear_plan:
+        from analysis.live_order_planning import validate_empty_bear_replacement
+        if not _same_day:
+            raise RuntimeError('Empty-bear replacement requires the already committed decision day')
+        with open(ORDERS_FILE,encoding='utf-8') as stream:
+            _previous_empty_plan=json.load(stream)
+        if (_previous_empty_plan.get('signal_identity')!=_signal_identity or
+                _previous_empty_plan.get('date')!=str(target_date)):
+            raise RuntimeError('Replacement requires the same committed source signal bundle')
+        validate_empty_bear_replacement(_previous_empty_plan,account,prev_positions,execution_date)
+        print('[熊市出单修正] 原空计划无持仓/挂单，按相同信号重新走正常出单链路；不重复累计日收益')
+    if _same_day and not args.dry_run and not args.replace_empty_bear_plan:
         with open(ORDERS_FILE, encoding='utf-8') as stream:
             _committed_orders = json.load(stream)
         if _committed_orders.get('date') != str(target_date):
@@ -1178,7 +1187,7 @@ def main():
               f"{portfolio.vol_lookback}")
     elif _same_day:
         print(f"  [WARN] 同日重跑({target_date}): 不重复计入日收益; "
-              f"台账/状态写入将被跳过")
+              f"日收益窗口保持不变；订单与状态按本次运行模式处理")
 
     current_positions = {
         code: float(info['amount']) for code, info in prev_positions.items()
@@ -1225,7 +1234,8 @@ def main():
         _decision_strategy.index_data = _ctx['index_data']
         _decision_strategy.industry_stock_counts = _ctx['industry_stock_counts']
         _decision_strategy.sector_rotation = portfolio._sector_rotation
-        adjusted = _decision_strategy.generate_positions(
+        from analysis.live_order_planning import generate_order_positions
+        adjusted = generate_order_positions(_decision_strategy,
             date=target_date,universe=universe,current_positions=current_positions,
             cash=cash,prices=_decision_prices,cost=cost)
     else:
@@ -1299,6 +1309,8 @@ def main():
         signal_store, raw_map, stock_file_map, selection_map=selection_map,
         price_date=price_date,
     )
+    from analysis.live_order_planning import validate_order_price_references
+    validate_order_price_references(orders)
 
     if _accepted_bridge is not None:
         from core.entry_confirmation import cap_blocked_addition
@@ -1321,7 +1333,7 @@ def main():
         from analysis.bear_plan_presentation import present_bear_plan
         _bear_presentation = present_bear_plan(
             target_date, portfolio, bear_risk, universe, signal_store,
-            orders, prev_positions, portfolio.max_positions)
+            orders, prev_positions, portfolio.max_positions,market_regime=market_regime)
         _retained_order_ids = {id(order) for order in _bear_presentation['orders']}
         for _order in orders:
             if id(_order) not in _retained_order_ids:
@@ -1331,9 +1343,9 @@ def main():
                 else:
                     new_positions.pop(_code, None)
         orders = _bear_presentation['orders']
-        print(f"[accepted465] {_bear_presentation['watchlist_note']}")
+        print(f"[accepted465] {_bear_presentation['market_note']}")
         for _candidate in _bear_presentation['watchlist']:
-            print(f"  [熊市观察｜禁止买入] {_candidate['signal_date']} "
+            print(f"  [熊市标签] {_candidate['signal_date']} "
                   f"{_candidate['code']} score={_candidate['score']:.6f}")
 
     # ── 0h 现金闸 (2026-09-17): 买单总额 ≤ 可用现金 + 同日卖出回款 ──
@@ -1456,28 +1468,6 @@ def main():
         output['signal_identity'] = _signal_identity
         output.update({key: value for key, value in _bear_presentation.items()
                        if key != 'orders'})
-        if args.bear_reference_report and _bear_presentation['market_status']['effective_bear']:
-            from analysis.bear_reference_orders import reference_plan
-            def _reference_order_factory(_targets, _selections):
-                _orders, _, _ = build_orders(
-                    str(target_date), _targets, prices, prev_positions, total_equity,
-                    signal_store, raw_map, stock_file_map,
-                    selection_map={row['code']:row for row in _selections},
-                    price_date=price_date)
-                for _order in _orders:
-                    _reference_code = _order['stock_code'].split('.')[0].zfill(6)
-                    _order['reference_raw_price'] = float(prices[_reference_code])
-                return _orders
-            try:
-                output['bear_reference_plan'] = reference_plan(
-                    _decision_strategy,target_date,universe,current_positions,cash,
-                    _decision_prices,cost,_bear_presentation['market_status'],
-                    _reference_order_factory)
-            except Exception as _reference_error:
-                output['bear_reference_plan'] = dict(
-                    status='failed',observation_only=True,executable=False,buy_enabled=False,
-                    reference_orders=[],error=str(_reference_error))
-                print(f'[熊市参考报告失败] {_reference_error}; 正式交易规则不变')
     if _cb_result and _cb_result.get('rebalanced'):
         output['cb_sleeve'] = {
             'month': _cb_result['month'],
@@ -1565,23 +1555,7 @@ def main():
         print(f"  [monitor] 生成失败(不影响订单): {e}")
 
     if args.dry_run:
-        if args.bear_reference_report:
-            from pathlib import Path
-            from core.live_state import atomic_bytes
-            _report_path = Path(args.bear_reference_report).resolve()
-            _protected_paths = {Path(path).resolve() for path in (
-                ORDERS_FILE,POSITIONS_FILE,ACCOUNT_FILE,PORTFOLIO_STATE_FILE,REBUILD_STATE_FILE)}
-            if _report_path in _protected_paths:
-                raise ValueError('Reference report cannot overwrite a live account/order file')
-            _reference = output.get('bear_reference_plan')
-            if _reference is None:
-                _reference = dict(status='not_effective_bear',observation_only=True,
-                                  executable=False,buy_enabled=False,orders=[],reference_orders=[])
-            _reference.update(signal_date=str(target_date),execution_date=str(execution_date),
-                              signal_identity=_signal_identity)
-            atomic_bytes(_report_path,json.dumps(_reference,ensure_ascii=False,indent=2).encode())
-            print(f'[熊市参考报告｜禁止执行] {_report_path}')
-        print("\n[Dry-run] 不写入账户、组合状态或正式订单")
+        print("\n[Dry-run] 不写入文件")
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return
 
