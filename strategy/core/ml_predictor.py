@@ -313,6 +313,13 @@ class MLFactorPredictor:
         exclude_set = {'code', 'date', 'future_ret', 'industry', 'label_end_date', '__ml_regime_input'}
         numeric_cols = [c for c in factor_df.columns if c not in exclude_set
                        and factor_df[c].dtype in ('float64', 'float32', 'int64', 'int32')]
+        whitelist = self.config.get('ml', {}).get('feature_whitelist')
+        if whitelist:
+            # Keep the complete input contract above, but avoid copying and
+            # standardizing unused factors. Retain market columns so their
+            # shared-observation validation also keeps its original behavior.
+            required = set(whitelist).union(self._market_feature_cols)
+            numeric_cols = [c for c in numeric_cols if c in required]
         meta_cols = [c for c in ['code', 'date', 'future_ret', 'industry', 'label_end_date'] if c in factor_df.columns]
         df = factor_df[meta_cols + numeric_cols].copy()
         if row_regimes is not None:
