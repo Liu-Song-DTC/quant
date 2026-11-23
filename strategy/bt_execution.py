@@ -30,6 +30,7 @@ from core.signal_store import SignalStore
 from core.config_loader import load_config
 from core.monitor import monitor, get_logger
 from core.pipeline_logger import plog
+from core.entry_observation import EntryObservation
 from core.industry_mapping import INDUSTRY_KEYWORDS, build_fine_industry_map
 from core.market_regime_detector import MarketRegimeDetector
 from core.stock_pool import get_stock_pool, get_exclusion_set
@@ -1824,6 +1825,7 @@ class BacktraderExecution(bt.Strategy):
 
     def __init__(self):
         self.universe = [d._name for d in self.datas]
+        self._entry_observation = EntryObservation(plog, 'backtrader')
         self.count = 0
         self.current_rebalance_period = REBALANCE_DAYS  # 动态周期，默认20天
         self.orders_list = defaultdict(list)
@@ -1931,6 +1933,9 @@ class BacktraderExecution(bt.Strategy):
             prices=prices,
             cost=self.cost,
         )
+        self._entry_observation.prepare(
+            date, target, current_positions, self.p.real_strategy,
+            (d._name for d in self.datas if self.getposition(d).size > 0))
 
         # 记录选股结果
         if rebalance:
@@ -1992,6 +1997,7 @@ class BacktraderExecution(bt.Strategy):
                 if size < abs(raw) * 100 * 0.5:
                     self._fill_stats['buy_partial'] += 1
                 order = self.buy(data=d, size=size)
+                self._entry_observation.order_created(order, date)
                 self.orders_list[date].append(order)
                 self._today_buys.add(code)
             elif size < 0:
@@ -2007,6 +2013,7 @@ class BacktraderExecution(bt.Strategy):
                     continue
                 self._fill_stats['sell_attempted'] += 1
                 order = self.sell(data=d, size=abs(size))
+                self._entry_observation.order_created(order, date)
                 self.orders_list[date].append(order)
 
         # 计算并记录每日收益率（供组合层波动率控制使用）
@@ -2046,7 +2053,12 @@ class BacktraderExecution(bt.Strategy):
             s['sell_filled'], s['sell_attempted'], s['sell_filled']/sa*100,
             s['sell_limit_down_skip'], s['sell_tplus1_blocked']))
 
+    def stop(self):
+        self._entry_observation.close(self.last_date)
+
     def notify_order(self, order):
+        self._entry_observation.notify_order(
+            order, self.last_date, lambda: self.getposition(order.data).size)
         # 未被处理的订单
         if order.status in [order.Submitted, order.Accepted]:
             return
@@ -2084,6 +2096,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
     from core.trading_lots import buy_shares_for_budget, valid_buy_shares
     from core.entry_admission import EntryAdmission, B2HoldingThesis
     from core.profit_guard import DailyExitContext, B2ContextProfitGuard
+    from core.entry_observation import EntryObservation
+    _entry_observation = EntryObservation(plog, 'vectorized')
     _entry_admission = EntryAdmission(os.environ.get('QUANT_ENTRY_ADMISSION', 'off'), DATA_PATH, str(fromdate))
     _pending_admission = {}
     _preserve_carry_shares = os.environ.get('QUANT_PRESERVE_CARRY_SHARES', '0') == '1'
@@ -2494,6 +2508,12 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         plog.detail('execution_fill', **_execution_fills[-1],
                     reference_price=reference, impact_rate=impact, stamp_rate=stamp,
                     fill_basis='simulated_executed_cashflow')
+        _entry_observation.vectorized_fill(
+            code, date, side, shares, price,
+            int(_raw_account.shares.get(code, 0) if raw_execution_arm
+                else positions[code_to_idx[code]]),
+            f'vectorized-fill:{len(_execution_fills)}',
+            position_already_applied=raw_execution_arm)
     _trade_invested = defaultdict(float)
     _trade_received = defaultdict(float)
 
@@ -3023,6 +3043,7 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
                 prices=prices, cost=cost_tracker)
         except Exception as e:
             import traceback
+            _entry_observation.close(date)
             print(f" [选股异常] date={date}: {e}")
             traceback.print_exc()
             raise RuntimeError(f'组合构建失败，回测已中止: {date}') from e
@@ -3114,6 +3135,9 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         if _pending_admission:
             plog.detail('entry_admission_prepared', date=date, constraints=_pending_admission,
                         mode=_entry_admission.mode)
+        _entry_observation.prepare(
+            date, target, cur_pos, strategy,
+            (stock_codes[j] for j in np.flatnonzero(positions > 0)))
         _pending = target
 
         # 跟踪回撤
@@ -3124,6 +3148,8 @@ def _vectorized_backtest(strategy, fundamental_data, fromdate, todate, initial_c
         exposure_val = float(executed_exposure[i])
         plog.log_backtest_daily(calendar[i].date(), nav[i], float(running_dd),
                                 pos_count, exposure_val, float(daily_ret[i-1]) if i > 0 else 0.0)
+
+    _entry_observation.close(calendar[-1].date() if len(calendar) else None)
 
     # 记录执行成交汇总
     plog.log_execution(
