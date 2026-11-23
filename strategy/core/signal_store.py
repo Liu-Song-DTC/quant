@@ -197,7 +197,13 @@ class SignalStore:
                 # (带时分秒) 时不能静默返回空 (板块信号密度归零)。
                 self._date_positions = {}
                 for _k, _pos in self._df.groupby(level='date', sort=False).indices.items():
-                    self._date_positions.setdefault(str(_k)[:10], []).extend(_pos)
+                    day_key = str(_k)[:10]
+                    previous = self._date_positions.get(day_key)
+                    # GroupBy already returns integer arrays. Keep them instead
+                    # of boxing every row position into a Python list. Aliases
+                    # of one day retain the original group encounter order.
+                    self._date_positions[day_key] = (
+                        _pos if previous is None else np.concatenate((previous, _pos)))
             positions = self._date_positions.get(day)
             available = {}
             if positions is not None and 'buy' in self._df.columns:
@@ -230,7 +236,7 @@ class SignalStore:
                     else str(date)[:10])
         if self._dates is None:  # 惰性构建, 单次~5000个日期
             self._dates = set(
-                self._df.index.get_level_values('date').astype(str).str[:10])
+                self._df.index.unique(level='date').astype(str).str[:10])
         return date_str in self._dates
 
     def _get_from_df(self, code, date):
