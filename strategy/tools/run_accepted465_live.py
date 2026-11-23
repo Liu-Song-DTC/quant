@@ -116,11 +116,13 @@ def main(execution_date):
         revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
         dirty=subprocess.run(['git','diff','--quiet','HEAD','--',*sources,
             'strategy/generate_trade_orders.py','strategy/tools/run_accepted465_live.py',
+            'strategy/analysis/bear_reference_orders.py',
             'strategy/config/deployment/accepted465.json','strategy/check_data_freshness.py'],cwd=ROOT)
         if dirty.returncode:
             raise RuntimeError('Live source differs from the committed release; refusing an ambiguous version')
         protected={str(p):sha(p) for p in (Path(__file__),
             ROOT/'strategy/generate_trade_orders.py',
+            ROOT/'strategy/analysis/bear_reference_orders.py',
             ROOT/'strategy/check_data_freshness.py',
             ROOT/'data/stock_data/kline_stale_allowlist.txt',
             ROOT/'strategy/config/deployment/accepted465.json',
@@ -157,7 +159,8 @@ def main(execution_date):
         # Preview validates the exact same CLI/decision code without committing
         # an account/plan. The final call retains the real live-account lock.
         with (out/'live_preview.log').open('x') as stream:
-            subprocess.run([*argv,'--dry-run'],env=order_env,cwd=ROOT,stdout=stream,
+            subprocess.run([*argv,'--dry-run','--bear-reference-report',str(out/'bear_reference_plan.json')],
+                           env=dict(order_env,QUANT_DETAIL_TRACE_DIR=str(out/'live_preview_trace')),cwd=ROOT,stdout=stream,
                            stderr=subprocess.STDOUT,check=True)
         assert_inputs_unchanged()
         stage('commit_live_plan',log=str(out/'live_plan.log'))
@@ -169,9 +172,15 @@ def main(execution_date):
         generated=json.loads((out/'generation_complete.json').read_text())
         assert orders['signal_identity']['signals_sha256']==generated['signal_sha256']
         assert orders['signal_identity']['inputs_sha256']==inputs
+        reference=json.loads((out/'bear_reference_plan.json').read_text())
+        if reference.get('status') in ('complete','no_eligible_reference_orders'):
+            from analysis.bear_reference_orders import attach_reference_report
+            orders=attach_reference_report(ROOT,reference)
         save(out/'live_plan_receipt.json',dict(profile='accepted465',signal_date=day,
             execution_date=execution_date,orders_file=str(ROOT/'trade_orders.json'),
-            order_count=len(orders['orders']),broker_orders_submitted=False))
+            order_count=len(orders['orders']),broker_orders_submitted=False,
+            bear_reference_status=reference.get('status'),
+            reference_order_count=len(reference.get('reference_orders',[]))))
         stage('live_plan_complete',log=str(out/'live_plan.log'),orders_file=str(ROOT/'trade_orders.json'),
               orders=len(orders['orders']),broker_orders_submitted=False)
 

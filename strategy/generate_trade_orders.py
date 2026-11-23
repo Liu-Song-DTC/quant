@@ -745,6 +745,8 @@ def main():
                         help=f'总资金 (默认: {DEFAULT_CASH})')
     parser.add_argument('--dry-run', action='store_true',
                         help='仅打印结果, 不写入文件')
+    parser.add_argument('--bear-reference-report', default=None,
+                        help='配合--dry-run，仅另存禁止执行的熊市参考报告；不提交账户或订单')
     parser.add_argument('--skip-freshness', action='store_true',
                         help='跳过数据新鲜度门禁 (仅调试用, 实盘勿用)')
     parser.add_argument('--force-reset', action='store_true',
@@ -759,6 +761,10 @@ def main():
                         help='显式确认未成交的过期挂单, 逗号分隔 run_id:seq；'
                              '仅在核对真实券商账户后使用 (程序不替你假定成交)')
     args = parser.parse_args()
+    if args.bear_reference_report and not args.dry_run:
+        parser.error('--bear-reference-report requires --dry-run')
+    if args.bear_reference_report and not accepted465_active():
+        parser.error('--bear-reference-report requires accepted465')
     if accepted465_active() and args.force_reset:
         parser.error('accepted465 uses broker-reconciled inventory; --force-reset is unsupported')
 
@@ -1450,6 +1456,28 @@ def main():
         output['signal_identity'] = _signal_identity
         output.update({key: value for key, value in _bear_presentation.items()
                        if key != 'orders'})
+        if args.bear_reference_report and _bear_presentation['market_status']['effective_bear']:
+            from analysis.bear_reference_orders import reference_plan
+            def _reference_order_factory(_targets, _selections):
+                _orders, _, _ = build_orders(
+                    str(target_date), _targets, prices, prev_positions, total_equity,
+                    signal_store, raw_map, stock_file_map,
+                    selection_map={row['code']:row for row in _selections},
+                    price_date=price_date)
+                for _order in _orders:
+                    _reference_code = _order['stock_code'].split('.')[0].zfill(6)
+                    _order['reference_raw_price'] = float(prices[_reference_code])
+                return _orders
+            try:
+                output['bear_reference_plan'] = reference_plan(
+                    _decision_strategy,target_date,universe,current_positions,cash,
+                    _decision_prices,cost,_bear_presentation['market_status'],
+                    _reference_order_factory)
+            except Exception as _reference_error:
+                output['bear_reference_plan'] = dict(
+                    status='failed',observation_only=True,executable=False,buy_enabled=False,
+                    reference_orders=[],error=str(_reference_error))
+                print(f'[熊市参考报告失败] {_reference_error}; 正式交易规则不变')
     if _cb_result and _cb_result.get('rebalanced'):
         output['cb_sleeve'] = {
             'month': _cb_result['month'],
@@ -1537,7 +1565,23 @@ def main():
         print(f"  [monitor] 生成失败(不影响订单): {e}")
 
     if args.dry_run:
-        print("\n[Dry-run] 不写入文件")
+        if args.bear_reference_report:
+            from pathlib import Path
+            from core.live_state import atomic_bytes
+            _report_path = Path(args.bear_reference_report).resolve()
+            _protected_paths = {Path(path).resolve() for path in (
+                ORDERS_FILE,POSITIONS_FILE,ACCOUNT_FILE,PORTFOLIO_STATE_FILE,REBUILD_STATE_FILE)}
+            if _report_path in _protected_paths:
+                raise ValueError('Reference report cannot overwrite a live account/order file')
+            _reference = output.get('bear_reference_plan')
+            if _reference is None:
+                _reference = dict(status='not_effective_bear',observation_only=True,
+                                  executable=False,buy_enabled=False,orders=[],reference_orders=[])
+            _reference.update(signal_date=str(target_date),execution_date=str(execution_date),
+                              signal_identity=_signal_identity)
+            atomic_bytes(_report_path,json.dumps(_reference,ensure_ascii=False,indent=2).encode())
+            print(f'[熊市参考报告｜禁止执行] {_report_path}')
+        print("\n[Dry-run] 不写入账户、组合状态或正式订单")
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return
 
