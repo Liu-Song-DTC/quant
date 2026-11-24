@@ -31,15 +31,16 @@ def load_roster(path):
     with path.open(encoding='utf-8') as fh:
         codes = [row[0].strip() for row in csv.reader(fh) if row and row[0].strip()]
     reference = None
-    siblings = sorted(path.parent.glob('listed_codes_*.csv'), reverse=True)
+    # MMDD 名称跨年不代表先后，按文件实际生成时间选上一次名册。
+    siblings = sorted((p for p in path.parent.glob('listed_codes_*.csv')
+                       if p != path), key=lambda p: p.stat().st_mtime, reverse=True)
     for other in siblings:
-        if other.name != path.name:
-            try:
-                with other.open(encoding='utf-8') as fh:
-                    reference = sum(1 for row in csv.reader(fh) if row and row[0].strip())
-            except OSError:
-                reference = None
-            break
+        try:
+            with other.open(encoding='utf-8') as fh:
+                reference = sum(1 for row in csv.reader(fh) if row and row[0].strip())
+        except OSError:
+            reference = None
+        break
     return codes, reference
 
 
